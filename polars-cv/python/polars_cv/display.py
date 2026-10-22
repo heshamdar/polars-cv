@@ -191,7 +191,11 @@ def show_images(
 
     Args:
         df: Polars DataFrame containing the image column.
-        column: Name of the column with image data.
+        column: Name of the column with image data, or ``"col.field"`` for
+            one field of a struct column — the outputs of a dict sink, such
+            as an aliased intermediate sunk beside the result
+            (``.sink({"out": "native", "bg_strip": "png"})``). A column whose
+            own name contains the dot wins.
         max_rows: Maximum number of rows to display (default 10).
         max_width: Maximum display width in pixels for each thumbnail
             (default 200).
@@ -210,12 +214,8 @@ def show_images(
         >>> show_images(df, "img")
         ```
     """
-    if column not in df.columns:
-        msg = f"Column '{column}' not found in DataFrame. Available: {df.columns}"
-        raise KeyError(msg)
-
+    col = _image_column(df, column)
     n = min(max_rows, df.height)
-    col = df[column]
     if format == "auto" and isinstance(col.dtype, NdArrayType):
         format = "numpy"
 
@@ -223,6 +223,22 @@ def show_images(
         _show_notebook(col, n, max_width, format)
     else:
         _show_text(col, n, format)
+
+
+def _image_column(df: pl.DataFrame, column: str) -> pl.Series:
+    """``column``, or the field ``col.field`` names of a struct column."""
+    if column in df.columns:
+        return df[column]
+    name, _, field = column.partition(".")
+    dtype = df[name].dtype if name in df.columns else None
+    if field and isinstance(dtype, pl.Struct):
+        fields = [f.name for f in dtype.fields]
+        if field not in fields:
+            msg = f"Struct column '{name}' has no field '{field}'. Fields: {fields}"
+            raise KeyError(msg)
+        return df[name].struct.field(field)
+    msg = f"Column '{column}' not found in DataFrame. Available: {df.columns}"
+    raise KeyError(msg)
 
 
 def _show_notebook(

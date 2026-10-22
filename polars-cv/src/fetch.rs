@@ -266,6 +266,9 @@ pub struct Fetcher<'a> {
 /// What a call's in-flight fetches share with it.
 struct Shared {
     options: Option<CloudOptions>,
+    /// How much of each object the window fetches: the whole of it, or for a
+    /// header fetcher ([`Fetcher::headers`]) a prefix.
+    reach: cloud::Reach,
     /// Fetched bodies held now, and the most held at once.
     resident: AtomicUsize,
     peak: AtomicUsize,
@@ -305,7 +308,9 @@ impl Entry {
         }
         let (entry, shared) = (Arc::clone(self), Arc::clone(shared));
         let (fetch, handle) = futures::future::abortable(async move {
-            let result = cloud::read_remote_budgeted(&entry.path, shared.options.as_ref()).await;
+            let result =
+                cloud::read_remote_budgeted(&entry.path, shared.options.as_ref(), shared.reach)
+                    .await;
             entry.finish(result, &shared);
         });
         *state = State::Fetching(handle);
@@ -358,6 +363,10 @@ impl Entry {
     }
 }
 
+/// How much of a remote object a header read fetches first, as the first
+/// local read takes: an image header is usually in the first few KiB.
+const HEADER_PREFIX: usize = 64 * 1024;
+
 impl<'a> Fetcher<'a> {
     /// The fetcher for `ca`, a call's path column.
     ///
@@ -367,6 +376,32 @@ impl<'a> Fetcher<'a> {
         ca: &'a StringChunked,
         options: Option<&CloudOptions>,
         policy: &'a PathPolicy,
+    ) -> Self {
+        Self::with_reach(ca, options, policy, cloud::Reach::Whole)
+    }
+
+    /// The fetcher for header-only reads ([`Fetcher::header`]): its window
+    /// fetches each remote object's first [`HEADER_PREFIX`] bytes, as a local
+    /// file's header is read, rather than the whole object. It reads no
+    /// bodies: [`Fetcher::bytes`] refuses.
+    pub fn headers(
+        ca: &'a StringChunked,
+        options: Option<&CloudOptions>,
+        policy: &'a PathPolicy,
+    ) -> Self {
+        Self::with_reach(
+            ca,
+            options,
+            policy,
+            cloud::Reach::Prefix(HEADER_PREFIX as u64),
+        )
+    }
+
+    fn with_reach(
+        ca: &'a StringChunked,
+        options: Option<&CloudOptions>,
+        policy: &'a PathPolicy,
+        reach: cloud::Reach,
     ) -> Self {
         let mut index: HashMap<&str, usize> = HashMap::new();
         let mut entries: Vec<Arc<Entry>> = Vec::new();
@@ -394,6 +429,7 @@ impl<'a> Fetcher<'a> {
             entries,
             shared: Arc::new(Shared {
                 options: options.cloned(),
+                reach,
                 resident: AtomicUsize::new(0),
                 peak: AtomicUsize::new(0),
             }),
@@ -407,6 +443,15 @@ impl<'a> Fetcher<'a> {
     /// so the policy check here is what makes the sandbox total. A remote
     /// path's bytes are shared, not copied; a local file is read now.
     pub fn bytes(&self, row: usize) -> Result<Option<Bytes<'_>>, String> {
+        if self.shared.reach != cloud::Reach::Whole {
+            return Err("internal: a header fetcher's window holds prefixes, not bodies".into());
+        }
+        self.fetched(row)
+    }
+
+    /// Row `row`'s bytes as this fetcher's window fetched them: the body, or
+    /// for a header fetcher a remote object's prefix.
+    fn fetched(&self, row: usize) -> Result<Option<Bytes<'_>>, String> {
         let Some(path) = self.ca.get(row) else {
             return Ok(None);
         };
@@ -449,9 +494,10 @@ impl<'a> Fetcher<'a> {
     /// much each time `parse` cannot tell yet) until `parse` answers or the
     /// file ends — an image header is usually in the first few KiB, but a
     /// JPEG's frame header may sit behind large EXIF/comment segments. A
-    /// remote file is the whole object ([`Fetcher::bytes`]): ranged reads
-    /// would nest the store's concurrency permits (`cloud::read_object`).
-    /// The [`PathPolicy`] check applies to both.
+    /// remote file's prefix is what a [`Fetcher::headers`] window fetched;
+    /// when it cannot tell from that, the whole object is read once. A
+    /// [`Fetcher::new`] window holds whole objects, which are parsed as they
+    /// are. The [`PathPolicy`] check applies to both.
     pub fn header<T>(
         &self,
         row: usize,
@@ -461,10 +507,32 @@ impl<'a> Fetcher<'a> {
             return Ok(None);
         };
         if cloud::is_remote_path(path) {
-            return self.bytes(row).map(|bytes| bytes.and_then(|b| parse(&b)));
+            let Some(prefix) = self.fetched(row)? else {
+                return Ok(None);
+            };
+            if let Some(found) = parse(&prefix) {
+                return Ok(Some(found));
+            }
+            let cloud::Reach::Prefix(n) = self.shared.reach else {
+                return Ok(None);
+            };
+            if (prefix.len() as u64) < n {
+                return Ok(None); // The whole object, and no header in it.
+            }
+            drop(prefix);
+            // Rare (a header behind a large segment), so read in line;
+            // `block_in_place_on` is safe from any thread polars runs rows on.
+            let whole = ASYNC
+                .block_in_place_on(cloud::read_remote_budgeted(
+                    path,
+                    self.shared.options.as_ref(),
+                    cloud::Reach::Whole,
+                ))
+                .map_err(|e| format!("Failed to read remote file '{path}': {e}"))?;
+            return Ok(parse(&whole));
         }
         self.policy.check(path)?;
-        let mut limit = 64 * 1024;
+        let mut limit = HEADER_PREFIX;
         loop {
             let (bytes, eof) = cloud::read_local_prefix(path, limit)
                 .map_err(|e| format!("Failed to read local file '{path}': {e}"))?;

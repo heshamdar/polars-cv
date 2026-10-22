@@ -44,6 +44,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Header-only metadata on a remote path reads a prefix, not the object.**
+  `.cv.image_info()`, `width()`, `height()`, `channels()` and `image_dtype()`
+  over `s3://`/`gs://`/`az://`/`http(s)://` paths ask for the first 64 KiB
+  (a ranged read), and read the whole object only when the header is not in
+  it, as a local file already was. An empty remote object, which has no
+  first byte to range over, is now a row error rather than a null.
+- **`show_images(df, "col.field")`** shows one field of a struct column, such
+  as an aliased intermediate sunk beside the result with a dict sink.
 - **A row an op refuses ends `(row n)`,** as a `.contour` accessor's refusal
   already did, and a bad per-row parameter names its op and the parameter
   it was bound to as well as its column (`crop: left: Parameter column 'l'
