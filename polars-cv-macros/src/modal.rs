@@ -8,6 +8,7 @@
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
+use syn::ext::IdentExt as _;
 use syn::visit::Visit;
 use syn::visit_mut::VisitMut;
 use syn::{spanned::Spanned, Attribute, Data, DeriveInput, Expr, Fields, Ident, Type};
@@ -383,7 +384,7 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
             .unwrap_or_else(|| Ident::new("Public", proc_macro2::Span::call_site()));
         let field_names: Vec<String> = named
             .iter()
-            .map(|f| f.ident.as_ref().unwrap().to_string())
+            .map(|f| f.ident.as_ref().unwrap().unraw().to_string())
             .collect();
         let ids: Vec<&Ident> = named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
 
@@ -393,7 +394,8 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let mut visits = Vec::new();
         for f in &named {
             let id = f.ident.as_ref().unwrap();
-            let fname = id.to_string();
+            // `r#where` is the wire's `where`.
+            let fname = id.unraw().to_string();
             let fdoc = doc_of(&f.attrs);
             if fdoc.is_empty() {
                 return Err(syn::Error::new(

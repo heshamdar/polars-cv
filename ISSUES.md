@@ -45,8 +45,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
-| CR-121 | Resampling | Feature | `resize(like=node)`, `filter="area"`, `block_reduce` (B5) |
-| CR-122 | Ops | Feature | `rank_filter`/`median_filter`, `background_divide`, `flip(when=)`, `stack` + `sink("long", where=)` (C2/B7/B6) |
 | CR-123 | Params | Feature | `H`/`W` placeholders: op parameters derived from the current buffer's shape (B4) |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
@@ -350,31 +348,13 @@ against `main` at `e788d72` that day, and their full text is in git history).
 ## Downstream proposal (2026-10-22)
 
 A downstream image-analytics user's proposal, reviewed against 0.40.0. The
-bugs and small gaps shipped in the first phase (CR-124 to CR-128) and the
-reductions in the second (CR-119, CR-120), all closed below; these are the
-rest, in the order planned. A masked percentile normalize (the window from a
+bugs and small gaps shipped in the first phase (CR-124 to CR-128), the
+reductions in the second (CR-119, CR-120) and the resampling, filters and
+long sink in the third (CR-121, CR-122), all closed below; this is the
+rest. A masked percentile normalize (the window from a
 mask's pixels) waits on CR-123's mechanism for values derived from another
 node. Each is test-first, through
 the typed catalogue, with its own CHANGELOG entry.
-
-### CR-121 — Resampling onto another node's grid
-
-- Generalise `RasterSize` (`view-buffer/src/geometry/ops.rs`) into one
-  `SizeSpec { Fixed, FromNode }` read by `rasterize(shape=)` and
-  `resize(like=)`.
-- `FilterType::Area` (box average when shrinking, as OpenCV's
-  `INTER_AREA`); `block_reduce(height, width, reduction)` on the CR-119
-  authority, partial edge blocks reducing their in-bounds pixels.
-
-### CR-122 — Local filters, conditional flip, long-format sink
-
-- `rank_filter(height, width, q, border)`; `median_filter` is its `q=50`
-  sugar; `background_divide(sigma)` is blur + divide sugar.
-- `flip(when=)`: a per-row `bool`, eligible because the shape is the same
-  either way. Not a general per-op `when=`.
-- `sink("long", names=, where=<channel>)`: `[H, W(, C)]` to
-  `List[Struct{row, col, <names>}]`, filtering on (and dropping) one
-  channel; `stack(*maps, names=)` is `channel_merge` sugar.
 
 ### CR-123 — Shape placeholders (`H`, `W`)
 
@@ -616,6 +596,8 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-122 | No rank/median filter, no flat-fielding, no per-row flip, no per-pixel table of stacked maps (C2/B7/B6) | Fixed (unreleased): `rank_filter`/`median_filter`, `background_divide`, `flip_h`/`flip_v(when=)`, `sink("long", names=, where=)`; no `stack()`, since `channel_merge` is that op (`test_rank_filters.py`, `test_conditional_flip.py`, `test_long_sink.py`) |
+| CR-121 | No resize onto another node's grid, no area filter, no block reduction (B5) | Fixed (unreleased): `resize_like(other)` as a graph op (not a shared `SizeSpec`: rasterize's size is a literal, resize_like's another node's per-row shape), `resize(filter="area")` with OpenCV `INTER_AREA`'s exact overlap weights, `block_reduce` (`test_resampling.py`) |
 | CR-120 | `normalize` had no percentile window and no explicit bounds (C3) | Fixed (unreleased): `method="percentile"`/`"range"` with `low`/`high` (`TestNormalizeWindows`) |
 | CR-119 | Reductions counted the zeros outside a mask; no median, no axis on sum/percentile; `label_reduce` had max/mean/sum only (B2/C1) | Fixed (unreleased): one `Reduction` authority; `reduce_masked`, `reduce_median`, `axis=` on sum/percentile, `statistics(mask=, "pNN", "count")`, `region_stats` (`test_reductions.py`) |
 | CR-128 | Remote header-only metadata fetched the whole object; `show_images` could not show a dict sink's field (C4/C6) | Fixed (unreleased): a header fetcher reads a 64 KiB prefix first (`test_remote_header_reads.py`); `show_images(df, "col.field")` |

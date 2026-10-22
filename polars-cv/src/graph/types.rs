@@ -47,6 +47,9 @@ pub struct OutputSpec {
     pub expected_shape: Option<Vec<usize>>,
     /// Planned rank.
     pub expected_ndim: Option<usize>,
+    /// Planned channel count: 1 for an `[H, W]` buffer, axis 2's size for
+    /// an `[H, W, C]` one, when known (with or without the other sizes).
+    pub expected_channels: Option<usize>,
     /// The output is histogram buckets: a `vector`-domain output encoded as
     /// `List(Struct[lower_edge, upper_edge, count, normalized])` rather than by
     /// its (domain, format) pair.
@@ -72,6 +75,11 @@ impl OutputSpec {
             expected_dtype: planned.dtype,
             expected_shape,
             expected_ndim: planned.shape.rank(),
+            expected_channels: match (planned.domain, planned.shape.rank()) {
+                (view_buffer::ops::Domain::Buffer, Some(2)) => Some(1),
+                (view_buffer::ops::Domain::Buffer, Some(3)) => planned.shape.sizes()[2],
+                _ => None,
+            },
             histogram_buckets,
         }
     }
@@ -99,6 +107,17 @@ pub(crate) enum RowResult {
     NumpyStruct(Option<ViewBuffer>),
     /// Histogram buckets data [lower_edge, upper_edge, count, normalized] flattened
     HistogramBuckets(Option<Vec<f64>>),
+    /// A row of the "long" sink, as `OutputValue::Long`.
+    Long(Option<LongRow>),
+}
+
+/// A row of the "long" sink: each kept pixel's position, and one 1-D
+/// buffer per value field (the buffer's dtype), in the layout's order.
+#[derive(Debug, Clone)]
+pub(crate) struct LongRow {
+    pub rows: Vec<u32>,
+    pub cols: Vec<u32>,
+    pub fields: Vec<ViewBuffer>,
 }
 
 impl RowResult {
@@ -113,6 +132,7 @@ impl RowResult {
             RowResult::TypedArray(_) => "TypedArray",
             RowResult::NumpyStruct(_) => "NumpyStruct",
             RowResult::HistogramBuckets(_) => "HistogramBuckets",
+            RowResult::Long(_) => "Long",
         }
     }
 }
@@ -493,6 +513,8 @@ pub(crate) enum OutputValue {
     NumpyStruct(ViewBuffer),
     /// Histogram buckets data [lower_edge, upper_edge, count, normalized] flattened
     HistogramBuckets(Vec<f64>),
+    /// A row of the "long" sink.
+    Long(LongRow),
 }
 /// A node in the pipeline graph.
 ///

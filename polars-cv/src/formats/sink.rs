@@ -28,6 +28,18 @@ pub enum Sink {
     /// A nested Polars `List`.
     #[op(name = "list", sample = {})]
     List,
+    /// One struct per pixel, row-major: an ``[H, W]`` or ``[H, W, C]``
+    /// buffer as ``List[Struct{row: u32, col: u32, <names>...}]``, each
+    /// channel a field of the buffer's dtype.
+    #[op(name = "long", sample = {"names": ["heat", "mask"], "where": "mask"})]
+    Long {
+        /// One field name per channel, in channel order (one for an
+        /// ``[H, W]`` buffer); distinct, and neither ``row`` nor ``col``.
+        names: Vec<String>,
+        /// Keep only the pixels where this named channel is > 0, and leave
+        /// the channel out of the struct.
+        r#where: Option<String>,
+    },
     /// The domain's own Polars type: `Float64` for a scalar, a `List` for a
     /// vector, the contour struct for contours.
     #[op(name = "native", sample = {})]
@@ -110,6 +122,7 @@ impl Sink {
             Sink::Array { .. }
             | Sink::Blob
             | Sink::List
+            | Sink::Long { .. }
             | Sink::Native
             | Sink::NdArray { .. }
             | Sink::Numpy { .. }
@@ -126,6 +139,7 @@ impl Sink {
             Sink::Blob
             | Sink::Jpeg { .. }
             | Sink::List
+            | Sink::Long { .. }
             | Sink::Native
             | Sink::NdArray { .. }
             | Sink::Numpy { .. }
@@ -146,6 +160,7 @@ impl Sink {
             | Sink::Blob
             | Sink::Jpeg { .. }
             | Sink::List
+            | Sink::Long { .. }
             | Sink::Native
             | Sink::Png
             | Sink::Tiff
@@ -155,6 +170,24 @@ impl Sink {
 }
 
 impl Sink {
+    /// The `long` sink's layout, its names checked.
+    pub fn long_layout(&self) -> Option<Result<LongLayout, String>> {
+        match self {
+            Sink::Long { names, r#where } => Some(LongLayout::of(names, r#where.as_deref())),
+            Sink::Array { .. }
+            | Sink::Blob
+            | Sink::Jpeg { .. }
+            | Sink::List
+            | Sink::Native
+            | Sink::NdArray { .. }
+            | Sink::Numpy { .. }
+            | Sink::Png
+            | Sink::Tiff
+            | Sink::Torch { .. }
+            | Sink::WebP => None,
+        }
+    }
+
     /// Whether a tensor sink compacts each row to exactly its elements.
     pub fn compact(&self) -> bool {
         match self {
@@ -165,11 +198,77 @@ impl Sink {
             | Sink::Blob
             | Sink::Jpeg { .. }
             | Sink::List
+            | Sink::Long { .. }
             | Sink::Native
             | Sink::Png
             | Sink::Tiff
             | Sink::WebP => false,
         }
+    }
+}
+
+/// The `long` sink over a buffer's channels: the channel each struct field
+/// reads, in order, and the channel that selects the pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LongLayout {
+    /// `(channel, name)` for each value field, in channel order.
+    pub fields: Vec<(usize, String)>,
+    /// The `where` channel: a pixel is kept where it is > 0.
+    pub select: Option<usize>,
+    /// The channel count the names describe.
+    pub channels: usize,
+}
+
+impl LongLayout {
+    /// The layout `names` and `where` describe, refusing names that cannot
+    /// be struct fields beside `row` and `col`.
+    pub fn of(names: &[String], r#where: Option<&str>) -> Result<Self, String> {
+        if names.is_empty() {
+            return Err("the 'long' sink needs `names`: one per channel".into());
+        }
+        for (i, name) in names.iter().enumerate() {
+            if name == "row" || name == "col" {
+                return Err(format!(
+                    "the 'long' sink's names cannot include '{name}': the 'row' and 'col' \
+                     fields hold each pixel's position"
+                ));
+            }
+            if names[..i].contains(name) {
+                return Err(format!(
+                    "the 'long' sink's names must be distinct: '{name}' appears twice"
+                ));
+            }
+        }
+        let select = match r#where {
+            None => None,
+            Some(w) => Some(names.iter().position(|n| n == w).ok_or_else(|| {
+                format!("the 'long' sink's 'where' = '{w}' is not one of its names {names:?}")
+            })?),
+        };
+        let fields = names
+            .iter()
+            .enumerate()
+            .filter(|(c, _)| Some(*c) != select)
+            .map(|(c, n)| (c, n.clone()))
+            .collect();
+        Ok(LongLayout {
+            fields,
+            select,
+            channels: names.len(),
+        })
+    }
+
+    /// Refuse a buffer whose channel count is not the names'.
+    pub fn check_channels(&self, channels: usize) -> Result<(), String> {
+        if channels == self.channels {
+            return Ok(());
+        }
+        let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+        Err(format!(
+            "the 'long' sink's buffer has {} but {} given: give one name per channel",
+            plural(channels, "channel"),
+            plural(self.channels, "name") + if self.channels == 1 { " was" } else { " were" },
+        ))
     }
 }
 
@@ -238,6 +337,31 @@ mod tests {
             let sink = parse(serde_json::json!({"format": "torch", "dtype": spelling})).unwrap();
             assert!(sink.as_f16());
         }
+    }
+
+    #[test]
+    fn the_long_layout_reads_each_named_channel_and_drops_where() {
+        let names: Vec<String> = ["heat", "mask", "score"].map(String::from).into();
+        let layout = LongLayout::of(&names, Some("mask")).unwrap();
+        assert_eq!(
+            layout.fields,
+            vec![(0, "heat".to_string()), (2, "score".to_string())]
+        );
+        assert_eq!(layout.select, Some(1));
+        assert!(layout.check_channels(3).is_ok());
+        let err = layout.check_channels(1).unwrap_err();
+        assert!(err.contains("1 channel but 3 names were given"), "{err}");
+        for (bad, says) in [
+            (vec!["a", "a"], "'a' appears twice"),
+            (vec!["col"], "cannot include 'col'"),
+            (vec![], "needs `names`"),
+        ] {
+            let bad: Vec<String> = bad.into_iter().map(String::from).collect();
+            let err = LongLayout::of(&bad, None).unwrap_err();
+            assert!(err.contains(says), "{err}");
+        }
+        let err = LongLayout::of(&names, Some("x")).unwrap_err();
+        assert!(err.contains("'where' = 'x' is not one of"), "{err}");
     }
 
     #[test]

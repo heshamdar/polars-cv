@@ -219,7 +219,10 @@ pub fn validate_channel_merge(
         .collect();
     if known.iter().any(|d| *d != known[0]) {
         return Err(ValidationError::Generic {
-            message: format!("channel_merge inputs must share one dtype, got {known:?}"),
+            message: format!(
+                "channel_merge inputs must share one dtype, got {known:?}: cast them \
+                 to one first (`.cast(...)`)"
+            ),
         });
     }
     Ok(())

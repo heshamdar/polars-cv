@@ -517,6 +517,38 @@
       "fields": []
     },
     {
+      "name": "long",
+      "python": "long",
+      "visibility": "public",
+      "doc": "One struct per pixel, row-major: an ``[H, W]`` or ``[H, W, C]``\nbuffer as ``List[Struct{row: u32, col: u32, <names>...}]``, each\nchannel a field of the buffer's dtype.",
+      "fields": [
+        {
+          "name": "names",
+          "doc": "One field name per channel, in channel order (one for an\n``[H, W]`` buffer); distinct, and neither ``row`` nor ``col``.",
+          "type": {
+            "kind": "list",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "str"
+            }
+          }
+        },
+        {
+          "name": "where",
+          "doc": "Keep only the pixels where this named channel is > 0, and leave\nthe channel out of the struct.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "str"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "native",
       "python": "native",
       "visibility": "public",

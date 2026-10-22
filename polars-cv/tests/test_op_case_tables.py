@@ -84,6 +84,7 @@ NON_CODEC_SINKS: dict[str, str] = {
     "blob": "the self-describing VIEW protocol, no codec preconditions",
     "array": "Polars Array, fixed shape",
     "list": "Polars nested List",
+    "long": "Polars List of one struct per pixel",
     "native": "the domain's Polars-native type; an error for buffers",
 }
 

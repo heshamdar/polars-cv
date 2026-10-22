@@ -558,6 +558,7 @@ impl CompiledGraph {
                             OutputValue::TypedList(buf) => RowResult::TypedList(Some(buf)),
                             OutputValue::TypedArray(buf) => RowResult::TypedArray(Some(buf)),
                             OutputValue::NumpyStruct(buf) => RowResult::NumpyStruct(Some(buf)),
+                            OutputValue::Long(row) => RowResult::Long(Some(row)),
                             OutputValue::HistogramBuckets(buckets) => {
                                 RowResult::HistogramBuckets(Some(buckets))
                             }

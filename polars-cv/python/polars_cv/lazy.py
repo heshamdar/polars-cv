@@ -303,7 +303,11 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                     makes each row's ``data`` exactly its elements, row-major,
                     at offset 0, instead of the storage a view reads from
                     (zero-copy, but written whole by Parquet/IPC); it copies
-                    only a row that is not already compact. A keyword that does not apply to the chosen format
+                    only a row that is not already compact. ``names=[...]``
+                    (one per channel) and ``where="<name>"`` for the long
+                    sink, which gives ``List[Struct{row, col, <names>...}]``,
+                    one struct per pixel kept (``where``'s channel > 0, and
+                    left out). A keyword that does not apply to the chosen format
                     is rejected rather than ignored, as is one that is not a
                     sink parameter at all. With a dict ``format`` these
                     apply to every output; naming one both here and in an
