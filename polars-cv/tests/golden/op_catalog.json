@@ -2301,6 +2301,71 @@
     ]
   },
   {
+    "name": "reduce_masked",
+    "python": "reduce_masked",
+    "visibility": "lazy_only",
+    "doc": "Reduce this image over the pixels a mask selects: all of them (one\nvalue), or along ``axis`` 0 (one value per column) or 1 (per row).\n\nA pixel counts where the mask (u8 or float, ``[H, W]`` or\n``[H, W, 1]`` of the image's size) is > 0, so ``apply_mask``'s\nzeros are not counted. Channels are reduced together, or kept along\nan axis. A line with no masked pixel is NaN (0 for \"sum\" and\n\"count\").\n\nExample:\n    >>> heat.reduce_masked(breast, reduction=\"median\", axis=1)  # per-row median",
+    "fields": [
+      {
+        "name": "mask",
+        "doc": "The mask's node.",
+        "type": {
+          "kind": "node"
+        }
+      },
+      {
+        "name": "reduction",
+        "doc": "The reduction: \"sum\", \"mean\" (default), \"min\", \"max\", \"std\",\n\"median\", \"percentile\" (with ``q``) or \"count\".",
+        "default": "mean",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "Reduction",
+          "variants": [
+            "sum",
+            "mean",
+            "min",
+            "max",
+            "std",
+            "median",
+            "percentile",
+            "count"
+          ]
+        }
+      },
+      {
+        "name": "q",
+        "doc": "The percentile, in [0, 100], for ``reduction=\"percentile\"`` only.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "axis",
+        "doc": "None for one value over every masked pixel, 0 for one per column,\n1 for one per row. It fixes the output rank, so it is literal-only.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "reduce_max",
     "python": "reduce_max",
     "visibility": "public",

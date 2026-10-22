@@ -364,6 +364,52 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             input=self,
         )
 
+    def reduce_masked(
+        self,
+        mask: "LazyPipelineExpr",
+        *,
+        reduction: str | pl.Expr = "mean",
+        q: float | pl.Expr | None = None,
+        axis: int | None = None,
+    ) -> "LazyPipelineExpr":
+        """
+        Reduce this image over the pixels a mask selects.
+
+        A pixel counts where the mask (u8 or float, ``[H, W]`` or
+        ``[H, W, 1]`` of the image's size) is > 0, so the zeros
+        ``apply_mask`` leaves are not counted. With ``axis=None`` every
+        masked pixel (every channel) reduces to one value; ``axis=0`` gives
+        one value per column, ``axis=1`` one per row (per channel for an
+        ``[H, W, C]`` image). A line with no masked pixel is NaN (0 for
+        ``"sum"`` and ``"count"``).
+
+        Args:
+            mask: LazyPipelineExpr producing the mask.
+            reduction: "sum", "mean" (default), "min", "max", "std"
+                (population), "median", "percentile" (with ``q``) or "count".
+            q: The percentile, in [0, 100], for ``reduction="percentile"``.
+            axis: None, 0 (per column) or 1 (per row). Literal only: it
+                fixes the output rank.
+
+        Returns:
+            New LazyPipelineExpr: a scalar, or a ``[W]``/``[H]`` (``[.., C]``)
+            buffer along an axis.
+
+        Example:
+            ```python
+            >>> heat.reduce_masked(breast, reduction="median", axis=1)  # per row
+            ```
+        """
+        new_pipeline = self._receiving()
+        args = {"mask": mask, "reduction": reduction, "q": q, "axis": axis}
+        new_pipeline._add_node_op("reduce_masked", args)
+        return LazyPipelineExpr(
+            column=None,
+            pipeline=new_pipeline,
+            node_id=_generate_node_id(),
+            input=self,
+        )
+
     def channel_merge(self, *others: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """
         Join this buffer's channels with the operands', in order.

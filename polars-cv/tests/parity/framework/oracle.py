@@ -2539,6 +2539,11 @@ BINARY_EXEMPT: dict[str, str] = {
         "takes a mask operand of a different shape (single channel, or a "
         "contour to rasterize); covered by test_binary_ops_ref.py"
     ),
+    "reduce_masked": (
+        "reduces over a single-channel mask's selection rather than combining "
+        "two images; tests/test_reductions.py holds every reduction, global and "
+        "per axis, to NumPy over the masked pixels"
+    ),
     "channel_merge": (
         "variadic over single-channel operands; its inverse law is checked in "
         "laws/test_parity_laws.py"

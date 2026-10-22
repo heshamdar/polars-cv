@@ -168,6 +168,17 @@ pub(crate) fn run_step(
                     &image, &mask, *invert,
                 )))
             }
+            Role::ReduceMasked {
+                reduction, q, axis, ..
+            } => {
+                let [image, mask] = exactly(name, buffers()?)?;
+                Ok(
+                    match view_buffer::ops::reduce_masked(&image, &mask, *reduction, *q, axis) {
+                        view_buffer::ops::Masked::Scalar(value) => NodeOutput::from_scalar(value),
+                        view_buffer::ops::Masked::Along(buf) => NodeOutput::from_buffer(buf),
+                    },
+                )
+            }
             Role::ChannelMerge { .. } => {
                 let all = buffers()?;
                 let refs: Vec<&ViewBuffer> = all.iter().map(Arc::as_ref).collect();
@@ -310,6 +321,7 @@ fn vector_reads_as_buffer(step: &GraphStep) -> bool {
             Role::Binary(..)
             | Role::Regions(..)
             | Role::ApplyMask { .. }
+            | Role::ReduceMasked { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
             | Role::AssertShape { .. }

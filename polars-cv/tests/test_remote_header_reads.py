@@ -67,10 +67,12 @@ def server():
             else:
                 part = body
                 self.send_response(200)
+            # Logged before the body is sent: the client may return (and the
+            # test assert) as soon as the last byte arrives.
+            log.append((self.path, rng, len(part)))
             self.send_header("Content-Length", str(len(part)))
             self.end_headers()
             self.wfile.write(part)
-            log.append((self.path, rng, len(part)))
 
         def log_message(self, *args):
             pass

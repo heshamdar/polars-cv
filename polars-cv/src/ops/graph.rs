@@ -270,6 +270,32 @@ pub enum GraphOp<M: Mode = Exec> {
         #[param(default = false)]
         invert: M::V<bool>,
     },
+    /// Reduce this image over the pixels a mask selects: all of them (one
+    /// value), or along ``axis`` 0 (one value per column) or 1 (per row).
+    ///
+    /// A pixel counts where the mask (u8 or float, ``[H, W]`` or
+    /// ``[H, W, 1]`` of the image's size) is > 0, so ``apply_mask``'s
+    /// zeros are not counted. Channels are reduced together, or kept along
+    /// an axis. A line with no masked pixel is NaN (0 for "sum" and
+    /// "count").
+    ///
+    /// Example:
+    ///     >>> heat.reduce_masked(breast, reduction="median", axis=1)  # per-row median
+    #[op(name = "reduce_masked", visibility = LazyOnly,
+         sample = {"mask": "n0", "reduction": "percentile", "q": 75.0, "axis": 1})]
+    ReduceMasked {
+        /// The mask's node.
+        mask: NodeRef,
+        /// The reduction: "sum", "mean" (default), "min", "max", "std",
+        /// "median", "percentile" (with ``q``) or "count".
+        #[param(default = "mean")]
+        reduction: M::V<Reduction>,
+        /// The percentile, in [0, 100], for ``reduction="percentile"`` only.
+        q: Option<M::V<f64>>,
+        /// None for one value over every masked pixel, 0 for one per column,
+        /// 1 for one per row. It fixes the output rank, so it is literal-only.
+        axis: Option<M::L<u32>>,
+    },
     /// Join this buffer's channels with the operands', in order.
     ///
     /// Each ``[H, W]`` input brings one channel and each ``[H, W, C]`` input
@@ -368,6 +394,17 @@ impl<M: Mode> GraphOp<M> {
                 Role::Regions(RegionOp::SymmetricDifference, other)
             }
             GraphOp::ApplyMask { mask, invert } => Role::ApplyMask { mask, invert },
+            GraphOp::ReduceMasked {
+                mask,
+                reduction,
+                q,
+                axis,
+            } => Role::ReduceMasked {
+                mask,
+                reduction,
+                q,
+                axis: axis.as_ref().map(|a| M::lit(a) as usize),
+            },
             GraphOp::ChannelMerge { others } => Role::ChannelMerge { others },
             GraphOp::AssertShape { dims, exact } => Role::AssertShape { dims, exact },
             GraphOp::ExtractShape => Role::ExtractShape,
@@ -401,6 +438,7 @@ impl<M: Mode> GraphOp<M> {
             // this list too.
             Role::Regions(..) => vec![Domain::Contour],
             Role::ApplyMask { .. }
+            | Role::ReduceMasked { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
             | Role::LabelReduce { .. } => {
@@ -416,6 +454,9 @@ impl<M: Mode> GraphOp<M> {
             // vector); a declaration describes the data, not its kind.
             Role::Binary(..) | Role::AssertShape { .. } => input,
             Role::ApplyMask { .. } | Role::ChannelMerge { .. } => Domain::Buffer,
+            // One value, as a global reduction; a buffer along an axis.
+            Role::ReduceMasked { axis: None, .. } => Domain::Scalar,
+            Role::ReduceMasked { axis: Some(_), .. } => Domain::Buffer,
             Role::ExtractShape | Role::LabelReduce { .. } => Domain::Vector,
             Role::Regions(..) => Domain::Contour,
         }
@@ -428,8 +469,10 @@ impl<M: Mode> GraphOp<M> {
             Role::ApplyMask { .. } | Role::ChannelMerge { .. } | Role::AssertShape { .. } => {
                 OutputDTypeRule::PreserveInput
             }
-            // Dimension reads and region scores are f64 values.
-            Role::ExtractShape | Role::LabelReduce { .. } => OutputDTypeRule::ForceF64,
+            // Dimension reads, region scores and masked reductions are f64.
+            Role::ExtractShape | Role::LabelReduce { .. } | Role::ReduceMasked { .. } => {
+                OutputDTypeRule::ForceF64
+            }
             // Coordinates, as every contour op's.
             Role::Regions(..) => OutputDTypeRule::Fixed(DType::F64),
         }
@@ -448,6 +491,7 @@ impl<M: Mode> GraphOp<M> {
             // Combining regions reads every coordinate of both sets.
             Role::ExtractShape
             | Role::LabelReduce { .. }
+            | Role::ReduceMasked { .. }
             | Role::AssertShape { .. }
             | Role::Regions(..) => SpatialDependency::Global,
         }
@@ -461,6 +505,7 @@ impl<M: Mode> GraphOp<M> {
             // derive from their inputs, and removing a declaration would
             // remove its check.
             Role::ApplyMask { .. }
+            | Role::ReduceMasked { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
             | Role::LabelReduce { .. }
@@ -491,6 +536,17 @@ impl<M: Mode> GraphOp<M> {
                 ),
                 _ => Ok(()),
             },
+            Role::ReduceMasked { .. } => match inputs {
+                [buffer, mask, ..] => view_buffer::ops::validate_masked_reduce(
+                    buffer,
+                    mask,
+                    dtypes
+                        .get(1)
+                        .copied()
+                        .unwrap_or(view_buffer::PlannedDType::Unknown),
+                ),
+                _ => Ok(()),
+            },
             Role::ChannelMerge { .. } => view_buffer::validate_channel_merge(inputs, dtypes),
             // A declaration is applied by the planner and checked per row;
             // the others read no size.
@@ -506,7 +562,7 @@ impl<M: Mode> GraphOp<M> {
     pub fn operands(&self) -> Vec<&NodeRef> {
         match self.role() {
             Role::Binary(_, other) | Role::Regions(_, other) => vec![other],
-            Role::ApplyMask { mask, .. } => vec![mask],
+            Role::ApplyMask { mask, .. } | Role::ReduceMasked { mask, .. } => vec![mask],
             Role::ChannelMerge { others } => others.iter().collect(),
             Role::AssertShape { .. } | Role::ExtractShape | Role::LabelReduce { .. } => Vec::new(),
         }
@@ -532,7 +588,7 @@ impl<M: Mode> GraphOp<M> {
             | GraphOp::Intersection { other }
             | GraphOp::Difference { other }
             | GraphOp::SymmetricDifference { other } => vec![other],
-            GraphOp::ApplyMask { mask, .. } => vec![mask],
+            GraphOp::ApplyMask { mask, .. } | GraphOp::ReduceMasked { mask, .. } => vec![mask],
             GraphOp::ChannelMerge { others } => others.iter_mut().collect(),
             GraphOp::AssertShape { .. } | GraphOp::ExtractShape | GraphOp::LabelReduce { .. } => {
                 Vec::new()
@@ -546,6 +602,8 @@ impl<M: Mode> GraphOp<M> {
             Role::Binary(op, _) => op.shape(),
             // The mask is blended into this buffer in place.
             Role::ApplyMask { .. } => OpShape::Preserve,
+            // An axis reduction's shape: the axis removed, or one value.
+            Role::ReduceMasked { axis, .. } => OpShape::Reduce { axis },
             // This `[H, W]` buffer and one per merged operand.
             Role::ChannelMerge { .. } => OpShape::JoinChannels,
             Role::ExtractShape => OpShape::InputRank,
@@ -582,6 +640,22 @@ impl<M: Mode> GraphOp<M> {
                 }
                 Ok(())
             }
+            GraphOp::ReduceMasked {
+                reduction, q, axis, ..
+            } => {
+                if let Some(axis) = axis.as_ref().map(M::lit).filter(|&a| a > 1) {
+                    return Err(format!(
+                        "reduce_masked: axis = {axis}, but a mask selects pixels of the \
+                         image plane: axis 0 (per column), 1 (per row) or None"
+                    ));
+                }
+                Reduction::check_q(
+                    "reduce_masked",
+                    view_buffer::mode::known::<M, Reduction>(reduction),
+                    q.is_some(),
+                    q.as_ref().and_then(view_buffer::mode::known::<M, f64>),
+                )
+            }
             GraphOp::LabelReduce { reduction, q, .. } => Reduction::check_q(
                 "label_reduce",
                 view_buffer::mode::known::<M, Reduction>(reduction),
@@ -603,6 +677,12 @@ pub enum Role<'a, M: Mode> {
     ApplyMask {
         mask: &'a NodeRef,
         invert: &'a M::V<bool>,
+    },
+    ReduceMasked {
+        mask: &'a NodeRef,
+        reduction: &'a M::V<Reduction>,
+        q: &'a Option<M::V<f64>>,
+        axis: Option<usize>,
     },
     ChannelMerge {
         others: &'a [NodeRef],

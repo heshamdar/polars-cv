@@ -517,6 +517,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "reciprocal",
         "reduce_argmax",
         "reduce_argmin",
+        "reduce_masked",
         "reduce_max",
         "reduce_mean",
         "reduce_min",
@@ -1045,6 +1046,32 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "reciprocal": {},
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "reduce_argmin": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
+    "reduce_masked": {
+        "mask": {"kind": "node"},
+        "reduction": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "Reduction",
+            "variants": [
+                "sum",
+                "mean",
+                "min",
+                "max",
+                "std",
+                "median",
+                "percentile",
+                "count",
+            ],
+        },
+        "q": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
+        "axis": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        },
+    },
     "reduce_max": {
         "axis": {
             "kind": "optional",
@@ -1249,6 +1276,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "pad_to_size": {"position": "center", "value": 0.0},
     "perceptual_hash": {"algorithm": "perceptual", "hash_size": 64},
     "rasterize": {"fill_value": 255, "background": 0, "supersample": 1},
+    "reduce_masked": {"reduction": "mean"},
     "reduce_std": {"ddof": 0},
     "resize": {"filter": "lanczos3"},
     "resize_max": {"filter": "lanczos3"},
@@ -1374,6 +1402,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
         {"input": "buffer", "output": "buffer"},
         {"input": "vector", "output": "buffer"},
     ],
+    "reduce_masked": [{"input": "buffer", "output": "buffer"}],
     "reduce_max": [
         {"input": "buffer", "output": "scalar"},
         {"input": "vector", "output": "scalar"},
