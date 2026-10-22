@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import polars as pl
 
+from polars_cv._dims import Dim
 from polars_cv._domains import compose, domain_line, with_domain
 from polars_cv._ops_generated import (
     OP_DEFAULTS,
@@ -26,8 +27,8 @@ from polars_cv._ops_generated import (
 from polars_cv._types import (
     BoolOrExpr,
     DType,
-    FloatOrExpr,
-    IntOrExpr,
+    FloatOrDimOrExpr,
+    IntOrDimOrExpr,
     NullParamPolicy,
     RowErrorPolicy,
     SlotTable,
@@ -101,7 +102,7 @@ def _encode_field(p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str) -
         ]
     if kind == "scalar" and ty["per_row"]:
         return p._wire(value)
-    if isinstance(value, pl.Expr):
+    if isinstance(value, (pl.Expr, Dim)):
         msg = f"{where}: {_STRUCTURAL}"
         raise TypeError(msg)
     return _literal(value)
@@ -226,8 +227,13 @@ class Pipeline(_OpsMixin):
         return {"$slot": len(self._exprs) - 1}
 
     def _wire(self, value: Any) -> Any:
-        """A per-row argument's wire value: its slot, or the literal."""
-        return self._slot(value) if isinstance(value, pl.Expr) else _literal(value)
+        """A per-row argument's wire value: its slot, its shape expression,
+        or the literal."""
+        if isinstance(value, pl.Expr):
+            return self._slot(value)
+        if isinstance(value, Dim):
+            return value._wire()
+        return _literal(value)
 
     def _read_node(self, node: "LazyPipelineExpr") -> None:
         """Record *node* as one this pipeline reads by id."""
@@ -483,9 +489,9 @@ class Pipeline(_OpsMixin):
         self,
         *,
         dims: "Sequence[int | None] | None" = None,
-        height: IntOrExpr | None = None,
-        width: IntOrExpr | None = None,
-        channels: IntOrExpr | None = None,
+        height: IntOrDimOrExpr | None = None,
+        width: IntOrDimOrExpr | None = None,
+        channels: IntOrDimOrExpr | None = None,
     ) -> "Pipeline":
         """
         Declare a shape the planner cannot work out for itself.
@@ -597,7 +603,7 @@ class Pipeline(_OpsMixin):
 
     @_sugar("rank_filter")
     def median_filter(
-        self, size: IntOrExpr = 3, *, border: str | pl.Expr = "replicate"
+        self, size: IntOrDimOrExpr = 3, *, border: str | pl.Expr = "replicate"
     ) -> "Pipeline":
         """
         Median filter: ``rank_filter(height=size, width=size, q=50)``.
@@ -690,7 +696,7 @@ class Pipeline(_OpsMixin):
     @_sugar("scale", optional=("cast",))
     def scale(
         self,
-        factor: FloatOrExpr,
+        factor: FloatOrDimOrExpr,
         out_dtype: str | None = None,
         preserve_dtype: bool = False,
     ) -> "Pipeline":
@@ -722,8 +728,8 @@ class Pipeline(_OpsMixin):
     @_sugar("clamp", optional=("cast",))
     def clamp(
         self,
-        min_val: FloatOrExpr,
-        max_val: FloatOrExpr,
+        min_val: FloatOrDimOrExpr,
+        max_val: FloatOrDimOrExpr,
         out_dtype: str | None = None,
         preserve_dtype: bool = False,
     ) -> "Pipeline":
@@ -772,7 +778,7 @@ class Pipeline(_OpsMixin):
 
     @_sugar("scale", "clamp", optional=("cast",))
     def adjust_brightness(
-        self, *, factor: FloatOrExpr, preserve_dtype: bool = False
+        self, *, factor: FloatOrDimOrExpr, preserve_dtype: bool = False
     ) -> "Pipeline":
         """
         Adjust image brightness by scaling pixel values.
@@ -859,7 +865,7 @@ class Pipeline(_OpsMixin):
             >>> gx = Pipeline().source("image_bytes").grayscale().sobel(axis="x")
             ```
         """
-        kernels: dict[str, list[FloatOrExpr]] = {
+        kernels: dict[str, list[FloatOrDimOrExpr]] = {
             "x": [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0],
             "y": [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0],
         }
@@ -888,7 +894,7 @@ class Pipeline(_OpsMixin):
         return self.convolve2d(kernel=laplacian_3, normalize=False)
 
     @_sugar("convolve2d")
-    def sharpen(self, *, strength: FloatOrExpr = 1.0) -> "Pipeline":
+    def sharpen(self, *, strength: FloatOrDimOrExpr = 1.0) -> "Pipeline":
         """
         Sharpen using an unsharp-mask-style kernel.
 
@@ -930,7 +936,7 @@ class Pipeline(_OpsMixin):
     def morphology_open(
         self,
         *,
-        ksize: IntOrExpr = OP_DEFAULTS["erode"]["ksize"],
+        ksize: IntOrDimOrExpr = OP_DEFAULTS["erode"]["ksize"],
         footprint: str | pl.Expr = OP_DEFAULTS["erode"]["footprint"],
     ) -> "Pipeline":
         """
@@ -964,7 +970,7 @@ class Pipeline(_OpsMixin):
     def morphology_close(
         self,
         *,
-        ksize: IntOrExpr = OP_DEFAULTS["dilate"]["ksize"],
+        ksize: IntOrDimOrExpr = OP_DEFAULTS["dilate"]["ksize"],
         footprint: str | pl.Expr = OP_DEFAULTS["dilate"]["footprint"],
     ) -> "Pipeline":
         """
@@ -1002,9 +1008,9 @@ class Pipeline(_OpsMixin):
     def resize_scale(
         self,
         *,
-        scale: FloatOrExpr | None = None,
-        scale_x: FloatOrExpr | None = None,
-        scale_y: FloatOrExpr | None = None,
+        scale: FloatOrDimOrExpr | None = None,
+        scale_x: FloatOrDimOrExpr | None = None,
+        scale_y: FloatOrDimOrExpr | None = None,
         filter: str | pl.Expr = OP_DEFAULTS["resize_scale"]["filter"],
     ) -> "Pipeline":
         """
@@ -1064,9 +1070,9 @@ class Pipeline(_OpsMixin):
     def shear(
         self,
         *,
-        sx: FloatOrExpr = 0.0,
-        sy: FloatOrExpr = 0.0,
-        output_size: tuple[IntOrExpr, IntOrExpr],
+        sx: FloatOrDimOrExpr = 0.0,
+        sy: FloatOrDimOrExpr = 0.0,
+        output_size: tuple[IntOrDimOrExpr, IntOrDimOrExpr],
     ) -> "Pipeline":
         """
         Apply a shear transformation.
@@ -1097,7 +1103,7 @@ class Pipeline(_OpsMixin):
         """
         # sx/sy may be per-row expressions; warp_affine tracks each matrix
         # element independently, so the shear matrix passes them through.
-        matrix: list[FloatOrExpr] = [1.0, sx, 0.0, sy, 1.0, 0.0]
+        matrix: list[FloatOrDimOrExpr] = [1.0, sx, 0.0, sy, 1.0, 0.0]
         return self.warp_affine(matrix=matrix, output_size=output_size)
 
     # --- Contour/Geometry Operations ---
@@ -1106,12 +1112,12 @@ class Pipeline(_OpsMixin):
     def rasterize(
         self,
         *,
-        width: IntOrExpr | None = None,
-        height: IntOrExpr | None = None,
+        width: IntOrDimOrExpr | None = None,
+        height: IntOrDimOrExpr | None = None,
         shape: "LazyPipelineExpr | None" = None,
-        fill_value: IntOrExpr = OP_DEFAULTS["rasterize"]["fill_value"],
-        background: IntOrExpr = OP_DEFAULTS["rasterize"]["background"],
-        supersample: IntOrExpr = OP_DEFAULTS["rasterize"]["supersample"],
+        fill_value: IntOrDimOrExpr = OP_DEFAULTS["rasterize"]["fill_value"],
+        background: IntOrDimOrExpr = OP_DEFAULTS["rasterize"]["background"],
+        supersample: IntOrDimOrExpr = OP_DEFAULTS["rasterize"]["supersample"],
     ) -> "Pipeline":
         """
         Rasterize contours to a mask: each region filled.
@@ -1168,7 +1174,7 @@ class Pipeline(_OpsMixin):
             # H/W come from `GeometryOp::Rasterize`'s `shape` and the
             # single-channel output from the op's `fixed:1` channel rule; none
             # of it is re-derived here.
-            size: "list[IntOrExpr] | LazyPipelineExpr" = [height, width]
+            size: "list[IntOrDimOrExpr] | LazyPipelineExpr" = [height, width]
         else:
             from polars_cv.lazy import LazyPipelineExpr
 

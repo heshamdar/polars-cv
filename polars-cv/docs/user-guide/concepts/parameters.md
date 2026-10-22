@@ -62,6 +62,32 @@ pipeline is built: `blur(sigma=-1)` raises at once, naming the op, while
 `blur(sigma=pl.col("s"))` with a negative `s` fails that row (see
 [Errors](#errors) for what a failing row does).
 
+### Parameters from the image's size: `H` and `W`
+
+`polars_cv.H` and `polars_cv.W` are the height and width of the buffer an op
+reads, per row. Combine them with numbers using `+ - * / //` and pass the
+result to any parameter that may be an expression:
+
+```python
+from polars_cv import H, W, Pipeline
+
+# The central 60% of every image, whatever its size
+Pipeline().source("image_bytes").crop(
+    top=0.2 * H, left=0.2 * W, height=0.6 * H, width=0.6 * W
+)
+
+# A blur that scales with the image
+Pipeline().source("image_bytes").blur(sigma=H / 320)
+```
+
+Each op reads the buffer it is given: after `resize(height=512, width=512)`,
+`H` is 512. An integer parameter takes the value rounded to nearest, so
+`0.29 * H` at `H = 100` is 29. As with a column, a size set this way is unknown
+when the query is planned. A parameter that must be a literal (see the list
+above) refuses `H`/`W`, as do non-numeric parameters, a buffer that is not
+`[H, W]` or `[H, W, C]`, and functions with no buffer such as the `.contour`
+methods.
+
 ### Null parameter values
 
 A parameter column can contain nulls. By default a null parameter fails the

@@ -15,7 +15,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import polars as pl
 
-    from polars_cv._types import BoolOrExpr, CloudOptions, FloatOrExpr, IntOrExpr
+    from polars_cv._types import (
+        BoolOrExpr,
+        CloudOptions,
+        FloatOrDimOrExpr,
+        FloatOrExpr,
+        IntOrDimOrExpr,
+        IntOrExpr,
+    )
     from polars_cv.lazy import LazyPipelineExpr
     from polars_cv.pipeline import Pipeline
 
@@ -1759,7 +1766,7 @@ class _OpsMixin:
         """
         return self._append_typed("abs", {})
 
-    def add_constant(self, value: FloatOrExpr) -> Pipeline:
+    def add_constant(self, value: FloatOrDimOrExpr) -> Pipeline:
         """Add a constant to every value (`x + value`).
 
         Domain: buffer → buffer
@@ -1769,7 +1776,7 @@ class _OpsMixin:
         """
         return self._append_typed("add_constant", {"value": value})
 
-    def adjust_contrast(self, factor: FloatOrExpr) -> Pipeline:
+    def adjust_contrast(self, factor: FloatOrDimOrExpr) -> Pipeline:
         """Adjust image contrast: `(pixel - mean) * factor + mean`.
 
         Domain: buffer → buffer
@@ -1782,7 +1789,7 @@ class _OpsMixin:
         """
         return self._append_typed("adjust_contrast", {"factor": factor})
 
-    def adjust_gamma(self, gamma: FloatOrExpr) -> Pipeline:
+    def adjust_gamma(self, gamma: FloatOrDimOrExpr) -> Pipeline:
         """Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,
         denormalize.
 
@@ -1797,7 +1804,7 @@ class _OpsMixin:
         return self._append_typed("adjust_gamma", {"gamma": gamma})
 
     def apply_lut(
-        self, table: Sequence[Sequence[FloatOrExpr]], *, out_dtype: str = "u8"
+        self, table: Sequence[Sequence[FloatOrDimOrExpr]], *, out_dtype: str = "u8"
     ) -> Pipeline:
         """Map each value through a lookup table.
 
@@ -1823,7 +1830,7 @@ class _OpsMixin:
         return self._append_typed("apply_lut", {"table": table, "out_dtype": out_dtype})
 
     def _assert_shape(
-        self, dims: Sequence[IntOrExpr | None], *, exact: bool = True
+        self, dims: Sequence[IntOrDimOrExpr | None], *, exact: bool = True
     ) -> Pipeline:
         """Declare the shape of the data at this point: sizes of its dimensions,
         and with them its rank when the declaration is exact.
@@ -1847,10 +1854,10 @@ class _OpsMixin:
     def block_reduce(
         self,
         *,
-        height: IntOrExpr,
-        width: IntOrExpr,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
         reduction: str | pl.Expr = "mean",
-        q: FloatOrExpr | None = None,
+        q: FloatOrDimOrExpr | None = None,
     ) -> Pipeline:
         """Pool fixed blocks: each ``height`` x ``width`` block reduced to one
         value per channel, so ``[H, W, C]`` becomes
@@ -1875,7 +1882,7 @@ class _OpsMixin:
             {"height": height, "width": width, "reduction": reduction, "q": q},
         )
 
-    def blur(self, sigma: FloatOrExpr) -> Pipeline:
+    def blur(self, sigma: FloatOrDimOrExpr) -> Pipeline:
         """Apply Gaussian blur.
 
         Domain: buffer → buffer
@@ -1886,7 +1893,10 @@ class _OpsMixin:
         return self._append_typed("blur", {"sigma": sigma})
 
     def canny(
-        self, *, low_threshold: FloatOrExpr = 50.0, high_threshold: FloatOrExpr = 150.0
+        self,
+        *,
+        low_threshold: FloatOrDimOrExpr = 50.0,
+        high_threshold: FloatOrDimOrExpr = 150.0,
     ) -> Pipeline:
         """Canny edge detection, as ``cv2.Canny(image, low, high)`` computes it:
         3x3 Sobel gradients (L1 magnitude), non-maximum suppression and
@@ -1925,7 +1935,9 @@ class _OpsMixin:
         """
         return self._append_typed("ceil", {})
 
-    def channel_select(self, index: IntOrExpr, *, keepdims: bool = True) -> Pipeline:
+    def channel_select(
+        self, index: IntOrDimOrExpr, *, keepdims: bool = True
+    ) -> Pipeline:
         """Extract one channel of a multi-channel image: ``[H, W, 1]`` from a
         ``[H, W, C]`` input (the shape ``grayscale`` and ``rasterize`` give),
         or ``[H, W]`` with ``keepdims=False``. A ``[H, W]`` input is returned
@@ -1945,7 +1957,7 @@ class _OpsMixin:
             "channel_select", {"index": index, "keepdims": keepdims}
         )
 
-    def channel_swap(self, order: Sequence[IntOrExpr]) -> Pipeline:
+    def channel_swap(self, order: Sequence[IntOrDimOrExpr]) -> Pipeline:
         """Reorder channels in a multi-channel image.
 
         Domain: buffer → buffer
@@ -1960,7 +1972,7 @@ class _OpsMixin:
         """
         return self._append_typed("channel_swap", {"order": order})
 
-    def _clamp(self, *, min: FloatOrExpr, max: FloatOrExpr) -> Pipeline:
+    def _clamp(self, *, min: FloatOrDimOrExpr, max: FloatOrDimOrExpr) -> Pipeline:
         """Clamp values to a range.
 
         The public `Pipeline.clamp` is sugar over this op that adds
@@ -1974,7 +1986,7 @@ class _OpsMixin:
         """
         return self._append_typed("clamp", {"min": min, "max": max})
 
-    def clamp_max(self, value: FloatOrExpr) -> Pipeline:
+    def clamp_max(self, value: FloatOrDimOrExpr) -> Pipeline:
         """Cap values at `value` (`min(x, value)`); one-sided clamp.
 
         Domain: buffer → buffer
@@ -1984,7 +1996,7 @@ class _OpsMixin:
         """
         return self._append_typed("clamp_max", {"value": value})
 
-    def clamp_min(self, value: FloatOrExpr) -> Pipeline:
+    def clamp_min(self, value: FloatOrDimOrExpr) -> Pipeline:
         """Floor values at `value` (`max(x, value)`); one-sided clamp.
 
         Domain: buffer → buffer
@@ -2057,7 +2069,7 @@ class _OpsMixin:
         """
         return self._append_typed("contour_convex_hull", {})
 
-    def densify(self, max_segment_length: FloatOrExpr) -> Pipeline:
+    def densify(self, max_segment_length: FloatOrDimOrExpr) -> Pipeline:
         """Add points so no edge is longer than *max_segment_length*: each edge is
         split into ``ceil(length / max_segment_length)`` equal parts, and every
         existing point is kept. A region's closing edges are split too.
@@ -2072,7 +2084,7 @@ class _OpsMixin:
             "contour_densify", {"max_segment_length": max_segment_length}
         )
 
-    def largest(self, *, k: IntOrExpr = 1) -> Pipeline:
+    def largest(self, *, k: IntOrDimOrExpr = 1) -> Pipeline:
         """Keep the ``k`` largest contours of the set, by area: largest first,
         equal areas in their input order. A set of fewer keeps them all.
 
@@ -2084,7 +2096,7 @@ class _OpsMixin:
         return self._append_typed("contour_largest", {"k": k})
 
     def offset(
-        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
+        self, distance: FloatOrDimOrExpr, *, join: str | pl.Expr = "round"
     ) -> Pipeline:
         """Grow the set's regions by *distance* (negative: shrink them): every
         point within *distance* of their union, or inside it and at least
@@ -2117,7 +2129,11 @@ class _OpsMixin:
         return self._append_typed("contour_perimeter", {})
 
     def scale_contour(
-        self, *, sx: FloatOrExpr, sy: FloatOrExpr, origin: str | pl.Expr = "centroid"
+        self,
+        *,
+        sx: FloatOrDimOrExpr,
+        sy: FloatOrDimOrExpr,
+        origin: str | pl.Expr = "centroid",
     ) -> Pipeline:
         """Scale the contour about *origin*.
 
@@ -2135,7 +2151,7 @@ class _OpsMixin:
             "contour_scale", {"sx": sx, "sy": sy, "origin": origin}
         )
 
-    def simplify(self, tolerance: FloatOrExpr) -> Pipeline:
+    def simplify(self, tolerance: FloatOrDimOrExpr) -> Pipeline:
         """Simplify the contour using the Douglas-Peucker algorithm.
 
         Domain: contour → contour
@@ -2145,7 +2161,7 @@ class _OpsMixin:
         """
         return self._append_typed("contour_simplify", {"tolerance": tolerance})
 
-    def smooth(self, *, iterations: IntOrExpr = 1) -> Pipeline:
+    def smooth(self, *, iterations: IntOrDimOrExpr = 1) -> Pipeline:
         """Round off corners by Chaikin's corner cutting: each pass replaces every
         edge by its points a quarter and three quarters along, doubling the
         point count. A region's rings are cut all the way round; an open line
@@ -2163,7 +2179,7 @@ class _OpsMixin:
     def stroke(
         self,
         *,
-        width: FloatOrExpr = 1.0,
+        width: FloatOrDimOrExpr = 1.0,
         cap: str | pl.Expr = "round",
         join: str | pl.Expr = "round",
     ) -> Pipeline:
@@ -2192,7 +2208,7 @@ class _OpsMixin:
             "contour_stroke", {"width": width, "cap": cap, "join": join}
         )
 
-    def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> Pipeline:
+    def translate(self, *, dx: FloatOrDimOrExpr, dy: FloatOrDimOrExpr) -> Pipeline:
         """Translate the contour by an offset.
 
         Domain: contour → contour
@@ -2214,7 +2230,7 @@ class _OpsMixin:
 
     def convolve2d(
         self,
-        kernel: Sequence[FloatOrExpr],
+        kernel: Sequence[FloatOrDimOrExpr],
         *,
         normalize: BoolOrExpr = False,
         border: str | pl.Expr = "replicate",
@@ -2268,12 +2284,12 @@ class _OpsMixin:
     def crop(
         self,
         *,
-        top: IntOrExpr = 0,
-        left: IntOrExpr = 0,
-        height: IntOrExpr | None = None,
-        width: IntOrExpr | None = None,
+        top: IntOrDimOrExpr = 0,
+        left: IntOrDimOrExpr = 0,
+        height: IntOrDimOrExpr | None = None,
+        width: IntOrDimOrExpr | None = None,
         bounds: str = "error",
-        pad_value: FloatOrExpr | None = None,
+        pad_value: FloatOrDimOrExpr | None = None,
     ) -> Pipeline:
         """Extract a rectangular region.
 
@@ -2328,8 +2344,8 @@ class _OpsMixin:
     def dilate(
         self,
         *,
-        ksize: IntOrExpr = 3,
-        iterations: IntOrExpr = 1,
+        ksize: IntOrDimOrExpr = 3,
+        iterations: IntOrDimOrExpr = 1,
         footprint: str | pl.Expr = "square",
     ) -> Pipeline:
         """Morphological dilation: the local maximum over a footprint (a
@@ -2397,8 +2413,8 @@ class _OpsMixin:
     def erode(
         self,
         *,
-        ksize: IntOrExpr = 3,
-        iterations: IntOrExpr = 1,
+        ksize: IntOrDimOrExpr = 3,
+        iterations: IntOrDimOrExpr = 1,
         footprint: str | pl.Expr = "square",
     ) -> Pipeline:
         """Morphological erosion: the local minimum over a footprint (a
@@ -2444,8 +2460,8 @@ class _OpsMixin:
         *,
         mode: str | pl.Expr = "external",
         method: str | pl.Expr = "simple",
-        min_area: FloatOrExpr | None = None,
-        min_area_fraction: FloatOrExpr | None = None,
+        min_area: FloatOrDimOrExpr | None = None,
+        min_area_fraction: FloatOrDimOrExpr | None = None,
     ) -> Pipeline:
         """Extract contours from binary mask.
 
@@ -2537,8 +2553,8 @@ class _OpsMixin:
     def histogram(
         self,
         *,
-        bins: IntOrExpr | Sequence[float] = 256,
-        range: Sequence[FloatOrExpr] | None = None,
+        bins: IntOrDimOrExpr | Sequence[float] = 256,
+        range: Sequence[FloatOrDimOrExpr] | None = None,
         closed: str = "left",
         output: str = "buckets",
     ) -> Pipeline:
@@ -2582,7 +2598,7 @@ class _OpsMixin:
         contours: pl.Expr,
         *,
         reduction: str | pl.Expr = "max",
-        q: FloatOrExpr | None = None,
+        q: FloatOrDimOrExpr | None = None,
         region_mode: str | pl.Expr = "interior",
     ) -> Pipeline:
         """Score contour regions against the current buffer values.
@@ -2620,9 +2636,9 @@ class _OpsMixin:
     def letterbox(
         self,
         *,
-        height: IntOrExpr,
-        width: IntOrExpr,
-        value: FloatOrExpr = 0.0,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
+        value: FloatOrDimOrExpr = 0.0,
         filter: str | pl.Expr = "lanczos3",
     ) -> Pipeline:
         """Resize image maintaining aspect ratio and pad to exact target size: fit
@@ -2646,7 +2662,7 @@ class _OpsMixin:
         )
 
     def morphology_gradient(
-        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+        self, *, ksize: IntOrDimOrExpr = 3, footprint: str | pl.Expr = "square"
     ) -> Pipeline:
         """Morphological gradient (dilate - erode): an edge outline. Requires
         single-channel input.
@@ -2678,10 +2694,10 @@ class _OpsMixin:
         self,
         *,
         method: str = "minmax",
-        mean: Sequence[FloatOrExpr] | None = None,
-        std: Sequence[FloatOrExpr] | None = None,
-        low: FloatOrExpr | None = None,
-        high: FloatOrExpr | None = None,
+        mean: Sequence[FloatOrDimOrExpr] | None = None,
+        std: Sequence[FloatOrDimOrExpr] | None = None,
+        low: FloatOrDimOrExpr | None = None,
+        high: FloatOrDimOrExpr | None = None,
         out_dtype: str | None = None,
     ) -> Pipeline:
         """Normalize values to a standard range.
@@ -2735,11 +2751,11 @@ class _OpsMixin:
     def pad(
         self,
         *,
-        top: IntOrExpr = 0,
-        bottom: IntOrExpr = 0,
-        left: IntOrExpr = 0,
-        right: IntOrExpr = 0,
-        value: FloatOrExpr = 0.0,
+        top: IntOrDimOrExpr = 0,
+        bottom: IntOrDimOrExpr = 0,
+        left: IntOrDimOrExpr = 0,
+        right: IntOrDimOrExpr = 0,
+        value: FloatOrDimOrExpr = 0.0,
         mode: str | pl.Expr = "constant",
     ) -> Pipeline:
         """Add padding to the image.
@@ -2774,10 +2790,10 @@ class _OpsMixin:
     def pad_to_size(
         self,
         *,
-        height: IntOrExpr,
-        width: IntOrExpr,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
         position: str | pl.Expr = "center",
-        value: FloatOrExpr = 0.0,
+        value: FloatOrDimOrExpr = 0.0,
     ) -> Pipeline:
         """Pad image to exact target size (computed at runtime). A larger image is
         not cropped - resize first if needed.
@@ -2822,9 +2838,9 @@ class _OpsMixin:
     def rank_filter(
         self,
         *,
-        height: IntOrExpr,
-        width: IntOrExpr,
-        q: FloatOrExpr = 50.0,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
+        q: FloatOrDimOrExpr = 50.0,
         border: str | pl.Expr = "replicate",
     ) -> Pipeline:
         """Rank filter: each pixel the ``q``-th percentile of its ``height`` x
@@ -2854,11 +2870,11 @@ class _OpsMixin:
 
     def _rasterize(
         self,
-        size: Sequence[IntOrExpr] | LazyPipelineExpr,
+        size: Sequence[IntOrDimOrExpr] | LazyPipelineExpr,
         *,
-        fill_value: IntOrExpr = 255,
-        background: IntOrExpr = 0,
-        supersample: IntOrExpr = 1,
+        fill_value: IntOrDimOrExpr = 255,
+        background: IntOrDimOrExpr = 0,
+        supersample: IntOrDimOrExpr = 1,
     ) -> Pipeline:
         """Rasterize contours to a mask: each region filled. An open line has no
         region to fill and is refused; ``stroke()`` it first to draw it.
@@ -2963,7 +2979,9 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_min", {"axis": axis})
 
-    def reduce_percentile(self, q: FloatOrExpr, *, axis: int | None = None) -> Pipeline:
+    def reduce_percentile(
+        self, q: FloatOrDimOrExpr, *, axis: int | None = None
+    ) -> Pipeline:
         """Compute the q-th percentile of all values, or along one axis (linear
         interpolation, as numpy's default).
 
@@ -2984,7 +3002,9 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_popcount", {})
 
-    def reduce_std(self, *, axis: int | None = None, ddof: IntOrExpr = 0) -> Pipeline:
+    def reduce_std(
+        self, *, axis: int | None = None, ddof: IntOrDimOrExpr = 0
+    ) -> Pipeline:
         """Reduce buffer by computing the standard deviation.
 
         Domain: buffer → scalar, vector → scalar; with ``axis``: buffer → buffer, vector
@@ -3019,7 +3039,7 @@ class _OpsMixin:
         """
         return self._append_typed("relu", {})
 
-    def reshape(self, shape: Sequence[IntOrExpr]) -> Pipeline:
+    def reshape(self, shape: Sequence[IntOrDimOrExpr]) -> Pipeline:
         """Reshape array to new dimensions.
 
         Domain: buffer → buffer
@@ -3031,7 +3051,11 @@ class _OpsMixin:
         return self._append_typed("reshape", {"shape": shape})
 
     def resize(
-        self, *, height: IntOrExpr, width: IntOrExpr, filter: str | pl.Expr = "lanczos3"
+        self,
+        *,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
+        filter: str | pl.Expr = "lanczos3",
     ) -> Pipeline:
         """Resize image to specified dimensions.
 
@@ -3050,7 +3074,7 @@ class _OpsMixin:
         )
 
     def resize_max(
-        self, max_size: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+        self, max_size: IntOrDimOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
         """Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).
 
@@ -3068,7 +3092,7 @@ class _OpsMixin:
         )
 
     def resize_min(
-        self, min_size: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+        self, min_size: IntOrDimOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
         """Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).
 
@@ -3088,8 +3112,8 @@ class _OpsMixin:
     def _resize_scale(
         self,
         *,
-        scale_x: FloatOrExpr,
-        scale_y: FloatOrExpr,
+        scale_x: FloatOrDimOrExpr,
+        scale_y: FloatOrDimOrExpr,
         filter: str | pl.Expr = "lanczos3",
     ) -> Pipeline:
         """Resize image by scale factor: `new_width = input_width * scale_x`,
@@ -3110,7 +3134,7 @@ class _OpsMixin:
         )
 
     def resize_to_height(
-        self, height: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+        self, height: IntOrDimOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
         """Resize image to target height, preserving aspect ratio (width is computed at runtime).
 
@@ -3128,7 +3152,7 @@ class _OpsMixin:
         )
 
     def resize_to_width(
-        self, width: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+        self, width: IntOrDimOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
         """Resize image to target width, preserving aspect ratio (height is computed at runtime).
 
@@ -3145,11 +3169,11 @@ class _OpsMixin:
 
     def rotate(
         self,
-        angle: FloatOrExpr,
+        angle: FloatOrDimOrExpr,
         *,
         expand: bool = False,
         interpolation: str | pl.Expr = "bilinear",
-        border_value: FloatOrExpr = 0.0,
+        border_value: FloatOrDimOrExpr = 0.0,
     ) -> Pipeline:
         """Rotate image by specified angle.
 
@@ -3194,10 +3218,10 @@ class _OpsMixin:
     def rotate_and_scale(
         self,
         *,
-        angle: FloatOrExpr,
-        center: Sequence[FloatOrExpr],
-        output_size: Sequence[IntOrExpr],
-        scale: FloatOrExpr = 1.0,
+        angle: FloatOrDimOrExpr,
+        center: Sequence[FloatOrDimOrExpr],
+        output_size: Sequence[IntOrDimOrExpr],
+        scale: FloatOrDimOrExpr = 1.0,
     ) -> Pipeline:
         """Combined rotation and scaling around a center point.
 
@@ -3247,7 +3271,7 @@ class _OpsMixin:
         """
         return self._append_typed("round", {})
 
-    def _scale(self, factor: FloatOrExpr) -> Pipeline:
+    def _scale(self, factor: FloatOrDimOrExpr) -> Pipeline:
         """Multiply all values by a factor.
 
         The public `Pipeline.scale` is sugar over this op that adds
@@ -3296,7 +3320,7 @@ class _OpsMixin:
         """
         return self._append_typed("squeeze", {"axis": axis})
 
-    def subtract_constant(self, value: FloatOrExpr) -> Pipeline:
+    def subtract_constant(self, value: FloatOrDimOrExpr) -> Pipeline:
         """Subtract a constant from every value (`x - value`).
 
         Domain: buffer → buffer
@@ -3306,7 +3330,7 @@ class _OpsMixin:
         """
         return self._append_typed("subtract_constant", {"value": value})
 
-    def threshold(self, value: FloatOrExpr) -> Pipeline:
+    def threshold(self, value: FloatOrDimOrExpr) -> Pipeline:
         """Apply binary threshold: a U8 mask, 255 where the element exceeds `value`
         and 0 elsewhere (for u8 input typically 0-255; for [0, 1] floats e.g. 0.5).
 
@@ -3337,10 +3361,10 @@ class _OpsMixin:
     def warp_affine(
         self,
         *,
-        matrix: Sequence[FloatOrExpr],
-        output_size: Sequence[IntOrExpr],
+        matrix: Sequence[FloatOrDimOrExpr],
+        output_size: Sequence[IntOrDimOrExpr],
         interpolation: str | pl.Expr = "bilinear",
-        border_value: FloatOrExpr = 0.0,
+        border_value: FloatOrDimOrExpr = 0.0,
     ) -> Pipeline:
         """Apply a 2x3 affine transformation matrix.
 

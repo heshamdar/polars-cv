@@ -171,7 +171,7 @@ fn step_rows<R: Send>(
     // As the pipeline resolves a step: once when no field is per-row (its
     // literals were checked as the expression was built), else per row.
     let mut per_row = false;
-    op.visit_slots(&mut |_, _| per_row = true);
+    op.visit_inputs(&mut |_, _| per_row = true);
     let fixed = if per_row {
         None
     } else {

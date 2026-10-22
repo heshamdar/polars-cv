@@ -21,7 +21,7 @@
 use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use serde::Deserialize;
-use view_buffer::mode::{Wire, WireOps};
+use view_buffer::mode::{RowInput, Wire, WireOps};
 use view_buffer::naming::WireScalar;
 use view_buffer::GeometryOp;
 
@@ -95,11 +95,14 @@ impl<'a> GeomParams<'a> {
             .map_err(|e| polars_err!(ComputeError: "{}: {}", name, e))?;
         let mut claimed: Vec<usize> = Vec::new();
         let mut bad: Option<(&'static str, usize)> = None;
-        op.visit_slots(&mut |field, slot| {
-            if slot == 0 || slot >= inputs.len() {
-                bad.get_or_insert((field, slot));
+        op.visit_inputs(&mut |field, input| {
+            // An `H`/`W` field claims no input; resolving it finds no buffer.
+            if let RowInput::Slot(slot) = input {
+                if slot == 0 || slot >= inputs.len() {
+                    bad.get_or_insert((field, slot));
+                }
+                claimed.push(slot);
             }
-            claimed.push(slot);
         });
         if let Some((field, slot)) = bad {
             polars_bail!(ComputeError:
@@ -213,6 +216,8 @@ impl<'a> GeomParams<'a> {
         let values = crate::ops::param::RowValues {
             row: row.unwrap_or(0),
             ctx: &self.ctx,
+            // A geometry has no buffer for an `H`/`W` field to read.
+            shape: None,
         };
         let step: GeometryOp = view_buffer::mode::Resolve::resolve(op, &values)?;
         step.check().map_err(|e| match row {

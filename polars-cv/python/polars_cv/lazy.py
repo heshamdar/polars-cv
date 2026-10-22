@@ -21,6 +21,7 @@ from polars_cv._ops_generated import _LazyOpsMixin
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
     from polars_cv._optimize import OptFlags
+    from polars_cv._types import FloatOrDimOrExpr
     from polars_cv.pipeline import Pipeline
 
 
@@ -477,7 +478,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         )
 
     def background_divide(
-        self, sigma: float | pl.Expr, *, epsilon: float = 1e-6
+        self, sigma: "FloatOrDimOrExpr", *, epsilon: float = 1e-6
     ) -> "LazyPipelineExpr":
         """
         Flat-field: divide this image by its own background,

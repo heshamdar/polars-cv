@@ -45,7 +45,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
-| CR-123 | Params | Feature | `H`/`W` placeholders: op parameters derived from the current buffer's shape (B4) |
+| CR-129 | Params | Feature | Masked percentile `normalize`: a window from another node's pixels (C3 remainder) |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -347,22 +347,21 @@ against `main` at `e788d72` that day, and their full text is in git history).
 
 ## Downstream proposal (2026-10-22)
 
-A downstream image-analytics user's proposal, reviewed against 0.40.0. The
-bugs and small gaps shipped in the first phase (CR-124 to CR-128), the
-reductions in the second (CR-119, CR-120) and the resampling, filters and
-long sink in the third (CR-121, CR-122), all closed below; this is the
-rest. A masked percentile normalize (the window from a
-mask's pixels) waits on CR-123's mechanism for values derived from another
-node. Each is test-first, through
-the typed catalogue, with its own CHANGELOG entry.
+A downstream image-analytics user's proposal, reviewed against 0.40.0. Its
+four phases are closed below (CR-119 to CR-128); this is what remains.
 
-### CR-123 — Shape placeholders (`H`, `W`)
+### CR-129 — Masked percentile `normalize`
 
-- `Param::Dim(DimExpr)` beside `Lit`/`Slot` (`view-buffer/src/mode.rs`):
-  a small `+ - * /` tree over the current input's H and W, `{"$dim": ...}`
-  on the wire, `Sym::PerRow` to the planner, resolved in
-  `RowValues::value` from the operand's shape. Python exposes
-  `polars_cv.H`/`W`. Enables `blur(H / 320)`, `crop(top=0.2 * H, ...)`.
+- `normalize(method="percentile", low=, high=)` takes its window from the
+  whole image. The proposal also wanted it from a mask's pixels (a lesion's
+  1st–99th percentile), which needs a parameter computed from *another
+  node's* values per row. `H`/`W` (CR-123) read only the op's own input
+  shape, so they do not provide it.
+- Today: `reduce_masked(mask, reduction="percentile", q=...)` computes the
+  bounds as a scalar, but a scalar cannot yet feed another op's parameter.
+  A general "parameter from a node" mechanism (a `Param` variant naming a
+  scalar node) would cover it; decide whether that is worth its planner
+  cost before building it.
 
 ## Extension types
 
@@ -596,6 +595,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-123 | No way to size a parameter by the image (B4) | Fixed (unreleased): `polars_cv.H`/`W` with `+ - * / //`, `{"$dim": tree}` on the wire, resolved per row from the shape of the buffer each op reads, carried through a node's steps by their shape rules; integers round to nearest (`test_shape_placeholders.py`) |
 | CR-122 | No rank/median filter, no flat-fielding, no per-row flip, no per-pixel table of stacked maps (C2/B7/B6) | Fixed (unreleased): `rank_filter`/`median_filter`, `background_divide`, `flip_h`/`flip_v(when=)`, `sink("long", names=, where=)`; no `stack()`, since `channel_merge` is that op (`test_rank_filters.py`, `test_conditional_flip.py`, `test_long_sink.py`) |
 | CR-121 | No resize onto another node's grid, no area filter, no block reduction (B5) | Fixed (unreleased): `resize_like(other)` as a graph op (not a shared `SizeSpec`: rasterize's size is a literal, resize_like's another node's per-row shape), `resize(filter="area")` with OpenCV `INTER_AREA`'s exact overlap weights, `block_reduce` (`test_resampling.py`) |
 | CR-120 | `normalize` had no percentile window and no explicit bounds (C3) | Fixed (unreleased): `method="percentile"`/`"range"` with `low`/`high` (`TestNormalizeWindows`) |

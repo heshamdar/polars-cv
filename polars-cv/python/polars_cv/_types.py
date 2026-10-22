@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, TypeAlias, Union
 
 import polars as pl
 
+from polars_cv._dims import Dim
+
 # The enums are generated from the Rust registries (`scripts/gen_ops.py`),
 # which lists them in `_ops_generated.__all__`; every one is re-exported here,
 # where the rest of the package imports them from. No hand-kept subset.
@@ -25,6 +27,10 @@ if TYPE_CHECKING:
 # Type alias for values that can be either literals or expressions
 IntOrExpr: TypeAlias = Union[int, pl.Expr]
 FloatOrExpr: TypeAlias = Union[float, pl.Expr]
+#: A pipeline op's numeric per-row parameter: also ``H``/``W`` arithmetic
+#: (:class:`polars_cv.Dim`), read from the shape of the buffer the op reads.
+IntOrDimOrExpr: TypeAlias = Union[int, pl.Expr, Dim]
+FloatOrDimOrExpr: TypeAlias = Union[float, pl.Expr, Dim]
 # For non-structural flags only. A flag that changes the output shape — such as
 # ``rotate(expand)`` — stays a plain ``bool``.
 BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
@@ -172,6 +178,12 @@ def _literal(value: Any) -> Any:
     """
     if isinstance(value, (list, tuple)):
         return [_literal(v) for v in value]
+    if isinstance(value, Dim):
+        msg = (
+            f"{value!r} reads the height and width of the buffer an op reads, "
+            "so it is only for a per-row numeric parameter of a pipeline op"
+        )
+        raise TypeError(msg)
     value = _to_python(value)
     if isinstance(value, float) and not math.isfinite(value):
         return "nan" if math.isnan(value) else ("inf" if value > 0 else "-inf")

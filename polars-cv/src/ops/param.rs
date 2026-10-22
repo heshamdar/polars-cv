@@ -5,17 +5,20 @@
 
 use polars::prelude::*;
 pub use view_buffer::mode::{
-    literal_field, ColumnRef, FieldType, Literal, Param, Resolve, Values, SLOT_KEY,
+    literal_field, ColumnRef, DimExpr, FieldType, Literal, Param, Resolve, Values, SLOT_KEY,
 };
 use view_buffer::naming::{WireKind, WireScalar, WireValue};
 
 use crate::params::ParamCtx;
 
 /// One row of the plugin's parameter columns: where a `Wire` op's slots are
-/// read when it is resolved for that row.
+/// read when it is resolved for that row, and the shape of the buffer the op
+/// reads, where its `H`/`W` parameters are read (`None` where it is not
+/// known before the op runs, or there is none).
 pub struct RowValues<'a> {
     pub row: usize,
     pub ctx: &'a ParamCtx<'a>,
+    pub shape: Option<&'a [usize]>,
 }
 
 impl Values for RowValues<'_> {
@@ -36,6 +39,11 @@ impl Values for RowValues<'_> {
         })
     }
 
+    fn dim<T: WireScalar>(&self, expr: &DimExpr) -> PolarsResult<T> {
+        view_buffer::mode::dim_value(expr, self.shape)
+            .map_err(|e| polars_err!(ComputeError: "{}", e))
+    }
+
     fn in_field(&self, field: &'static str, error: PolarsError) -> PolarsError {
         error.wrap_msg(|msg| format!("{field}: {msg}"))
     }
@@ -50,6 +58,13 @@ pub trait ParamExt<T> {
 
 impl<T: WireScalar> ParamExt<T> for Param<T> {
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<T> {
-        Resolve::resolve(self, &RowValues { row, ctx })
+        Resolve::resolve(
+            self,
+            &RowValues {
+                row,
+                ctx,
+                shape: None,
+            },
+        )
     }
 }

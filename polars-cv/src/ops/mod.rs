@@ -30,6 +30,7 @@ use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
 pub use param::{ColumnRef, FieldType, Literal, Param, ParamExt};
 pub use view_buffer::mode::OpDesc;
+use view_buffer::mode::RowInput;
 
 /// Register the typed op families.
 ///
@@ -92,10 +93,13 @@ macro_rules! typed_ops {
                 }
             }
 
-            /// Call `f(field, slot)` for every slot a field reads.
-            pub fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
+            /// Call `f(field, input)` for every row input a field reads.
+            pub fn visit_inputs(
+                &self,
+                f: &mut dyn FnMut(&'static str, view_buffer::mode::RowInput),
+            ) {
                 match self {
-                    $($($at)::+($($inner)*) => $op.visit_slots(f),)*
+                    $($($at)::+($($inner)*) => $op.visit_inputs(f),)*
                 }
             }
 
@@ -170,8 +174,20 @@ impl TypedOp {
     /// checked with every value known. An op with no per-row parameter is
     /// resolved once at graph compile time.
     pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
-        let step: GraphStep =
-            view_buffer::mode::Resolve::resolve(self, &param::RowValues { row, ctx })?;
+        self.resolve_on(row, ctx, None)
+    }
+
+    /// [`resolve`](Self::resolve) for an op whose input has `shape` (`None`
+    /// where it is not known before the op runs), which an `H`/`W`
+    /// parameter reads.
+    pub fn resolve_on(
+        &self,
+        row: usize,
+        ctx: &ParamCtx,
+        shape: Option<&[usize]>,
+    ) -> PolarsResult<GraphStep> {
+        let values = param::RowValues { row, ctx, shape };
+        let step: GraphStep = view_buffer::mode::Resolve::resolve(self, &values)?;
         step.check()
             .map_err(|e| polars_err!(ComputeError: "{}", e))?;
         Ok(step)
@@ -180,14 +196,25 @@ impl TypedOp {
     /// Whether any field is per-row. An op with none resolves once.
     pub fn is_static(&self) -> bool {
         let mut any = false;
-        self.visit_slots(&mut |_, _| any = true);
+        self.visit_inputs(&mut |_, _| any = true);
         !any
+    }
+
+    /// Whether a field reads the shape of the op's input (`H`/`W`).
+    pub fn reads_shape(&self) -> bool {
+        let mut any = false;
+        self.visit_inputs(&mut |_, input| any |= input == RowInput::Shape);
+        any
     }
 
     /// One past the highest slot the op reads (0 when none).
     pub fn min_inputs(&self) -> usize {
         let mut n = 0;
-        self.visit_slots(&mut |_, slot| n = n.max(slot + 1));
+        self.visit_inputs(&mut |_, input| {
+            if let RowInput::Slot(slot) = input {
+                n = n.max(slot + 1);
+            }
+        });
         n
     }
 }
@@ -802,8 +829,14 @@ mod tests {
                                     "interpolation": "bilinear", "border_value": 0}))
         .unwrap();
         let mut seen = Vec::new();
-        op.visit_slots(&mut |name, slot| seen.push((name, slot)));
-        assert_eq!(seen, [("matrix", 3), ("output_size", 1)]);
+        op.visit_inputs(&mut |name, input| seen.push((name, input)));
+        assert_eq!(
+            seen,
+            [
+                ("matrix", RowInput::Slot(3)),
+                ("output_size", RowInput::Slot(1))
+            ]
+        );
         assert!(!op.is_static());
         assert_eq!(op.min_inputs(), 4);
     }

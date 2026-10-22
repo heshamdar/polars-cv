@@ -17,7 +17,8 @@
 //!
 //! The wire form of a parameter is the value itself — `224`, `"bilinear"`,
 //! `[1.0, 0.0]` — or, per row, `{"$slot": n}`: the index of the plugin input
-//! column that carries it. Deserialization is hand-written rather than
+//! column that carries it, or `{"$dim": tree}`: a number computed from the
+//! height and width of the buffer the op reads ([`DimExpr`]). Deserialization is hand-written rather than
 //! `#[serde(untagged)]`, which is ambiguous for integer `T` and replaces every
 //! error with "data did not match any variant". The eligibility rule (a
 //! parameter may be per-row iff it has no effect on the output rank, dtype or
@@ -25,11 +26,12 @@
 //! in a [`Literal`] is a deserialization error.
 
 use core::fmt::Debug;
+use std::sync::Arc;
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::naming::{WireScalar, WireValue};
+use crate::naming::{WireKind, WireScalar, WireValue};
 use crate::ops::Sym;
 
 /// How an op holds its parameters (see the module docs).
@@ -67,10 +69,7 @@ impl Mode for Wire {
     type V<T: WireScalar> = Param<T>;
     type L<T: WireScalar> = Literal<T>;
     fn sym<T: WireScalar>(value: &Param<T>) -> Sym<T> {
-        match value {
-            Param::Lit(v) => Sym::Known(*v),
-            Param::Slot(_) => Sym::PerRow,
-        }
+        value.sym()
     }
     fn lit<T: WireScalar>(value: &Literal<T>) -> T {
         value.0
@@ -95,22 +94,29 @@ pub fn known<M: Mode, T: WireScalar>(value: &M::V<T>) -> Option<T> {
 /// The wire key marking a per-row parameter.
 pub const SLOT_KEY: &str = "$slot";
 
-/// A parameter that is a literal or, per row, an input column.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The wire key marking a parameter derived from the input's shape.
+pub const DIM_KEY: &str = "$dim";
+
+/// A parameter that is a literal or, per row, an input column or a number
+/// derived from the shape of the buffer the op reads.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Param<T> {
     /// A value fixed for every row.
     Lit(T),
     /// The plugin input column at this position holds the value for each row.
     Slot(usize),
+    /// Computed, per row, from the height and width of the buffer the op
+    /// reads (`polars_cv.H`, `W`). Only a numeric parameter takes one.
+    Dim(Arc<DimExpr>),
 }
 
 impl<T: Copy> Param<T> {
     /// This parameter as a shape argument: its value when literal, `PerRow`
-    /// when a column supplies it.
+    /// when a column or the row's shape supplies it.
     pub fn sym(&self) -> Sym<T> {
         match self {
             Param::Lit(v) => Sym::Known(*v),
-            Param::Slot(_) => Sym::PerRow,
+            Param::Slot(_) | Param::Dim(_) => Sym::PerRow,
         }
     }
 }
@@ -118,11 +124,231 @@ impl<T: Copy> Param<T> {
 impl Param<u32> {
     /// A size parameter as a shape argument (see [`sym`](Self::sym)).
     pub fn size(&self) -> Sym<usize> {
-        match self {
-            Param::Lit(v) => Sym::Known(*v as usize),
-            Param::Slot(_) => Sym::PerRow,
+        match self.sym() {
+            Sym::Known(v) => Sym::Known(v as usize),
+            Sym::PerRow => Sym::PerRow,
         }
     }
+}
+
+/// What a parameter reads per row, besides its literal: an input column, or
+/// the shape of the buffer its op reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowInput {
+    /// The plugin input column at this position.
+    Slot(usize),
+    /// The height and width of the op's input ([`Param::Dim`]).
+    Shape,
+}
+
+/// A number computed from the height (`H`) and width (`W`) of the buffer an
+/// op reads. On the wire, `"H"`, `"W"`, a number, or `[op, a, b]` with `op`
+/// one of `+ - * / //` (`//` floors), under [`DIM_KEY`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum DimExpr {
+    /// The input's height (axis 0).
+    H,
+    /// The input's width (axis 1).
+    W,
+    /// A finite number.
+    Num(f64),
+    /// `a op b`.
+    Op(DimOp, Box<(DimExpr, DimExpr)>),
+}
+
+/// A [`DimExpr`] operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DimOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    FloorDiv,
+}
+
+impl DimOp {
+    /// Each operator and its wire (and Python) spelling.
+    const SPELLINGS: [(DimOp, &'static str); 5] = [
+        (DimOp::Add, "+"),
+        (DimOp::Sub, "-"),
+        (DimOp::Mul, "*"),
+        (DimOp::Div, "/"),
+        (DimOp::FloorDiv, "//"),
+    ];
+
+    fn spelling(self) -> &'static str {
+        Self::SPELLINGS
+            .iter()
+            .find(|(op, _)| *op == self)
+            .map(|(_, s)| *s)
+            .expect("every operator has a spelling")
+    }
+
+    /// How tightly it binds, as in Python (for display).
+    fn precedence(self) -> u8 {
+        match self {
+            DimOp::Add | DimOp::Sub => 1,
+            DimOp::Mul | DimOp::Div | DimOp::FloorDiv => 2,
+        }
+    }
+}
+
+impl DimExpr {
+    /// Parse the wire tree.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        use serde_json::Value;
+        match value {
+            Value::String(s) if s == "H" => Ok(DimExpr::H),
+            Value::String(s) if s == "W" => Ok(DimExpr::W),
+            Value::Number(n) => match n.as_f64() {
+                Some(f) if f.is_finite() => Ok(DimExpr::Num(f)),
+                _ => Err(format!("{n} is not a finite number")),
+            },
+            Value::Array(items) if items.len() == 3 => {
+                let op = items[0]
+                    .as_str()
+                    .and_then(|s| DimOp::SPELLINGS.iter().find(|(_, sp)| *sp == s))
+                    .map(|(op, _)| *op)
+                    .ok_or_else(|| {
+                        let known: Vec<&str> = DimOp::SPELLINGS.iter().map(|(_, s)| *s).collect();
+                        format!("unknown operator {}, expected one of {known:?}", items[0])
+                    })?;
+                let a = Self::from_json(&items[1])?;
+                let b = Self::from_json(&items[2])?;
+                Ok(DimExpr::Op(op, Box::new((a, b))))
+            }
+            other => Err(format!(
+                "a shape expression is \"H\", \"W\", a number or [op, a, b], got {other}"
+            )),
+        }
+    }
+
+    /// The wire tree.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            DimExpr::H => "H".into(),
+            DimExpr::W => "W".into(),
+            DimExpr::Num(f) => serde_json::Value::from(*f),
+            DimExpr::Op(op, args) => {
+                serde_json::json!([op.spelling(), args.0.to_json(), args.1.to_json()])
+            }
+        }
+    }
+
+    /// The value over a height and a width.
+    pub fn eval(&self, h: f64, w: f64) -> Result<f64, String> {
+        Ok(match self {
+            DimExpr::H => h,
+            DimExpr::W => w,
+            DimExpr::Num(f) => *f,
+            DimExpr::Op(op, args) => {
+                let (a, b) = (args.0.eval(h, w)?, args.1.eval(h, w)?);
+                match op {
+                    DimOp::Add => a + b,
+                    DimOp::Sub => a - b,
+                    DimOp::Mul => a * b,
+                    DimOp::Div | DimOp::FloorDiv if b == 0.0 => {
+                        return Err(format!("{self}: division by zero"))
+                    }
+                    DimOp::Div => a / b,
+                    DimOp::FloorDiv => (a / b).floor(),
+                }
+            }
+        })
+    }
+
+    /// Written as an operand of `parent`, parenthesised where Python would
+    /// need it to read the same: a looser operator, or on the right an equal
+    /// one that does not associate (`a - (b - c)`, `a / (b * c)`).
+    fn fmt_operand(
+        &self,
+        f: &mut core::fmt::Formatter<'_>,
+        parent: DimOp,
+        right: bool,
+    ) -> core::fmt::Result {
+        let wrap = match self {
+            DimExpr::Op(op, _) => {
+                let (child, outer) = (op.precedence(), parent.precedence());
+                child < outer
+                    || (right
+                        && child == outer
+                        && !(*op == parent && matches!(parent, DimOp::Add | DimOp::Mul)))
+            }
+            _ => false,
+        };
+        if wrap {
+            write!(f, "({self})")
+        } else {
+            write!(f, "{self}")
+        }
+    }
+}
+
+impl core::fmt::Display for DimExpr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DimExpr::H => f.write_str("H"),
+            DimExpr::W => f.write_str("W"),
+            DimExpr::Num(n) => write!(f, "{n}"),
+            DimExpr::Op(op, args) => {
+                args.0.fmt_operand(f, *op, false)?;
+                write!(f, " {} ", op.spelling())?;
+                args.1.fmt_operand(f, *op, true)
+            }
+        }
+    }
+}
+
+/// `expr`'s value as a `T`, over `shape`, the shape of the buffer the op
+/// reads (`None` where none is known before the op runs). An integer
+/// parameter takes the value rounded to nearest (half away from zero), so
+/// `0.29 * H` at `H = 100` is 29, not the 28 its float error truncates to.
+pub fn dim_value<T: WireScalar>(expr: &DimExpr, shape: Option<&[usize]>) -> Result<T, String> {
+    let Some(shape) = shape else {
+        return Err(format!(
+            "{expr}: H/W need the size of the buffer this op reads, which is not \
+             known before the op runs (its input is not a buffer, or an earlier \
+             op's output size depends on the data)"
+        ));
+    };
+    let [h, w, ..] = *shape else {
+        return Err(format!(
+            "{expr}: H/W read an [H, W] or [H, W, C] buffer, and this op's input \
+             has shape {shape:?}"
+        ));
+    };
+    if shape.len() > 3 {
+        return Err(format!(
+            "{expr}: H/W read an [H, W] or [H, W, C] buffer, and this op's input \
+             has shape {shape:?}"
+        ));
+    }
+    let value = expr.eval(h as f64, w as f64)?;
+    if !value.is_finite() {
+        return Err(format!("{expr} is {value} for H = {h}, W = {w}"));
+    }
+    let wire = match T::KIND {
+        WireKind::Float => WireValue::Float(value),
+        WireKind::Int => {
+            let rounded = value.round();
+            if rounded < i64::MIN as f64 || rounded >= i64::MAX as f64 {
+                return Err(format!("{expr} is {value}, out of range"));
+            }
+            WireValue::Int(rounded as i64)
+        }
+        WireKind::Bool | WireKind::Name => {
+            return Err(dim_kind_error::<T>());
+        }
+    };
+    T::from_wire(wire).map_err(|e| format!("{expr} = {value} for H = {h}, W = {w}: {e}"))
+}
+
+/// The refusal of a shape expression where the parameter is not a number.
+fn dim_kind_error<T: WireScalar>() -> String {
+    format!(
+        "H/W give a number, and this parameter takes a {}",
+        T::PY_TYPE
+    )
 }
 
 /// A structural parameter: always a literal, never per-row.
@@ -154,6 +380,9 @@ pub trait Values {
     type Error;
     /// The value slot `slot` holds for this row.
     fn value<T: WireScalar>(&self, slot: usize) -> Result<T, Self::Error>;
+    /// The value `expr` takes over the shape of the buffer the op reads
+    /// ([`dim_value`]).
+    fn dim<T: WireScalar>(&self, expr: &DimExpr) -> Result<T, Self::Error>;
     /// `error`, raised resolving the field `field`, saying which field it was:
     /// `#[derive(Resolve)]` calls it for every named field, so a bad per-row
     /// value names the parameter it was bound to (`left`), not only the
@@ -170,8 +399,8 @@ pub trait WireOps: Sized {
     fn wire_name(&self) -> Option<&'static str>;
     /// The op's wire fields; `None` for an engine-internal variant.
     fn wire_fields(&self) -> Option<serde_json::Map<String, serde_json::Value>>;
-    /// Call `f(field, slot)` for every slot a field reads.
-    fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize));
+    /// Call `f(field, input)` for every row input a field reads.
+    fn visit_inputs(&self, f: &mut dyn FnMut(&'static str, RowInput));
     /// Every op's catalogue entry, in declaration order.
     fn catalog() -> Vec<OpDesc>;
 }
@@ -183,6 +412,9 @@ impl Values for Literals {
     type Error = String;
     fn value<T: WireScalar>(&self, slot: usize) -> Result<T, String> {
         Err(format!("slot {slot} read where only literals resolve"))
+    }
+    fn dim<T: WireScalar>(&self, expr: &DimExpr) -> Result<T, String> {
+        dim_value(expr, None)
     }
     fn in_field(&self, field: &'static str, error: String) -> String {
         format!("{field}: {error}")
@@ -200,9 +432,10 @@ pub trait Resolve {
 impl<T: WireScalar> Resolve for Param<T> {
     type Exec = T;
     fn resolve<V: Values>(&self, values: &V) -> Result<T, V::Error> {
-        match *self {
-            Param::Lit(v) => Ok(v),
-            Param::Slot(slot) => values.value(slot),
+        match self {
+            Param::Lit(v) => Ok(*v),
+            Param::Slot(slot) => values.value(*slot),
+            Param::Dim(expr) => values.dim(expr),
         }
     }
 }
@@ -299,6 +532,18 @@ pub fn as_slot(value: &serde_json::Value) -> Option<Result<usize, String>> {
     )
 }
 
+/// `Some(expr)` when `value` is exactly `{"$dim": tree}`.
+pub fn as_dim(value: &serde_json::Value) -> Option<Result<DimExpr, String>> {
+    let obj = value.as_object()?;
+    let tree = obj.get(DIM_KEY)?;
+    if obj.len() != 1 {
+        return Some(Err(format!(
+            "a shape expression is exactly {{\"{DIM_KEY}\": tree}}, got {value}"
+        )));
+    }
+    Some(DimExpr::from_json(tree))
+}
+
 impl<T: WireScalar> Serialize for Param<T> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match *self {
@@ -307,6 +552,12 @@ impl<T: WireScalar> Serialize for Param<T> {
                 use serde::ser::SerializeMap;
                 let mut map = s.serialize_map(Some(1))?;
                 map.serialize_entry(SLOT_KEY, &idx)?;
+                map.end()
+            }
+            Param::Dim(ref expr) => {
+                use serde::ser::SerializeMap;
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry(DIM_KEY, &expr.to_json())?;
                 map.end()
             }
         }
@@ -318,6 +569,14 @@ impl<'de, T: WireScalar> Deserialize<'de> for Param<T> {
         let value = serde_json::Value::deserialize(d)?;
         if let Some(slot) = as_slot(&value) {
             return slot.map(Param::Slot).map_err(D::Error::custom);
+        }
+        if let Some(expr) = as_dim(&value) {
+            if !matches!(T::KIND, WireKind::Int | WireKind::Float) {
+                return Err(D::Error::custom(dim_kind_error::<T>()));
+            }
+            return expr
+                .map(|e| Param::Dim(Arc::new(e)))
+                .map_err(D::Error::custom);
         }
         scalar_from_json(&value)
             .map(Param::Lit)
@@ -334,7 +593,7 @@ impl<T: WireScalar> Serialize for Literal<T> {
 impl<'de, T: WireScalar> Deserialize<'de> for Literal<T> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(d)?;
-        if as_slot(&value).is_some() {
+        if as_slot(&value).is_some() || as_dim(&value).is_some() {
             return Err(D::Error::custom(
                 "this parameter is structural (it fixes the output shape, rank or \
                  dtype at planning time) and cannot be a per-row expression",
@@ -390,8 +649,8 @@ pub enum TypeDesc {
 pub trait FieldType {
     /// The field's catalogue description.
     fn describe() -> TypeDesc;
-    /// Call `f` with every slot the value reads.
-    fn visit_slots(&self, f: &mut dyn FnMut(usize));
+    /// Call `f` with every row input the value reads.
+    fn visit_inputs(&self, f: &mut dyn FnMut(RowInput));
 }
 
 fn scalar_desc<T: WireScalar>(per_row: bool) -> TypeDesc {
@@ -406,9 +665,11 @@ impl<T: WireScalar> FieldType for Param<T> {
     fn describe() -> TypeDesc {
         scalar_desc::<T>(true)
     }
-    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
-        if let Param::Slot(idx) = self {
-            f(*idx);
+    fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
+        match self {
+            Param::Lit(_) => {}
+            Param::Slot(idx) => f(RowInput::Slot(*idx)),
+            Param::Dim(_) => f(RowInput::Shape),
         }
     }
 }
@@ -417,7 +678,7 @@ impl<T: WireScalar> FieldType for Literal<T> {
     fn describe() -> TypeDesc {
         scalar_desc::<T>(false)
     }
-    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
+    fn visit_inputs(&self, _f: &mut dyn FnMut(RowInput)) {}
 }
 
 /// Literal text (a path root, say): never per-row.
@@ -429,14 +690,14 @@ impl FieldType for String {
             variants: Vec::new(),
         }
     }
-    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
+    fn visit_inputs(&self, _f: &mut dyn FnMut(RowInput)) {}
 }
 
 impl FieldType for std::collections::HashMap<String, String> {
     fn describe() -> TypeDesc {
         TypeDesc::Map
     }
-    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
+    fn visit_inputs(&self, _f: &mut dyn FnMut(RowInput)) {}
 }
 
 impl<F: FieldType> FieldType for Option<F> {
@@ -445,9 +706,9 @@ impl<F: FieldType> FieldType for Option<F> {
             inner: Box::new(F::describe()),
         }
     }
-    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
+    fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
         if let Some(v) = self {
-            v.visit_slots(f);
+            v.visit_inputs(f);
         }
     }
 }
@@ -459,8 +720,8 @@ impl<F: FieldType, const N: usize> FieldType for [F; N] {
             inner: Box::new(F::describe()),
         }
     }
-    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
-        self.iter().for_each(|v| v.visit_slots(f));
+    fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
+        self.iter().for_each(|v| v.visit_inputs(f));
     }
 }
 
@@ -470,8 +731,8 @@ impl<F: FieldType> FieldType for Vec<F> {
             inner: Box::new(F::describe()),
         }
     }
-    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
-        self.iter().for_each(|v| v.visit_slots(f));
+    fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
+        self.iter().for_each(|v| v.visit_inputs(f));
     }
 }
 
@@ -614,8 +875,8 @@ impl FieldType for ColumnRef {
     fn describe() -> TypeDesc {
         TypeDesc::Column
     }
-    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
-        f(self.0);
+    fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
+        f(RowInput::Slot(self.0));
     }
 }
 
@@ -623,5 +884,101 @@ impl FieldType for NodeRef {
     fn describe() -> TypeDesc {
         TypeDesc::Node
     }
-    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
+    fn visit_inputs(&self, _f: &mut dyn FnMut(RowInput)) {}
+}
+
+#[cfg(test)]
+mod dim_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn tree(v: serde_json::Value) -> DimExpr {
+        DimExpr::from_json(&v).unwrap()
+    }
+
+    #[test]
+    fn the_wire_tree_round_trips_and_evaluates() {
+        let wire = json!(["+", ["*", ["-", "H", 4.0], 0.5], ["//", "W", 3.0]]);
+        let expr = tree(wire.clone());
+        assert_eq!(expr.to_json(), wire);
+        // (100 - 4) * 0.5 + floor(10 / 3)
+        assert_eq!(expr.eval(100.0, 10.0).unwrap(), 51.0);
+    }
+
+    /// The same text Python's `repr` gives, so an error quotes the
+    /// expression as the user wrote it.
+    #[test]
+    fn it_displays_as_python_reads_it() {
+        for (wire, text) in [
+            (json!(["*", ["-", "H", 4], 0.5]), "(H - 4) * 0.5"),
+            (json!(["/", "H", ["+", "W", 1]]), "H / (W + 1)"),
+            (json!(["-", "H", ["-", "W", 1]]), "H - (W - 1)"),
+            (json!(["+", "H", ["+", "W", 1]]), "H + W + 1"),
+            (json!(["-", ["-", "H", "W"], 1]), "H - W - 1"),
+        ] {
+            assert_eq!(tree(wire).to_string(), text);
+        }
+    }
+
+    #[test]
+    fn a_malformed_tree_is_refused() {
+        for (wire, says) in [
+            (json!(["%", "H", 2]), "unknown operator"),
+            (json!(["+", "H"]), "a shape expression is"),
+            (json!("C"), "a shape expression is"),
+        ] {
+            let err = DimExpr::from_json(&wire).unwrap_err();
+            assert!(err.contains(says), "{err}");
+        }
+    }
+
+    /// An integer parameter rounds to nearest: 0.29 * 100 is
+    /// 28.999999999999996, which truncating would make 28.
+    #[test]
+    fn an_integer_rounds_to_nearest_and_a_float_is_exact() {
+        let expr = tree(json!(["*", 0.29, "H"]));
+        assert_eq!(dim_value::<u32>(&expr, Some(&[100, 7])).unwrap(), 29);
+        let half = tree(json!(["/", "W", 2]));
+        assert_eq!(dim_value::<u32>(&half, Some(&[1, 5, 3])).unwrap(), 3);
+        assert_eq!(dim_value::<f32>(&half, Some(&[1, 5])).unwrap(), 2.5);
+    }
+
+    #[test]
+    fn the_shape_must_be_known_and_an_image() {
+        let h = DimExpr::H;
+        let err = dim_value::<u32>(&h, None).unwrap_err();
+        assert!(err.contains("not known before the op runs"), "{err}");
+        for shape in [&[9][..], &[1, 2, 3, 4]] {
+            let err = dim_value::<u32>(&h, Some(shape)).unwrap_err();
+            assert!(err.contains("[H, W] or [H, W, C]"), "{err}");
+        }
+        let err =
+            dim_value::<u32>(&tree(json!(["/", "H", ["-", "W", "W"]])), Some(&[2, 2])).unwrap_err();
+        assert!(err.contains("H / (W - W): division by zero"), "{err}");
+        let err = dim_value::<u32>(&tree(json!(["-", "H", 9])), Some(&[2, 2])).unwrap_err();
+        assert!(err.contains("negative"), "{err}");
+    }
+
+    #[test]
+    fn only_a_per_row_numeric_parameter_takes_one() {
+        let wire = json!({"$dim": ["/", "H", 2]});
+        let p: Param<u32> = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(p.sym(), Sym::PerRow);
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            json!({"$dim": ["/", "H", 2.0]})
+        );
+        let err = serde_json::from_value::<Param<bool>>(wire.clone()).unwrap_err();
+        assert!(err.to_string().contains("H/W give a number"), "{err}");
+        let err = serde_json::from_value::<Literal<u32>>(wire).unwrap_err();
+        assert!(err.to_string().contains("structural"), "{err}");
+    }
+
+    #[test]
+    fn it_is_visited_as_a_shape_read() {
+        let p: Param<f32> = serde_json::from_value(json!({"$dim": "W"})).unwrap();
+        let mut seen = Vec::new();
+        p.visit_inputs(&mut |input| seen.push(input));
+        assert_eq!(seen, [RowInput::Shape]);
+    }
 }

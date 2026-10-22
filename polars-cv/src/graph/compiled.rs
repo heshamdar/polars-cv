@@ -80,6 +80,9 @@ struct NodePlan {
     input: PlannedInput,
     /// The node's ops, compiled.
     steps: Vec<CompiledStep>,
+    /// A step reads its input's `H`/`W`, so each row carries the shape
+    /// through the steps as they resolve ([`next_shape`]).
+    reads_shape: bool,
 }
 
 /// A node's input ([`NodeInput`]), prepared for the row loop.
@@ -259,6 +262,7 @@ impl CompiledGraph {
                 id: node_id.clone(),
                 input,
                 steps,
+                reads_shape: node.ops.iter().any(TypedOp::reads_shape),
             });
         }
 
@@ -635,12 +639,20 @@ impl CompiledGraph {
             // re-resolved for this row through typed slot reads. The scratch
             // Vec is reused so steady-state rows allocate nothing here.
             dto_scratch.clear();
+            // The shape each step reads, for a node whose `H`/`W` parameters
+            // read it: the input's, then each resolved step's output over it
+            // (`None` once it is not known before the step runs).
+            let mut shape: Option<Vec<usize>> = if np.reads_shape {
+                input.as_buffer().map(|b| b.shape().to_vec())
+            } else {
+                None
+            };
             for step in &np.steps {
                 match &step.resolver {
                     OpResolver::Static(resolved) => dto_scratch.push(Cow::Borrowed(resolved)),
                     OpResolver::Dynamic(spec) => {
                         ctx.clear_null();
-                        match spec.resolve(row_idx, ctx) {
+                        match spec.resolve_on(row_idx, ctx, shape.as_deref()) {
                             Ok(resolved) => dto_scratch.push(Cow::Owned(resolved)),
                             // Under `on_null_param="null"` a null parameter is
                             // not a failure — this node just has no output for
@@ -660,6 +672,10 @@ impl CompiledGraph {
                             }
                         }
                     }
+                }
+                if np.reads_shape {
+                    let resolved = dto_scratch.last().expect("the step was pushed above");
+                    shape = next_shape(resolved, shape.as_deref(), node_outputs, &step.operands);
                 }
             }
             let mut current_output = input;
@@ -967,6 +983,23 @@ fn node_readers(
     readers
 }
 
+/// The shape `step` outputs over `input` and the buffers of the nodes it
+/// reads, by its shape rule: `None` when any of them is not a known buffer or
+/// the output's size is decided by the data.
+fn next_shape(
+    step: &GraphStep,
+    input: Option<&[usize]>,
+    outputs: &RowOutputs,
+    operands: &[usize],
+) -> Option<Vec<usize>> {
+    let mut shapes: Vec<&[usize]> = vec![input?];
+    for operand in outputs.operands(operands)? {
+        shapes.push(operand.as_buffer()?.shape());
+    }
+    let out = step.shape().concrete(&shapes);
+    (!out.is_empty()).then_some(out)
+}
+
 /// Prepare every parameter in the graph for execution, returning how many
 /// plugin inputs the graph reads (one past the highest slot or column binding).
 ///
@@ -977,7 +1010,11 @@ fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
     for node in graph.nodes.values_mut() {
         if let NodeInput::Decode { column, source } = &node.input {
             inputs = inputs.max(column + 1);
-            source.visit_slots(&mut |_, slot| inputs = inputs.max(slot + 1));
+            source.visit_inputs(&mut |_, input| {
+                if let view_buffer::mode::RowInput::Slot(slot) = input {
+                    inputs = inputs.max(slot + 1);
+                }
+            });
         }
         for op in &node.ops {
             inputs = inputs.max(op.min_inputs());
@@ -2181,8 +2218,8 @@ mod tests {
         match &compiled.node_plan("n0").steps[0].resolver {
             OpResolver::Dynamic(op) => {
                 let mut slots = Vec::new();
-                op.visit_slots(&mut |name, slot| slots.push((name, slot)));
-                assert_eq!(slots, [("factor", 1)]);
+                op.visit_inputs(&mut |name, input| slots.push((name, input)));
+                assert_eq!(slots, [("factor", view_buffer::mode::RowInput::Slot(1))]);
             }
             _ => panic!("expected a dynamic typed op"),
         }

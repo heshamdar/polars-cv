@@ -297,10 +297,10 @@ impl FieldType for RasterSize<Wire> {
             ],
         }
     }
-    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
+    fn visit_inputs(&self, f: &mut dyn FnMut(crate::mode::RowInput)) {
         match self {
-            RasterSize::Fixed(dims) => dims.visit_slots(f),
-            RasterSize::FromNode(node) => node.visit_slots(f),
+            RasterSize::Fixed(dims) => dims.visit_inputs(f),
+            RasterSize::FromNode(node) => node.visit_inputs(f),
         }
     }
 }

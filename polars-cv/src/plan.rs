@@ -372,7 +372,7 @@ fn declare(
         .iter()
         .map(|d| match d {
             Some(Param::Lit(size)) => Some(*size as usize),
-            Some(Param::Slot(_)) | None => None,
+            Some(Param::Slot(_) | Param::Dim(_)) | None => None,
         })
         .collect();
     let shape = apply_declaration(&state.shape, &sizes, exact).map_err(|m| match m {
