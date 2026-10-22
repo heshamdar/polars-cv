@@ -2600,6 +2600,10 @@ BINARY_EXEMPT: dict[str, str] = {
         "two images; tests/test_reductions.py holds every reduction, global and "
         "per axis, to NumPy over the masked pixels"
     ),
+    "resize_like": (
+        "takes only another node's height and width, not its values; "
+        "tests/test_resampling.py holds it to resize at that size, row by row"
+    ),
     "channel_merge": (
         "variadic over single-channel operands; its inverse law is checked in "
         "laws/test_parity_laws.py"

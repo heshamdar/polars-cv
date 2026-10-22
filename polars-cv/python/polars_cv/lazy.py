@@ -435,6 +435,43 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             input=self,
         )
 
+    def resize_like(
+        self,
+        like: "LazyPipelineExpr",
+        *,
+        filter: str | pl.Expr = "lanczos3",
+    ) -> "LazyPipelineExpr":
+        """
+        Resize this image onto another node's grid, row by row.
+
+        Each row takes the height and width ``like`` has on that row, keeping
+        this image's channels and dtype: a heatmap and the image it came from
+        then compare cell by cell. When ``like``'s size is known at planning
+        time (a fixed-size ``Array`` column, a fixed ``resize``), so is this
+        output's.
+
+        Args:
+            like: LazyPipelineExpr whose height and width to take.
+            filter: As ``resize``'s; ``"area"`` when shrinking by a large
+                factor.
+
+        Returns:
+            New LazyPipelineExpr with the resize composed.
+
+        Example:
+            ```python
+            >>> img.resize_like(heat, filter="area")
+            ```
+        """
+        new_pipeline = self._receiving()
+        new_pipeline._add_node_op("resize_like", {"like": like, "filter": filter})
+        return LazyPipelineExpr(
+            column=None,
+            pipeline=new_pipeline,
+            node_id=_generate_node_id(),
+            input=self,
+        )
+
     def channel_merge(self, *others: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """
         Join this buffer's channels with the operands', in order.

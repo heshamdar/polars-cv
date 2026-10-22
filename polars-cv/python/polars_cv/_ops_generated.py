@@ -535,6 +535,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "relu",
         "reshape",
         "resize",
+        "resize_like",
         "resize_max",
         "resize_min",
         "resize_scale",
@@ -1181,6 +1182,22 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             ],
         },
     },
+    "resize_like": {
+        "like": {"kind": "node"},
+        "filter": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "FilterType",
+            "variants": [
+                "nearest",
+                "bilinear",
+                "catmullrom",
+                "gaussian",
+                "lanczos3",
+                "area",
+            ],
+        },
+    },
     "resize_max": {
         "max_size": {"kind": "scalar", "per_row": True, "py": "int"},
         "filter": {
@@ -1369,6 +1386,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "reduce_masked": {"reduction": "mean"},
     "reduce_std": {"ddof": 0},
     "resize": {"filter": "lanczos3"},
+    "resize_like": {"filter": "lanczos3"},
     "resize_max": {"filter": "lanczos3"},
     "resize_min": {"filter": "lanczos3"},
     "resize_scale": {"filter": "lanczos3"},
@@ -1538,6 +1556,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "relu": [{"input": "buffer", "output": "buffer"}],
     "reshape": [{"input": "buffer", "output": "buffer"}],
     "resize": [{"input": "buffer", "output": "buffer"}],
+    "resize_like": [{"input": "buffer", "output": "buffer"}],
     "resize_max": [{"input": "buffer", "output": "buffer"}],
     "resize_min": [{"input": "buffer", "output": "buffer"}],
     "resize_scale": [{"input": "buffer", "output": "buffer"}],

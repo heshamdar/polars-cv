@@ -179,6 +179,22 @@ pub(crate) fn run_step(
                     },
                 )
             }
+            Role::ResizeLike { filter, .. } => {
+                let [image, like] = exactly(name, buffers()?)?;
+                let (height, width) = (like.shape()[0] as u32, like.shape()[1] as u32);
+                let resize = view_buffer::ops::ViewDto::Image(view_buffer::ops::ImageOp {
+                    kind: view_buffer::ops::ImageOpKind::Resize {
+                        height,
+                        width,
+                        filter: *filter,
+                    },
+                });
+                // The engine's resize, validated by its own contract.
+                let expr = view_buffer::ViewExpr::new_source((*image).clone())
+                    .try_apply_op(resize)
+                    .map_err(|e| named(e.to_string()))?;
+                Ok(NodeOutput::from_buffer(expr.plan().execute()))
+            }
             Role::ChannelMerge { .. } => {
                 let all = buffers()?;
                 let refs: Vec<&ViewBuffer> = all.iter().map(Arc::as_ref).collect();
@@ -322,6 +338,7 @@ fn vector_reads_as_buffer(step: &GraphStep) -> bool {
             | Role::Regions(..)
             | Role::ApplyMask { .. }
             | Role::ReduceMasked { .. }
+            | Role::ResizeLike { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
             | Role::AssertShape { .. }

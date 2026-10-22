@@ -143,3 +143,48 @@ class TestBlockReduce:
     def test_a_zero_block_is_refused(self) -> None:
         with pytest.raises(ValueError, match="block"):
             Pipeline().source("array").block_reduce(height=0, width=2)
+
+
+class TestResizeLike:
+    """``img.resize_like(other)``: onto another node's grid, row by row."""
+
+    def _frame(self, heats: list[np.ndarray]) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "img": [_png(RGB)] * len(heats),
+                "heat": [h.tolist() for h in heats],
+            }
+        )
+
+    def test_matches_a_resize_to_the_others_size(self) -> None:
+        heats = [np.zeros((6, 8)), np.zeros((9, 4))]
+        img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        heat = pl.col("heat").cv.pipe(Pipeline().source("list", dtype="f64"))
+        out = (
+            self._frame(heats)
+            .select(img.resize_like(heat, filter="area").sink("numpy"))
+            .to_series()
+        )
+        for row, h in zip(out, heats):
+            got = numpy_from_struct(row)
+            want = _run_bytes(
+                Pipeline()
+                .source("image_bytes")
+                .resize(height=h.shape[0], width=h.shape[1], filter="area"),
+                RGB,
+            )
+            np.testing.assert_array_equal(got, want)
+
+    def test_the_lazy_schema_takes_a_known_grid(self) -> None:
+        frame = pl.DataFrame(
+            {"img": [_png(RGB)], "heat": [np.zeros((6, 8)).tolist()]}
+        ).lazy()
+        img = pl.col("img").cv.pipe(
+            Pipeline().source("image_bytes", dtype="u8").grayscale(keepdims=False)
+        )
+        heat = pl.col("heat").cv.pipe(
+            Pipeline().source("list", dtype="f64").assert_shape(dims=[6, 8])
+        )
+        query = frame.select(img.resize_like(heat).sink("array"))
+        assert query.collect_schema()["img"] == pl.Array(pl.UInt8, (6, 8))
+        assert query.collect().schema == query.collect_schema()

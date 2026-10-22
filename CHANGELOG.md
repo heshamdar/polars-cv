@@ -25,6 +25,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`img.resize_like(other, filter=)`** resizes an image onto another
+  node's grid, row by row (a 120-row heatmap and the 3,000-row image it came
+  from, compared cell by cell), keeping the image's channels and dtype;
+  `filter="area"` for the large shrink. The output's size is known to the
+  lazy schema when the other node's is.
 - **`resize(filter="area")`** and **`block_reduce(height=, width=,
   reduction=)`.** Shrinking by a large factor, `"area"` makes each output
   pixel the mean of its footprint, every input pixel weighted by its overlap

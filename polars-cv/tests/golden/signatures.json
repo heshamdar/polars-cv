@@ -1981,6 +1981,23 @@
     "'lanczos3'"
    ]
   ],
+  "resize_like": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "like",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "filter",
+    "KEYWORD_ONLY",
+    "'lanczos3'"
+   ]
+  ],
   "resize_max": [
    [
     "self",
