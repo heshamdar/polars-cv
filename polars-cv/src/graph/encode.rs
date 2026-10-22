@@ -15,7 +15,8 @@ use view_buffer::ops::NodeOutput;
 use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 
 use super::sink_kind::SinkKind;
-use super::types::{OutputSpec, OutputValue};
+use super::types::{LongRow, OutputSpec, OutputValue};
+use crate::formats::sink::LongLayout;
 use crate::formats::Format as _;
 use crate::row_split::Split;
 use std::mem::MaybeUninit;
@@ -711,6 +712,12 @@ pub(crate) fn encode_node_output(
                 output.domain()
             )),
         },
+        SinkKind::Long => {
+            let layout = sink
+                .long_layout()
+                .ok_or("internal: a long sink kind without a long layout")??;
+            long_row(require_buffer(output, domain, format)?, &layout).map(OutputValue::Long)
+        }
         SinkKind::Contours => match output {
             NodeOutput::Contours(contours) => Ok(OutputValue::Contours(contours.clone())),
             _ => Err(format!(
@@ -720,6 +727,136 @@ pub(crate) fn encode_node_output(
         },
     }
 }
+/// A buffer's kept pixels as a `long` sink row: their positions, row-major,
+/// and each value field's channel, gathered once on the row's thread.
+fn long_row(buf: &ViewBuffer, layout: &LongLayout) -> Result<LongRow, String> {
+    let (height, width, channels) = match *buf.shape() {
+        [h, w] => (h, w, 1),
+        [h, w, c] => (h, w, c),
+        ref other => {
+            return Err(format!(
+                "the 'long' sink takes an [H, W] or [H, W, C] buffer, got shape {other:?}"
+            ))
+        }
+    };
+    layout.check_channels(channels)?;
+    if u32::try_from(height.max(width)).is_err() {
+        return Err(format!(
+            "the 'long' sink's positions are u32, and this buffer is {height}x{width}"
+        ));
+    }
+    let contig = buf.to_contiguous();
+    macro_rules! gather {
+        ($t:ty) => {{
+            let data = contig.as_slice::<$t>();
+            let picked: Vec<usize> = match layout.select {
+                Some(s) => (0..height * width)
+                    .filter(|p| data[p * channels + s] > <$t>::default())
+                    .collect(),
+                None => (0..height * width).collect(),
+            };
+            let fields = layout
+                .fields
+                .iter()
+                .map(|&(c, _)| {
+                    ViewBuffer::from_vec(
+                        picked
+                            .iter()
+                            .map(|p| data[p * channels + c])
+                            .collect::<Vec<$t>>(),
+                    )
+                })
+                .collect();
+            (picked, fields)
+        }};
+    }
+    let (picked, fields): (Vec<usize>, Vec<ViewBuffer>) = match buf.dtype() {
+        DType::U8 => gather!(u8),
+        DType::I8 => gather!(i8),
+        DType::U16 => gather!(u16),
+        DType::I16 => gather!(i16),
+        DType::U32 => gather!(u32),
+        DType::I32 => gather!(i32),
+        DType::U64 => gather!(u64),
+        DType::I64 => gather!(i64),
+        DType::F32 => gather!(f32),
+        DType::F64 => gather!(f64),
+    };
+    // In range: both are below `height.max(width)`, checked above.
+    Ok(LongRow {
+        rows: picked.iter().map(|p| (p / width) as u32).collect(),
+        cols: picked.iter().map(|p| (p % width) as u32).collect(),
+        fields,
+    })
+}
+
+/// The `long` sink's dtype: `List(Struct{row, col, <fields>})`, each value
+/// field `value`.
+pub(super) fn long_dtype(layout: &LongLayout, value: DataType) -> DataType {
+    let mut fields = vec![
+        Field::new("row".into(), DataType::UInt32),
+        Field::new("col".into(), DataType::UInt32),
+    ];
+    fields.extend(
+        layout
+            .fields
+            .iter()
+            .map(|(_, name)| Field::new(name.as_str().into(), value.clone())),
+    );
+    DataType::List(Box::new(DataType::Struct(fields)))
+}
+
+/// The `long` sink's column, built straight into Arrow: one struct per kept
+/// pixel, one list per row; a null row is null, a row that kept no pixel `[]`.
+pub(super) fn long_series(
+    name: PlSmallStr,
+    rows: &[Option<LongRow>],
+    layout: &LongLayout,
+    dtype: PlannedDType,
+    split: Option<&Split>,
+) -> PolarsResult<Series> {
+    use polars_arrow::array::{Array, ListArray, PrimitiveArray, StructArray};
+    use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
+    use polars_arrow::offset::Offsets;
+
+    let positions = |pick: fn(&LongRow) -> &[u32]| -> Box<dyn Array> {
+        let flat: Vec<u32> = rows.iter().flatten().flat_map(pick).copied().collect();
+        PrimitiveArray::<u32>::from_vec(flat).boxed()
+    };
+    let mut values = vec![positions(|r| &r.rows), positions(|r| &r.cols)];
+    for k in 0..layout.fields.len() {
+        let field: Vec<TypedListRow> = rows
+            .iter()
+            .map(|r| r.as_ref().map(|r| r.fields[k].clone()))
+            .collect();
+        let dtype = element_dtype(&field, dtype)?;
+        values.push(flat_values(&field, dtype, None, split)?);
+    }
+    let names = ["row", "col"]
+        .into_iter()
+        .chain(layout.fields.iter().map(|(_, n)| n.as_str()));
+    let arrow_fields = names
+        .zip(&values)
+        .map(|(n, v)| ArrowField::new(n.into(), v.dtype().clone(), true))
+        .collect();
+    let length = rows.iter().flatten().map(|r| r.rows.len()).sum();
+    let structs = StructArray::try_new(ArrowDataType::Struct(arrow_fields), length, values, None)?;
+    let offsets = Offsets::<i64>::try_from_lengths(
+        rows.iter().map(|r| r.as_ref().map_or(0, |r| r.rows.len())),
+    )?;
+    let validity = rows
+        .iter()
+        .any(Option::is_none)
+        .then(|| rows.iter().map(Option::is_some).collect());
+    let list = ListArray::<i64>::try_new(
+        ListArray::<i64>::default_datatype(structs.dtype().clone()),
+        offsets.into(),
+        structs.boxed(),
+        validity,
+    )?;
+    Series::from_arrow(name, list.boxed())
+}
+
 /// A `List[Contour]` column, one contour set per row, built straight into Arrow
 /// (see [`crate::geom_schema::contour_array`]).
 ///
@@ -1163,6 +1300,7 @@ mod contour_sink_tests {
             expected_dtype: view_buffer::PlannedDType::Unknown,
             expected_shape: None,
             expected_ndim: None,
+            expected_channels: None,
             histogram_buckets: false,
         }
     }

@@ -450,6 +450,29 @@ def _decode_codec(series: pl.Series, info: OutputInfo) -> list[Any]:
     return rows
 
 
+def _decode_long(series: pl.Series, info: OutputInfo) -> list[Any]:
+    """Each row's array, rebuilt from its structs (one per pixel, row-major)."""
+    dtype = DTYPES[info.dtype]
+    rows = []
+    for value, shape in zip(series, _shapes_with_nulls(series, info)):
+        if value is None:
+            rows.append(None)
+            continue
+        frame = value.struct.unnest()
+        h, w = shape[:2]
+        r, c = np.indices((h, w))
+        # The order is the sink's contract, not just the values.
+        assert frame["row"].to_list() == r.ravel().tolist(), "not row-major"
+        assert frame["col"].to_list() == c.ravel().tolist(), "not row-major"
+        planes = [frame[name].to_numpy() for name in _long_names(shape)]
+        rows.append(np.stack(planes, axis=-1).astype(dtype).reshape(shape))
+    return rows
+
+
+def _long_names(shape: tuple[int, ...]) -> list[str]:
+    return [f"c{i}" for i in range(shape[2] if len(shape) == 3 else 1)]
+
+
 def _shapes_with_nulls(series: pl.Series, info: OutputInfo) -> list[tuple[int, ...]]:
     shapes = iter(info.shapes)
     return [() if v is None else next(shapes) for v in series]
@@ -486,6 +509,7 @@ class SinkSpec:
     needs_dtype: bool = False
     homogeneous: bool = False
     codec: Callable[[str, int], bool] | None = None
+    ranks: frozenset[int] | None = None
     available: Callable[[], bool] = lambda: True
 
     def applies(self, info: OutputInfo) -> bool:
@@ -495,6 +519,10 @@ class SinkSpec:
         if self.needs_dtype and info.dtype == "auto":
             return False
         if self.homogeneous and len(set(info.shapes)) > 1:
+            return False
+        if self.ranks is not None and (
+            not info.shapes or any(len(s) not in self.ranks for s in info.shapes)
+        ):
             return False
         if self.codec is not None:
             if info.dtype == "auto" or not info.shapes:
@@ -509,6 +537,8 @@ class SinkSpec:
         """The ``sink()`` keyword arguments for this output."""
         if self.name == "array" and info.domain == "buffer":
             return {"shape": list(info.shapes[0])}
+        if self.name == "long":
+            return {"names": _long_names(info.shapes[0])}
         return {}
 
 
@@ -525,6 +555,15 @@ SINKS: dict[str, SinkSpec] = {
         ),
         SinkSpec("array", BUFFER, _decode_array, needs_dtype=True, homogeneous=True),
         SinkSpec("blob", BUFFER, _decode_blob),
+        # One struct per pixel; the names follow the (shared) channel count.
+        SinkSpec(
+            "long",
+            BUFFER,
+            _decode_long,
+            needs_dtype=True,
+            homogeneous=True,
+            ranks=frozenset({2, 3}),
+        ),
         # Image codecs hold at most four channels (gray, gray+alpha, RGB, RGBA).
         SinkSpec(
             "png",

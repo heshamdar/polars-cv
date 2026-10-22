@@ -19,6 +19,7 @@ use super::encode::{
 };
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, RowResult};
+use crate::formats::Format as _;
 
 /// What a path-based source (`file_path`) reads a row's bytes through: this
 /// call's [`Fetcher`](crate::fetch::Fetcher) for the node's column (its cloud
@@ -864,6 +865,21 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
                 );
             }
         }
+        SinkKind::Long => {
+            let layout = long_layout(spec)?;
+            if let Some(ndim) = spec.expected_ndim.filter(|n| !matches!(n, 2 | 3)) {
+                polars_bail!(ComputeError:
+                    "the 'long' sink takes an [H, W] or [H, W, C] buffer, and this \
+                     one has rank {ndim}"
+                );
+            }
+            if let Some(channels) = spec.expected_channels {
+                layout
+                    .check_channels(channels)
+                    .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
+            }
+            Ok(super::encode::long_dtype(&layout, inner("long")?))
+        }
         SinkKind::Scalar => Ok(DataType::Float64),
         SinkKind::VectorList => {
             // Reject an unresolved "auto" element dtype the same way the
@@ -926,7 +942,17 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
         SinkKind::BufferArray | SinkKind::VectorArray => RowResult::TypedArray(None),
         SinkKind::Scalar => RowResult::Scalar(None),
         SinkKind::Contours => RowResult::Contours(None),
+        SinkKind::Long => RowResult::Long(None),
     })
+}
+
+/// The `long` sink's layout, for a spec that resolved to [`SinkKind::Long`].
+pub(crate) fn long_layout(spec: &OutputSpec) -> PolarsResult<crate::formats::sink::LongLayout> {
+    match spec.sink.long_layout() {
+        Some(layout) => layout.map_err(|msg| polars_err!(ComputeError: "{}", msg)),
+        None => polars_bail!(ComputeError:
+            "internal: a '{}' sink has no long layout", spec.sink.name()),
+    }
 }
 /// A row whose variant the sink kind does not accept.
 ///
@@ -1100,6 +1126,13 @@ pub(crate) fn build_series_from_spec(
                 other => Err(other.variant_name()),
             })?;
             contour_set_series(name, &rows)
+        }
+        SinkKind::Long => {
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::Long(l) => Ok(l),
+                other => Err(other.variant_name()),
+            })?;
+            super::encode::long_series(name, &rows, &long_layout(spec)?, dtype, split)
         }
     }
 }

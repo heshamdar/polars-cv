@@ -111,6 +111,7 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &Sink) -> PolarsResult<Vec<u8>> {
         Sink::Array { .. }
         | Sink::Blob
         | Sink::List
+        | Sink::Long { .. }
         | Sink::Native
         | Sink::NdArray { .. }
         | Sink::Numpy { .. }

@@ -48,6 +48,7 @@ result = df.with_columns(
 | `raw` | Binary | Raw bytes (requires `dtype`) |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
+| `long` | List(Struct) | One struct per pixel, `{row, col, <names>...}`; `names=` one per channel, `where=` keeps a channel's > 0 pixels |
 | `contour` | Struct | Contour geometry (contour domain) |
 
 ### Auto DType for Image Sources
@@ -88,6 +89,21 @@ memory but not on disk: Parquet and IPC write each row's `data` whole. Pass
 `compact=True` for a column you will persist, and each row's `data` is exactly
 its elements, row-major, at offset 0. Only a row that is not already compact is
 copied.
+
+The `long` sink turns maps into a table. Stack them as channels with
+`channel_merge` (cast them to one dtype first), name each channel, and name the
+mask channel in `where`: only its pixels > 0 are kept, and it is left out.
+
+```python
+heat = pl.col("heat").cv.pipe(Pipeline().source("array"))
+score = pl.col("score").cv.pipe(Pipeline().source("array"))
+mask = pl.col("mask").cv.pipe(Pipeline().source("array"))
+pixels = df.select(
+    heat.channel_merge(score, mask)
+    .sink("long", names=["heat", "score", "mask"], where="mask")
+    .alias("p")
+).explode("p").unnest("p")  # columns: row, col, heat, score
+```
 
 Float buffers cannot be encoded to PNG/JPEG/WebP — `.cast("u8")`/`.cast("u16")`
 first, or sink to `tiff`, which stores floating point directly.

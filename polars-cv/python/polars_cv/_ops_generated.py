@@ -439,6 +439,7 @@ class SinkFormat(str, Enum):
     BLOB = "blob"
     JPEG = "jpeg"
     LIST = "list"
+    LONG = "long"
     NATIVE = "native"
     NDARRAY = "ndarray"
     NUMPY = "numpy"

@@ -25,6 +25,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`sink("long", names=[...], where=)`**: an `[H, W]` or `[H, W, C]`
+  buffer as `List[Struct{row: u32, col: u32, <names>...}]`, one struct per
+  pixel, row-major, each channel a named field of the buffer's dtype.
+  `where="<name>"` keeps the pixels whose named channel is > 0 and leaves
+  that channel out, so several maps stacked with `channel_merge` and a mask
+  become a per-pixel table (`.explode().struct.unnest()`) without a NumPy
+  round trip. The names are checked against the planned channel count when
+  the query is planned. `channel_merge`'s mixed-dtype refusal now says to
+  cast; no separate `stack()` was added, since `channel_merge` is that op.
 - **`rank_filter(height, width, q=50, border=)`, `median_filter(size)` and
   `img.background_divide(sigma)`.** A rank filter is each pixel's window
   percentile, per channel (q=50 a median, 0/100 minimum/maximum; `height=1,

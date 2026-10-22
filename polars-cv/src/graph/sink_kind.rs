@@ -68,6 +68,8 @@ pub(crate) enum SinkKind {
     VectorArray,
     /// `contour` × `native` — `List(Struct)` matching `CONTOUR_SCHEMA`.
     Contours,
+    /// `buffer` × `long` — one struct per pixel (`List(Struct)`).
+    Long,
     /// Any domain whose spec asks for the histogram-bucket encoding.
     ///
     /// Encoding outranks the pair: histogram buckets are a `vector`-domain
@@ -96,6 +98,7 @@ impl SinkKind {
             (Domain::Buffer, Sink::Blob) => Ok(Self::Blob),
             (Domain::Buffer, Sink::List) => Ok(Self::BufferList),
             (Domain::Buffer, Sink::Array { .. }) => Ok(Self::BufferArray),
+            (Domain::Buffer, Sink::Long { .. }) => Ok(Self::Long),
             (Domain::Scalar, Sink::Native) => Ok(Self::Scalar),
             (Domain::Vector, Sink::Native | Sink::List) => Ok(Self::VectorList),
             (Domain::Vector, Sink::Array { .. }) => Ok(Self::VectorArray),
@@ -131,13 +134,19 @@ mod tests {
     use super::*;
 
     fn spec(domain: &str, format: &str) -> OutputSpec {
+        // Each format with its defaults; `long` has a required field.
+        let mut wire = serde_json::json!({"format": format});
+        if format == "long" {
+            wire["names"] = serde_json::json!(["v"]);
+        }
         OutputSpec {
             node: "n".to_string(),
-            sink: serde_json::from_value(serde_json::json!({"format": format})).unwrap(),
+            sink: serde_json::from_value(wire).unwrap(),
             expected_domain: view_buffer::naming::lookup(Domain::NAMED, domain).unwrap(),
             expected_dtype: view_buffer::PlannedDType::Known(view_buffer::DType::U8),
             expected_shape: None,
             expected_ndim: None,
+            expected_channels: None,
             histogram_buckets: false,
         }
     }
@@ -157,6 +166,7 @@ mod tests {
         ("buffer", "blob", SinkKind::Blob),
         ("buffer", "list", SinkKind::BufferList),
         ("buffer", "array", SinkKind::BufferArray),
+        ("buffer", "long", SinkKind::Long),
         ("scalar", "native", SinkKind::Scalar),
         ("vector", "native", SinkKind::VectorList),
         ("vector", "list", SinkKind::VectorList),
@@ -229,6 +239,7 @@ mod tests {
             SinkKind::Blob => "Blob",
             SinkKind::BufferList => "BufferList",
             SinkKind::BufferArray => "BufferArray",
+            SinkKind::Long => "Long",
             SinkKind::Scalar => "Scalar",
             SinkKind::VectorList => "VectorList",
             SinkKind::VectorArray => "VectorArray",

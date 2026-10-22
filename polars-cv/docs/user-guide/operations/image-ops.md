@@ -11,7 +11,34 @@ Pipeline().source("image_bytes").resize(height=224, width=224)
 Pipeline().source("image_bytes").resize(height=224, width=224, filter="bilinear")
 ```
 
-**Filters:** `"nearest"`, `"bilinear"`, `"catmullrom"`, `"gaussian"`, `"lanczos3"` (default).
+**Filters:** `"nearest"`, `"bilinear"`, `"catmullrom"`, `"gaussian"`, `"lanczos3"` (default),
+`"area"`. For a large shrink, `"area"` makes each output pixel the mean of its
+footprint, every input pixel weighted by its overlap (OpenCV's `INTER_AREA`);
+enlarging, it is bilinear.
+
+### Resize onto another node's grid
+
+`resize_like` resizes an image to another node's height and width, row by
+row, keeping its own channels and dtype: a low-resolution heatmap onto the
+image it was computed from, so the two compare cell by cell.
+
+```python
+img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
+heat = pl.col("heatmap").cv.pipe(Pipeline().source("array"))
+heat.resize_like(img, filter="bilinear").sink("numpy")
+```
+
+### Block reduce
+
+`block_reduce` reduces each non-overlapping `height x width` block to one
+value (`"mean"`, `"sum"`, `"min"`, `"max"`, `"std"`, `"median"`,
+`"percentile"` with `q`, `"count"`), per channel. A partial block at the
+right or bottom edge reduces only its in-bounds pixels, so the output is
+`ceil(H / height) x ceil(W / width)`.
+
+```python
+Pipeline().source("array").block_reduce(height=16, width=16, reduction="max")
+```
 
 ## Grayscale
 
@@ -30,6 +57,27 @@ Apply Gaussian blur.
 
 ```python
 Pipeline().source("image_bytes").blur(sigma=3.0)
+```
+
+## Rank Filters
+
+`rank_filter` replaces each pixel by its window's `q`-th percentile, per
+channel: `q=50` is a median, `0`/`100` a minimum/maximum. Unlike a blur, it
+ignores the outliers in the window. Both sides must be odd; `border` is
+`"replicate"` (default), `"reflect"` or `"zero"`.
+
+```python
+Pipeline().source("image_bytes").median_filter(5)
+# A running median along each row, 25 pixels wide
+Pipeline().source("array").rank_filter(height=1, width=25)
+```
+
+`background_divide(sigma)` flat-fields an image by dividing it by its own
+Gaussian blur (plus `epsilon`), on a `LazyPipelineExpr`:
+
+```python
+img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").grayscale())
+img.background_divide(50.0).sink("numpy")
 ```
 
 ## Threshold
@@ -97,6 +145,8 @@ Pipeline().source("image_bytes").letterbox(height=224, width=224)
 ```python
 Pipeline().source("image_bytes").flip_h()
 Pipeline().source("image_bytes").flip_v()
+# Flip only the rows whose column says so (e.g. right-side views)
+Pipeline().source("image_bytes").flip_h(when=pl.col("laterality") == "R")
 ```
 
 ## Histogram

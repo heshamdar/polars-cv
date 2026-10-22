@@ -141,7 +141,12 @@ _SINK_SAMPLES: dict[str, object] = {
     "shape": [2, 2, 1],
     "dtype": "f16",
     "compact": True,
+    "names": ["v"],
+    "where": "v",
 }
+
+#: The fields a format requires, given with every keyword tried on it.
+_SINK_REQUIRED: dict[str, dict[str, object]] = {"long": {"names": ["v"]}}
 
 
 def _sinkable() -> "pl.Expr":
@@ -175,7 +180,7 @@ def test_a_sink_parameter_is_rejected_by_every_format_that_ignores_it(
     dropped; it is rejected, naming where it does apply, while the pipeline is
     built.
     """
-    kwargs = {name: _SINK_SAMPLES[name]}
+    kwargs = _SINK_REQUIRED.get(fmt, {}) | {name: _SINK_SAMPLES[name]}
     if name in _SINK_FIELDS[fmt]:
         _sinkable().sink(fmt, return_expr=False, **kwargs)
         return
