@@ -132,10 +132,10 @@ _SCALAR = {
     "str": ("str", "str"),
 }
 
-#: A pipeline op's per-row numeric parameter also takes ``H``/``W``
-#: (``polars_cv.Dim``): it reads the shape of the buffer the op reads, which
+#: A pipeline op's per-row numeric parameter also takes ``this`` arithmetic
+#: (``polars_cv.ThisExpr``): it reads the buffer the op reads, which
 #: a source or a geometry function has none of.
-_OP_SCALAR = {"IntOrExpr": "IntOrDimOrExpr", "FloatOrExpr": "FloatOrDimOrExpr"}
+_OP_SCALAR = {"IntOrExpr": "IntOrThisOrExpr", "FloatOrExpr": "FloatOrThisOrExpr"}
 
 #: Docstring width, less the method body's eight-space indent.
 _DOC_WIDTH = 88 - 8
@@ -146,7 +146,7 @@ _SECTION = re.compile(r"^(Example|Examples|Returns|Raises|Note|Notes|Warning):\s
 
 def annotation(ty: dict[str, Any], *, op: bool = False) -> str:
     """The Python annotation for a catalogue field type; *op* for a pipeline
-    op's field, whose numeric per-row parameters also take ``H``/``W``."""
+    op's field, whose numeric per-row parameters also take ``this``."""
     kind = ty["kind"]
     if kind == "scalar":
         if ty.get("variants"):
@@ -444,9 +444,9 @@ def _imports(methods: str) -> str:
             "BoolOrExpr",
             "CloudOptions",
             "FloatOrExpr",
-            "FloatOrDimOrExpr",
+            "FloatOrThisOrExpr",
             "IntOrExpr",
-            "IntOrDimOrExpr",
+            "IntOrThisOrExpr",
         )
         if re.search(rf"\b{name}\b", methods)
     )
@@ -590,9 +590,9 @@ _FORWARDER_IMPORTS = {
     "BoolOrExpr": "from polars_cv._types import BoolOrExpr",
     "CloudOptions": "from polars_cv._types import CloudOptions",
     "FloatOrExpr": "from polars_cv._types import FloatOrExpr",
-    "FloatOrDimOrExpr": "from polars_cv._types import FloatOrDimOrExpr",
+    "FloatOrThisOrExpr": "from polars_cv._types import FloatOrThisOrExpr",
     "IntOrExpr": "from polars_cv._types import IntOrExpr",
-    "IntOrDimOrExpr": "from polars_cv._types import IntOrDimOrExpr",
+    "IntOrThisOrExpr": "from polars_cv._types import IntOrThisOrExpr",
     "LazyPipelineExpr": "from polars_cv.lazy import LazyPipelineExpr",
     "Pipeline": "from polars_cv.pipeline import Pipeline",
 }

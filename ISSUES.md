@@ -355,7 +355,7 @@ four phases are closed below (CR-119 to CR-128); this is what remains.
 - `normalize(method="percentile", low=, high=)` takes its window from the
   whole image. The proposal also wanted it from a mask's pixels (a lesion's
   1st–99th percentile), which needs a parameter computed from *another
-  node's* values per row. `H`/`W` (CR-123) read only the op's own input
+  node's* values per row. `this` (CR-123) reads only the op's own input
   shape, so they do not provide it.
 - Today: `reduce_masked(mask, reduction="percentile", q=...)` computes the
   bounds as a scalar, but a scalar cannot yet feed another op's parameter.
@@ -595,7 +595,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
-| CR-123 | No way to size a parameter by the image (B4) | Fixed (unreleased): `polars_cv.H`/`W` with `+ - * / //`, `{"$dim": tree}` on the wire, resolved per row from the shape of the buffer each op reads, carried through a node's steps by their shape rules; integers round to nearest (`test_shape_placeholders.py`) |
+| CR-123 | No way to size a parameter by the image (B4) | Fixed (unreleased): `polars_cv.this` (`.height`, `.width`, `.channels`, `.ndim`) with `+ - * / //`, `{"$this": tree}` on the wire, resolved per row from the shape of the buffer each op reads, carried through a node's steps by their shape rules; integers round to nearest (`test_this.py`). An attribute of another node (CR-129) would be the same entity on a `LazyPipelineExpr` |
 | CR-122 | No rank/median filter, no flat-fielding, no per-row flip, no per-pixel table of stacked maps (C2/B7/B6) | Fixed (unreleased): `rank_filter`/`median_filter`, `background_divide`, `flip_h`/`flip_v(when=)`, `sink("long", names=, where=)`; no `stack()`, since `channel_merge` is that op (`test_rank_filters.py`, `test_conditional_flip.py`, `test_long_sink.py`) |
 | CR-121 | No resize onto another node's grid, no area filter, no block reduction (B5) | Fixed (unreleased): `resize_like(other)` as a graph op (not a shared `SizeSpec`: rasterize's size is a literal, resize_like's another node's per-row shape), `resize(filter="area")` with OpenCV `INTER_AREA`'s exact overlap weights, `block_reduce` (`test_resampling.py`) |
 | CR-120 | `normalize` had no percentile window and no explicit bounds (C3) | Fixed (unreleased): `method="percentile"`/`"range"` with `low`/`high` (`TestNormalizeWindows`) |

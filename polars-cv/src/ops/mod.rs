@@ -178,7 +178,7 @@ impl TypedOp {
     }
 
     /// [`resolve`](Self::resolve) for an op whose input has `shape` (`None`
-    /// where it is not known before the op runs), which an `H`/`W`
+    /// where it is not known before the op runs), which a `this`
     /// parameter reads.
     pub fn resolve_on(
         &self,
@@ -200,7 +200,7 @@ impl TypedOp {
         !any
     }
 
-    /// Whether a field reads the shape of the op's input (`H`/`W`).
+    /// Whether a field reads the shape of the op's input (`this`).
     pub fn reads_shape(&self) -> bool {
         let mut any = false;
         self.visit_inputs(&mut |_, input| any |= input == RowInput::Shape);

@@ -25,19 +25,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
-- **`polars_cv.H` and `polars_cv.W`**: op parameters from the image's size,
-  per row. `crop(top=0.2 * H, height=0.6 * H)`, `blur(sigma=H / 320)`,
-  `background_divide(H / 20)`: any parameter that may be an expression takes
-  `H`/`W` combined with numbers by `+ - * / //`. Each op reads the buffer it
-  is given, so after a `resize` `H` is the resized height. An integer
-  parameter takes the value rounded to nearest (`0.29 * H` at `H = 100` is
-  29), where a float column in an integer parameter truncates: the
-  expression's float error is ours, not the user's. A size set this way is
-  unknown to the lazy schema, as a column's is. Structural and non-numeric
-  parameters, buffers that are not `[H, W]`/`[H, W, C]`, and functions with
-  no buffer (the `.contour` methods) refuse them. Pipeline op parameters are
-  annotated `IntOrDimOrExpr`/`FloatOrDimOrExpr`; `IntOrExpr`/`FloatOrExpr`
-  keep their meaning elsewhere.
+- **`polars_cv.this`**: op parameters from the buffer the op reads, per row.
+  `this.height`, `this.width`, `this.channels` (1 for an `[H, W]` buffer) and
+  `this.ndim`, combined with numbers by `+ - * / //`, go wherever a parameter
+  may be an expression: `crop(top=0.2 * this.height, height=0.6 * this.height)`,
+  `blur(sigma=this.height / 320)`, `background_divide(this.height / 20)`. Each
+  op reads the buffer it is given, so after a `resize` `this.height` is the
+  resized height. An integer parameter takes the value rounded to nearest
+  (`0.29 * this.height` at a height of 100 is 29), where a float column in an
+  integer parameter truncates: the expression's float error is ours, not the
+  user's. A size set this way is unknown to the lazy schema, as a column's
+  is. Structural and non-numeric parameters, an attribute the buffer does not
+  have (`this.height` of a 1-D buffer), and functions with no buffer (the
+  `.contour` methods) refuse them. Pipeline op parameters are annotated
+  `IntOrThisOrExpr`/`FloatOrThisOrExpr`; `IntOrExpr`/`FloatOrExpr` keep their
+  meaning elsewhere.
 - **`sink("long", names=[...], where=)`**: an `[H, W]` or `[H, W, C]`
   buffer as `List[Struct{row: u32, col: u32, <names>...}]`, one struct per
   pixel, row-major, each channel a named field of the buffer's dtype.

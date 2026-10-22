@@ -5,7 +5,7 @@
 
 use polars::prelude::*;
 pub use view_buffer::mode::{
-    literal_field, ColumnRef, DimExpr, FieldType, Literal, Param, Resolve, Values, SLOT_KEY,
+    literal_field, ColumnRef, FieldType, Literal, Param, Resolve, ThisExpr, Values, SLOT_KEY,
 };
 use view_buffer::naming::{WireKind, WireScalar, WireValue};
 
@@ -13,7 +13,7 @@ use crate::params::ParamCtx;
 
 /// One row of the plugin's parameter columns: where a `Wire` op's slots are
 /// read when it is resolved for that row, and the shape of the buffer the op
-/// reads, where its `H`/`W` parameters are read (`None` where it is not
+/// reads, where its `this` parameters are read (`None` where it is not
 /// known before the op runs, or there is none).
 pub struct RowValues<'a> {
     pub row: usize,
@@ -39,8 +39,8 @@ impl Values for RowValues<'_> {
         })
     }
 
-    fn dim<T: WireScalar>(&self, expr: &DimExpr) -> PolarsResult<T> {
-        view_buffer::mode::dim_value(expr, self.shape)
+    fn this<T: WireScalar>(&self, expr: &ThisExpr) -> PolarsResult<T> {
+        view_buffer::mode::this_value(expr, self.shape)
             .map_err(|e| polars_err!(ComputeError: "{}", e))
     }
 
