@@ -1700,7 +1700,7 @@ mod reshape_offset_tests {
         let image: Vec<u8> = (0..12).collect();
         let source = || ViewBuffer::from_vec_with_shape(image.clone(), vec![4, 3, 1]);
         let reshape = ViewDto::View(ViewOp::Reshape { shape: vec![12, 1] });
-        let flip = ViewDto::View(ViewOp::Flip { axes: vec![0] });
+        let flip = ViewDto::View(ViewOp::flip(&[0]));
         let out = ViewExpr::new_source(source())
             .try_apply_op(flip)
             .unwrap()

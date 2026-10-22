@@ -251,6 +251,14 @@ CASES: list[ExprCase] = [
         (8, 16),
     ),
     ExprCase(
+        "flip",
+        "when",
+        lambda v: rgb().flip(axes=[1], when=v),
+        (True, False),
+    ),
+    ExprCase("flip_h", "when", lambda v: rgb().flip_h(when=v), (True, False)),
+    ExprCase("flip_v", "when", lambda v: rgb().flip_v(when=v), (True, False)),
+    ExprCase(
         "crop",
         "top",
         lambda v: rgb().crop(top=v, left=0, height=6, width=6),

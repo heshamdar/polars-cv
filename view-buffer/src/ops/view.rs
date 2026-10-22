@@ -75,11 +75,19 @@ pub enum ViewOp<M: Mode = Exec> {
         /// be a Polars expression.
         shape: Vec<M::V<u32>>,
     },
-    /// Flip along specified axes.
-    #[op(name = "flip", sample = {"axes": [1]})]
+    /// Flip along specified axes, in every row or where ``when`` holds.
+    ///
+    /// Example:
+    ///     >>> # Orient every view with the chest wall on the left
+    ///     >>> pipe = Pipeline().source("image_bytes").flip_h(when=pl.col("view").str.starts_with("R"))
+    #[op(name = "flip", sample = {"axes": [1], "when": false})]
     Flip {
         /// Axes to flip.
         axes: Vec<M::L<u32>>,
+        /// Whether to flip (default True). Accepts a Polars expression for a
+        /// per-row choice: the shape is the same either way.
+        #[param(default = true)]
+        when: M::V<bool>,
     },
     /// Extract one channel of a multi-channel image: ``[H, W, 1]`` from a
     /// ``[H, W, C]`` input (the shape ``grayscale`` and ``rasterize`` give),
@@ -349,7 +357,7 @@ impl<M: Mode> ViewOp<M> {
     /// The axes of a transpose or flip, as the kernels index them.
     pub fn axes(&self) -> Vec<usize> {
         match self {
-            ViewOp::Transpose { axes } | ViewOp::Flip { axes } => axes_of::<M>(axes),
+            ViewOp::Transpose { axes } | ViewOp::Flip { axes, .. } => axes_of::<M>(axes),
             _ => Vec::new(),
         }
     }
@@ -378,6 +386,7 @@ impl ViewOp {
     pub fn flip(axes: &[usize]) -> Self {
         ViewOp::Flip {
             axes: axes.iter().map(|&a| a as u32).collect(),
+            when: true,
         }
     }
 }
@@ -703,6 +712,9 @@ impl<M: Mode> Op for ViewOp<M> {
                 // since we need to verify contiguity with the actual DType.
                 // Both contiguous and non-contiguous cases return None here.
                 None
+            }
+            ViewOp::Flip { when, .. } if M::sym(when).known() == Some(false) => {
+                Some(input_strides.to_vec())
             }
             ViewOp::Flip { .. } => {
                 let mut new_strides = input_strides.to_vec();

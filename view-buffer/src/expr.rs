@@ -137,6 +137,8 @@ impl ViewExpr {
                 ViewOp::Reshape { shape } => {
                     self.reshape(shape.iter().map(|&d| d as usize).collect())
                 }
+                // A flip a row declines is no node: every flip node flips.
+                ViewOp::Flip { when: false, .. } => self.clone(),
                 ViewOp::Flip { .. } => self.flip(view.axes()),
                 ViewOp::Crop { .. } => {
                     // The window placed in this input: its in-bounds part,
@@ -538,17 +540,21 @@ impl ViewExpr {
         };
 
         match optimized_node {
-            ExprNode::View(ViewOp::Flip { axes: axes1 }, child) => {
+            ExprNode::View(ViewOp::Flip { axes: axes1, when }, child) => {
                 if cfg.view_flip_involution {
-                    if let ExprNode::View(ViewOp::Flip { axes: ref axes2 }, ref grandchild) =
-                        &child.node
+                    if let ExprNode::View(
+                        ViewOp::Flip {
+                            axes: ref axes2, ..
+                        },
+                        ref grandchild,
+                    ) = &child.node
                     {
                         if axes1 == *axes2 {
                             return grandchild.clone();
                         }
                     }
                 }
-                self.rebuild(ExprNode::View(ViewOp::Flip { axes: axes1 }, child))
+                self.rebuild(ExprNode::View(ViewOp::Flip { axes: axes1, when }, child))
             }
 
             ExprNode::View(ViewOp::Transpose { axes: p1 }, child) => {

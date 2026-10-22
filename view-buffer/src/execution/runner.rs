@@ -60,6 +60,7 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
                 .map(|&d| d as usize)
                 .collect::<crate::core::layout::Dims>(),
         ),
+        ViewOp::Flip { when: false, .. } => buf,
         ViewOp::Flip { .. } => buf.flip(&op.axes()),
         ViewOp::Crop { .. } | ViewOp::Slice { .. } => unreachable!("windows are sliced above"),
         ViewOp::Rotate90 => {

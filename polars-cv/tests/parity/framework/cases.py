@@ -90,8 +90,10 @@ def batches(
     heterogeneous: bool = True,
     max_side: int = 32,
     contents: Sequence[str] | None = None,
+    min_present: int = 1,
 ) -> st.SearchStrategy[Batch]:
-    """Draw a :class:`Batch`: 1..*max_rows* rows, optionally with nulls."""
+    """Draw a :class:`Batch`: 1..*max_rows* rows, optionally with nulls, at
+    least *min_present* of them non-null (drawn so, not filtered for)."""
 
     @st.composite
     def build(draw: st.DrawFn) -> Batch:
@@ -104,7 +106,7 @@ def batches(
             ),
             label="first image",
         )
-        n = draw(st.integers(1, max_rows), label="rows")
+        n = draw(st.integers(min_present, max(min_present, max_rows)), label="rows")
         vary = heterogeneous and n > 1 and draw(st.booleans(), label="heterogeneous")
         specs: list[ImageSpec | None] = [first]
         for i in range(1, n):
@@ -121,7 +123,8 @@ def batches(
             specs.append(spec)
         if nulls and n > 1:
             null_rows = draw(
-                st.sets(st.integers(0, n - 1), max_size=n - 1), label="null rows"
+                st.sets(st.integers(0, n - 1), max_size=n - min_present),
+                label="null rows",
             )
             specs = [None if i in null_rows else s for i, s in enumerate(specs)]
         images = tuple(None if s is None else render(s) for s in specs)
