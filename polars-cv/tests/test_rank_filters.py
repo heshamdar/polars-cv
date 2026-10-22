@@ -98,3 +98,19 @@ def test_background_divide_is_the_image_over_its_blur() -> None:
         frame.select(img.pipe(Pipeline().blur(2.0)).sink("numpy")).item()
     )
     np.testing.assert_allclose(got, (FMAP + 1.0) / (blur + 1e-6), rtol=1e-5)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.int32])
+def test_background_divide_blurs_an_integer_image_in_float(dtype: type) -> None:
+    """The background is not rounded to the image's integers: a faint one
+    (below 0.5) was 0 in u8, and the image was divided by epsilon alone."""
+    spot = np.zeros((21, 21), dtype=dtype)
+    spot[10, 10] = 1
+    img = pl.col("a").cv.pipe(Pipeline().source("array"))
+
+    def flat(arr: np.ndarray) -> np.ndarray:
+        frame = pl.DataFrame({"a": pl.Series("a", arr[np.newaxis])})
+        out = frame.select(img.background_divide(sigma=3.0).sink("numpy")).item()
+        return numpy_from_struct(out)
+
+    np.testing.assert_allclose(flat(spot), flat(spot.astype(np.float64)), rtol=1e-5)

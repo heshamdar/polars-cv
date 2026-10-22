@@ -98,11 +98,14 @@ fn score_one(
     q: Option<f64>,
     region_mode: LabelRegionMode,
 ) -> f64 {
+    // No pixels: what the reduction gives over none (NaN, or 0 for a sum or
+    // a count), from the one authority.
+    let none = || reduction.of(&mut [], q);
     if width == 0 || height == 0 {
-        return 0.0;
+        return none();
     }
     let Some(bbox) = contour.bounding_box() else {
-        return 0.0;
+        return none();
     };
 
     // A point or a line has no region to scan in any mode: its pixels are the
@@ -141,7 +144,7 @@ fn score_one(
                 .map(|(x, y)| at(y, x)),
         );
         if values.is_empty() {
-            return 0.0;
+            return none();
         }
     }
     reduction.of(&mut values, q)

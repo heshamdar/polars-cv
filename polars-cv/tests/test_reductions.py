@@ -67,6 +67,23 @@ class TestLabelReduce:
         got = _frame().select(pl.col("a").cv.pipe(pipe).sink("native")).item()
         np.testing.assert_allclose(got, [NUMPY[reduction](s) for s in SLICES])
 
+    @pytest.mark.parametrize("reduction", sorted(NUMPY))
+    def test_a_region_with_no_pixels_is_nan_or_zero(self, reduction: str) -> None:
+        """Over no pixels, as every reduction: NaN, but 0 for a sum or a
+        count. A region outside the image, and one with no points."""
+        empty = {"exterior": [], "holes": [], "is_closed": True}
+        frame = pl.DataFrame(
+            {
+                "a": pl.Series("a", IMG[np.newaxis]),
+                "c": [[_square(90, 90, 94, 94), empty]],
+            },
+            schema_overrides={"c": CONTOUR_SET_SCHEMA},
+        )
+        pipe = Pipeline().source("array").label_reduce(pl.col("c"), reduction=reduction)
+        got = frame.select(pl.col("a").cv.pipe(pipe).sink("native")).item()
+        want = 0.0 if reduction in ("sum", "count") else np.nan
+        np.testing.assert_array_equal(got, [want, want])
+
     @pytest.mark.parametrize("q", [0.0, 10.0, 62.5, 100.0])
     def test_percentile_matches_numpy(self, q: float) -> None:
         pipe = (
@@ -331,6 +348,22 @@ class TestNormalizeWindows:
             got, np.clip((IMG - lo) / (hi - lo), 0, 1), atol=1e-6
         )
         assert got.dtype == np.float32
+
+    def test_a_nan_pixel_makes_the_percentile_window_nan(self) -> None:
+        """As ``np.percentile`` and ``minmax``: an unknown window is NaN, not
+        the empty window's zeros."""
+        from polars_cv import numpy_from_struct
+
+        img = np.arange(16, dtype=np.float32).reshape(4, 4)
+        img[1, 2] = np.nan
+        frame = pl.DataFrame({"a": pl.Series("a", img[np.newaxis])})
+        for kwargs in (
+            {"method": "percentile", "low": 2.0, "high": 98.0},
+            {"method": "minmax"},
+        ):
+            pipe = Pipeline().source("array").normalize(**kwargs)
+            out = frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+            assert np.isnan(numpy_from_struct(out)).all(), kwargs
 
     def test_range_window_per_row(self) -> None:
         pipe = (
