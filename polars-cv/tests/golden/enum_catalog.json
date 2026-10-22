@@ -63,6 +63,15 @@
     ]
   },
   {
+    "name": "CropBounds",
+    "doc": "What a crop window reaching past the input's edge means.\n\n- ERROR: refuse the row (default)\n- CLIP: keep the part inside the input, which may be smaller than asked\n- PAD: keep the requested size, filling outside the input with ``pad_value``",
+    "variants": [
+      "error",
+      "clip",
+      "pad"
+    ]
+  },
+  {
     "name": "DType",
     "doc": "Supported data types.",
     "variants": [

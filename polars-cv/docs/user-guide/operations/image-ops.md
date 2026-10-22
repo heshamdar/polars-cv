@@ -45,10 +45,25 @@ Extract a rectangular region.
 Pipeline().source("image_bytes").crop(top=10, left=10, height=100, width=100)
 ```
 
-Omit `height` or `width` to crop to the end of that axis. The window must lie
-inside the image: a negative bound, or a window that runs past the edge, is an
-error (a per-row error when it comes from a column, so `on_error` applies)
-rather than being clamped to a smaller region.
+Omit `height` or `width` to crop to the end of that axis. By default the window
+must lie inside the image: a negative bound, or a window that runs past the
+edge, is an error (a per-row error when it comes from a column, so `on_error`
+applies) rather than being clamped to a smaller region.
+
+Strips, tiles and sliding windows near a border say what they want instead with
+`bounds=` (offsets may then be negative):
+
+```python
+# The part of the window inside the image: narrower near the right edge.
+Pipeline().source("image_bytes").crop(top=0, left=8, width=24, bounds="clip")
+# Always 12 x 24, filled with 0 outside the image.
+Pipeline().source("image_bytes").crop(
+    top=0, left=8, height=12, width=24, bounds="pad", pad_value=0
+)
+```
+
+`bounds="clip"` refuses a window with nothing inside the image; `bounds="pad"`
+needs both `height` and `width`, and its size is known to the lazy schema.
 
 ## Rotate
 

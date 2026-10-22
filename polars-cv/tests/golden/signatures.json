@@ -1092,6 +1092,16 @@
     "width",
     "KEYWORD_ONLY",
     "None"
+   ],
+   [
+    "bounds",
+    "KEYWORD_ONLY",
+    "'error'"
+   ],
+   [
+    "pad_value",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "densify": [
@@ -2744,6 +2754,16 @@
    ],
    [
     "width",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "bounds",
+    "KEYWORD_ONLY",
+    "'error'"
+   ],
+   [
+    "pad_value",
     "KEYWORD_ONLY",
     "None"
    ]

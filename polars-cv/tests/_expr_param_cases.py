@@ -274,6 +274,15 @@ CASES: list[ExprCase] = [
         lambda v: rgb().crop(top=0, left=0, height=6, width=v),
         (4, 8, 12),
     ),
+    ExprCase(
+        "crop",
+        "pad_value",
+        # A window past the bottom-right corner, so the fill is in the output.
+        lambda v: rgb().crop(
+            top=12, left=12, height=6, width=6, bounds="pad", pad_value=v
+        ),
+        (0.0, 7.0, 200.0),
+    ),
     # --- scalar arithmetic -------------------------------------------------
     ExprCase("scale", "factor", lambda v: rgb().scale(v), (0.5, 1.0, 2.0)),
     ExprCase("clamp_min", "value", lambda v: rgb().clamp_min(v), (0.0, 0.5, 1.0)),

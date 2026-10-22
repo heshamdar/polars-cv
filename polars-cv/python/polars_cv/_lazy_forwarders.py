@@ -263,13 +263,22 @@ class _LazyForwardersMixin:
         left: IntOrExpr = 0,
         height: IntOrExpr | None = None,
         width: IntOrExpr | None = None,
+        bounds: str = "error",
+        pad_value: FloatOrExpr | None = None,
     ) -> LazyPipelineExpr:
         """Extract a rectangular region.
 
         Lazy form of :meth:`Pipeline.crop` on this expression's output.
         """
         return self.pipe(
-            self._continuation().crop(top=top, left=left, height=height, width=width)
+            self._continuation().crop(
+                top=top,
+                left=left,
+                height=height,
+                width=width,
+                bounds=bounds,
+                pad_value=pad_value,
+            )
         )
 
     def densify(self, max_segment_length: FloatOrExpr) -> LazyPipelineExpr:

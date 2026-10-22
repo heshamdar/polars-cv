@@ -177,6 +177,13 @@ pub enum OpShape {
         start: Vec<Sym<usize>>,
         len: Vec<Option<Sym<usize>>>,
     },
+    /// H and W windowed by `start` (which may be negative) and `len` (to the
+    /// end when `None`), clipped to the input: the part of the window inside
+    /// it. Later axes are kept whole.
+    ClipWindow {
+        start: [Sym<i64>; 2],
+        len: [Option<Sym<usize>>; 2],
+    },
     /// Axis `axis` removed (a global reduction when `None`); never below rank 1.
     Reduce { axis: Option<usize> },
     /// The two inputs' one shape: equal ranks, each axis the size whichever
@@ -362,6 +369,25 @@ impl OpShape {
             OpShape::Transpose(perm) => perm
                 .iter()
                 .map(|&axis| input.get(axis).copied().unwrap_or(Dim::Unknown))
+                .collect(),
+            OpShape::ClipWindow { start, len } => input
+                .iter()
+                .enumerate()
+                .map(|(axis, &d)| {
+                    if axis >= 2 {
+                        return d;
+                    }
+                    let (Some(n), Some(origin)) = (d.known(), start[axis].known()) else {
+                        return Dim::Unknown;
+                    };
+                    let end = match len[axis] {
+                        None => n as i64,
+                        Some(Sym::Known(len)) => origin + len as i64,
+                        Some(Sym::PerRow) => return Dim::Unknown,
+                    };
+                    let lo = origin.clamp(0, n as i64);
+                    Dim::Known((end.clamp(lo, n as i64) - lo) as usize)
+                })
                 .collect(),
             OpShape::Crop { start, len } => input
                 .iter()
@@ -840,6 +866,10 @@ mod symbolic_tests {
                 start: vec![k(1), k(0)],
                 len: vec![Some(k(2)), None],
             },
+            OpShape::ClipWindow {
+                start: [Sym::Known(-1), Sym::Known(2)],
+                len: [Some(k(3)), None],
+            },
             OpShape::Reduce { axis: None },
             OpShape::Reduce { axis: Some(0) },
             OpShape::Reduce { axis: Some(3) },
@@ -875,6 +905,7 @@ mod symbolic_tests {
                 | OpShape::AtLeastHw { .. }
                 | OpShape::Transpose(_)
                 | OpShape::Crop { .. }
+                | OpShape::ClipWindow { .. }
                 | OpShape::Reduce { .. }
                 | OpShape::Elementwise
                 | OpShape::RemoveAxis(_)

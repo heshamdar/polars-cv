@@ -357,11 +357,11 @@ def test_a_bad_per_row_value_names_its_op_and_parameter(in_memory_engine) -> Non
     """A per-row value no op can take names the op, the parameter it was
     bound to and the column it came from, once each."""
     frame = pl.DataFrame({"img": [_rgb_png(31, 12)], "l": [-1]})
-    pipe = _image().crop(left=pl.col("l"), width=4)
+    pipe = _image().crop(left=0, width=pl.col("l"))
     with pytest.raises(pl.exceptions.ComputeError) as err:
         frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
     first = _first_line(err)
-    assert "crop: left: Parameter column 'l' at row 0: -1 cannot be negative" in first
+    assert "crop: width: Parameter column 'l' at row 0: -1 cannot be negative" in first
     assert "(row 0)" not in first, first
 
 

@@ -138,8 +138,29 @@ impl ViewExpr {
                     self.reshape(shape.iter().map(|&d| d as usize).collect())
                 }
                 ViewOp::Flip { .. } => self.flip(view.axes()),
-                ViewOp::Crop { .. } | ViewOp::Slice { .. } => {
-                    let (start, end) = view.window().expect("a crop or slice has a window");
+                ViewOp::Crop { .. } => {
+                    // The window placed in this input: its in-bounds part,
+                    // then any padding as the `pad` op (`bounds="pad"`).
+                    let placed = view.place(&self.shape).expect("a crop has a placement");
+                    let cropped = self.crop(placed.start, placed.end);
+                    match placed.pad {
+                        None => cropped,
+                        Some((top, bottom, left, right, value)) => {
+                            cropped.apply_op(ViewDto::Image(crate::ops::ImageOp {
+                                kind: crate::ops::ImageOpKind::Pad {
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    value,
+                                    mode: crate::ops::PadMode::Constant,
+                                },
+                            }))
+                        }
+                    }
+                }
+                ViewOp::Slice { .. } => {
+                    let (start, end) = view.window().expect("a slice has a window");
                     self.crop(start, end)
                 }
                 ViewOp::Rotate90 => {
