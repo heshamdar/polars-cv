@@ -3775,11 +3775,6 @@
     "None"
    ],
    [
-    "channels",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
     "cloud_options",
     "KEYWORD_ONLY",
     "None"

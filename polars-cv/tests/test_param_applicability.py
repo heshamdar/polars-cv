@@ -62,7 +62,6 @@ _SAMPLE_VALUES: dict[str, object] = {
     "allowed_roots": ["/tmp"],
     "require_contiguous": True,
     "decode_max_size": 64,
-    "channels": 1,
     "on_error": "null",
 }
 

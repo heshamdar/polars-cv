@@ -63,10 +63,6 @@ pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuf
         None => ImageAdapter::decode(bytes)
             .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?,
     };
-    let buf = match source.channels() {
-        Some(channels) => to_channels(buf, channels),
-        None => buf,
-    };
     // If source spec declares an expected dtype, cast to it.
     // This is a no-op when the decoded dtype already matches.
     if let Some(target) = source.dtype() {
@@ -75,44 +71,6 @@ pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuf
         }
     }
     Ok(buf)
-}
-
-/// A decoded image converted to `channels` colour channels (`source(channels=)`)
-/// by the ops that already define each conversion: `grayscale` for luma (the
-/// one luma authority), `convert_color` from gray for RGB, and a channel
-/// slice to drop alpha.
-fn to_channels(buf: ViewBuffer, channels: usize) -> ViewBuffer {
-    use view_buffer::ops::{ColorConvertOp, ColorSpace, ImageOp, ImageOpKind, ViewDto, ViewOp};
-    let have = buf.shape().get(2).copied().unwrap_or(1);
-    let (h, w) = (buf.shape()[0], buf.shape()[1]);
-    let mut ops = Vec::new();
-    match channels {
-        1 if have != 1 => ops.push(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Grayscale { keepdims: true },
-        })),
-        3 => {
-            let mut have = have;
-            if have <= 2 {
-                // Gray (+ alpha, carried through) to RGB (+ alpha).
-                ops.push(ViewDto::Color(ColorConvertOp {
-                    from_space: ColorSpace::Gray,
-                    to_space: ColorSpace::Rgb,
-                }));
-                have += 2;
-            }
-            if have == 4 {
-                ops.push(ViewDto::View(ViewOp::Slice {
-                    start: vec![0, 0, 0],
-                    end: vec![h, w, 3],
-                }));
-            }
-        }
-        _ => {}
-    }
-    if ops.is_empty() {
-        return buf;
-    }
-    view_buffer::execution::execute_plan(buf, ops)
 }
 
 /// Encode the result buffer to a binary sink format.
