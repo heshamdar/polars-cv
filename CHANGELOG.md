@@ -25,6 +25,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`reduce_sum(axis=)` and `reduce_percentile(q, axis=)`** reduce along one
+  axis, as `reduce_mean`/`reduce_max`/... already did, and
+  **`reduce_median(axis=None)`** is `reduce_percentile(50)`. A per-row
+  median of a map no longer needs nested lists filtered in polars.
 - **`label_reduce(reduction=...)` takes every reduction:** `"min"`, `"std"`
   (population), `"median"`, `"percentile"` (with `q`, NumPy's linear
   interpolation) and `"count"` beside `"max"`, `"mean"` and `"sum"`, on the

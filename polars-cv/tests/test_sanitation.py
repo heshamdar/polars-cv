@@ -2636,6 +2636,7 @@ _SUGAR_PROBES: list[tuple[str, Callable[[], Pipeline], Callable[[], Pipeline]]] 
     ("clamp", _image, lambda: _image().clamp(0.0, 1.0)),
     ("clamp", _image, lambda: _image().clamp(0.0, 1.0, out_dtype="u8")),
     ("flip_h", _image, lambda: _image().flip_h()),
+    ("reduce_median", _image, lambda: _image().reduce_median()),
     ("flip_v", _image, lambda: _image().flip_v()),
     ("laplacian", _image, lambda: _image().laplacian()),
     ("sobel", _image, lambda: _image().sobel()),
