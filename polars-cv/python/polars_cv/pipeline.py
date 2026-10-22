@@ -586,6 +586,19 @@ class Pipeline(_OpsMixin):
         """
         return self.flip(axes=[0])
 
+    @_sugar("reduce_percentile")
+    def reduce_median(self, *, axis: int | None = None) -> "Pipeline":
+        """
+        The median of all values, or along one axis: ``reduce_percentile(50)``.
+
+        Args:
+            axis: Axis to reduce along. None for global reduction.
+
+        Returns:
+            Self for chaining.
+        """
+        return self.reduce_percentile(50.0, axis=axis)
+
     # --- Compute Operations ---
 
     def _out_dtype_target(

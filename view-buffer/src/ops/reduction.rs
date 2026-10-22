@@ -152,9 +152,13 @@ pub enum ReductionOp<M: Mode = Exec> {
         #[param(default = 0)]
         ddof: M::V<u8>,
     },
-    /// Sum all elements in the buffer.
-    #[op(name = "reduce_sum", sample = {})]
-    Sum,
+    /// Sum all elements in the buffer, or along one axis.
+    #[op(name = "reduce_sum", sample = {"axis": 1})]
+    Sum {
+        /// Axis to reduce along. None for global reduction. It fixes the
+        /// output rank, so it is literal-only.
+        axis: Option<M::L<u32>>,
+    },
     /// Index of the maximum value along an axis.
     ///
     /// Unlike other reductions it always requires an axis: a global index
@@ -178,13 +182,16 @@ pub enum ReductionOp<M: Mode = Exec> {
     /// Count set bits (1s) in the buffer.
     #[op(name = "reduce_popcount", sample = {})]
     PopCount,
-    /// Compute the q-th percentile of all values (linear interpolation, as numpy's
-    /// default).
-    #[op(name = "reduce_percentile", sample = {"q": 50.0})]
+    /// Compute the q-th percentile of all values, or along one axis (linear
+    /// interpolation, as numpy's default).
+    #[op(name = "reduce_percentile", sample = {"q": 50.0, "axis": 0})]
     Percentile {
         /// Percentile to compute, in [0, 100]. Accepts a Polars expression for
         /// per-row dynamic values.
         q: M::V<f64>,
+        /// Axis to reduce along. None for global reduction. It fixes the
+        /// output rank, so it is literal-only.
+        axis: Option<M::L<u32>>,
     },
 }
 
@@ -200,11 +207,13 @@ impl<M: Mode> ReductionOp<M> {
             ReductionOp::Max { axis }
             | ReductionOp::Min { axis }
             | ReductionOp::Mean { axis }
+            | ReductionOp::Sum { axis }
+            | ReductionOp::Percentile { axis, .. }
             | ReductionOp::Std { axis, .. } => axis.as_ref().map(|a| M::lit(a) as usize),
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => {
                 Some(M::lit(axis) as usize)
             }
-            ReductionOp::Sum | ReductionOp::PopCount | ReductionOp::Percentile { .. } => None,
+            ReductionOp::PopCount => None,
         }
     }
 
@@ -235,8 +244,8 @@ impl ReductionOp {
             return self.execute_popcount(&contig);
         }
 
-        // Percentile has special handling (needs sorting)
-        if let ReductionOp::Percentile { q } = self {
+        // A global percentile has special handling (needs sorting)
+        if let ReductionOp::Percentile { q, axis: None } = self {
             return self.execute_percentile(&contig, *q);
         }
 
@@ -382,7 +391,7 @@ impl ReductionOp {
                 let std = variance.sqrt();
                 ViewBuffer::from_scalar(std)
             }
-            ReductionOp::Sum => {
+            ReductionOp::Sum { axis: None } => {
                 let sum: f64 = data
                     .iter()
                     .copied()
@@ -441,6 +450,25 @@ impl ReductionOp {
                     variance.sqrt()
                 })
             }
+            ReductionOp::Sum { axis: Some(ax) } => {
+                self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, |slice: &[T]| {
+                    slice
+                        .iter()
+                        .copied()
+                        .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
+                        .sum()
+                })
+            }
+            ReductionOp::Percentile { q, axis: Some(ax) } => {
+                let q = *q;
+                self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, move |slice: &[T]| {
+                    let mut values: Vec<f64> = slice
+                        .iter()
+                        .map(|&x| num_traits::NumCast::from(x).unwrap_or(f64::NAN))
+                        .collect();
+                    percentile_of(&mut values, q)
+                })
+            }
             ReductionOp::ArgMax { axis } => {
                 self.reduce_axis_argmax::<T>(buffer, *axis as usize, true)
             }
@@ -449,7 +477,9 @@ impl ReductionOp {
             }
             // PopCount and Percentile are handled specially in execute() before calling execute_typed()
             ReductionOp::PopCount => unreachable!("PopCount is handled in execute()"),
-            ReductionOp::Percentile { .. } => unreachable!("Percentile is handled in execute()"),
+            ReductionOp::Percentile { axis: None, .. } => {
+                unreachable!("a global Percentile is handled in execute()")
+            }
         }
     }
 
@@ -622,7 +652,7 @@ impl<M: Mode> Op for ReductionOp<M> {
             ReductionOp::Min { .. } => "Min",
             ReductionOp::Mean { .. } => "Mean",
             ReductionOp::Std { .. } => "Std",
-            ReductionOp::Sum => "Sum",
+            ReductionOp::Sum { .. } => "Sum",
             ReductionOp::ArgMax { .. } => "ArgMax",
             ReductionOp::ArgMin { .. } => "ArgMin",
             ReductionOp::PopCount => "PopCount",
@@ -657,7 +687,7 @@ impl<M: Mode> Op for ReductionOp<M> {
             | ReductionOp::Min { .. }
             | ReductionOp::Mean { .. }
             | ReductionOp::Std { .. }
-            | ReductionOp::Sum
+            | ReductionOp::Sum { .. }
             | ReductionOp::ArgMax { .. }
             | ReductionOp::ArgMin { .. }
             | ReductionOp::PopCount
@@ -722,7 +752,7 @@ impl<M: Mode> Op for ReductionOp<M> {
         match self {
             ReductionOp::Mean { .. }
             | ReductionOp::Std { .. }
-            | ReductionOp::Sum
+            | ReductionOp::Sum { .. }
             | ReductionOp::PopCount
             | ReductionOp::Percentile { .. } => OutputDTypeRule::ForceF64,
             ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => OutputDTypeRule::ForceI64,
@@ -808,7 +838,10 @@ mod tests {
                 },
                 ReductionOp::Max { axis: None },
                 ReductionOp::Min { axis: None },
-                ReductionOp::Percentile { q: 50.0 },
+                ReductionOp::Percentile {
+                    q: 50.0,
+                    axis: None,
+                },
             ] {
                 let err = check(&op, &shape).expect_err(&format!("{op:?} on {shape:?}"));
                 assert!(err.to_string().contains("empty"), "{op:?}: {err}");
@@ -817,7 +850,7 @@ mod tests {
             let other = 2;
             assert!(check(&ReductionOp::ArgMax { axis: other }, &shape).is_ok());
             for op in [
-                ReductionOp::Sum,
+                ReductionOp::Sum { axis: None },
                 ReductionOp::Mean { axis: None },
                 ReductionOp::Std {
                     axis: None,
@@ -853,7 +886,7 @@ mod tests {
                 assert!(out.as_slice::<f32>()[0].is_nan(), "{op:?} of {data:?}");
             }
             for q in [0.0, 50.0, 100.0] {
-                let out = ReductionOp::Percentile { q }.execute(&buffer);
+                let out = ReductionOp::Percentile { q, axis: None }.execute(&buffer);
                 assert!(out.as_slice::<f64>()[0].is_nan(), "p{q} of {data:?}");
             }
             for op in [
@@ -873,7 +906,11 @@ mod tests {
             .map(|i| if i % 3 == 0 { f64::NAN } else { i as f64 })
             .collect();
         let buffer = ViewBuffer::from_vec_with_shape(data, vec![64]);
-        let out = ReductionOp::Percentile { q: 25.0 }.execute(&buffer);
+        let out = ReductionOp::Percentile {
+            q: 25.0,
+            axis: None,
+        }
+        .execute(&buffer);
         assert!(out.as_slice::<f64>()[0].is_nan());
     }
 

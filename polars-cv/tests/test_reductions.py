@@ -98,3 +98,31 @@ class TestLabelReduce:
             Pipeline().source("array").label_reduce(
                 pl.col("c"), reduction="mean", q=5.0
             )
+
+
+def _reduce(pipe: Pipeline) -> np.ndarray:
+    out = _frame().select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+    from polars_cv import numpy_from_struct
+
+    return numpy_from_struct(out)
+
+
+class TestAxes:
+    @pytest.mark.parametrize("axis", [0, 1])
+    def test_reduce_sum_along_an_axis(self, axis: int) -> None:
+        got = _reduce(Pipeline().source("array").reduce_sum(axis=axis))
+        np.testing.assert_allclose(got, IMG.sum(axis=axis))
+
+    @pytest.mark.parametrize(("q", "axis"), [(10.0, 0), (75.0, 1), (100.0, 1)])
+    def test_reduce_percentile_along_an_axis(self, q: float, axis: int) -> None:
+        got = _reduce(Pipeline().source("array").reduce_percentile(q, axis=axis))
+        np.testing.assert_allclose(got, np.percentile(IMG, q, axis=axis))
+
+    @pytest.mark.parametrize("axis", [None, 0, 1])
+    def test_reduce_median(self, axis: int | None) -> None:
+        pipe = Pipeline().source("array").reduce_median(axis=axis)
+        if axis is None:
+            got = _frame().select(pl.col("a").cv.pipe(pipe).sink("native")).item()
+        else:
+            got = _reduce(pipe)
+        np.testing.assert_allclose(got, np.median(IMG, axis=axis))

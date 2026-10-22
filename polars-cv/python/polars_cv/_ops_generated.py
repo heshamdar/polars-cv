@@ -1063,7 +1063,13 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "inner": {"kind": "scalar", "per_row": False, "py": "int"},
         }
     },
-    "reduce_percentile": {"q": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "reduce_percentile": {
+        "q": {"kind": "scalar", "per_row": True, "py": "float"},
+        "axis": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        },
+    },
     "reduce_popcount": {},
     "reduce_std": {
         "axis": {
@@ -1072,7 +1078,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
         "ddof": {"kind": "scalar", "per_row": True, "py": "int"},
     },
-    "reduce_sum": {},
+    "reduce_sum": {
+        "axis": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        }
+    },
     "relu": {},
     "reshape": {
         "shape": {
@@ -1382,8 +1393,8 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
         {"with": ["``axis``"], "input": "vector", "output": "buffer"},
     ],
     "reduce_percentile": [
-        {"input": "buffer", "output": "scalar"},
-        {"input": "vector", "output": "scalar"},
+        {"input": "buffer", "output": "buffer"},
+        {"input": "vector", "output": "buffer"},
     ],
     "reduce_popcount": [
         {"input": "buffer", "output": "scalar"},
@@ -1398,6 +1409,8 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "reduce_sum": [
         {"input": "buffer", "output": "scalar"},
         {"input": "vector", "output": "scalar"},
+        {"with": ["``axis``"], "input": "buffer", "output": "buffer"},
+        {"with": ["``axis``"], "input": "vector", "output": "buffer"},
     ],
     "relu": [{"input": "buffer", "output": "buffer"}],
     "reshape": [{"input": "buffer", "output": "buffer"}],
@@ -2707,17 +2720,19 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_min", {"axis": axis})
 
-    def reduce_percentile(self, q: FloatOrExpr) -> Pipeline:
-        """Compute the q-th percentile of all values (linear interpolation, as numpy's
-        default).
+    def reduce_percentile(self, q: FloatOrExpr, *, axis: int | None = None) -> Pipeline:
+        """Compute the q-th percentile of all values, or along one axis (linear
+        interpolation, as numpy's default).
 
-        Domain: buffer → scalar, vector → scalar
+        Domain: buffer → buffer, vector → buffer
 
         Args:
             q: Percentile to compute, in [0, 100]. Accepts a Polars expression for per-
                 row dynamic values.
+            axis: Axis to reduce along. None for global reduction. It fixes the output
+                rank, so it is literal-only.
         """
-        return self._append_typed("reduce_percentile", {"q": q})
+        return self._append_typed("reduce_percentile", {"q": q, "axis": axis})
 
     def reduce_popcount(self) -> Pipeline:
         """Count set bits (1s) in the buffer.
@@ -2742,12 +2757,17 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_std", {"axis": axis, "ddof": ddof})
 
-    def reduce_sum(self) -> Pipeline:
-        """Sum all elements in the buffer.
+    def reduce_sum(self, *, axis: int | None = None) -> Pipeline:
+        """Sum all elements in the buffer, or along one axis.
 
-        Domain: buffer → scalar, vector → scalar
+        Domain: buffer → scalar, vector → scalar; with ``axis``: buffer → buffer, vector
+            → buffer
+
+        Args:
+            axis: Axis to reduce along. None for global reduction. It fixes the output
+                rank, so it is literal-only.
         """
-        return self._append_typed("reduce_sum", {})
+        return self._append_typed("reduce_sum", {"axis": axis})
 
     def relu(self) -> Pipeline:
         """Apply ReLU activation (max(0, x)): negative values become zero.
