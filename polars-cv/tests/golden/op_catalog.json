@@ -1056,11 +1056,11 @@
     "name": "crop",
     "python": "crop",
     "visibility": "public",
-    "doc": "Extract a rectangular region.",
+    "doc": "Extract a rectangular region.\n\nA window reaching past the input's edge is refused by default;\n``bounds=\"clip\"`` keeps the part inside the input (strips, tiles and\nsliding windows near a border), and ``bounds=\"pad\"`` keeps the\nrequested ``height`` x ``width``, filling outside with ``pad_value``.\nOffsets may be negative under either.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").crop(left=8, width=24, bounds=\"clip\")",
     "fields": [
       {
         "name": "top",
-        "doc": "Top offset.",
+        "doc": "Top offset; negative only with ``bounds=\"clip\"`` or ``\"pad\"``.",
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1070,7 +1070,7 @@
       },
       {
         "name": "left",
-        "doc": "Left offset.",
+        "doc": "Left offset; negative only with ``bounds=\"clip\"`` or ``\"pad\"``.",
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1099,6 +1099,33 @@
             "kind": "scalar",
             "per_row": true,
             "py": "int"
+          }
+        }
+      },
+      {
+        "name": "bounds",
+        "doc": "What a window past the input's edge means: \"error\" (default),\n\"clip\" or \"pad\".",
+        "default": "error",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "CropBounds",
+          "variants": [
+            "error",
+            "clip",
+            "pad"
+          ]
+        }
+      },
+      {
+        "name": "pad_value",
+        "doc": "The fill outside the input under ``bounds=\"pad\"`` (default 0).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
           }
         }
       }

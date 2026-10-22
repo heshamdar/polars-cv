@@ -27,6 +27,7 @@ __all__ = [
     "BorderMode",
     "ColorSpace",
     "CoordOrder",
+    "CropBounds",
     "DType",
     "Domain",
     "ExtractMode",
@@ -113,6 +114,19 @@ class CoordOrder(str, Enum):
 
     XY = "xy"
     YX = "yx"
+
+
+class CropBounds(str, Enum):
+    """What a crop window reaching past the input's edge means.
+
+    - ERROR: refuse the row (default)
+    - CLIP: keep the part inside the input, which may be smaller than asked
+    - PAD: keep the requested size, filling outside the input with ``pad_value``
+    """
+
+    ERROR = "error"
+    CLIP = "clip"
+    PAD = "pad"
 
 
 class DType(str, Enum):
@@ -756,6 +770,16 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "optional",
             "inner": {"kind": "scalar", "per_row": True, "py": "int"},
         },
+        "bounds": {
+            "kind": "scalar",
+            "per_row": False,
+            "py": "CropBounds",
+            "variants": ["error", "clip", "pad"],
+        },
+        "pad_value": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
     },
     "cvt_color": {
         "from_space": {
@@ -1165,7 +1189,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "contour_stroke": {"width": 1.0, "cap": "round", "join": "round"},
     "convolve2d": {"normalize": False, "border": "replicate"},
     "coordinate_grid": {"normalized": False},
-    "crop": {"top": 0, "left": 0},
+    "crop": {"top": 0, "left": 0, "bounds": "error"},
     "dilate": {"ksize": 3, "iterations": 1, "footprint": "square"},
     "distance_transform": {"signed": False},
     "erode": {"ksize": 3, "iterations": 1, "footprint": "square"},
@@ -2019,19 +2043,41 @@ class _OpsMixin:
         left: IntOrExpr = 0,
         height: IntOrExpr | None = None,
         width: IntOrExpr | None = None,
+        bounds: str = "error",
+        pad_value: FloatOrExpr | None = None,
     ) -> Pipeline:
         """Extract a rectangular region.
+
+        A window reaching past the input's edge is refused by default;
+        ``bounds="clip"`` keeps the part inside the input (strips, tiles and
+        sliding windows near a border), and ``bounds="pad"`` keeps the
+        requested ``height`` x ``width``, filling outside with ``pad_value``.
+        Offsets may be negative under either.
 
         Domain: buffer → buffer
 
         Args:
-            top: Top offset.
-            left: Left offset.
+            top: Top offset; negative only with ``bounds="clip"`` or ``"pad"``.
+            left: Left offset; negative only with ``bounds="clip"`` or ``"pad"``.
             height: Crop height (None = to end).
             width: Crop width (None = to end).
+            bounds: What a window past the input's edge means: "error" (default), "clip"
+                or "pad".
+            pad_value: The fill outside the input under ``bounds="pad"`` (default 0).
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").crop(left=8, width=24, bounds="clip")
         """
         return self._append_typed(
-            "crop", {"top": top, "left": left, "height": height, "width": width}
+            "crop",
+            {
+                "top": top,
+                "left": left,
+                "height": height,
+                "width": width,
+                "bounds": bounds,
+                "pad_value": pad_value,
+            },
         )
 
     def convert_color(self, *, from_space: str, to_space: str) -> Pipeline:

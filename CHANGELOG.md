@@ -20,6 +20,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`crop(bounds="clip" | "pad")`** for windows that reach past the image's
+  edge, as strips, tiles and sliding windows near a border do.
+  `bounds="clip"` keeps the part inside the image; `bounds="pad"` keeps the
+  requested `height` x `width`, filling outside with `pad_value` (default 0),
+  as the in-bounds crop followed by a constant `pad`. `top` and `left` may be
+  negative under either; the default, `bounds="error"`, refuses a negative
+  offset as `crop: top = -1 is negative (...)` and a window past the edge as
+  before.
 - **`polars_cv.check_cloud_access(path, cloud_options=None)`** resolves the
   credential a read of `path` would use and exercises it once (a `HEAD`, or a
   one-level listing of a prefix), before any row is read. It returns

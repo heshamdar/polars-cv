@@ -403,9 +403,11 @@ mod tests {
 
     #[test]
     fn a_value_error_names_the_field() {
-        let err = parse_err(json!({"op": "crop", "top": -5, "left": 0}));
+        // `height` is unsigned; a crop's offsets are signed (`bounds="clip"`)
+        // and a negative one is refused by its check instead.
+        let err = parse_err(json!({"op": "crop", "top": 0, "left": 0, "height": -5}));
         assert!(
-            err.contains("'top'") && err.contains("cannot be negative"),
+            err.contains("'height'") && err.contains("cannot be negative"),
             "{err}"
         );
     }
