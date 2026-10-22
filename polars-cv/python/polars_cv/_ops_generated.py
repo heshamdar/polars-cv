@@ -38,7 +38,6 @@ __all__ = [
     "HistogramClosed",
     "HistogramOutput",
     "InterpolationType",
-    "LabelReduction",
     "LabelRegionMode",
     "LineCap",
     "LineJoin",
@@ -47,6 +46,7 @@ __all__ = [
     "NullParamPolicy",
     "PadMode",
     "PadPosition",
+    "Reduction",
     "RowErrorPolicy",
     "ScaleOrigin",
     "SinkFormat",
@@ -256,14 +256,6 @@ class InterpolationType(str, Enum):
     BILINEAR = "bilinear"
 
 
-class LabelReduction(str, Enum):
-    """Reduction over a contour region's pixel values (``label_reduce``)."""
-
-    MAX = "max"
-    MEAN = "mean"
-    SUM = "sum"
-
-
 class LabelRegionMode(str, Enum):
     """Region selection for ``label_reduce``.
 
@@ -361,6 +353,28 @@ class PadPosition(str, Enum):
     CENTER = "center"
     TOP_LEFT = "top-left"
     BOTTOM_RIGHT = "bottom-right"
+
+
+class Reduction(str, Enum):
+    """A reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``).
+
+    - SUM, MEAN, MIN, MAX
+    - STD: population standard deviation
+    - MEDIAN
+    - PERCENTILE: the ``q``-th, NumPy's linear interpolation
+    - COUNT: how many pixels
+
+    Over no pixels each is NaN, except SUM and COUNT (0).
+    """
+
+    SUM = "sum"
+    MEAN = "mean"
+    MIN = "min"
+    MAX = "max"
+    STD = "std"
+    MEDIAN = "median"
+    PERCENTILE = "percentile"
+    COUNT = "count"
 
 
 class RowErrorPolicy(str, Enum):
@@ -890,8 +904,21 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "reduction": {
             "kind": "scalar",
             "per_row": True,
-            "py": "LabelReduction",
-            "variants": ["max", "mean", "sum"],
+            "py": "Reduction",
+            "variants": [
+                "sum",
+                "mean",
+                "min",
+                "max",
+                "std",
+                "median",
+                "percentile",
+                "count",
+            ],
+        },
+        "q": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
         },
         "region_mode": {
             "kind": "scalar",
@@ -2348,6 +2375,7 @@ class _OpsMixin:
         contours: pl.Expr,
         *,
         reduction: str | pl.Expr = "max",
+        q: FloatOrExpr | None = None,
         region_mode: str | pl.Expr = "interior",
     ) -> Pipeline:
         """Score contour regions against the current buffer values.
@@ -2364,8 +2392,9 @@ class _OpsMixin:
 
         Args:
             contours: Contour-set expression (`List[Contour]`) to score.
-            reduction: Reduction over contour region values (`"max"`, `"mean"`,
-                `"sum"`).
+            reduction: Reduction over each region's pixel values: "sum", "mean", "min",
+                "max" (default), "std", "median", "percentile" (with ``q``) or "count".
+            q: The percentile, in [0, 100], for ``reduction="percentile"`` only.
             region_mode: Region selection mode. ``"interior"`` — only pixels strictly
                 inside the contour polygon. ``"boundary"`` — interior pixels *plus*
                 pixels whose centre lies on the contour boundary. ``"bbox"`` — all
@@ -2373,7 +2402,12 @@ class _OpsMixin:
         """
         return self._append_typed(
             "label_reduce",
-            {"contours": contours, "reduction": reduction, "region_mode": region_mode},
+            {
+                "contours": contours,
+                "reduction": reduction,
+                "q": q,
+                "region_mode": region_mode,
+            },
         )
 
     def letterbox(
@@ -3810,6 +3844,7 @@ class _ContourOpsMixin:
         image: pl.Expr,
         *,
         reduction: str | pl.Expr = "max",
+        q: FloatOrExpr | None = None,
         region_mode: str | pl.Expr = "interior",
     ) -> pl.Expr:
         """Score each contour from an image/array expression with configurable reduction.
@@ -3826,8 +3861,10 @@ class _ContourOpsMixin:
 
         Args:
             image: Image/array expression aligned by row with contour sets.
-            reduction: Aggregation method over pixels in each contour region. Accepts a
-                Polars expression for a per-row choice.
+            reduction: Aggregation over the pixels of each contour region: "sum",
+                "mean", "min", "max" (default), "std", "median", "percentile" (with
+                ``q``) or "count". Accepts a Polars expression for a per-row choice.
+            q: The percentile, in [0, 100], for ``reduction="percentile"`` only.
             region_mode: Region selector - ``"interior"`` (pixels strictly inside),
                 ``"boundary"`` (interior plus the contour boundary) or ``"bbox"``
                 (everything in the bounding box). Accepts a Polars expression.
@@ -3837,7 +3874,12 @@ class _ContourOpsMixin:
         """
         return self._call(
             "contour_label_reduce",
-            {"image": image, "reduction": reduction, "region_mode": region_mode},
+            {
+                "image": image,
+                "reduction": reduction,
+                "q": q,
+                "region_mode": region_mode,
+            },
         )
 
     def largest(self, *, k: IntOrExpr = 1) -> pl.Expr:

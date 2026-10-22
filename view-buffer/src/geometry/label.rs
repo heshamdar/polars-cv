@@ -9,15 +9,7 @@ use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
 use crate::geometry::contour::{BoundingBox, Contour, Point};
 use crate::geometry::{measures, pairwise, predicates};
-use crate::ops::util::maximum;
-
-/// Reduction applied over the pixel values of a contour's region.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LabelReduction {
-    Max,
-    Mean,
-    Sum,
-}
+use crate::ops::reduction::Reduction;
 
 /// Which pixels count as a contour's region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,12 +21,6 @@ pub enum LabelRegionMode {
     /// All pixels within the contour's bounding box.
     Bbox,
 }
-
-crate::naming::named_variants!(LabelReduction: "Reduction over a contour region's pixel values (``label_reduce``)." {
-    "max" => Max,
-    "mean" => Mean,
-    "sum" => Sum,
-});
 
 crate::naming::named_variants!(LabelRegionMode: "Region selection for ``label_reduce``.\n\n- INTERIOR: Pixels strictly inside the contour polygon.\n- BOUNDARY: Interior pixels plus pixels on the contour boundary.\n- BBOX: All pixels within the bounding box." {
     "interior" => Interior,
@@ -55,9 +41,11 @@ crate::naming::named_variants!(LabelRegionMode: "Region selection for ``label_re
 pub fn score_contours_on_buffer(
     buffer: &ViewBuffer,
     contours: &[Contour],
-    reduction: LabelReduction,
+    reduction: Reduction,
+    q: Option<f64>,
     region_mode: LabelRegionMode,
 ) -> Result<Vec<f64>, String> {
+    Reduction::check_q("label_reduce", Some(reduction), q.is_some(), q)?;
     let shape = buffer.shape();
     if shape.len() < 2 {
         return Err(format!(
@@ -82,7 +70,7 @@ pub fn score_contours_on_buffer(
             let at = |y: usize, x: usize| -> f64 { data[y * width + x] as f64 };
             contours
                 .iter()
-                .map(|c| score_one(c, &at, width, height, reduction, region_mode))
+                .map(|c| score_one(c, &at, width, height, reduction, q, region_mode))
                 .collect()
         }};
     }
@@ -106,7 +94,8 @@ fn score_one(
     at: &dyn Fn(usize, usize) -> f64,
     width: usize,
     height: usize,
-    reduction: LabelReduction,
+    reduction: Reduction,
+    q: Option<f64>,
     region_mode: LabelRegionMode,
 ) -> f64 {
     if width == 0 || height == 0 {
@@ -128,15 +117,8 @@ fn score_one(
     let y1 = (bbox.y + bbox.height).ceil().min(height as f64).max(0.0) as usize;
     let (x1, y1) = if degenerate { (x0, y0) } else { (x1, y1) };
 
-    let mut acc = 0.0;
-    let mut max_val = f64::NEG_INFINITY;
-    let mut count = 0usize;
-    let mut take = |x: usize, y: usize| {
-        let val = at(y, x);
-        acc += val;
-        max_val = maximum(max_val, val);
-        count += 1;
-    };
+    let mut values = Vec::new();
+    let mut take = |x: usize, y: usize| values.push(at(y, x));
     match region_mode {
         LabelRegionMode::Bbox => {
             for y in y0..y1 {
@@ -150,24 +132,19 @@ fn score_one(
             for_each_region_pixel(contour, include_boundary, (x0, x1), (y0, y1), take);
         }
     }
-    if count == 0 {
+    if values.is_empty() {
         // A degenerate contour, or a sub-pixel one whose region holds no
         // pixel centre: its pixels are the ones its outline passes through.
-        for (x, y) in path_pixels(&contour.exterior, width, height) {
-            let val = at(y, x);
-            acc += val;
-            max_val = maximum(max_val, val);
-            count += 1;
-        }
-        if count == 0 {
+        values.extend(
+            path_pixels(&contour.exterior, width, height)
+                .into_iter()
+                .map(|(x, y)| at(y, x)),
+        );
+        if values.is_empty() {
             return 0.0;
         }
     }
-    match reduction {
-        LabelReduction::Max => max_val,
-        LabelReduction::Mean => acc / count as f64,
-        LabelReduction::Sum => acc,
-    }
+    reduction.of(&mut values, q)
 }
 
 /// Visit, in raster order, every pixel `(x, y)` of `xs` x `ys` whose centre
@@ -351,11 +328,7 @@ mod tests {
             .collect();
 
         let contour = square(1.0, 1.0, 5.0);
-        for reduction in [
-            LabelReduction::Max,
-            LabelReduction::Mean,
-            LabelReduction::Sum,
-        ] {
+        for reduction in [Reduction::Max, Reduction::Mean, Reduction::Sum] {
             for mode in [
                 LabelRegionMode::Interior,
                 LabelRegionMode::Boundary,
@@ -365,6 +338,7 @@ mod tests {
                     &buffer,
                     std::slice::from_ref(&contour),
                     reduction,
+                    None,
                     mode,
                 )
                 .unwrap();
@@ -394,9 +368,10 @@ mod tests {
                     }
                 }
                 let expected = match reduction {
-                    LabelReduction::Max => max_val,
-                    LabelReduction::Mean => acc / count as f64,
-                    LabelReduction::Sum => acc,
+                    Reduction::Max => max_val,
+                    Reduction::Mean => acc / count as f64,
+                    Reduction::Sum => acc,
+                    other => unreachable!("{other:?} is not swept here"),
                 };
                 assert_eq!(scores[0], expected, "{reduction:?}/{mode:?}");
             }
@@ -413,15 +388,12 @@ mod tests {
             let mut data: Vec<f32> = (0..16).map(|i| i as f32).collect();
             data[at] = f32::NAN;
             let buffer = ViewBuffer::from_vec_with_shape(data, vec![4, 4, 1]);
-            for reduction in [
-                LabelReduction::Max,
-                LabelReduction::Mean,
-                LabelReduction::Sum,
-            ] {
+            for reduction in [Reduction::Max, Reduction::Mean, Reduction::Sum] {
                 let scores = score_contours_on_buffer(
                     &buffer,
                     &[square(0.0, 0.0, 4.0)],
                     reduction,
+                    None,
                     LabelRegionMode::Bbox,
                 )
                 .unwrap();
@@ -445,7 +417,8 @@ mod tests {
         let scores = score_contours_on_buffer(
             &buffer,
             &[tiny],
-            LabelReduction::Max,
+            Reduction::Max,
+            None,
             LabelRegionMode::Interior,
         )
         .unwrap();
@@ -497,16 +470,17 @@ mod tests {
             ] {
                 for (reduction, expected) in [
                     (
-                        LabelReduction::Max,
+                        Reduction::Max,
                         values.iter().copied().fold(f64::MIN, f64::max),
                     ),
-                    (LabelReduction::Mean, sum / values.len() as f64),
-                    (LabelReduction::Sum, sum),
+                    (Reduction::Mean, sum / values.len() as f64),
+                    (Reduction::Sum, sum),
                 ] {
                     let scores = score_contours_on_buffer(
                         &buffer,
                         std::slice::from_ref(contour),
                         reduction,
+                        None,
                         mode,
                     )
                     .unwrap();
@@ -637,7 +611,8 @@ mod tests {
         let scores = score_contours_on_buffer(
             &buffer,
             &[line, outside],
-            LabelReduction::Sum,
+            Reduction::Sum,
+            None,
             LabelRegionMode::Interior,
         )
         .unwrap();
@@ -650,7 +625,8 @@ mod tests {
         let err = score_contours_on_buffer(
             &buffer,
             &[square(0.0, 0.0, 1.0)],
-            LabelReduction::Max,
+            Reduction::Max,
+            None,
             LabelRegionMode::Interior,
         )
         .unwrap_err();

@@ -1670,17 +1670,34 @@
       },
       {
         "name": "reduction",
-        "doc": "Reduction over contour region values (`\"max\"`, `\"mean\"`, `\"sum\"`).",
+        "doc": "Reduction over each region's pixel values: \"sum\", \"mean\", \"min\",\n\"max\" (default), \"std\", \"median\", \"percentile\" (with ``q``) or\n\"count\".",
         "default": "max",
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "LabelReduction",
+          "py": "Reduction",
           "variants": [
-            "max",
+            "sum",
             "mean",
-            "sum"
+            "min",
+            "max",
+            "std",
+            "median",
+            "percentile",
+            "count"
           ]
+        }
+      },
+      {
+        "name": "q",
+        "doc": "The percentile, in [0, 100], for ``reduction=\"percentile\"`` only.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
         }
       },
       {

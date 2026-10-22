@@ -92,7 +92,7 @@ def _det(table) -> pl.DataFrame:  # noqa: ANN001
 
 def test_an_unknown_score_reduction_is_refused() -> None:
     with pytest.raises(ValueError, match="score_reduction"):
-        ContourMatcher(score_reduction="median")
+        ContourMatcher(score_reduction="mode")
 
 
 def test_an_unknown_score_region_mode_is_refused() -> None:

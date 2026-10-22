@@ -438,6 +438,7 @@ class _LazyForwardersMixin:
         contours: pl.Expr,
         *,
         reduction: str | pl.Expr = "max",
+        q: FloatOrExpr | None = None,
         region_mode: str | pl.Expr = "interior",
     ) -> LazyPipelineExpr:
         """Score contour regions against the current buffer values.
@@ -446,7 +447,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(
             self._continuation().label_reduce(
-                contours=contours, reduction=reduction, region_mode=region_mode
+                contours=contours, reduction=reduction, q=q, region_mode=region_mode
             )
         )
 

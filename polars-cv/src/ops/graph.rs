@@ -4,9 +4,10 @@
 //! `view_buffer::mode`), with the rules the planner reads from it.
 
 use view_buffer::core::dtype::OutputDTypeRule;
-use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
+use view_buffer::geometry::label::LabelRegionMode;
 use view_buffer::geometry::transforms::RegionOp;
 use view_buffer::mode::{ColumnRef, Exec, Mode, NodeRef};
+use view_buffer::ops::Reduction;
 use view_buffer::ops::{Domain, OpShape, SpatialDependency};
 use view_buffer::{BinaryOp, DType, IdentityRule, Op};
 
@@ -319,9 +320,13 @@ pub enum GraphOp<M: Mode = Exec> {
     LabelReduce {
         /// Contour-set expression (`List[Contour]`) to score.
         contours: ColumnRef,
-        /// Reduction over contour region values (`"max"`, `"mean"`, `"sum"`).
+        /// Reduction over each region's pixel values: "sum", "mean", "min",
+        /// "max" (default), "std", "median", "percentile" (with ``q``) or
+        /// "count".
         #[param(default = "max")]
-        reduction: M::V<LabelReduction>,
+        reduction: M::V<Reduction>,
+        /// The percentile, in [0, 100], for ``reduction="percentile"`` only.
+        q: Option<M::V<f64>>,
         /// Region selection mode. ``"interior"`` — only pixels strictly inside the
         /// contour polygon. ``"boundary"`` — interior pixels *plus* pixels whose
         /// centre lies on the contour boundary.
@@ -369,10 +374,12 @@ impl<M: Mode> GraphOp<M> {
             GraphOp::LabelReduce {
                 contours,
                 reduction,
+                q,
                 region_mode,
             } => Role::LabelReduce {
                 contours,
                 reduction,
+                q,
                 region_mode,
             },
         }
@@ -575,6 +582,12 @@ impl<M: Mode> GraphOp<M> {
                 }
                 Ok(())
             }
+            GraphOp::LabelReduce { reduction, q, .. } => Reduction::check_q(
+                "label_reduce",
+                view_buffer::mode::known::<M, Reduction>(reduction),
+                q.is_some(),
+                q.as_ref().and_then(view_buffer::mode::known::<M, f64>),
+            ),
             _ => Ok(()),
         }
     }
@@ -601,7 +614,8 @@ pub enum Role<'a, M: Mode> {
     ExtractShape,
     LabelReduce {
         contours: &'a ColumnRef,
-        reduction: &'a M::V<LabelReduction>,
+        reduction: &'a M::V<Reduction>,
+        q: &'a Option<M::V<f64>>,
         region_mode: &'a M::V<LabelRegionMode>,
     },
 }
