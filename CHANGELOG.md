@@ -20,14 +20,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
-- **`grayscale(keepdims=False)`** gives `[H, W]`, and
-  **`source("image_bytes" | "file_path", channels=1 | 3)`** decodes every row
-  to that many colour channels (luma as `grayscale` computes it, or RGB with
-  gray replicated; alpha dropped), so the channel count is known to the lazy
-  schema. A decoded grayscale image was `[H, W, 1]` and a decoded image's
-  channel count unknown, so `reduce_mean(axis=0)` gave one-element lists and
-  an `array` sink could not be planned without `channel_select(0,
-  keepdims=False)` after every decode.
+- **`grayscale(keepdims=False)`** gives `[H, W]` from any input (gray, RGB,
+  RGBA). A decoded grayscale image is `[H, W, 1]`, so `reduce_mean(axis=0)`
+  gave one-element lists without a `channel_select(0, keepdims=False)` after
+  the decode.
 - **`crop(bounds="clip" | "pad")`** for windows that reach past the image's
   edge, as strips, tiles and sliding windows near a border do.
   `bounds="clip"` keeps the part inside the image; `bounds="pad"` keeps the

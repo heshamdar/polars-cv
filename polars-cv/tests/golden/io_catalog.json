@@ -250,18 +250,6 @@
           }
         },
         {
-          "name": "channels",
-          "doc": "Decode every row to this many colour channels: 1 (luma, as\n``grayscale``) or 3 (RGB), dropping alpha, so the channel count is\nknown to the lazy schema. Absent: the image's own.",
-          "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "int"
-            }
-          }
-        },
-        {
           "name": "cloud_options",
           "doc": "Cloud-storage credentials: a ``CloudOptions`` or a dict.",
           "type": {
@@ -341,18 +329,6 @@
                 "f32",
                 "f64"
               ]
-            }
-          }
-        },
-        {
-          "name": "channels",
-          "doc": "Decode every row to this many colour channels: 1 (luma, as\n``grayscale``) or 3 (RGB), dropping alpha, so the channel count is\nknown to the lazy schema. Absent: the image's own.",
-          "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "int"
             }
           }
         },

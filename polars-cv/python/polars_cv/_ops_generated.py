@@ -1407,7 +1407,6 @@ SOURCE_FIELDS: dict[str, dict[str, Any]] = {
         "kind": "list",
         "inner": {"kind": "scalar", "per_row": False, "py": "str"},
     },
-    "channels": {"kind": "scalar", "per_row": False, "py": "int"},
     "cloud_options": {"kind": "map"},
     "decode_max_size": {"kind": "scalar", "per_row": False, "py": "int"},
     "dtype": {
@@ -1450,7 +1449,6 @@ class _OpsMixin:
         format: str = "auto",
         *,
         allowed_roots: Sequence[str] | None = None,
-        channels: int | None = None,
         cloud_options: CloudOptions | dict[str, Any] | None = None,
         decode_max_size: int | None = None,
         dtype: str | None = None,
@@ -1508,10 +1506,6 @@ class _OpsMixin:
                 bytes, decoded as a flat 1-D buffer of `dtype`.
             allowed_roots: ``auto``, ``file_path``: Locations a path column may read
                 from (unrestricted when absent; see above).
-            channels: ``file_path``, ``image_bytes``: Decode every row to this many
-                colour channels: 1 (luma, as ``grayscale``) or 3 (RGB), dropping alpha,
-                so the channel count is known to the lazy schema. Absent: the image's
-                own.
             cloud_options: ``auto``, ``file_path``: Cloud-storage credentials: a
                 ``CloudOptions`` or a dict.
             decode_max_size: ``auto``, ``file_path``, ``image_bytes``: Decode only
@@ -1553,7 +1547,6 @@ class _OpsMixin:
             format,
             {
                 "allowed_roots": allowed_roots,
-                "channels": channels,
                 "cloud_options": cloud_options,
                 "decode_max_size": decode_max_size,
                 "dtype": dtype,

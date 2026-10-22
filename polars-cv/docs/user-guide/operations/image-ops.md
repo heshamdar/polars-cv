@@ -24,15 +24,6 @@ Pipeline().source("image_bytes").grayscale()
 Pipeline().source("image_bytes").grayscale(keepdims=False)  # [H, W]
 ```
 
-A decoded image's channel count is the file's own, unknown until it is decoded.
-`source("image_bytes" | "file_path", channels=1 | 3)` converts every row to
-that many colour channels (luma as `grayscale` computes it, or RGB with gray
-replicated; alpha dropped either way), and the lazy schema knows it:
-
-```python
-Pipeline().source("file_path", channels=1)  # [H, W, 1] for every row
-```
-
 ## Blur
 
 Apply Gaussian blur.

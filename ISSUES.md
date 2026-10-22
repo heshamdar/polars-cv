@@ -636,7 +636,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | ID | Finding | Outcome |
 |----|---------|---------|
 | CR-128 | Remote header-only metadata fetched the whole object; `show_images` could not show a dict sink's field (C4/C6) | Fixed (unreleased): a header fetcher reads a 64 KiB prefix first (`test_remote_header_reads.py`); `show_images(df, "col.field")` |
-| CR-127 | A decoded image's channel count was unknown and grayscale kept `[H, W, 1]` (B3) | Fixed (unreleased): `source(channels=1 \| 3)`, `grayscale(keepdims=False)` (`test_channel_control.py`) |
+| CR-127 | Grayscale kept `[H, W, 1]`, so axis reductions gave one-element lists (B3) | Fixed (unreleased): `grayscale(keepdims=False)` (`test_channel_control.py`); a decode-time `source(channels=)` was added and removed as redundant with `grayscale()` |
 | CR-126 | A crop window past the image's edge could only be refused (B1) | Fixed (unreleased): `crop(bounds="clip" \| "pad", pad_value=)`, signed offsets (`test_crop_bounds.py`) |
 | CR-125 | `UInt32` image sizes wrapped below zero in polars, so a computed crop offset failed as a ~2^32 window; row errors named no row (A2/C5) | Fixed (unreleased): `Int64` sizes; `(row n)` and the parameter's name in errors (`TestSignedMetadata`, `test_error_messages.py`) |
 | CR-124 | A federated gcloud ADC was used only when some `CloudOptions` was passed (A1) | Fixed (unreleased): ambient detection with no options; `check_cloud_access()`; failures name the credential (`test_cloud_credentials.py`) |
