@@ -45,6 +45,11 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
+| CR-119 | Analytics | Feature | Masked and axis-aware reductions, median/percentiles everywhere, one reduction authority (downstream proposal B2/C1) |
+| CR-120 | Analytics | Feature | `normalize(method="percentile" \| "range")`; masked normalize after CR-123 (C3) |
+| CR-121 | Resampling | Feature | `resize(like=node)`, `filter="area"`, `block_reduce` (B5) |
+| CR-122 | Ops | Feature | `rank_filter`/`median_filter`, `background_divide`, `flip(when=)`, `stack` + `sink("long", where=)` (C2/B7/B6) |
+| CR-123 | Params | Feature | `H`/`W` placeholders: op parameters derived from the current buffer's shape (B4) |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -344,6 +349,60 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Fix:** add `pycocotools` to a dependency group the fast lane installs, or
   make the reference lane fail rather than skip when it is missing in CI.
 
+## Downstream proposal (2026-10-22)
+
+A downstream image-analytics user's proposal, reviewed against 0.40.0. The
+bugs and small gaps shipped in the first phase (CR-124 to CR-128, closed
+below); these are the rest, in the order planned. Each is test-first, through
+the typed catalogue, with its own CHANGELOG entry.
+
+### CR-119 — Masked and axis-aware reductions
+
+- One `Reduction` authority (sum, mean, min, max, std, median,
+  percentile{q}, count) and one accumulator over a pixel iterator in
+  `view-buffer/src/ops/reduction.rs`; `label_reduce` (`geometry/label.rs`,
+  max/mean/sum today) moves onto it, giving regionprops-style reductions.
+- `axis=` on `reduce_sum`/`reduce_percentile`; `reduce_median` is sugar over
+  `reduce_percentile(50)`.
+- `GraphOp::ReduceMasked { mask: NodeRef, reduction, axis }` (lazy-only, as
+  `apply_mask`): a pixel counts where the mask is > 0; a row with no masked
+  pixel is null (global) or NaN (per-axis element).
+- `statistics(include=[..., "median", "p90", "count"], mask=)` and
+  `region_stats(regions, {name: (map, reduction)})` as sugar.
+
+### CR-120 — Percentile and explicit-range normalize
+
+- `NormalizeMethod::Percentile { low, high }` and `Range { low, high }`
+  (per-row `low`/`high`). A masked percentile window needs scalars derived
+  from another node, which waits on CR-123's mechanism.
+
+### CR-121 — Resampling onto another node's grid
+
+- Generalise `RasterSize` (`view-buffer/src/geometry/ops.rs`) into one
+  `SizeSpec { Fixed, FromNode }` read by `rasterize(shape=)` and
+  `resize(like=)`.
+- `FilterType::Area` (box average when shrinking, as OpenCV's
+  `INTER_AREA`); `block_reduce(height, width, reduction)` on the CR-119
+  authority, partial edge blocks reducing their in-bounds pixels.
+
+### CR-122 — Local filters, conditional flip, long-format sink
+
+- `rank_filter(height, width, q, border)`; `median_filter` is its `q=50`
+  sugar; `background_divide(sigma)` is blur + divide sugar.
+- `flip(when=)`: a per-row `bool`, eligible because the shape is the same
+  either way. Not a general per-op `when=`.
+- `sink("long", names=, where=<channel>)`: `[H, W(, C)]` to
+  `List[Struct{row, col, <names>}]`, filtering on (and dropping) one
+  channel; `stack(*maps, names=)` is `channel_merge` sugar.
+
+### CR-123 — Shape placeholders (`H`, `W`)
+
+- `Param::Dim(DimExpr)` beside `Lit`/`Slot` (`view-buffer/src/mode.rs`):
+  a small `+ - * /` tree over the current input's H and W, `{"$dim": ...}`
+  on the wire, `Sym::PerRow` to the planner, resolved in
+  `RowValues::value` from the operand's shape. Python exposes
+  `polars_cv.H`/`W`. Enables `blur(H / 320)`, `crop(top=0.2 * H, ...)`.
+
 ## Extension types
 
 Shipped in 0.29.0: `ExtType`, the four registered types, `sink("ndarray")`,
@@ -576,6 +635,11 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-128 | Remote header-only metadata fetched the whole object; `show_images` could not show a dict sink's field (C4/C6) | Fixed (unreleased): a header fetcher reads a 64 KiB prefix first (`test_remote_header_reads.py`); `show_images(df, "col.field")` |
+| CR-127 | A decoded image's channel count was unknown and grayscale kept `[H, W, 1]` (B3) | Fixed (unreleased): `source(channels=1 \| 3)`, `grayscale(keepdims=False)` (`test_channel_control.py`) |
+| CR-126 | A crop window past the image's edge could only be refused (B1) | Fixed (unreleased): `crop(bounds="clip" \| "pad", pad_value=)`, signed offsets (`test_crop_bounds.py`) |
+| CR-125 | `UInt32` image sizes wrapped below zero in polars, so a computed crop offset failed as a ~2^32 window; row errors named no row (A2/C5) | Fixed (unreleased): `Int64` sizes; `(row n)` and the parameter's name in errors (`TestSignedMetadata`, `test_error_messages.py`) |
+| CR-124 | A federated gcloud ADC was used only when some `CloudOptions` was passed (A1) | Fixed (unreleased): ambient detection with no options; `check_cloud_access()`; failures name the credential (`test_cloud_credentials.py`) |
 | CR-115 | `average`/`difference`/`blockhash` hashes packed bits LSB-first while `perceptual` packed MSB-first, so one hash column type held two bit orders | Fixed (0.40.0): `HasherConfig::bit_order(BitOrder::MsbFirst)`; every algorithm is MSB-first, row-major (`every_algorithm_packs_bits_msb_first`, Rust and `test_perceptual_hash_ref.py`) |
 | CR-114 | CSE ran once, before the node passes, so pipelines made equal by identity elimination or the crop pushdown stayed apart | Fixed (0.39.0): `PipelineGraph.optimize` repeats the logical passes until a round changes nothing (refusing a graph that has not settled in 16); `tests/test_cse_interactions.py` pins CSE with the node passes, per-row parameters and nulls, the error policy, several columns, DAG shapes, determinism and streaming, plus a random-graph property (found a stale operand id in a second round and a root-order slip, both fixed) |
 | CR-113 | `channel_select` dropped the channel axis (`[H, W]`) while `grayscale` and `rasterize` keep it (`[H, W, 1]`), so a selected channel needed reshaping before it met either; `apply_mask` refused a `[H, W, 1]` mask over a `[H, W]` image (`examples/05` failed in the slow lane) | Changed (0.39.0): `channel_select(keepdims=True)` by default (`OpShape::SingleChannel`), `keepdims=False` for `[H, W]`; `validate_mask` reads such a mask as `[H, W]`, with an unknown channel count left to the row (`tests/test_channel_select.py`, migration guide 0.39) |

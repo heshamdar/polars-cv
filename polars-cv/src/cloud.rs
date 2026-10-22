@@ -304,20 +304,36 @@ fn polars_options(
 pub(crate) async fn read_remote_budgeted(
     path: &str,
     options: Option<&CloudOptions>,
+    reach: Reach,
 ) -> Result<Vec<u8>, String> {
-    with_concurrency_budget(1, || read_remote(path, options))
+    with_concurrency_budget(1, || read_remote(path, options, reach))
         .await
         .map_err(|e| e.to_string())
 }
 
 /// Read one remote file, whichever scheme names it: the single async remote
 /// read, so a change to auth, retries or error text lands for every caller.
-async fn read_remote(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
+async fn read_remote(
+    path: &str,
+    options: Option<&CloudOptions>,
+    reach: Reach,
+) -> Result<Vec<u8>, CloudError> {
     if path.starts_with("http://") || path.starts_with("https://") {
-        read_http(path).await
+        read_http(path, reach).await
     } else {
-        read_object(path, options).await
+        read_object(path, options, reach).await
     }
+}
+
+/// How much of a remote object a read takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// The whole object: what a decode reads.
+    Whole,
+    /// Its first `n` bytes, or all of it when shorter: what a header-only
+    /// metadata read asks for first. A server may send more (an HTTP server
+    /// that ignores `Range` sends the whole body).
+    Prefix(u64),
 }
 
 /// Read one object from S3, GCS or Azure through `polars-io`'s cached store.
@@ -341,7 +357,13 @@ async fn read_remote(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u
 /// avoids nesting concurrency-budget acquisitions — `PolarsObjectStore::head`
 /// and `get_range` take permits internally, and holding one while asking for
 /// another is a deadlock at any budget smaller than twice the in-flight count.
-async fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
+/// A header read ([`Reach::Prefix`]) asks the raw store, inside the closure,
+/// for one range of unknown-size object, which takes no permit of its own.
+async fn read_object(
+    path: &str,
+    options: Option<&CloudOptions>,
+    reach: Reach,
+) -> Result<Vec<u8>, CloudError> {
     let url = PlRefPath::new(path);
     let scheme = url
         .scheme()
@@ -363,7 +385,16 @@ async fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u
         store
             .exec_with_rebuild_retry_on_err(|store| {
                 let key = &key;
-                async move { store.get(key).await?.bytes().await }
+                async move {
+                    match reach {
+                        Reach::Whole => store.get(key).await?.bytes().await,
+                        // A range past the end returns the rest of the object
+                        // (`GetRange::Bounded`). The raw store's `get_range`,
+                        // inside the one budget permit this read holds:
+                        // `PolarsObjectStore::get_range` would take a second.
+                        Reach::Prefix(n) => store.get_range(key, 0..n).await,
+                    }
+                }
             })
             .await
             .map(|bytes| bytes.to_vec())
@@ -540,15 +571,18 @@ fn http_client() -> &'static reqwest::Client {
 ///
 /// # Example
 /// ```ignore
-/// let bytes = read_http("https://example.com/image.png")?;
+/// let bytes = read_http("https://example.com/image.png", Reach::Whole)?;
 /// ```
-async fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
+async fn read_http(url: &str, reach: Reach) -> Result<Vec<u8>, CloudError> {
     let url_string = url.to_string();
 
     {
         let client = http_client();
-        let response = client
-            .get(&url_string)
+        let mut request = client.get(&url_string);
+        if let Reach::Prefix(n) = reach {
+            request = request.header(reqwest::header::RANGE, format!("bytes=0-{}", n - 1));
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| CloudError::ReadError(format!("HTTP request failed: {e}")))?;
@@ -854,7 +888,11 @@ mod tests {
         // shared test process.
         let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")]));
         let err = ASYNC
-            .block_on(read_remote("gs://bucket/obj.png", Some(&opts)))
+            .block_on(read_remote(
+                "gs://bucket/obj.png",
+                Some(&opts),
+                Reach::Whole,
+            ))
             .unwrap_err();
         assert!(
             matches!(err, CloudError::StoreError(_)),
@@ -870,7 +908,11 @@ mod tests {
         // credential the user believes is in effect.
         let opts = CloudOptions::from_map(&map(&[("token_command", "printf tok")]));
         let err = ASYNC
-            .block_on(read_remote("s3://bucket/obj.png", Some(&opts)))
+            .block_on(read_remote(
+                "s3://bucket/obj.png",
+                Some(&opts),
+                Reach::Whole,
+            ))
             .unwrap_err();
         assert!(
             matches!(err, CloudError::StoreError(_)),
@@ -936,7 +978,7 @@ mod tests {
     #[ignore]
     fn test_read_http_url() {
         // Use httpbin.org which returns known content
-        let result = ASYNC.block_on(read_http("https://httpbin.org/bytes/100"));
+        let result = ASYNC.block_on(read_http("https://httpbin.org/bytes/100", Reach::Whole));
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 100);
     }
@@ -945,7 +987,11 @@ mod tests {
     #[ignore]
     fn test_read_http_image() {
         // Test with httpbin's PNG image endpoint
-        let result = ASYNC.block_on(read_remote("https://httpbin.org/image/png", None));
+        let result = ASYNC.block_on(read_remote(
+            "https://httpbin.org/image/png",
+            None,
+            Reach::Whole,
+        ));
         assert!(result.is_ok());
         // PNG files start with these magic bytes
         let bytes = result.unwrap();

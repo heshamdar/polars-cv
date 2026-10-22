@@ -29,15 +29,25 @@ result = df.with_columns(
 These methods work on binary columns containing encoded images (PNG, JPEG, TIFF,
 etc.) and on **path** columns. A local file is read only as far as its header
 needs (a JPEG's frame header may sit behind large EXIF or comment segments, so
-the read grows until it is found); a remote object is fetched whole, as
-[`read_bytes()`](../concepts/sources.md#reading-bytes-without-decoding) does.
-Path columns take the same `cloud_options`, `on_error` and `allowed_roots` as
+the read grows until it is found). A remote object is read the same way: its
+first 64 KiB (an HTTP `Range` / object-store ranged read), and the whole object
+only when the header is not in them. An empty remote object has no first byte
+to range over and is a row error. Path columns take the same `cloud_options`, `on_error` and `allowed_roots` as
 `read_bytes()`. Asking for more than one field? `image_info()` reads each
 header once:
 
 ```python
 df.with_columns(info=pl.col("path").cv.image_info()).unnest("info")
 ```
+
+Sizes are `Int64`, so arithmetic on them can go below zero and be refused as
+the negative value it is: `pl.col("path").cv.width() - 32` on a 31-wide image
+is -1, not a wrapped `UInt32`.
+
+When the same rows are also decoded, fetch once with
+[`read_bytes()`](../concepts/sources.md#reading-bytes-without-decoding) and
+read both the header and the pixels from that column, rather than fetching the
+object for each expression.
 
 ### Use Case: Filtering by Size
 

@@ -61,6 +61,24 @@ extracted = result.select(
 )
 ```
 
+## Debugging Intermediate Maps
+
+To look at an intermediate map on a few rows, alias it and sink it beside the
+result in an image format; `show_images` takes a struct field as
+`"column.field"`:
+
+```python
+from polars_cv import show_images
+
+strip = img.pipe(Pipeline().crop(left=8, width=24, bounds="clip")).alias("strip")
+final = strip.pipe(Pipeline().blur(2.0)).alias("out")
+
+debug = df.head(4).with_columns(
+    maps=final.sink({"out": "png", "strip": "png"})
+)
+show_images(debug, "maps.strip")
+```
+
 ## Common Subexpression Elimination (CSE)
 
 Within one `.sink()`, each distinct value is computed once: the same op on the
