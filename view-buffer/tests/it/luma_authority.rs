@@ -40,7 +40,7 @@ fn convert_color_to_gray_is_grayscale_on_every_dtype() {
         let gray = run(
             &buf,
             ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Grayscale,
+                kind: ImageOpKind::Grayscale { keepdims: true },
             }),
         );
         let cvt = run(

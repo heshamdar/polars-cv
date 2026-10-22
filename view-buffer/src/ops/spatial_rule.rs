@@ -224,7 +224,10 @@ mod tests {
             img(ImageOpKind::Threshold { value: 128.0 }).spatial_dependency(),
             pw
         );
-        assert_eq!(img(ImageOpKind::Grayscale).spatial_dependency(), pw);
+        assert_eq!(
+            img(ImageOpKind::Grayscale { keepdims: true }).spatial_dependency(),
+            pw
+        );
         assert_eq!(
             img(ImageOpKind::ChannelSwap {
                 order: vec![2, 1, 0]
@@ -421,7 +424,7 @@ mod tests {
         // Nothing else is a window: geometric neighbours, pointwise ops, reduces.
         assert!(!ViewOp::flip(&[0]).is_spatial_window());
         assert!(!ViewOp::Reshape { shape: vec![48] }.is_spatial_window());
-        assert!(!img(ImageOpKind::Grayscale).is_spatial_window());
+        assert!(!img(ImageOpKind::Grayscale { keepdims: true }).is_spatial_window());
         assert!(!img(ImageOpKind::Resize {
             width: 8,
             height: 8,

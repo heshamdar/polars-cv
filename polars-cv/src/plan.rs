@@ -594,7 +594,12 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> State {
         Source::Raw { .. } => buffer(dtype, Some(1)),
         // Decoded images are always `[H, W, C]`; the dtype is the caller's
         // assertion or unknown until decode (PNG u8, 16-bit PNG u16, TIFF ...).
-        Source::ImageBytes { .. } | Source::FilePath { .. } => buffer(dtype, Some(3)),
+        // `channels=` fixes the third.
+        Source::ImageBytes { .. } | Source::FilePath { .. } => {
+            let dtype = dtype.map_or(PlannedDType::Unknown, PlannedDType::Known);
+            let shape = PlannedShape::Ranked(vec![None, None, source.channels()]);
+            State::new(Domain::Buffer, dtype, shape)
+        }
         // Rank follows the column (nesting depth, blob header, or the path the
         // column's dtype routes to), known only with the input.
         Source::Auto { .. } | Source::Blob { .. } | Source::List { .. } | Source::Array { .. } => {

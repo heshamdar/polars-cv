@@ -468,7 +468,7 @@ impl ViewExpr {
 
     pub fn grayscale(self: &Arc<Self>) -> Arc<Self> {
         self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Grayscale,
+            kind: ImageOpKind::Grayscale { keepdims: true },
         }))
     }
 
@@ -832,7 +832,7 @@ mod dtype_contract_tests {
             // `apply_op` through hand-written builders that stamped their own
             // dtype; `grayscale()` hardcoded `U8`, diverging from the contract
             // on non-u8 input. They now route through the same canonical block.
-            ImageOpKind::Grayscale,
+            ImageOpKind::Grayscale { keepdims: true },
             ImageOpKind::Threshold { value: 128.0 },
             ImageOpKind::Blur { sigma: 1.0 },
             ImageOpKind::Resize {
@@ -871,7 +871,10 @@ mod dtype_contract_tests {
             let source = ViewExpr::new_source(base.cast(dtype));
 
             let cases: [(Arc<ViewExpr>, ImageOpKind); 4] = [
-                (source.grayscale(), ImageOpKind::Grayscale),
+                (
+                    source.grayscale(),
+                    ImageOpKind::Grayscale { keepdims: true },
+                ),
                 (
                     source.threshold(128.0),
                     ImageOpKind::Threshold { value: 128.0 },

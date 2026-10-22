@@ -41,9 +41,14 @@ pub enum ImageOpKind<M: Mode = Exec> {
         /// Standard deviation for Gaussian kernel.
         sigma: M::V<f32>,
     },
-    /// Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).
-    #[op(name = "grayscale", sample = {})]
-    Grayscale,
+    /// Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): ``[H, W, 1]``,
+    /// or ``[H, W]`` with ``keepdims=False``.
+    #[op(name = "grayscale", sample = {"keepdims": false})]
+    Grayscale {
+        /// Keep the channel axis, as size 1 (default), or drop it.
+        #[param(default = true)]
+        keepdims: M::L<bool>,
+    },
     /// Canny edge detection, as ``cv2.Canny(image, low, high)`` computes it:
     /// 3x3 Sobel gradients (L1 magnitude), non-maximum suppression and
     /// double-threshold hysteresis. There is no pre-blur — add ``.blur()``
@@ -360,7 +365,11 @@ impl<M: Mode> ImageOpKind<M> {
     /// `Sym::PerRow`) and on the `Exec` op at execution.
     pub fn shape(&self) -> OpShape {
         match self {
-            ImageOpKind::Grayscale | ImageOpKind::Canny { .. } => OpShape::SingleChannel,
+            ImageOpKind::Grayscale { keepdims } => match M::lit(keepdims) {
+                true => OpShape::SingleChannel,
+                false => OpShape::DropChannelAxis,
+            },
+            ImageOpKind::Canny { .. } => OpShape::SingleChannel,
             ImageOpKind::Threshold { .. }
             | ImageOpKind::Blur { .. }
             | ImageOpKind::ChannelSwap { .. }
@@ -509,7 +518,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Canny { .. }
             | ImageOpKind::CoordinateGrid { .. }
-            | ImageOpKind::Grayscale => require_hw_or_hwc(shape),
+            | ImageOpKind::Grayscale { .. } => require_hw_or_hwc(shape),
             // The resampler handles one to four interleaved channels, and
             // needs a source pixel on each axis: an empty image has nothing
             // to interpolate and no aspect ratio to keep.
@@ -561,7 +570,7 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Threshold { .. } => "Threshold",
             ImageOpKind::Resize { .. } => "Resize",
             ImageOpKind::Blur { .. } => "Blur",
-            ImageOpKind::Grayscale => "Grayscale",
+            ImageOpKind::Grayscale { .. } => "Grayscale",
             ImageOpKind::Canny { .. } => "Canny",
             ImageOpKind::HistogramEqualize => "HistogramEqualize",
             ImageOpKind::Erode { .. } => "Erode",
@@ -618,7 +627,7 @@ impl<M: Mode> Op for ImageOp<M> {
             // A per-pixel map (`grayscale_strided`): reads any view where it
             // lies, which measured faster than packing a transpose or a
             // horizontal flip first.
-            ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
+            ImageOpKind::Grayscale { .. } => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
             // Reads only the shape: any layout, and nothing to pack.
             ImageOpKind::CoordinateGrid { .. } => MemoryEffect::StridePreserving,
@@ -646,7 +655,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::ResizeMin { .. }
             | ImageOpKind::Blur { .. }
             | ImageOpKind::Threshold { .. }
-            | ImageOpKind::Grayscale
+            | ImageOpKind::Grayscale { .. }
             | ImageOpKind::ChannelSwap { .. }
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
@@ -669,7 +678,7 @@ impl<M: Mode> Op for ImageOp<M> {
             // Per-element: threshold compares one pixel, grayscale combines the
             // channels at one pixel, channel_swap reorders channels in place.
             ImageOpKind::Threshold { .. }
-            | ImageOpKind::Grayscale
+            | ImageOpKind::Grayscale { .. }
             | ImageOpKind::ChannelSwap { .. } => SpatialDependency::Pointwise,
             // Separable Gaussian of radius ceil(3σ) — the radius
             // `gaussian_kernel_1d` builds in the runner.
@@ -742,7 +751,7 @@ impl<M: Mode> Op for ImageOp<M> {
             // Resize operates on the input's native dtype via fast_image_resize.
             ImageOpKind::Resize { .. } => None,
             // Grayscale uses BT.601 channel reduction — generic over dtype.
-            ImageOpKind::Grayscale => None,
+            ImageOpKind::Grayscale { .. } => None,
             // Threshold compares each element against a float threshold — generic.
             ImageOpKind::Threshold { .. } => None,
             // Blur operates on the input's native dtype (u8/u16/f32 directly;
@@ -779,7 +788,7 @@ impl<M: Mode> Op for ImageOp<M> {
             // Spatial transformations preserve the input dtype.
             ImageOpKind::Resize { .. } => OutputDTypeRule::PreserveInput,
             // Grayscale is a channel reduction that preserves element dtype.
-            ImageOpKind::Grayscale => OutputDTypeRule::PreserveInput,
+            ImageOpKind::Grayscale { .. } => OutputDTypeRule::PreserveInput,
             // Threshold always produces a U8 binary mask (0 or 255).
             ImageOpKind::Threshold { .. } => OutputDTypeRule::Fixed(DType::U8),
             // Blur preserves the input dtype (Gaussian smoothing is value-preserving).

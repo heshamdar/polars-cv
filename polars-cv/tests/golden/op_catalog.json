@@ -1510,8 +1510,19 @@
     "name": "grayscale",
     "python": "grayscale",
     "visibility": "public",
-    "doc": "Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).",
-    "fields": [],
+    "doc": "Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): ``[H, W, 1]``,\nor ``[H, W]`` with ``keepdims=False``.",
+    "fields": [
+      {
+        "name": "keepdims",
+        "doc": "Keep the channel axis, as size 1 (default), or drop it.",
+        "default": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "bool"
+        }
+      }
+    ],
     "domains": [
       {
         "input": "buffer",
