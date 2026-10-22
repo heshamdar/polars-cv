@@ -530,12 +530,9 @@ impl<M: Mode> ComputeOp<M> {
             NormalizeMethod::MinMax | NormalizeMethod::ZScore => {}
             NormalizeMethod::Percentile | NormalizeMethod::Range => {
                 let (Some(low), Some(high)) = (low, high) else {
-                    let name = match method {
-                        NormalizeMethod::Percentile => "percentile",
-                        _ => "range",
-                    };
                     return Err(format!(
-                        "normalize: method='{name}' requires both 'low' and 'high'"
+                        "normalize: method='{}' requires both 'low' and 'high'",
+                        method.spelling()
                     ));
                 };
                 let (low, high) = (M::sym(low).known(), M::sym(high).known());

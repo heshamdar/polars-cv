@@ -52,6 +52,12 @@ macro_rules! named_variants {
             pub const NAMED: &'static [(&'static str, $ty)] = &[
                 $(($name, $ty::$variant) $(, ($alias, $ty::$variant))*),+
             ];
+
+            /// This variant's canonical spelling: the name a message about it
+            /// uses, read from `NAMED` rather than restated.
+            pub fn spelling(self) -> &'static str {
+                $crate::naming::spelling_of(Self::NAMED, self)
+            }
         }
 
         impl $crate::naming::NamedEnum for $ty {
@@ -393,12 +399,16 @@ pub fn named_from_wire<T: Copy>(
 
 /// [`WireScalar::to_wire`] for a named enum: the variant's canonical name.
 pub fn named_to_wire<T: Copy + PartialEq>(table: &[(&'static str, T)], v: T) -> WireValue<'static> {
-    let name = table
+    WireValue::Str(spelling_of(table, v))
+}
+
+/// `v`'s canonical (first-listed) spelling in a `NAMED` table.
+pub fn spelling_of<T: Copy + PartialEq>(table: &[(&'static str, T)], v: T) -> &'static str {
+    table
         .iter()
         .find(|(_, candidate)| *candidate == v)
         .map(|(name, _)| *name)
-        .expect("named_variants! lists every variant");
-    WireValue::Str(name)
+        .expect("named_variants! lists every variant")
 }
 
 #[cfg(test)]
