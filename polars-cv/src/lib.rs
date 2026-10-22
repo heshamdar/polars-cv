@@ -71,6 +71,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(_check_cloud_access, m)?)?;
     m.add_function(wrap_pyfunction!(check_graph, m)?)?;
     m.add_function(wrap_pyfunction!(check_geom_call, m)?)?;
     m.add_function(wrap_pyfunction!(geom_catalog, m)?)?;
@@ -232,6 +233,32 @@ fn io_catalog() -> String {
 #[pyfunction]
 fn enum_catalog() -> String {
     crate::naming::enum_catalog_json()
+}
+
+/// Resolve and exercise the credential a read of `path` would use
+/// (`polars_cv.check_cloud_access`): `{backend, credential_source, status,
+/// error}`. A credential failure is reported, not raised, so the Python side
+/// can raise it with the credential named; a malformed path or option raises
+/// `ValueError`.
+#[pyfunction]
+#[pyo3(signature = (path, options=None))]
+fn _check_cloud_access(
+    py: Python<'_>,
+    path: &str,
+    options: Option<std::collections::HashMap<String, String>>,
+) -> PyResult<std::collections::HashMap<&'static str, Option<String>>> {
+    let options = options.map(|m| cloud::CloudOptions::from_map(&m));
+    let report = py
+        .detach(|| cloud::check_access(path, options.as_ref()))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok([
+        ("backend", Some(report.backend)),
+        ("credential_source", Some(report.credential_source)),
+        ("status", Some(report.status.to_string())),
+        ("error", report.error),
+    ]
+    .into_iter()
+    .collect())
 }
 
 // ============================================================================

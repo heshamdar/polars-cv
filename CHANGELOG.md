@@ -7,7 +7,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`polars_cv.check_cloud_access(path, cloud_options=None)`** resolves the
+  credential a read of `path` would use and exercises it once (a `HEAD`, or a
+  one-level listing of a prefix), before any row is read. It returns
+  `{"backend", "credential_source", "status"}` and raises
+  `polars_cv.CloudCredentialError` naming the credential when it fails.
+
 ### Fixed
+
+- **A federated gcloud ADC now works with no `cloud_options`.** Ambient
+  detection of an `external_account` / `external_account_authorized_user`
+  ADC (delegated to `gcloud auth application-default print-access-token`)
+  ran only when some `CloudOptions` was passed, so the default gcloud setup
+  under workforce federation failed every `gs://` read with `object_store`'s
+  "unknown variant `external_account_authorized_user`". It now runs either
+  way, as the `CloudOptions` docstring always said.
+- **A failing token names its credential.** A `token_command` or delegated
+  ADC that fails (an expired refresh token, a missing scope) reports
+  `token_command \`...\`` or `gcloud ADC (<type>, <path>)` with the command's
+  stderr, rather than a generic object-store error.
 
 - **`stroke(join="miter")` no longer paints a pocket its ring pinches off.**
   A traced ring with 8-connected pinches strokes to a region whose hole

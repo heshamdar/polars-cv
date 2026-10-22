@@ -41,6 +41,7 @@ use object_store::gcp::GcpCredential;
 use polars::io::cloud::credential_provider::{ObjectStoreCredential, PlCredentialProvider};
 use polars::io::cloud::CloudType;
 use serde::Deserialize;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -66,9 +67,13 @@ const ASSUMED_TOKEN_TTL: Duration = Duration::from_secs(55 * 60);
 /// the credential's identity, and identity is what the provider memo is keyed
 /// on. Rotating the file changes the key, which yields a new provider `Arc`,
 /// which is what makes polars build a fresh store rather than reuse one holding
-/// the superseded credential.
-fn federated_adc_path(options: Option<&CloudOptions>) -> Option<PathBuf> {
-    if std::env::var_os("POLARS_CV_DISABLE_GCS_FEDERATION").is_some() {
+/// the superseded credential. The file's `type` comes with it, for the label
+/// an error names the credential by.
+///
+/// `env` is the environment lookup — `std::env::var_os` outside tests — so
+/// the ambient case is testable without mutating the process environment.
+fn federated_adc_path(options: Option<&CloudOptions>, env: Env<'_>) -> Option<(PathBuf, String)> {
+    if env("POLARS_CV_DISABLE_GCS_FEDERATION").is_some() {
         return None;
     }
     // An explicit service account is the caller's stated intent — don't override.
@@ -80,21 +85,17 @@ fn federated_adc_path(options: Option<&CloudOptions>) -> Option<PathBuf> {
         }
     }
 
-    let path = locate_adc_path(options)?;
+    let path = locate_adc_path(options, env)?;
     // Unreadable ADC: leave it to object_store to report in context.
     let bytes = std::fs::read(&path).ok()?;
-    if is_federated_adc(&bytes) {
-        Some(path)
-    } else {
-        // service_account / authorized_user / unknown -> object_store's job.
-        None
-    }
+    // service_account / authorized_user / unknown -> object_store's job.
+    federated_adc_type(&bytes).map(|typ| (path, typ))
 }
 
 /// Locate the ADC file, mirroring `object_store`/gcloud resolution order:
 /// explicit `google_application_credentials`, then GOOGLE_APPLICATION_CREDENTIALS,
 /// then the well-known gcloud path.
-fn locate_adc_path(options: Option<&CloudOptions>) -> Option<PathBuf> {
+fn locate_adc_path(options: Option<&CloudOptions>, env: Env<'_>) -> Option<PathBuf> {
     if let Some(opts) = options {
         if let Some(p) = opts.config.get("google_application_credentials") {
             if !p.is_empty() {
@@ -102,7 +103,7 @@ fn locate_adc_path(options: Option<&CloudOptions>) -> Option<PathBuf> {
             }
         }
     }
-    if let Ok(p) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
+    if let Some(p) = env("GOOGLE_APPLICATION_CREDENTIALS") {
         if !p.is_empty() {
             return Some(PathBuf::from(p));
         }
@@ -113,7 +114,7 @@ fn locate_adc_path(options: Option<&CloudOptions>) -> Option<PathBuf> {
     } else {
         ".config/gcloud/application_default_credentials.json"
     };
-    if let Some(home) = std::env::var_os(home_var) {
+    if let Some(home) = env(home_var) {
         let p = Path::new(&home).join(rel);
         if p.exists() {
             return Some(p);
@@ -122,23 +123,21 @@ fn locate_adc_path(options: Option<&CloudOptions>) -> Option<PathBuf> {
     None
 }
 
-/// Whether an ADC file is a federated type `object_store` cannot load itself.
+/// The ADC file's `type` if it is a federated type `object_store` cannot load
+/// itself, else `None`.
 ///
 /// Only the `type` field is inspected, so `service_account` files (whose bodies
 /// differ) don't trip a full-schema parse.
-fn is_federated_adc(bytes: &[u8]) -> bool {
+fn federated_adc_type(bytes: &[u8]) -> Option<String> {
     #[derive(Deserialize)]
     struct Probe {
         #[serde(rename = "type")]
         typ: Option<String>,
     }
-    matches!(
-        serde_json::from_slice::<Probe>(bytes)
-            .ok()
-            .and_then(|p| p.typ)
-            .as_deref(),
-        Some("external_account") | Some("external_account_authorized_user")
-    )
+    serde_json::from_slice::<Probe>(bytes)
+        .ok()
+        .and_then(|p| p.typ)
+        .filter(|t| t == "external_account" || t == "external_account_authorized_user")
 }
 
 // ---------------------------------------------------------------------------
@@ -240,10 +239,11 @@ fn static_provider(kind: Bearer, token: String) -> PlCredentialProvider {
 ///
 /// The lock is held across the command run, which is what collapses a burst of
 /// concurrent first-time reads into a single invocation instead of a stampede.
-fn command_provider(kind: Bearer, command: String) -> PlCredentialProvider {
+fn command_provider(kind: Bearer, command: String, label: String) -> PlCredentialProvider {
     let cached: Arc<Mutex<Option<(String, u64)>>> = Arc::new(Mutex::new(None));
     PlCredentialProvider::from_func(move || {
         let command = command.clone();
+        let label = label.clone();
         let cached = cached.clone();
         Box::pin(async move {
             let mut guard = cached.lock().unwrap_or_else(|e| e.into_inner());
@@ -253,7 +253,7 @@ fn command_provider(kind: Bearer, command: String) -> PlCredentialProvider {
                 }
             }
             let token = run_token_command(&command)
-                .map_err(|e| polars::prelude::polars_err!(ComputeError: "{e}"))?;
+                .map_err(|e| polars::prelude::polars_err!(ComputeError: "{label}: {e}"))?;
             // A token command's stdout is opaque, so a real expiry is not
             // obtainable in general. The assumed window is unchanged from when
             // it was this module's own cache TTL — what changes is that polars
@@ -263,6 +263,90 @@ fn command_provider(kind: Bearer, command: String) -> PlCredentialProvider {
             Ok((kind.wrap(token), expiry))
         })
     })
+}
+
+/// An environment-variable lookup: `std::env::var_os` outside tests.
+type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
+
+fn process_env(key: &str) -> Option<OsString> {
+    std::env::var_os(key)
+}
+
+/// Which credential a remote read uses: the one decision, read by both
+/// [`credential_provider`] (to install it) and [`credential_source`] (to name
+/// it in an error), so the credential an error names is the one in effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Choice {
+    /// Unsigned requests (`anonymous=True`).
+    Anonymous,
+    /// Nothing bespoke: `object_store`'s own chain.
+    Chain,
+    /// A pre-obtained GCS bearer token.
+    Static,
+    /// A user-configured `token_command`.
+    Command(String),
+    /// A federated ambient ADC, delegated to `gcloud`: its path and `type`.
+    FederatedAdc(PathBuf, String),
+}
+
+impl Choice {
+    /// How an error names this credential.
+    fn label(&self, cloud_type: &CloudType) -> String {
+        match self {
+            Choice::Anonymous => "anonymous (unsigned requests)".to_string(),
+            Choice::Chain => {
+                let chain = match cloud_type {
+                    CloudType::Gcp => {
+                        "service account / authorized_user ADC, or the metadata server"
+                    }
+                    CloudType::Aws => "AWS env vars, profile, or instance role",
+                    CloudType::Azure => "Azure env vars or managed identity",
+                    _ => "the backend's defaults",
+                };
+                format!("object_store default credential chain ({chain})")
+            }
+            Choice::Static => "gcs_bearer_token".to_string(),
+            Choice::Command(command) => format!("token_command `{command}`"),
+            Choice::FederatedAdc(path, typ) => format!(
+                "gcloud ADC ({typ}, {}) via `{GCLOUD_ADC_COMMAND}`",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// Decide which credential applies. Ambient detection (a federated ADC) runs
+/// whether or not any options were given: the default gcloud setup under
+/// workforce federation passes none, and was once left to `object_store`,
+/// which cannot parse it.
+fn choose(cloud_type: &CloudType, options: Option<&CloudOptions>, env: Env<'_>) -> Choice {
+    // Anonymous access is requested by skipping signing entirely; installing a
+    // credential alongside it would contradict the request.
+    if options.is_some_and(|o| o.anonymous == Some(true)) {
+        return Choice::Anonymous;
+    }
+    // S3 signs with SigV4; `cloud::polars_options` rejects a bearer input
+    // there before this is reached.
+    if !matches!(cloud_type, CloudType::Gcp | CloudType::Azure) {
+        return Choice::Chain;
+    }
+    let gcs = matches!(cloud_type, CloudType::Gcp);
+    if let Some(opts) = options {
+        if gcs && opts.bearer_token.is_some() {
+            return Choice::Static;
+        }
+        if let Some(command) = opts.token_command.as_deref() {
+            if !command.trim().is_empty() {
+                return Choice::Command(command.to_string());
+            }
+        }
+    }
+    if gcs {
+        if let Some((path, typ)) = federated_adc_path(options, env) {
+            return Choice::FederatedAdc(path, typ);
+        }
+    }
+    Choice::Chain
 }
 
 /// Choose the credential provider for a remote read, if any.
@@ -276,62 +360,58 @@ pub(crate) fn credential_provider(
     cloud_type: &CloudType,
     options: Option<&CloudOptions>,
 ) -> Result<Option<PlCredentialProvider>, CloudError> {
-    let Some(opts) = options else {
-        return Ok(None);
-    };
+    provider_for(cloud_type, options, &process_env)
+}
 
-    // Anonymous access is requested by skipping signing entirely; installing a
-    // credential alongside it would contradict the request.
-    if opts.anonymous == Some(true) {
-        return Ok(None);
-    }
-
+fn provider_for(
+    cloud_type: &CloudType,
+    options: Option<&CloudOptions>,
+    env: Env<'_>,
+) -> Result<Option<PlCredentialProvider>, CloudError> {
     let kind = match cloud_type {
         CloudType::Gcp => Bearer::Gcs,
-        CloudType::Azure => Bearer::Azure,
-        // S3 signs with SigV4; `cloud::polars_options` rejects a bearer input
-        // there before this is reached.
-        _ => return Ok(None),
+        _ => Bearer::Azure,
     };
-
-    if kind == Bearer::Gcs {
-        if let Some(token) = opts.bearer_token.as_deref() {
-            let token = token.to_string();
-            return Ok(Some(memoized(format!("gcp:bearer:{token}"), || {
+    let choice = choose(cloud_type, options, env);
+    let label = choice.label(cloud_type);
+    Ok(match choice {
+        Choice::Anonymous | Choice::Chain => None,
+        Choice::Static => {
+            let token = options
+                .and_then(|o| o.bearer_token.clone())
+                .unwrap_or_default();
+            Some(memoized(format!("gcp:bearer:{token}"), || {
                 static_provider(kind, token.clone())
-            })));
+            }))
         }
-    }
-
-    if let Some(command) = opts.token_command.as_deref() {
-        if !command.trim().is_empty() {
-            let command = command.to_string();
+        Choice::Command(command) => {
             let prefix = match kind {
                 Bearer::Gcs => "gcp",
                 Bearer::Azure => "azure",
             };
-            return Ok(Some(memoized(format!("{prefix}:cmd:{command}"), || {
-                command_provider(kind, command.clone())
-            })));
+            Some(memoized(format!("{prefix}:cmd:{command}"), || {
+                command_provider(kind, command.clone(), label)
+            }))
         }
-    }
-
-    if kind == Bearer::Gcs {
-        if let Some(path) = federated_adc_path(options) {
+        Choice::FederatedAdc(path, _) => {
             let key = format!("gcp:adc:{}", cache_key(&path));
-            return Ok(Some(memoized(key, || {
-                command_provider(kind, GCLOUD_ADC_COMMAND.to_string())
-            })));
+            Some(memoized(key, || {
+                command_provider(kind, GCLOUD_ADC_COMMAND.to_string(), label)
+            }))
         }
-    }
+    })
+}
 
-    Ok(None)
+/// How an error names the credential a read of `cloud_type` uses under
+/// `options`: the same decision [`credential_provider`] installs.
+pub(crate) fn credential_source(cloud_type: &CloudType, options: Option<&CloudOptions>) -> String {
+    choose(cloud_type, options, &process_env).label(cloud_type)
 }
 
 /// Run a token command through the platform shell and return its trimmed
-/// stdout. Using the shell keeps the option flexible (arguments, pipes, env)
+/// stdout. Errors do not repeat the command: the caller's label names it. Using the shell keeps the option flexible (arguments, pipes, env)
 /// and matches how users write such commands.
-fn run_token_command(command: &str) -> Result<String, CloudError> {
+fn run_token_command(command: &str) -> Result<String, String> {
     let output = if cfg!(windows) {
         std::process::Command::new("cmd")
             .args(["/C", command])
@@ -341,20 +421,18 @@ fn run_token_command(command: &str) -> Result<String, CloudError> {
             .args(["-c", command])
             .output()
     }
-    .map_err(|e| CloudError::StoreError(format!("failed to run token command `{command}`: {e}")))?;
+    .map_err(|e| format!("failed to run: {e}"))?;
 
     if !output.status.success() {
-        return Err(CloudError::StoreError(format!(
-            "token command `{command}` exited with {}: {}",
+        return Err(format!(
+            "exited with {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        ));
     }
     let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if token.is_empty() {
-        return Err(CloudError::StoreError(format!(
-            "token command `{command}` produced no output"
-        )));
+        return Err("produced no output".to_string());
     }
     Ok(token)
 }
@@ -381,14 +459,78 @@ mod tests {
     }
 
     #[test]
-    fn test_is_federated_adc() {
-        assert!(is_federated_adc(br#"{"type": "external_account"}"#));
-        assert!(is_federated_adc(
-            br#"{"type": "external_account_authorized_user"}"#
-        ));
-        assert!(!is_federated_adc(br#"{"type": "service_account"}"#));
-        assert!(!is_federated_adc(br#"{"type": "authorized_user"}"#));
-        assert!(!is_federated_adc(b"not json"));
+    fn test_federated_adc_type() {
+        let typ = |b: &[u8]| federated_adc_type(b);
+        assert_eq!(
+            typ(br#"{"type": "external_account"}"#).as_deref(),
+            Some("external_account")
+        );
+        assert_eq!(
+            typ(br#"{"type": "external_account_authorized_user"}"#).as_deref(),
+            Some("external_account_authorized_user")
+        );
+        assert_eq!(typ(br#"{"type": "service_account"}"#), None);
+        assert_eq!(typ(br#"{"type": "authorized_user"}"#), None);
+        assert_eq!(typ(b"not json"), None);
+    }
+
+    /// An environment holding only `vars`, so ambient detection is tested
+    /// without touching the process environment the other tests share.
+    fn env_of(vars: Vec<(&'static str, PathBuf)>) -> impl Fn(&str) -> Option<OsString> {
+        move |key| {
+            vars.iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_os_str().to_owned())
+        }
+    }
+
+    #[test]
+    fn ambient_federated_adc_applies_with_no_options() {
+        // The default gcloud setup under workforce federation: an
+        // `external_account_authorized_user` ADC and no cloud_options at all.
+        // Watched failing: with `None` returning early, this chose `Chain`.
+        let (dir, path) = write_adc("ambient", r#"{"type": "external_account_authorized_user"}"#);
+        let env = env_of(vec![("GOOGLE_APPLICATION_CREDENTIALS", path.clone())]);
+        assert_eq!(
+            choose(&CloudType::Gcp, None, &env),
+            Choice::FederatedAdc(path.clone(), "external_account_authorized_user".into())
+        );
+        assert!(provider_for(&CloudType::Gcp, None, &env).unwrap().is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn no_options_and_no_federated_adc_leaves_the_chain() {
+        let (dir, path) = write_adc("ambient_sa", r#"{"type": "service_account"}"#);
+        let sa = env_of(vec![("GOOGLE_APPLICATION_CREDENTIALS", path.clone())]);
+        assert_eq!(choose(&CloudType::Gcp, None, &sa), Choice::Chain);
+        let empty = env_of(vec![]);
+        assert_eq!(choose(&CloudType::Gcp, None, &empty), Choice::Chain);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_failing_credential_names_its_source() {
+        let (dir, path) = write_adc("label", r#"{"type": "external_account"}"#);
+        let label =
+            Choice::FederatedAdc(path.clone(), "external_account".into()).label(&CloudType::Gcp);
+        assert!(
+            label.starts_with("gcloud ADC (external_account, "),
+            "{label}"
+        );
+        assert!(label.contains(&path.display().to_string()), "{label}");
+
+        let opts = opts_with(&[("token_command", "echo broker down >&2; exit 3")]);
+        let provider = credential_provider(&CloudType::Gcp, Some(&opts))
+            .unwrap()
+            .unwrap();
+        let err = fetch(&provider).unwrap_err();
+        assert!(
+            err.contains("token_command `echo broker down >&2; exit 3`: exited with"),
+            "{err}"
+        );
+        assert!(err.contains("broker down"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Ask a provider for a GCS credential exactly the way `object_store` will.
@@ -427,7 +569,9 @@ mod tests {
         assert!(credential_provider(&CloudType::Aws, Some(&opts))
             .unwrap()
             .is_none());
-        assert!(credential_provider(&CloudType::Gcp, None)
+        // No options and no federated ADC: the chain. (With a federated ADC
+        // and no options, see `ambient_federated_adc_applies_with_no_options`.)
+        assert!(provider_for(&CloudType::Gcp, None, &env_of(vec![]))
             .unwrap()
             .is_none());
     }

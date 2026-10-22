@@ -86,6 +86,13 @@ def io_catalog() -> str:
 def enum_catalog() -> str:
     """Return the registered-enum catalogue as JSON (see ``tests/golden/enum_catalog.json``)."""
 
+def _check_cloud_access(
+    path: str, options: dict[str, str] | None = None
+) -> dict[str, str | None]:
+    """Resolve and exercise the credential a read of ``path`` would use:
+    ``{backend, credential_source, status, error}``; see
+    ``polars_cv.check_cloud_access``."""
+
 def check_graph(graph_json: str) -> None:
     """Compile and plan a graph and check every output's sink, as the plugin
     will; raise ``ValueError``."""

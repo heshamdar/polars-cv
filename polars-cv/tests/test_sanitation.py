@@ -528,6 +528,8 @@ _REQUIRED_LIB_HOOKS = (
     # How many workers ran the most recent call's rows, read by
     # `test_an_eager_call_after_a_streaming_run_uses_the_pool`.
     "_last_split_workers",
+    # The credential check behind `polars_cv.check_cloud_access`.
+    "_check_cloud_access",
     # The process-wide row-splitting switch behind
     # `polars_cv.set_row_parallelism` / `row_parallelism`.
     "set_row_parallelism",
