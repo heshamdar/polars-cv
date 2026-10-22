@@ -96,7 +96,7 @@ impl<'a> GeomParams<'a> {
         let mut claimed: Vec<usize> = Vec::new();
         let mut bad: Option<(&'static str, usize)> = None;
         op.visit_inputs(&mut |field, input| {
-            // An `H`/`W` field claims no input; resolving it finds no buffer.
+            // A `this` field claims no input; resolving it finds no buffer.
             if let RowInput::Slot(slot) = input {
                 if slot == 0 || slot >= inputs.len() {
                     bad.get_or_insert((field, slot));
@@ -216,7 +216,7 @@ impl<'a> GeomParams<'a> {
         let values = crate::ops::param::RowValues {
             row: row.unwrap_or(0),
             ctx: &self.ctx,
-            // A geometry has no buffer for an `H`/`W` field to read.
+            // A geometry has no buffer for a `this` field to read.
             shape: None,
         };
         let step: GeometryOp = view_buffer::mode::Resolve::resolve(op, &values)?;

@@ -25,9 +25,9 @@ if TYPE_CHECKING:
     import numpy as np
 
 from ._cloud import CloudCredentialError, check_cloud_access
-from ._dims import Dim, H, W
 from ._dtype_names import SINK_NUMPY_NAMES
 from ._optimize import OptFlags
+from ._this import This, ThisExpr, this
 from ._types import (
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -692,9 +692,9 @@ def mask_dice(
 
 __all__ = [
     "Pipeline",
-    "H",
-    "W",
-    "Dim",
+    "this",
+    "This",
+    "ThisExpr",
     "CvNamespace",
     "LazyPipelineExpr",
     "region_stats",

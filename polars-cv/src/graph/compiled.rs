@@ -80,7 +80,7 @@ struct NodePlan {
     input: PlannedInput,
     /// The node's ops, compiled.
     steps: Vec<CompiledStep>,
-    /// A step reads its input's `H`/`W`, so each row carries the shape
+    /// A step reads its input's shape through `this`, so each row carries the shape
     /// through the steps as they resolve ([`next_shape`]).
     reads_shape: bool,
 }
@@ -639,7 +639,7 @@ impl CompiledGraph {
             // re-resolved for this row through typed slot reads. The scratch
             // Vec is reused so steady-state rows allocate nothing here.
             dto_scratch.clear();
-            // The shape each step reads, for a node whose `H`/`W` parameters
+            // The shape each step reads, for a node whose `this` parameters
             // read it: the input's, then each resolved step's output over it
             // (`None` once it is not known before the step runs).
             let mut shape: Option<Vec<usize>> = if np.reads_shape {
