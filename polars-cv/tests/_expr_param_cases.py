@@ -275,6 +275,37 @@ CASES: list[ExprCase] = [
         (10.0, 50.0, 90.0),
     ),
     ExprCase(
+        "rank_filter",
+        "height",
+        lambda v: gray().rank_filter(height=v, width=3),
+        (1, 3, 5),
+    ),
+    ExprCase(
+        "rank_filter",
+        "width",
+        lambda v: gray().rank_filter(height=3, width=v),
+        (1, 3, 5),
+    ),
+    ExprCase(
+        "rank_filter",
+        "q",
+        lambda v: gray().rank_filter(height=3, width=3, q=v),
+        (0.0, 50.0, 100.0),
+    ),
+    ExprCase(
+        "rank_filter",
+        "border",
+        lambda v: gray().rank_filter(height=5, width=5, q=90.0, border=v),
+        ("replicate", "zero", "reflect"),
+    ),
+    ExprCase("median_filter", "size", lambda v: gray().median_filter(v), (1, 3, 5)),
+    ExprCase(
+        "median_filter",
+        "border",
+        lambda v: gray().median_filter(5, border=v),
+        ("replicate", "zero", "reflect"),
+    ),
+    ExprCase(
         "flip",
         "when",
         lambda v: rgb().flip(axes=[1], when=v),

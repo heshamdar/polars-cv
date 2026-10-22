@@ -798,6 +798,23 @@
     "None"
    ]
   ],
+  "background_divide": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "sigma",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "epsilon",
+    "KEYWORD_ONLY",
+    "1e-06"
+   ]
+  ],
   "bitwise_and": [
    [
     "self",
@@ -1472,6 +1489,23 @@
     ""
    ]
   ],
+  "median_filter": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "size",
+    "POSITIONAL_OR_KEYWORD",
+    "3"
+   ],
+   [
+    "border",
+    "KEYWORD_ONLY",
+    "'replicate'"
+   ]
+  ],
   "merge_pipe": [
    [
     "self",
@@ -1742,6 +1776,33 @@
     "pipeline",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "rank_filter": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "q",
+    "KEYWORD_ONLY",
+    "50.0"
+   ],
+   [
+    "border",
+    "KEYWORD_ONLY",
+    "'replicate'"
    ]
   ],
   "rasterize": [
@@ -3257,6 +3318,23 @@
     "'lanczos3'"
    ]
   ],
+  "median_filter": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "size",
+    "POSITIONAL_OR_KEYWORD",
+    "3"
+   ],
+   [
+    "border",
+    "KEYWORD_ONLY",
+    "'replicate'"
+   ]
+  ],
   "morphology_close": [
    [
     "self",
@@ -3486,6 +3564,33 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "rank_filter": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "q",
+    "KEYWORD_ONLY",
+    "50.0"
+   ],
+   [
+    "border",
+    "KEYWORD_ONLY",
+    "'replicate'"
    ]
   ],
   "rasterize": [

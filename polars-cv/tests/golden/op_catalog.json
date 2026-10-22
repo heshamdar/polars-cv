@@ -2274,6 +2274,63 @@
     ]
   },
   {
+    "name": "rank_filter",
+    "python": "rank_filter",
+    "visibility": "public",
+    "doc": "Rank filter: each pixel the ``q``-th percentile of its ``height`` x\n``width`` window (linear interpolation, as every reduction here), per\nchannel; ``q=50`` is a median filter, 0 and 100 minimum and maximum\nfilters. Robust to outliers a blur averages in: lesion-robust\nbackgrounds, artifact detection, a running median along rows with\n``height=1``. The result keeps the input's dtype (a fractional\npercentile is rounded).\n\nExample:\n    >>> pipe = Pipeline().source(\"array\").rank_filter(height=1, width=25)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Window height: odd, >= 1. Accepts a Polars expression.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Window width: odd, >= 1. Accepts a Polars expression.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "q",
+        "doc": "The percentile of each window, in [0, 100] (default 50: a median).\nAccepts a Polars expression.",
+        "default": 50.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "border",
+        "doc": "Border handling (``\"replicate\"``, ``\"zero\"``, ``\"reflect\"``), as\n``convolve2d``'s.",
+        "default": "replicate",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "BorderMode",
+          "variants": [
+            "replicate",
+            "zero",
+            "reflect"
+          ]
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "rasterize",
     "python": "rasterize",
     "visibility": "internal",

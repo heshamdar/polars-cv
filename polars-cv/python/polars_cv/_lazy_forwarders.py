@@ -501,6 +501,15 @@ class _LazyForwardersMixin:
             )
         )
 
+    def median_filter(
+        self, size: IntOrExpr = 3, *, border: str | pl.Expr = "replicate"
+    ) -> LazyPipelineExpr:
+        """Median filter: ``rank_filter(height=size, width=size, q=50)``.
+
+        Lazy form of :meth:`Pipeline.median_filter` on this expression's output.
+        """
+        return self.pipe(self._continuation().median_filter(size=size, border=border))
+
     def morphology_close(
         self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
     ) -> LazyPipelineExpr:
@@ -646,6 +655,24 @@ class _LazyForwardersMixin:
         Lazy form of :meth:`Pipeline.perimeter` on this expression's output.
         """
         return self.pipe(self._continuation().perimeter())
+
+    def rank_filter(
+        self,
+        *,
+        height: IntOrExpr,
+        width: IntOrExpr,
+        q: FloatOrExpr = 50.0,
+        border: str | pl.Expr = "replicate",
+    ) -> LazyPipelineExpr:
+        """Rank filter: each pixel the ``q``-th percentile of its ``height`` x
+
+        Lazy form of :meth:`Pipeline.rank_filter` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().rank_filter(
+                height=height, width=width, q=q, border=border
+            )
+        )
 
     def rasterize(
         self,

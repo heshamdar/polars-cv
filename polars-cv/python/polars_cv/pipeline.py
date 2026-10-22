@@ -595,6 +595,22 @@ class Pipeline(_OpsMixin):
         """
         return self.flip(axes=[0], when=when)
 
+    @_sugar("rank_filter")
+    def median_filter(
+        self, size: IntOrExpr = 3, *, border: str | pl.Expr = "replicate"
+    ) -> "Pipeline":
+        """
+        Median filter: ``rank_filter(height=size, width=size, q=50)``.
+
+        Args:
+            size: The square window's side: odd, >= 1.
+            border: Border handling ("replicate", "zero", "reflect").
+
+        Returns:
+            Self for chaining.
+        """
+        return self.rank_filter(height=size, width=size, q=50.0, border=border)
+
     @_sugar("reduce_percentile")
     def reduce_median(self, *, axis: int | None = None) -> "Pipeline":
         """
