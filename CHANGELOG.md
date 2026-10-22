@@ -134,6 +134,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`background_divide` on an integer image** blurred in the image's own
+  dtype, so a u8 background rounded to whole numbers: a faint one (below 0.5)
+  was 0 and the image was divided by epsilon alone (a 1e6 spike). The
+  background is now computed in the image's float (f32, or f64 for a
+  32/64-bit image).
+- **`normalize(method="percentile")` over an image with a NaN pixel** gave
+  all zeros, as if the window were empty; it is now NaN, as `minmax` and
+  `np.percentile` give.
+- **`label_reduce` and `region_stats` over a region with no pixels** (outside
+  the image, or no points) gave 0.0 for every reduction; they now give what
+  every other reduction gives over nothing: NaN, or 0 for `sum` and `count`.
 - **Two optimizations changed results on this release's new parameters.**
   `spatial_window_pushdown` moved a crop ahead of an op reading `this`, so
   `scale(this.height).crop(height=2, width=2)` scaled by 2, not the input's

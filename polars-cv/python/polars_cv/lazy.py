@@ -499,7 +499,11 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         """
         from polars_cv.pipeline import Pipeline
 
-        background = self.pipe(Pipeline().blur(sigma).add_constant(epsilon))
+        # Epsilon first: `add_constant` promotes to the image's float
+        # (f32, or f64 for a 32/64-bit image), so the blur runs in it rather
+        # than rounding an integer image's background to whole numbers. A
+        # Gaussian's weights sum to one, so blur(x + e) is blur(x) + e.
+        background = self.pipe(Pipeline().add_constant(epsilon).blur(sigma))
         return self.divide(background)
 
     def channel_merge(self, *others: "LazyPipelineExpr") -> "LazyPipelineExpr":

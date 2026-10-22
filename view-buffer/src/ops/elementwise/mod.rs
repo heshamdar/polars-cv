@@ -252,9 +252,11 @@ fn lower_normalize(normalization: &Normalization, out_dtype: DType, buf: &ViewBu
 }
 
 /// `[lo, hi]` mapped to [0, 1], clipped outside it; an empty window has no
-/// spread, so every element is zero (as minmax over a constant image).
+/// spread, so every element is zero (as minmax over a constant image). A NaN
+/// end is no window at all: it carries through the kernels (which propagate
+/// NaN), as minmax's does, rather than reading as an empty one.
 fn window(lo: f32, hi: f32, out_dtype: DType) -> Lowered {
-    if hi.partial_cmp(&lo) != Some(std::cmp::Ordering::Greater) {
+    if hi <= lo {
         return Lowered::Zeros(out_dtype);
     }
     Lowered::Kernels(vec![FusedKernel {
