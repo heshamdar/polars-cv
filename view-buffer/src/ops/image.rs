@@ -74,6 +74,32 @@ pub enum ImageOpKind<M: Mode = Exec> {
     ///     >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
     #[op(name = "equalize_histogram", sample = {})]
     HistogramEqualize,
+    /// Rank filter: each pixel the ``q``-th percentile of its ``height`` x
+    /// ``width`` window (linear interpolation, as every reduction here), per
+    /// channel; ``q=50`` is a median filter, 0 and 100 minimum and maximum
+    /// filters. Robust to outliers a blur averages in: lesion-robust
+    /// backgrounds, artifact detection, a running median along rows with
+    /// ``height=1``. The result keeps the input's dtype (a fractional
+    /// percentile is rounded).
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("array").rank_filter(height=1, width=25)
+    #[op(name = "rank_filter", sample = {"height": 3, "width": 5, "q": 25.0,
+                                        "border": "reflect"})]
+    RankFilter {
+        /// Window height: odd, >= 1. Accepts a Polars expression.
+        height: M::V<u32>,
+        /// Window width: odd, >= 1. Accepts a Polars expression.
+        width: M::V<u32>,
+        /// The percentile of each window, in [0, 100] (default 50: a median).
+        /// Accepts a Polars expression.
+        #[param(default = 50.0)]
+        q: M::V<f64>,
+        /// Border handling (``"replicate"``, ``"zero"``, ``"reflect"``), as
+        /// ``convolve2d``'s.
+        #[param(default = "replicate")]
+        border: M::V<crate::ops::filter::BorderMode>,
+    },
     /// Morphological erosion: the local minimum over a footprint (a
     /// `ksize × ksize` square, or a disk), edges replicated. Requires
     /// single-channel input (e.g. after `.grayscale()` or `.threshold()`).
@@ -330,6 +356,22 @@ impl<M: Mode> ImageOpKind<M> {
     /// Refuse a parameter combination no row can execute. Every image op's
     /// parameters are independent, so there is none.
     pub fn check(&self) -> Result<(), String> {
+        // A rank filter's window has a centre pixel, and its q a percentile.
+        if let ImageOpKind::RankFilter {
+            height, width, q, ..
+        } = self
+        {
+            for (name, side) in [("height", height), ("width", width)] {
+                if let Some(n) = M::sym(side).known().filter(|n| n % 2 == 0) {
+                    return Err(format!(
+                        "rank_filter: {name} = {n}, but a window's side is odd (1, 3, 5, ...)"
+                    ));
+                }
+            }
+            if let Some(q) = M::sym(q).known().filter(|q| !(0.0..=100.0).contains(q)) {
+                return Err(format!("rank_filter: q = {q} is outside [0, 100]"));
+            }
+        }
         // A Gaussian's sigma is finite and non-negative; 0 is no blur. A
         // negative sigma has no kernel (it used to round to no blur), and NaN
         // or infinity none at all.
@@ -377,6 +419,7 @@ impl<M: Mode> ImageOpKind<M> {
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::RankFilter { .. }
             | ImageOpKind::DistanceTransform { .. } => OpShape::Preserve,
             // The input's own H and W, with an (x, y) pair at each pixel.
             ImageOpKind::CoordinateGrid { .. } => OpShape::Canvas { of: 0, channels: 2 },
@@ -488,6 +531,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
             | ImageOpKind::DistanceTransform { .. } => require_single_channel(shape),
+            ImageOpKind::RankFilter { .. } => require_hw_or_hwc(shape),
             // Image kernels read axes 0/1 as height/width and axis 2 as channels;
             // anything else would be passed through unchanged or read with an
             // axis silently dropped, so it is refused rather than degraded.
@@ -579,6 +623,7 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Canny { .. } => "Canny",
             ImageOpKind::HistogramEqualize => "HistogramEqualize",
             ImageOpKind::Erode { .. } => "Erode",
+            ImageOpKind::RankFilter { .. } => "RankFilter",
             ImageOpKind::Dilate { .. } => "Dilate",
             ImageOpKind::MorphGradient { .. } => "MorphGradient",
             ImageOpKind::DistanceTransform { .. } => "DistanceTransform",
@@ -634,6 +679,8 @@ impl<M: Mode> Op for ImageOp<M> {
             // horizontal flip first.
             ImageOpKind::Grayscale { .. } => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
+            // Reads one packed f64 copy of its input (`apply_rank_filter`).
+            ImageOpKind::RankFilter { .. } => MemoryEffect::RequiresContiguous,
             // Reads only the shape: any layout, and nothing to pack.
             ImageOpKind::CoordinateGrid { .. } => MemoryEffect::StridePreserving,
         }
@@ -665,6 +712,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::RankFilter { .. }
             | ImageOpKind::DistanceTransform { .. }
             | ImageOpKind::CoordinateGrid { .. }
             | ImageOpKind::Canny { .. }
@@ -702,6 +750,13 @@ impl<M: Mode> Op for ImageOp<M> {
                 (Sym::Known(k), Sym::Known(n)) => Sym::Known((k as usize / 2) * n as usize),
                 _ => Sym::PerRow,
             }),
+            // A height x width window reaches its half-sides out.
+            ImageOpKind::RankFilter { height, width, .. } => {
+                SpatialDependency::neighborhood_of(match (M::sym(height), M::sym(width)) {
+                    (Sym::Known(h), Sym::Known(w)) => Sym::Known(h.max(w) as usize / 2),
+                    _ => Sym::PerRow,
+                })
+            }
             // Gradient = one dilate − one erode, each of half-extent ksize / 2.
             ImageOpKind::MorphGradient { ksize, .. } => {
                 SpatialDependency::neighborhood_of(M::sym(ksize).map(|k| k as usize / 2))
@@ -769,6 +824,8 @@ impl<M: Mode> Op for ImageOp<M> {
             // Morphological ops work on native dtype (typically U8 binary masks)
             ImageOpKind::Erode { .. } => None,
             ImageOpKind::Dilate { .. } => None,
+            // Reads every dtype as f64 and writes its own back.
+            ImageOpKind::RankFilter { .. } => None,
             ImageOpKind::MorphGradient { .. } => None,
             // Reads only whether each element is zero, in its own dtype.
             ImageOpKind::DistanceTransform { .. } => None,
@@ -804,6 +861,7 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::HistogramEqualize => OutputDTypeRule::Fixed(DType::U8),
             // Morphological ops preserve the input dtype.
             ImageOpKind::Erode { .. } => OutputDTypeRule::PreserveInput,
+            ImageOpKind::RankFilter { .. } => OutputDTypeRule::PreserveInput,
             ImageOpKind::Dilate { .. } => OutputDTypeRule::PreserveInput,
             ImageOpKind::MorphGradient { .. } => OutputDTypeRule::PreserveInput,
             // A distance, whatever the mask's dtype.

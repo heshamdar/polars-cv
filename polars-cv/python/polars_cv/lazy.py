@@ -472,6 +472,31 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             input=self,
         )
 
+    def background_divide(
+        self, sigma: float | pl.Expr, *, epsilon: float = 1e-6
+    ) -> "LazyPipelineExpr":
+        """
+        Flat-field: divide this image by its own background,
+        ``image / (blur(image, sigma) + epsilon)``.
+
+        A wide blur is the slowly varying background (illumination, a
+        detector's gain); dividing it out leaves the local structure. The
+        result is a float image, as ``divide`` gives.
+
+        Args:
+            sigma: The background blur's sigma (wide: a fraction of the
+                image's size). Accepts a Polars expression.
+            epsilon: Added to the background so a black region does not
+                divide by zero.
+
+        Returns:
+            New LazyPipelineExpr: the flat-fielded image.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        background = self.pipe(Pipeline().blur(sigma).add_constant(epsilon))
+        return self.divide(background)
+
     def channel_merge(self, *others: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """
         Join this buffer's channels with the operands', in order.

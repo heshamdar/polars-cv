@@ -330,6 +330,41 @@ def _block_ref(x: np.ndarray, p: Params) -> np.ndarray:
     return out
 
 
+def _rank_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    return {
+        "height": draw(st.sampled_from([1, 3, 5]), label="height"),
+        "width": draw(st.sampled_from([1, 3, 5]), label="width"),
+        "q": draw(st.sampled_from([0.0, 25.0, 50.0, 100.0]), label="q"),
+    }
+
+
+def _rank_ref_of(q_of: Callable[[Params], float], size_of) -> Reference:
+    @quiet
+    def ref(x: np.ndarray, p: Params) -> np.ndarray:
+        """Each window's percentile over the edge-replicated image, per
+        channel, rounded back into the input's dtype."""
+        bh, bw = size_of(p)
+        pad = [(bh // 2, bh // 2), (bw // 2, bw // 2)] + [(0, 0)] * (x.ndim - 2)
+        padded = np.pad(x.astype(np.float64), pad, mode="edge")
+        windows = np.lib.stride_tricks.sliding_window_view(
+            padded, (bh, bw), axis=(0, 1)
+        )
+        out = np.percentile(windows, q_of(p), axis=(-2, -1))
+        return _round_into(out, x.dtype)
+
+    return ref
+
+
+def _round_into(values: np.ndarray, dtype: np.dtype) -> np.ndarray:
+    """f64 values in *dtype* by the conversion rule: rounded half away from
+    zero and saturated for an integer, as is for a float."""
+    if np.issubdtype(dtype, np.floating):
+        return values.astype(dtype)
+    info = np.iinfo(dtype)
+    rounded = np.sign(values) * np.floor(np.abs(values) + 0.5)
+    return np.clip(rounded, info.min, info.max).astype(dtype)
+
+
 def _transpose_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {"axes": draw(st.permutations(list(range(x.ndim))), label="axes")}
 
@@ -2340,6 +2375,23 @@ OPS: dict[str, OpSpec] = {
             domain_out="scalar",
             terminal=True,
             note="set bits of each element's two's-complement bytes",
+        ),
+        _spec(
+            "rank_filter",
+            _rank_params,
+            ref=_rank_ref_of(lambda p: p["q"], lambda p: (p["height"], p["width"])),
+            ref_accepts=lambda x, p: np.isfinite(x).all(),
+            tol=_stat_tol,
+            kind="global",
+            note="edge-replicated windows, numpy's percentile interpolation",
+        ),
+        _spec(
+            "median_filter",
+            ref=_rank_ref_of(lambda p: 50.0, lambda p: (3, 3)),
+            ref_accepts=lambda x, p: np.isfinite(x).all(),
+            tol=_stat_tol,
+            kind="global",
+            note="rank_filter(q=50) over 3x3",
         ),
         _spec(
             "block_reduce",

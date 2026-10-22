@@ -520,6 +520,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "pad",
         "pad_to_size",
         "perceptual_hash",
+        "rank_filter",
         "rasterize",
         "reciprocal",
         "reduce_argmax",
@@ -1074,6 +1075,17 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
         "hash_size": {"kind": "scalar", "per_row": False, "py": "int"},
     },
+    "rank_filter": {
+        "height": {"kind": "scalar", "per_row": True, "py": "int"},
+        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "q": {"kind": "scalar", "per_row": True, "py": "float"},
+        "border": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "BorderMode",
+            "variants": ["replicate", "zero", "reflect"],
+        },
+    },
     "rasterize": {
         "size": {
             "kind": "one_of",
@@ -1382,6 +1394,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "pad_to_size": {"position": "center", "value": 0.0},
     "perceptual_hash": {"algorithm": "perceptual", "hash_size": 64},
+    "rank_filter": {"q": 50.0, "border": "replicate"},
     "rasterize": {"fill_value": 255, "background": 0, "supersample": 1},
     "reduce_masked": {"reduction": "mean"},
     "reduce_std": {"ddof": 0},
@@ -1504,6 +1517,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "pad": [{"input": "buffer", "output": "buffer"}],
     "pad_to_size": [{"input": "buffer", "output": "buffer"}],
     "perceptual_hash": [{"input": "buffer", "output": "vector"}],
+    "rank_filter": [{"input": "buffer", "output": "buffer"}],
     "rasterize": [{"input": "contour", "output": "buffer"}],
     "reciprocal": [{"input": "buffer", "output": "buffer"}],
     "reduce_argmax": [
@@ -2802,6 +2816,39 @@ class _OpsMixin:
         """
         return self._append_typed(
             "perceptual_hash", {"algorithm": algorithm, "hash_size": hash_size}
+        )
+
+    def rank_filter(
+        self,
+        *,
+        height: IntOrExpr,
+        width: IntOrExpr,
+        q: FloatOrExpr = 50.0,
+        border: str | pl.Expr = "replicate",
+    ) -> Pipeline:
+        """Rank filter: each pixel the ``q``-th percentile of its ``height`` x
+        ``width`` window (linear interpolation, as every reduction here), per
+        channel; ``q=50`` is a median filter, 0 and 100 minimum and maximum
+        filters. Robust to outliers a blur averages in: lesion-robust
+        backgrounds, artifact detection, a running median along rows with
+        ``height=1``. The result keeps the input's dtype (a fractional
+        percentile is rounded).
+
+        Domain: buffer → buffer
+
+        Args:
+            height: Window height: odd, >= 1. Accepts a Polars expression.
+            width: Window width: odd, >= 1. Accepts a Polars expression.
+            q: The percentile of each window, in [0, 100] (default 50: a median).
+                Accepts a Polars expression.
+            border: Border handling (``"replicate"``, ``"zero"``, ``"reflect"``), as
+                ``convolve2d``'s.
+
+        Example:
+            >>> pipe = Pipeline().source("array").rank_filter(height=1, width=25)
+        """
+        return self._append_typed(
+            "rank_filter", {"height": height, "width": width, "q": q, "border": border}
         )
 
     def _rasterize(

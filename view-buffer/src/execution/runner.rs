@@ -1077,6 +1077,12 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             high_threshold,
         } => apply_canny(work_buf, low_threshold, high_threshold),
         ImageOpKind::HistogramEqualize => apply_histogram_equalize(work_buf),
+        ImageOpKind::RankFilter {
+            height,
+            width,
+            q,
+            border,
+        } => apply_rank_filter(&work_buf, height as usize, width as usize, q, border),
         ImageOpKind::Erode {
             ksize,
             iterations,
@@ -1676,6 +1682,59 @@ where
 #[cfg(not(feature = "image_interop"))]
 pub(crate) fn apply_image_inner(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
     panic!("Image operations require the 'image_interop' feature");
+}
+
+/// Each pixel's `height` x `width` window `q`-th percentile, per channel
+/// (`reduction::percentile_of`, the one interpolation), outside the image
+/// read by `border` as `convolve2d` reads it; the result in the input's
+/// dtype. `check` keeps both sides odd.
+fn apply_rank_filter(
+    buf: &ViewBuffer,
+    height: usize,
+    width: usize,
+    q: f64,
+    border: crate::ops::filter::BorderMode,
+) -> ViewBuffer {
+    use crate::ops::filter::BorderMode;
+    let shape = buf.shape();
+    let (h, w) = (shape[0], shape[1]);
+    let c = shape.get(2).copied().unwrap_or(1);
+    let values = buf.cast_to(DType::F64).to_contiguous();
+    let values = values.as_slice::<f64>();
+    // The in-image index an out-of-image one reads, or None for a zero.
+    let fold = |i: isize, n: usize| -> Option<usize> {
+        let n_i = n as isize;
+        match border {
+            BorderMode::Zero => (0..n_i).contains(&i).then_some(i as usize),
+            BorderMode::Replicate => Some(i.clamp(0, n_i - 1) as usize),
+            // `dcba|abcd|dcba`, repeated for a window wider than the image.
+            BorderMode::Reflect => {
+                let period = 2 * n_i;
+                let m = i.rem_euclid(period);
+                Some(if m < n_i { m } else { period - 1 - m } as usize)
+            }
+        }
+    };
+    let (ry, rx) = ((height / 2) as isize, (width / 2) as isize);
+    let mut out = Vec::with_capacity(h * w * c);
+    let mut window = Vec::with_capacity(height * width);
+    for y in 0..h as isize {
+        for x in 0..w as isize {
+            for ch in 0..c {
+                window.clear();
+                for dy in -ry..=ry {
+                    for dx in -rx..=rx {
+                        window.push(match (fold(y + dy, h), fold(x + dx, w)) {
+                            (Some(sy), Some(sx)) => values[(sy * w + sx) * c + ch],
+                            _ => 0.0,
+                        });
+                    }
+                }
+                out.push(crate::ops::reduction::percentile_of(&mut window, q));
+            }
+        }
+    }
+    ViewBuffer::from_vec_with_shape(out, shape.to_vec()).cast(buf.dtype())
 }
 
 // ============================================================

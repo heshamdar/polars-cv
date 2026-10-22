@@ -25,6 +25,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`rank_filter(height, width, q=50, border=)`, `median_filter(size)` and
+  `img.background_divide(sigma)`.** A rank filter is each pixel's window
+  percentile, per channel (q=50 a median, 0/100 minimum/maximum; `height=1,
+  width=25` a running median along rows), robust to the outliers a blur
+  averages in. `background_divide` flat-fields an image by its own blur.
 - **`img.resize_like(other, filter=)`** resizes an image onto another
   node's grid, row by row (a 120-row heatmap and the 3,000-row image it came
   from, compared cell by cell), keeping the image's channels and dtype;
