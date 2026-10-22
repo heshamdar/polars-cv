@@ -1471,7 +1471,7 @@
     "name": "flip",
     "python": "flip",
     "visibility": "public",
-    "doc": "Flip along specified axes.",
+    "doc": "Flip along specified axes, in every row or where ``when`` holds.\n\nExample:\n    >>> # Orient every view with the chest wall on the left\n    >>> pipe = Pipeline().source(\"image_bytes\").flip_h(when=pl.col(\"view\").str.starts_with(\"R\"))",
     "fields": [
       {
         "name": "axes",
@@ -1483,6 +1483,16 @@
             "per_row": false,
             "py": "int"
           }
+        }
+      },
+      {
+        "name": "when",
+        "doc": "Whether to flip (default True). Accepts a Polars expression for a\nper-row choice: the shape is the same either way.",
+        "default": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
         }
       }
     ],

@@ -373,26 +373,26 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().extract_shape())
 
-    def flip(self, axes: Sequence[int]) -> LazyPipelineExpr:
-        """Flip along specified axes.
+    def flip(self, axes: Sequence[int], *, when: BoolOrExpr = True) -> LazyPipelineExpr:
+        """Flip along specified axes, in every row or where ``when`` holds.
 
         Lazy form of :meth:`Pipeline.flip` on this expression's output.
         """
-        return self.pipe(self._continuation().flip(axes=axes))
+        return self.pipe(self._continuation().flip(axes=axes, when=when))
 
-    def flip_h(self) -> LazyPipelineExpr:
+    def flip_h(self, *, when: BoolOrExpr = True) -> LazyPipelineExpr:
         """Flip horizontally (along width axis).
 
         Lazy form of :meth:`Pipeline.flip_h` on this expression's output.
         """
-        return self.pipe(self._continuation().flip_h())
+        return self.pipe(self._continuation().flip_h(when=when))
 
-    def flip_v(self) -> LazyPipelineExpr:
+    def flip_v(self, *, when: BoolOrExpr = True) -> LazyPipelineExpr:
         """Flip vertically (along height axis).
 
         Lazy form of :meth:`Pipeline.flip_v` on this expression's output.
         """
-        return self.pipe(self._continuation().flip_v())
+        return self.pipe(self._continuation().flip_v(when=when))
 
     def floor(self) -> LazyPipelineExpr:
         """Round toward negative infinity.

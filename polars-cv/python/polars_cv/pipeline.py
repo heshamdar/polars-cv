@@ -24,6 +24,7 @@ from polars_cv._ops_generated import (
     _OpsMixin,
 )
 from polars_cv._types import (
+    BoolOrExpr,
     DType,
     FloatOrExpr,
     IntOrExpr,
@@ -567,24 +568,32 @@ class Pipeline(_OpsMixin):
     # --- View Operations (zero-copy where possible) ---
 
     @_sugar("flip")
-    def flip_h(self) -> "Pipeline":
+    def flip_h(self, *, when: BoolOrExpr = True) -> "Pipeline":
         """
         Flip horizontally (along width axis).
 
+        Args:
+            when: Whether to flip (default True); a Polars expression decides
+                per row.
+
         Returns:
             Self for chaining.
         """
-        return self.flip(axes=[1])
+        return self.flip(axes=[1], when=when)
 
     @_sugar("flip")
-    def flip_v(self) -> "Pipeline":
+    def flip_v(self, *, when: BoolOrExpr = True) -> "Pipeline":
         """
         Flip vertically (along height axis).
 
+        Args:
+            when: Whether to flip (default True); a Polars expression decides
+                per row.
+
         Returns:
             Self for chaining.
         """
-        return self.flip(axes=[0])
+        return self.flip(axes=[0], when=when)
 
     @_sugar("reduce_percentile")
     def reduce_median(self, *, axis: int | None = None) -> "Pipeline":

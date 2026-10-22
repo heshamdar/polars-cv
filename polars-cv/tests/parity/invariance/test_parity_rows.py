@@ -64,10 +64,11 @@ def test_per_row_arguments_match_literals(data: st.DataObject) -> None:
     """Each row with a PerRow argument equals that row alone with a literal."""
     spec = OPS[data.draw(st.sampled_from(PER_ROW), label="method")]
     batch = data.draw(
-        batches_for(spec, reference=False, heterogeneous=False, nulls=True),
+        batches_for(
+            spec, reference=False, heterogeneous=False, nulls=True, min_present=2
+        ),
         label="batch",
     )
-    assume(len(batch.present) > 1)
     step = data.draw(steps_for(spec, batch, per_row=True), label="step")
     assume(step.varies)
     for row, x in enumerate(batch.images):

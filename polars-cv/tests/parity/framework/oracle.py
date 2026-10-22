@@ -291,7 +291,17 @@ def _flip_params(draw: st.DrawFn, x: np.ndarray) -> Params:
         st.lists(st.integers(0, x.ndim - 1), min_size=1, max_size=x.ndim, unique=True),
         label="axes",
     )
-    return {"axes": sorted(axes)}
+    return {"axes": sorted(axes), **_when_params(draw, x)}
+
+
+def _when_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    """A flip's per-row condition."""
+    return {"when": draw(st.booleans(), label="when")}
+
+
+def _flipped(x: np.ndarray, p: Params, flip) -> np.ndarray:
+    """``flip(x)`` where ``when`` holds, ``x`` itself where it does not."""
+    return flip(x).copy() if p.get("when", True) else x.copy()
 
 
 def _transpose_params(draw: st.DrawFn, x: np.ndarray) -> Params:
@@ -1642,13 +1652,23 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "flip",
             _flip_params,
-            ref=lambda x, p: np.flip(x, p["axes"]).copy(),
+            ref=lambda x, p: _flipped(x, p, lambda a: np.flip(a, p["axes"])),
             **_movement,
         ),
         _spec(
-            "flip_h", ref=lambda x, p: x[:, ::-1].copy(), accepts=is_rank3, **_movement
+            "flip_h",
+            _when_params,
+            ref=lambda x, p: _flipped(x, p, lambda a: a[:, ::-1]),
+            accepts=is_rank3,
+            **_movement,
         ),
-        _spec("flip_v", ref=lambda x, p: x[::-1].copy(), accepts=is_rank3, **_movement),
+        _spec(
+            "flip_v",
+            _when_params,
+            ref=lambda x, p: _flipped(x, p, lambda a: a[::-1]),
+            accepts=is_rank3,
+            **_movement,
+        ),
         _spec(
             "transpose",
             _transpose_params,

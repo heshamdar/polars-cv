@@ -864,7 +864,8 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "axes": {
             "kind": "list",
             "inner": {"kind": "scalar", "per_row": False, "py": "int"},
-        }
+        },
+        "when": {"kind": "scalar", "per_row": True, "py": "bool"},
     },
     "floor": {},
     "grayscale": {"keepdims": {"kind": "scalar", "per_row": False, "py": "bool"}},
@@ -1269,6 +1270,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "distance_transform": {"signed": False},
     "erode": {"ksize": 3, "iterations": 1, "footprint": "square"},
     "extract_contours": {"mode": "external", "method": "simple"},
+    "flip": {"when": True},
     "grayscale": {"keepdims": True},
     "histogram": {"bins": 256, "closed": "left", "output": "buckets"},
     "label_reduce": {"reduction": "max", "region_mode": "interior"},
@@ -2351,15 +2353,21 @@ class _OpsMixin:
         """
         return self._append_typed("extract_shape", {})
 
-    def flip(self, axes: Sequence[int]) -> Pipeline:
-        """Flip along specified axes.
+    def flip(self, axes: Sequence[int], *, when: BoolOrExpr = True) -> Pipeline:
+        """Flip along specified axes, in every row or where ``when`` holds.
 
         Domain: buffer → buffer
 
         Args:
             axes: Axes to flip.
+            when: Whether to flip (default True). Accepts a Polars expression for a per-
+                row choice: the shape is the same either way.
+
+        Example:
+            >>> # Orient every view with the chest wall on the left
+            >>> pipe = Pipeline().source("image_bytes").flip_h(when=pl.col("view").str.starts_with("R"))
         """
-        return self._append_typed("flip", {"axes": axes})
+        return self._append_typed("flip", {"axes": axes, "when": when})
 
     def floor(self) -> Pipeline:
         """Round toward negative infinity.

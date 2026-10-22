@@ -1264,6 +1264,11 @@
     "axes",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "when",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "flip_h": [
@@ -1271,6 +1276,11 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "when",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "flip_v": [
@@ -1278,6 +1288,11 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "when",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "floor": [
@@ -3007,6 +3022,11 @@
     "axes",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "when",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "flip_h": [
@@ -3014,6 +3034,11 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "when",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "flip_v": [
@@ -3021,6 +3046,11 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "when",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "floor": [

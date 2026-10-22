@@ -25,6 +25,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`flip(axes, when=)`, `flip_h(when=)`, `flip_v(when=)`**: a per-row
+  condition, e.g. `flip_h(when=pl.col("view").str.starts_with("R"))` to
+  orient every view the same way. The shape is the same flipped or not, so
+  `when` may be an expression; a row it declines is left as it is.
 - **`normalize(method="percentile", low=, high=)`** maps the window between
   the image's own `low`-th and `high`-th percentiles to [0, 1] (robust
   windowing across devices), and **`normalize(method="range", low=, high=)`**
