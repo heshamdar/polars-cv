@@ -134,6 +134,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Two optimizations changed results on this release's new parameters.**
+  `spatial_window_pushdown` moved a crop ahead of an op reading `this`, so
+  `scale(this.height).crop(height=2, width=2)` scaled by 2, not the input's
+  height; a crop no longer crosses an op that reads its input's shape, and a
+  crop that reads `this` is not moved. `identity_elimination` deleted a padded
+  crop whose window kept the input's size but moved it (`crop(top=-1,
+  height=H, bounds="pad")`); a padded crop is never an identity. The
+  optimizer-equivalence table and the parity sweep now draw padded and
+  clipped crops, `flip(when=)` and `this`, which is what let both through.
+
 - **A federated gcloud ADC now works with no `cloud_options`.** Ambient
   detection of an `external_account` / `external_account_authorized_user`
   ADC (delegated to `gcloud auth application-default print-access-token`)

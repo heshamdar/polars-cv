@@ -275,19 +275,46 @@ def _no_params(draw: st.DrawFn, x: np.ndarray) -> Params:
 
 def _crop_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     h, w = x.shape[:2]
-    top = draw(st.integers(0, h - 1), label="top")
-    left = draw(st.integers(0, w - 1), label="left")
-    return {
-        "top": top,
-        "left": left,
-        "height": draw(st.integers(1, h - top), label="height"),
-        "width": draw(st.integers(1, w - left), label="width"),
+    bounds = draw(st.sampled_from(["error", "clip", "pad"]), label="bounds")
+    if bounds == "error":
+        top = draw(st.integers(0, h - 1), label="top")
+        left = draw(st.integers(0, w - 1), label="left")
+        return {
+            "top": top,
+            "left": left,
+            "height": draw(st.integers(1, h - top), label="height"),
+            "width": draw(st.integers(1, w - left), label="width"),
+            "bounds": bounds,
+        }
+    # A window that may reach past any edge, overlapping the input by at least
+    # one pixel (a clip with nothing left is its own refusal).
+    height = draw(st.integers(1, 2 * h), label="height")
+    width = draw(st.integers(1, 2 * w), label="width")
+    params: Params = {
+        "top": draw(st.integers(1 - height, h - 1), label="top"),
+        "left": draw(st.integers(1 - width, w - 1), label="left"),
+        "height": height,
+        "width": width,
+        "bounds": bounds,
     }
+    if bounds == "pad":
+        # Whole and within every dtype, so the fill is the value itself.
+        params["pad_value"] = draw(st.integers(0, 100), label="pad_value")
+    return params
 
 
 def _crop_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    top, left = p["top"], p["left"]
-    return x[top : top + p["height"], left : left + p["width"]].copy()
+    top, left, height, width = p["top"], p["left"], p["height"], p["width"]
+    h, w = x.shape[:2]
+    rows = slice(max(top, 0), min(top + height, h))
+    cols = slice(max(left, 0), min(left + width, w))
+    if p.get("bounds", "error") != "pad":
+        return x[rows, cols].copy()
+    out = np.full((height, width, *x.shape[2:]), p.get("pad_value", 0), dtype=x.dtype)
+    out[rows.start - top : rows.stop - top, cols.start - left : cols.stop - left] = x[
+        rows, cols
+    ]
+    return out
 
 
 def _flip_params(draw: st.DrawFn, x: np.ndarray) -> Params:

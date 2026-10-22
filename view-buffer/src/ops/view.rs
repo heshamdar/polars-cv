@@ -633,9 +633,14 @@ impl<M: Mode> Op for ViewOp<M> {
 
     fn identity_rule(&self) -> IdentityRule {
         match self {
+            // A padded crop's shape is its window's size wherever the window
+            // sits, so a preserved shape does not say the data stayed put
+            // (`top=-1` shifts the image down a row at the same size).
+            ViewOp::Crop { bounds, .. } if M::lit(bounds) == CropBounds::Pad => IdentityRule::Never,
             // A full-frame crop at the origin, or a same-shape reshape (a
             // row-major no-op), moves no data; `OpShape::preserves` decides
-            // whether this one is.
+            // whether this one is. A clipped window keeps the shape only by
+            // covering the whole input.
             ViewOp::Crop { .. } | ViewOp::Slice { .. } | ViewOp::Reshape { .. } => {
                 IdentityRule::WhenShapePreserved
             }

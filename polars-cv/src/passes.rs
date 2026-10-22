@@ -152,18 +152,24 @@ fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
 /// Each crop hoisted to the front of the pointwise run before it.
 ///
 /// The run stops at the first op the window may not cross (its spatial rule
-/// is not `Pointwise`, or it reads another node's buffer, which the window
-/// would leave full-size); an `assert_shape` is not `Pointwise`, so a crop
-/// never moves across a declaration. Two crops never contend — a crop is itself not `Pointwise` — so, left to right, a crop's
-/// run is always the tail of the order built so far.
+/// is not `Pointwise`, it reads another node's buffer, which the window
+/// would leave full-size, or it reads its own input's shape through `this`,
+/// which the window would shrink); an `assert_shape` is not `Pointwise`, so a
+/// crop never moves across a declaration. A crop that reads `this` stays
+/// where it is: an earlier position is another input shape (a pointwise op
+/// may still change the channel count). Two crops never contend — a crop is
+/// itself not `Pointwise` — so, left to right, a crop's run is always the
+/// tail of the order built so far.
 fn hoist_spatial_windows(node: &Node<'_>) -> Result<Vec<usize>, String> {
     let steps = node.ops;
     let crossable = |step: &crate::ops::TypedOp| {
-        !step.reads_other_nodes() && step.spatial_dependency() == SpatialDependency::Pointwise
+        !step.reads_other_nodes()
+            && !step.reads_shape()
+            && step.spatial_dependency() == SpatialDependency::Pointwise
     };
     let mut order: Vec<usize> = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
-        if !step.is_spatial_window() {
+        if !step.is_spatial_window() || step.reads_shape() {
             order.push(i);
             continue;
         }
