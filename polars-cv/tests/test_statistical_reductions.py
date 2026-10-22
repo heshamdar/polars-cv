@@ -477,9 +477,12 @@ def test_each_statistic_computes_its_own_reduction(encode_png: "Callable") -> No
     """
     from polars_cv.lazy import _STAT_REDUCERS
 
-    # 0..255 across a 16x16 grey image: mean 127.5, min 0, max 255, and a
-    # standard deviation near 73.9 — five values no two of which coincide.
-    ramp = np.tile(np.arange(256, dtype=np.uint8).reshape(16, 16), (1, 1))
+    # A squared ramp over a 16x16 grey image (0..255, skewed low): mean ~84.7,
+    # median 63.5, min 0, max 255 and a standard deviation near 75 — values no
+    # two of which coincide. A linear ramp's median *is* its mean.
+    ramp = (
+        (np.arange(256, dtype=np.uint32) ** 2 // 255).astype(np.uint8).reshape(16, 16)
+    )
     df = pl.DataFrame({"image": [encode_png(ramp)]})
     expected = {
         "mean": float(ramp.mean()),
@@ -487,6 +490,7 @@ def test_each_statistic_computes_its_own_reduction(encode_png: "Callable") -> No
         "max": float(ramp.max()),
         "sum": float(ramp.sum()),
         "std": float(ramp.std()),
+        "median": float(np.median(ramp)),
     }
     assert set(expected) == set(_STAT_REDUCERS), (
         f"this test knows {sorted(expected)} but _STAT_REDUCERS declares "
