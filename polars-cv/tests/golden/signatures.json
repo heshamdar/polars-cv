@@ -1287,6 +1287,11 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "keepdims",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "histogram": [
@@ -2951,6 +2956,11 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "keepdims",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "has_source": [
@@ -3761,6 +3771,11 @@
    ],
    [
     "allowed_roots",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "channels",
     "KEYWORD_ONLY",
     "None"
    ],

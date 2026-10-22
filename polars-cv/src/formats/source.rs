@@ -9,6 +9,38 @@ use view_buffer::DType;
 
 use crate::fetch::FetchErrorPolicy;
 use crate::ops::Literal;
+use view_buffer::naming::{WireKind, WireScalar, WireValue};
+
+/// The colour channels a decoded image keeps: 1 (luma, as `grayscale`
+/// computes it) or 3 (RGB: gray replicated). Alpha is dropped either way.
+/// Any other count is refused on the wire, by the type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeChannels(u8);
+
+impl DecodeChannels {
+    pub fn get(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+impl WireScalar for DecodeChannels {
+    const KIND: WireKind = WireKind::Int;
+    const PY_TYPE: &'static str = "int";
+    fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
+        match u8::from_wire(value)? {
+            n @ (1 | 3) => Ok(DecodeChannels(n)),
+            n => Err(format!(
+                "{n} is not a channel count a decode keeps (1 or 3)"
+            )),
+        }
+    }
+    fn to_wire(self) -> WireValue<'static> {
+        WireValue::Int(i64::from(self.0))
+    }
+    fn spellings() -> Vec<&'static str> {
+        Vec::new()
+    }
+}
 
 /// Define the input source format.
 ///
@@ -123,6 +155,10 @@ pub enum Source {
     FilePath {
         /// Asserted element dtype: a decoded image with another dtype is cast.
         dtype: Option<Literal<DType>>,
+        /// Decode every row to this many colour channels: 1 (luma, as
+        /// ``grayscale``) or 3 (RGB), dropping alpha, so the channel count is
+        /// known to the lazy schema. Absent: the image's own.
+        channels: Option<Literal<DecodeChannels>>,
         /// Cloud-storage credentials: a ``CloudOptions`` or a dict.
         cloud_options: Option<HashMap<String, String>>,
         /// Locations a path column may read from (unrestricted when absent;
@@ -140,6 +176,10 @@ pub enum Source {
     ImageBytes {
         /// Asserted element dtype: a decoded image with another dtype is cast.
         dtype: Option<Literal<DType>>,
+        /// Decode every row to this many colour channels: 1 (luma, as
+        /// ``grayscale``) or 3 (RGB), dropping alpha, so the channel count is
+        /// known to the lazy schema. Absent: the image's own.
+        channels: Option<Literal<DecodeChannels>>,
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
@@ -214,6 +254,7 @@ impl Source {
         Some(match column.dtype() {
             DataType::String => Ok(Source::FilePath {
                 dtype,
+                channels: None,
                 cloud_options: cloud_options.clone(),
                 allowed_roots: allowed_roots.clone(),
                 decode_max_size,
@@ -242,6 +283,7 @@ impl Source {
                 } else {
                     Source::ImageBytes {
                         dtype,
+                        channels: None,
                         decode_max_size,
                         on_error,
                     }
@@ -310,6 +352,21 @@ impl Source {
             | Source::List { dtype, .. } => dtype.map(|d| d.get()),
             Source::Raw { dtype, .. } => Some(dtype.get()),
             Source::Contour { .. } => None,
+        }
+    }
+
+    /// The colour channels a decoded image is converted to, if declared.
+    pub fn channels(&self) -> Option<usize> {
+        match self {
+            Source::FilePath { channels, .. } | Source::ImageBytes { channels, .. } => {
+                channels.map(|c| c.get().get())
+            }
+            Source::Array { .. }
+            | Source::Auto { .. }
+            | Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::List { .. }
+            | Source::Raw { .. } => None,
         }
     }
 

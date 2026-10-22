@@ -850,7 +850,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         }
     },
     "floor": {},
-    "grayscale": {},
+    "grayscale": {"keepdims": {"kind": "scalar", "per_row": False, "py": "bool"}},
     "histogram": {
         "bins": {
             "kind": "one_of",
@@ -1194,6 +1194,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "distance_transform": {"signed": False},
     "erode": {"ksize": 3, "iterations": 1, "footprint": "square"},
     "extract_contours": {"mode": "external", "method": "simple"},
+    "grayscale": {"keepdims": True},
     "histogram": {"bins": 256, "closed": "left", "output": "buckets"},
     "label_reduce": {"reduction": "max", "region_mode": "interior"},
     "letterbox": {"value": 0.0, "filter": "lanczos3"},
@@ -1406,6 +1407,7 @@ SOURCE_FIELDS: dict[str, dict[str, Any]] = {
         "kind": "list",
         "inner": {"kind": "scalar", "per_row": False, "py": "str"},
     },
+    "channels": {"kind": "scalar", "per_row": False, "py": "int"},
     "cloud_options": {"kind": "map"},
     "decode_max_size": {"kind": "scalar", "per_row": False, "py": "int"},
     "dtype": {
@@ -1448,6 +1450,7 @@ class _OpsMixin:
         format: str = "auto",
         *,
         allowed_roots: Sequence[str] | None = None,
+        channels: int | None = None,
         cloud_options: CloudOptions | dict[str, Any] | None = None,
         decode_max_size: int | None = None,
         dtype: str | None = None,
@@ -1505,6 +1508,10 @@ class _OpsMixin:
                 bytes, decoded as a flat 1-D buffer of `dtype`.
             allowed_roots: ``auto``, ``file_path``: Locations a path column may read
                 from (unrestricted when absent; see above).
+            channels: ``file_path``, ``image_bytes``: Decode every row to this many
+                colour channels: 1 (luma, as ``grayscale``) or 3 (RGB), dropping alpha,
+                so the channel count is known to the lazy schema. Absent: the image's
+                own.
             cloud_options: ``auto``, ``file_path``: Cloud-storage credentials: a
                 ``CloudOptions`` or a dict.
             decode_max_size: ``auto``, ``file_path``, ``image_bytes``: Decode only
@@ -1546,6 +1553,7 @@ class _OpsMixin:
             format,
             {
                 "allowed_roots": allowed_roots,
+                "channels": channels,
                 "cloud_options": cloud_options,
                 "decode_max_size": decode_max_size,
                 "dtype": dtype,
@@ -2288,12 +2296,16 @@ class _OpsMixin:
         """
         return self._append_typed("floor", {})
 
-    def grayscale(self) -> Pipeline:
-        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).
+    def grayscale(self, *, keepdims: bool = True) -> Pipeline:
+        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): ``[H, W, 1]``,
+        or ``[H, W]`` with ``keepdims=False``.
 
         Domain: buffer → buffer
+
+        Args:
+            keepdims: Keep the channel axis, as size 1 (default), or drop it.
         """
-        return self._append_typed("grayscale", {})
+        return self._append_typed("grayscale", {"keepdims": keepdims})
 
     def histogram(
         self,

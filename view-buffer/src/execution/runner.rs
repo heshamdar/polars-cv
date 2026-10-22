@@ -787,7 +787,7 @@ mod grayscale_threshold_parity_tests {
                         .chunks_exact(c)
                         .map(reference_luma_u8)
                         .collect();
-                    let got = run(view.clone(), ImageOpKind::Grayscale);
+                    let got = run(view.clone(), ImageOpKind::Grayscale { keepdims: true });
                     let (vh, vw) = (view.shape()[0], view.shape()[1]);
                     assert_eq!(got.shape(), &[vh, vw, 1], "{layout} {h}x{w}x{c}");
                     assert_eq!(
@@ -822,7 +822,7 @@ mod grayscale_threshold_parity_tests {
                                 + 0.114 * f64::from(p[2])) as f32
                         })
                         .collect();
-                    let got = run(view, ImageOpKind::Grayscale);
+                    let got = run(view, ImageOpKind::Grayscale { keepdims: true });
                     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
                     assert_eq!(
                         bits(got.to_contiguous().as_slice::<f32>()),
@@ -844,7 +844,7 @@ mod grayscale_threshold_parity_tests {
                         l.round().clamp(0.0, 65535.0) as u16
                     })
                     .collect();
-                let got = run(parent, ImageOpKind::Grayscale);
+                let got = run(parent, ImageOpKind::Grayscale { keepdims: true });
                 assert_eq!(got.as_slice::<u16>(), &expected[..], "u16 {h}x{w}x{c}");
             }
         }
@@ -857,10 +857,10 @@ mod grayscale_threshold_parity_tests {
     fn gray_alpha_grayscale_is_the_gray_channel_for_every_dtype() {
         let gray_alpha: Vec<u16> = vec![1000, 65535, 20, 0, 40000, 7];
         let buf = ViewBuffer::from_vec_with_shape(gray_alpha, vec![1, 3, 2]);
-        let got = run(buf, ImageOpKind::Grayscale);
+        let got = run(buf, ImageOpKind::Grayscale { keepdims: true });
         assert_eq!(got.as_slice::<u16>(), &[1000, 20, 40000]);
         let buf = ViewBuffer::from_vec_with_shape(vec![0.25f32, 1.0, 0.5, 0.0], vec![2, 1, 2]);
-        let got = run(buf, ImageOpKind::Grayscale);
+        let got = run(buf, ImageOpKind::Grayscale { keepdims: true });
         assert_eq!(got.as_slice::<f32>(), &[0.25, 0.5]);
     }
 
@@ -1051,7 +1051,14 @@ fn coordinate_grid(buf: &ViewBuffer, normalized: bool) -> ViewBuffer {
 fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
         ImageOpKind::Threshold { value } => threshold_generic(work_buf, value),
-        ImageOpKind::Grayscale => grayscale_strided(work_buf),
+        ImageOpKind::Grayscale { keepdims } => {
+            let gray = grayscale_strided(work_buf);
+            match (keepdims, gray.shape()) {
+                // `[H, W, 1]`, packed: the same elements as `[H, W]`.
+                (false, &[h, w, 1]) => gray.reshape(crate::core::layout::Dims::from_slice(&[h, w])),
+                _ => gray,
+            }
+        }
         ImageOpKind::Resize {
             width,
             height,

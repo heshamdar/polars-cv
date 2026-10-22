@@ -401,12 +401,12 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().floor())
 
-    def grayscale(self) -> LazyPipelineExpr:
-        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).
+    def grayscale(self, *, keepdims: bool = True) -> LazyPipelineExpr:
+        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): ``[H, W, 1]``,
 
         Lazy form of :meth:`Pipeline.grayscale` on this expression's output.
         """
-        return self.pipe(self._continuation().grayscale())
+        return self.pipe(self._continuation().grayscale(keepdims=keepdims))
 
     def histogram(
         self,
