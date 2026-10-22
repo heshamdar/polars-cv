@@ -45,8 +45,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
-| CR-119 | Analytics | Feature | Masked and axis-aware reductions, median/percentiles everywhere, one reduction authority (downstream proposal B2/C1) |
-| CR-120 | Analytics | Feature | `normalize(method="percentile" \| "range")`; masked normalize after CR-123 (C3) |
 | CR-121 | Resampling | Feature | `resize(like=node)`, `filter="area"`, `block_reduce` (B5) |
 | CR-122 | Ops | Feature | `rank_filter`/`median_filter`, `background_divide`, `flip(when=)`, `stack` + `sink("long", where=)` (C2/B7/B6) |
 | CR-123 | Params | Feature | `H`/`W` placeholders: op parameters derived from the current buffer's shape (B4) |
@@ -352,29 +350,12 @@ against `main` at `e788d72` that day, and their full text is in git history).
 ## Downstream proposal (2026-10-22)
 
 A downstream image-analytics user's proposal, reviewed against 0.40.0. The
-bugs and small gaps shipped in the first phase (CR-124 to CR-128, closed
-below); these are the rest, in the order planned. Each is test-first, through
+bugs and small gaps shipped in the first phase (CR-124 to CR-128) and the
+reductions in the second (CR-119, CR-120), all closed below; these are the
+rest, in the order planned. A masked percentile normalize (the window from a
+mask's pixels) waits on CR-123's mechanism for values derived from another
+node. Each is test-first, through
 the typed catalogue, with its own CHANGELOG entry.
-
-### CR-119 — Masked and axis-aware reductions
-
-- One `Reduction` authority (sum, mean, min, max, std, median,
-  percentile{q}, count) and one accumulator over a pixel iterator in
-  `view-buffer/src/ops/reduction.rs`; `label_reduce` (`geometry/label.rs`,
-  max/mean/sum today) moves onto it, giving regionprops-style reductions.
-- `axis=` on `reduce_sum`/`reduce_percentile`; `reduce_median` is sugar over
-  `reduce_percentile(50)`.
-- `GraphOp::ReduceMasked { mask: NodeRef, reduction, axis }` (lazy-only, as
-  `apply_mask`): a pixel counts where the mask is > 0; a row with no masked
-  pixel is null (global) or NaN (per-axis element).
-- `statistics(include=[..., "median", "p90", "count"], mask=)` and
-  `region_stats(regions, {name: (map, reduction)})` as sugar.
-
-### CR-120 — Percentile and explicit-range normalize
-
-- `NormalizeMethod::Percentile { low, high }` and `Range { low, high }`
-  (per-row `low`/`high`). A masked percentile window needs scalars derived
-  from another node, which waits on CR-123's mechanism.
 
 ### CR-121 — Resampling onto another node's grid
 
@@ -635,6 +616,8 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-120 | `normalize` had no percentile window and no explicit bounds (C3) | Fixed (unreleased): `method="percentile"`/`"range"` with `low`/`high` (`TestNormalizeWindows`) |
+| CR-119 | Reductions counted the zeros outside a mask; no median, no axis on sum/percentile; `label_reduce` had max/mean/sum only (B2/C1) | Fixed (unreleased): one `Reduction` authority; `reduce_masked`, `reduce_median`, `axis=` on sum/percentile, `statistics(mask=, "pNN", "count")`, `region_stats` (`test_reductions.py`) |
 | CR-128 | Remote header-only metadata fetched the whole object; `show_images` could not show a dict sink's field (C4/C6) | Fixed (unreleased): a header fetcher reads a 64 KiB prefix first (`test_remote_header_reads.py`); `show_images(df, "col.field")` |
 | CR-127 | Grayscale kept `[H, W, 1]`, so axis reductions gave one-element lists (B3) | Fixed (unreleased): `grayscale(keepdims=False)` (`test_channel_control.py`); a decode-time `source(channels=)` was added and removed as redundant with `grayscale()` |
 | CR-126 | A crop window past the image's edge could only be refused (B1) | Fixed (unreleased): `crop(bounds="clip" \| "pad", pad_value=)`, signed offsets (`test_crop_bounds.py`) |

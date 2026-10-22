@@ -35,6 +35,11 @@ pub enum Normalization {
         /// Per-channel standard deviation values (typically 3 for RGB).
         std: Vec<f32>,
     },
+    /// The window between the image's own `low`-th and `high`-th
+    /// percentiles (every channel together) mapped to [0, 1], clipped.
+    Percentile { low: f32, high: f32 },
+    /// The window `[low, high]` mapped to [0, 1], clipped.
+    Range { low: f32, high: f32 },
 }
 
 /// Which normalization: the user-facing method name, without its payload.
@@ -47,12 +52,16 @@ pub enum NormalizeMethod {
     MinMax,
     ZScore,
     Preset,
+    Percentile,
+    Range,
 }
 
-crate::naming::named_variants!(NormalizeMethod: "Normalization methods (``PRESET``: channel-wise with preset mean/std values)." {
+crate::naming::named_variants!(NormalizeMethod: "Normalization methods (``PRESET``: channel-wise with preset mean/std values; ``PERCENTILE``/``RANGE``: a ``low``..``high`` window mapped to [0, 1], clipped)." {
     "minmax" => MinMax,
     "zscore" => ZScore,
     "preset" => Preset,
+    "percentile" => Percentile,
+    "range" => Range,
 });
 
 impl Normalization {
@@ -62,6 +71,8 @@ impl Normalization {
             Normalization::MinMax => NormalizeMethod::MinMax,
             Normalization::ZScore => NormalizeMethod::ZScore,
             Normalization::Preset { .. } => NormalizeMethod::Preset,
+            Normalization::Percentile { .. } => NormalizeMethod::Percentile,
+            Normalization::Range { .. } => NormalizeMethod::Range,
         }
     }
 }
@@ -104,7 +115,11 @@ pub enum ComputeOp<M: Mode = Exec> {
         /// Normalization method: "minmax" scales values to [0, 1] using
         /// per-element min/max; "zscore" standardizes to mean=0, std=1 using
         /// per-element statistics; "preset" applies ImageNet-style channel-wise
-        /// normalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.
+        /// normalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`;
+        /// "percentile" maps the window between the image's own `low`-th and
+        /// `high`-th percentiles (all channels together) to [0, 1], clipped
+        /// outside it (robust windowing across devices); "range" maps the
+        /// window `[low, high]` to [0, 1], clipped.
         #[param(default = "minmax")]
         method: M::L<NormalizeMethod>,
         /// Per-channel mean values; required for, and only valid with,
@@ -116,6 +131,12 @@ pub enum ComputeOp<M: Mode = Exec> {
         /// with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
         /// element accepts an expression, as with `mean`.
         std: Option<Vec<M::V<f32>>>,
+        /// The window's lower edge: a percentile in [0, 100] for
+        /// method="percentile", a value for method="range"; required for,
+        /// and only valid with, those two. Accepts a Polars expression.
+        low: Option<M::V<f32>>,
+        /// The window's upper edge, above `low`; as `low`.
+        high: Option<M::V<f32>>,
         /// Output dtype (default f32). Normalization computes in f32 and the result
         /// is cast to this dtype at execution. For half precision use the sink
         /// dtype instead (`.sink("numpy", dtype="f16")`).
@@ -485,17 +506,54 @@ impl<M: Mode> ComputeOp<M> {
             return Ok(());
         }
         let ComputeOp::Normalize {
-            method, mean, std, ..
+            method,
+            mean,
+            std,
+            low,
+            high,
+            ..
         } = self
         else {
             return Ok(());
         };
-        match M::lit(method) {
-            NormalizeMethod::MinMax | NormalizeMethod::ZScore => {
-                if mean.is_some() || std.is_some() {
-                    return Err(
-                        "normalize: mean/std parameters are only valid for method='preset'".into(),
-                    );
+        let method = M::lit(method);
+        let windowed = matches!(method, NormalizeMethod::Percentile | NormalizeMethod::Range);
+        if !windowed && (low.is_some() || high.is_some()) {
+            return Err(
+                "normalize: low/high are only valid for method='percentile' or 'range'".into(),
+            );
+        }
+        if method != NormalizeMethod::Preset && (mean.is_some() || std.is_some()) {
+            return Err("normalize: mean/std parameters are only valid for method='preset'".into());
+        }
+        match method {
+            NormalizeMethod::MinMax | NormalizeMethod::ZScore => {}
+            NormalizeMethod::Percentile | NormalizeMethod::Range => {
+                let (Some(low), Some(high)) = (low, high) else {
+                    let name = match method {
+                        NormalizeMethod::Percentile => "percentile",
+                        _ => "range",
+                    };
+                    return Err(format!(
+                        "normalize: method='{name}' requires both 'low' and 'high'"
+                    ));
+                };
+                let (low, high) = (M::sym(low).known(), M::sym(high).known());
+                if method == NormalizeMethod::Percentile {
+                    if let Some(q) = [low, high]
+                        .into_iter()
+                        .flatten()
+                        .find(|q| !(0.0..=100.0).contains(q))
+                    {
+                        return Err(format!("normalize: percentile {q} is outside [0, 100]"));
+                    }
+                }
+                if let (Some(low), Some(high)) = (low, high) {
+                    if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
+                        return Err(format!(
+                            "normalize: low ({low}) must be below high ({high})"
+                        ));
+                    }
                 }
             }
             NormalizeMethod::Preset => {
@@ -639,14 +697,19 @@ impl ComputeOp {
     /// A `Normalize` op performing `normalization`, emitting `out_dtype`.
     pub fn from_normalization(normalization: Normalization, out_dtype: DType) -> Self {
         let method = normalization.method();
-        let (mean, std) = match normalization {
-            Normalization::Preset { mean, std } => (Some(mean), Some(std)),
-            Normalization::MinMax | Normalization::ZScore => (None, None),
-        };
+        let (mut mean, mut std, mut low, mut high) = (None, None, None, None);
+        match normalization {
+            Normalization::Preset { mean: m, std: s } => (mean, std) = (Some(m), Some(s)),
+            Normalization::Percentile { low: l, high: h }
+            | Normalization::Range { low: l, high: h } => (low, high) = (Some(l), Some(h)),
+            Normalization::MinMax | Normalization::ZScore => {}
+        }
         ComputeOp::Normalize {
             method,
             mean,
             std,
+            low,
+            high,
             out_dtype: Some(out_dtype),
         }
     }
@@ -657,14 +720,19 @@ impl ComputeOp {
         method: NormalizeMethod,
         mean: &Option<Vec<f32>>,
         std: &Option<Vec<f32>>,
+        low: Option<f32>,
+        high: Option<f32>,
     ) -> Normalization {
-        match (method, mean, std) {
-            (NormalizeMethod::MinMax, ..) => Normalization::MinMax,
-            (NormalizeMethod::ZScore, ..) => Normalization::ZScore,
-            (NormalizeMethod::Preset, mean, std) => Normalization::Preset {
+        let (low, high) = (low.unwrap_or(0.0), high.unwrap_or(0.0));
+        match method {
+            NormalizeMethod::MinMax => Normalization::MinMax,
+            NormalizeMethod::ZScore => Normalization::ZScore,
+            NormalizeMethod::Preset => Normalization::Preset {
                 mean: mean.clone().unwrap_or_default(),
                 std: std.clone().unwrap_or_default(),
             },
+            NormalizeMethod::Percentile => Normalization::Percentile { low, high },
+            NormalizeMethod::Range => Normalization::Range { low, high },
         }
     }
 }

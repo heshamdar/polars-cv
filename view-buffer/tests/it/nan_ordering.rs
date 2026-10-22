@@ -102,6 +102,8 @@ fn minmax_normalize_of_input_with_nan_is_nan() {
         method: NormalizeMethod::MinMax,
         mean: None,
         std: None,
+        low: None,
+        high: None,
         out_dtype: None,
     });
     let out = f32s(&run(buf, op));

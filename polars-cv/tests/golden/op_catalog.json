@@ -1916,7 +1916,7 @@
     "fields": [
       {
         "name": "method",
-        "doc": "Normalization method: \"minmax\" scales values to [0, 1] using\nper-element min/max; \"zscore\" standardizes to mean=0, std=1 using\nper-element statistics; \"preset\" applies ImageNet-style channel-wise\nnormalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.",
+        "doc": "Normalization method: \"minmax\" scales values to [0, 1] using\nper-element min/max; \"zscore\" standardizes to mean=0, std=1 using\nper-element statistics; \"preset\" applies ImageNet-style channel-wise\nnormalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`;\n\"percentile\" maps the window between the image's own `low`-th and\n`high`-th percentiles (all channels together) to [0, 1], clipped\noutside it (robust windowing across devices); \"range\" maps the\nwindow `[low, high]` to [0, 1], clipped.",
         "default": "minmax",
         "type": {
           "kind": "scalar",
@@ -1925,7 +1925,9 @@
           "variants": [
             "minmax",
             "zscore",
-            "preset"
+            "preset",
+            "percentile",
+            "range"
           ]
         }
       },
@@ -1956,6 +1958,30 @@
               "per_row": true,
               "py": "float"
             }
+          }
+        }
+      },
+      {
+        "name": "low",
+        "doc": "The window's lower edge: a percentile in [0, 100] for\nmethod=\"percentile\", a value for method=\"range\"; required for,\nand only valid with, those two. Accepts a Polars expression.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "high",
+        "doc": "The window's upper edge, above `low`; as `low`.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
           }
         }
       },

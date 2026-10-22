@@ -305,3 +305,62 @@ class TestRegionStats:
         # One row per region, as the struct of equal-length lists explodes.
         rows = out.unnest("stats").explode(pl.all())
         assert rows.height == len(REGIONS)
+
+
+class TestNormalizeWindows:
+    """``normalize(method="percentile" | "range")``: a window mapped to [0, 1],
+    clipped outside it."""
+
+    def _run(self, pipe: Pipeline, **columns) -> np.ndarray:
+        from polars_cv import numpy_from_struct
+
+        frame = _frame().with_columns(**{k: pl.lit(v) for k, v in columns.items()})
+        return numpy_from_struct(
+            frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+        )
+
+    @pytest.mark.parametrize(("low", "high"), [(2.0, 98.0), (0.0, 100.0), (25.0, 30.0)])
+    def test_percentile_window(self, low: float, high: float) -> None:
+        got = self._run(
+            Pipeline()
+            .source("array")
+            .normalize(method="percentile", low=low, high=high)
+        )
+        lo, hi = np.percentile(IMG, [low, high])
+        np.testing.assert_allclose(
+            got, np.clip((IMG - lo) / (hi - lo), 0, 1), atol=1e-6
+        )
+        assert got.dtype == np.float32
+
+    def test_range_window_per_row(self) -> None:
+        pipe = (
+            Pipeline()
+            .source("array")
+            .normalize(method="range", low=pl.col("lo"), high=pl.col("hi"))
+        )
+        got = self._run(pipe, lo=20.0, hi=60.0)
+        np.testing.assert_allclose(got, np.clip((IMG - 20) / 40, 0, 1), atol=1e-6)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"method": "percentile", "low": 2.0}, "low.*high"),
+            ({"method": "range"}, "low.*high"),
+            ({"method": "minmax", "low": 1.0, "high": 2.0}, "low"),
+            ({"method": "percentile", "low": -1.0, "high": 50.0}, r"\[0, 100\]"),
+            ({"method": "range", "low": 5.0, "high": 5.0}, "below"),
+            (
+                {
+                    "method": "percentile",
+                    "low": 2.0,
+                    "high": 98.0,
+                    "mean": [0.5],
+                    "std": [1.0],
+                },
+                "preset",
+            ),
+        ],
+    )
+    def test_refusals(self, kwargs: dict, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            Pipeline().source("array").normalize(**kwargs)

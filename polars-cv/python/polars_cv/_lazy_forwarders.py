@@ -529,6 +529,8 @@ class _LazyForwardersMixin:
         method: str = "minmax",
         mean: Sequence[FloatOrExpr] | None = None,
         std: Sequence[FloatOrExpr] | None = None,
+        low: FloatOrExpr | None = None,
+        high: FloatOrExpr | None = None,
         out_dtype: str | None = None,
     ) -> LazyPipelineExpr:
         """Normalize values to a standard range.
@@ -537,7 +539,12 @@ class _LazyForwardersMixin:
         """
         return self.pipe(
             self._continuation().normalize(
-                method=method, mean=mean, std=std, out_dtype=out_dtype
+                method=method,
+                mean=mean,
+                std=std,
+                low=low,
+                high=high,
+                out_dtype=out_dtype,
             )
         )
 

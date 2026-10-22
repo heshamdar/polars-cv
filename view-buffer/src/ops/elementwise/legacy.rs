@@ -49,10 +49,12 @@ pub(super) fn apply(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
             method,
             ref mean,
             ref std,
+            low,
+            high,
             out_dtype,
         } => apply_normalize(
             &buf,
-            &ComputeOp::normalization(method, mean, std),
+            &ComputeOp::normalization(method, mean, std, low, high),
             out_dtype.unwrap_or(DType::F32),
         ),
         ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
@@ -147,6 +149,9 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
     {
         if let Ok(view) = work_buf.as_array_view::<f32>() {
             match method {
+                Normalization::Percentile { .. } | Normalization::Range { .. } => {
+                    unreachable!("the oracle predates percentile/range normalize")
+                }
                 Normalization::MinMax => {
                     let min = view
                         .iter()
@@ -215,6 +220,9 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
     let src = contig.as_slice::<f32>();
 
     let new_data: Vec<f32> = match method {
+        Normalization::Percentile { .. } | Normalization::Range { .. } => {
+            unreachable!("the oracle predates percentile/range normalize")
+        }
         Normalization::MinMax => {
             let min = src
                 .iter()

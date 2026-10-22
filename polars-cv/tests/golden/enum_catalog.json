@@ -207,11 +207,13 @@
   },
   {
     "name": "NormalizeMethod",
-    "doc": "Normalization methods (``PRESET``: channel-wise with preset mean/std values).",
+    "doc": "Normalization methods (``PRESET``: channel-wise with preset mean/std values; ``PERCENTILE``/``RANGE``: a ``low``..``high`` window mapped to [0, 1], clipped).",
     "variants": [
       "minmax",
       "zscore",
-      "preset"
+      "preset",
+      "percentile",
+      "range"
     ]
   },
   {

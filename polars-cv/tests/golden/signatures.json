@@ -1546,6 +1546,16 @@
     "None"
    ],
    [
+    "low",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "high",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
     "out_dtype",
     "KEYWORD_ONLY",
     "None"
@@ -3222,6 +3232,16 @@
    ],
    [
     "std",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "low",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "high",
     "KEYWORD_ONLY",
     "None"
    ],
