@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
     import numpy as np
 
+from ._cloud import CloudCredentialError, check_cloud_access
 from ._dtype_names import SINK_NUMPY_NAMES
 from ._optimize import OptFlags
 from ._types import (
@@ -695,6 +696,8 @@ __all__ = [
     "OptFlags",
     # Types
     "CloudOptions",
+    "CloudCredentialError",
+    "check_cloud_access",
     "ColorSpace",
     "HashAlgorithm",
     "dtype_name_for",

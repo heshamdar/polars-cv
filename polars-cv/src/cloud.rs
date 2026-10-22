@@ -371,6 +371,83 @@ async fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u
     }
 }
 
+/// What [`check_access`] found for one remote path.
+#[derive(Debug)]
+pub struct AccessReport {
+    /// The object-store backend the path's scheme names (`gcp`, `aws`, …).
+    pub backend: String,
+    /// The credential in effect, as an error would name it.
+    pub credential_source: String,
+    /// `"ok"`, `"not_found"` (credentials accepted, no such object), or
+    /// `"error"`.
+    pub status: &'static str,
+    /// The failure, when `status` is `"error"`.
+    pub error: Option<String>,
+}
+
+/// Resolve the credential a read of `path` would use and exercise it once: a
+/// `HEAD` of an object, or a one-level listing of a prefix (a path ending in
+/// `/`). Built through [`polars_options`] like every read, so what this checks
+/// is what a pipeline would get.
+///
+/// `Err` is a caller mistake (no remote scheme, an invalid option); a
+/// credential or access failure is a report with `status: "error"`, so the
+/// caller can say which credential failed.
+pub fn check_access(
+    path: &str,
+    options: Option<&CloudOptions>,
+) -> Result<AccessReport, CloudError> {
+    let remote =
+        is_remote_path(path) && !path.starts_with("http://") && !path.starts_with("https://");
+    let url = PlRefPath::new(path);
+    let scheme = url.scheme().filter(|_| remote).ok_or_else(|| {
+        CloudError::UrlParse(format!(
+            "'{path}' is not a remote object-store path (s3://, gs://, az://, abfs[s]://)"
+        ))
+    })?;
+    let cloud_type = CloudType::from_cloud_scheme(scheme);
+    let credential_source = crate::cloud_auth::credential_source(&cloud_type, options);
+    let pl_options = polars_options(scheme, options)?;
+    let backend = format!("{cloud_type:?}").to_lowercase();
+
+    let probe = async {
+        let (location, store) = build_object_store(url, Some(&pl_options), false)
+            .await
+            .map_err(|e| e.to_string())?;
+        let key = ObjectPath::parse(&location.prefix).map_err(|e| e.to_string())?;
+        let prefix = location.prefix.is_empty() || location.prefix.ends_with('/');
+        store
+            .exec_with_rebuild_retry_on_err(|store| {
+                let key = &key;
+                async move {
+                    let found = if prefix {
+                        store.list_with_delimiter(Some(key)).await.map(|_| true)
+                    } else {
+                        store.head(key).await.map(|_| true)
+                    };
+                    match found {
+                        Err(object_store::Error::NotFound { .. }) => Ok(false),
+                        other => other,
+                    }
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())
+    };
+    let outcome = pyo3_polars::export::polars_core::runtime::ASYNC.block_on(probe);
+    let (status, error) = match outcome {
+        Ok(true) => ("ok", None),
+        Ok(false) => ("not_found", None),
+        Err(e) => ("error", Some(e)),
+    };
+    Ok(AccessReport {
+        backend,
+        credential_source,
+        status,
+        error,
+    })
+}
+
 /// The filesystem path a local path names: a bare path as written, or a
 /// `file://` URL's path, percent-decoded.
 ///

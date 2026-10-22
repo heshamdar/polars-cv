@@ -203,8 +203,9 @@ class CloudOptions:
 
     Federated Google credentials (workforce/workload identity, i.e. GCS ADC of
     type ``external_account`` or ``external_account_authorized_user``) cannot be
-    parsed by ``object_store``. They are handled without any extra configuration:
-    when the ambient ADC is federated, polars-cv delegates to
+    parsed by ``object_store``. They are handled without any extra configuration
+    (with or without a ``CloudOptions``): when the ambient ADC is federated,
+    polars-cv delegates to
     ``gcloud auth application-default print-access-token`` (so the ``gcloud`` CLI
     must be on ``PATH``) and uses the resulting access token. Set the environment
     variable ``POLARS_CV_DISABLE_GCS_FEDERATION=1`` to turn that off.
@@ -225,6 +226,10 @@ class CloudOptions:
     than a bearer token; passing it with an ``s3://`` source raises. Or pass a
     pre-obtained GCS token directly via ``gcs_bearer_token``. Tokens from any of
     these routes are cached until shortly before they expire.
+
+    ``polars_cv.check_cloud_access(path, cloud_options=...)`` resolves and
+    exercises the credential once, before any row is read, and names it when
+    it fails.
 
     Attributes:
         aws_region: AWS region (e.g., "us-east-1").
