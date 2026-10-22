@@ -431,17 +431,34 @@
       },
       {
         "name": "reduction",
-        "doc": "Aggregation method over pixels in each contour region. Accepts a\nPolars expression for a per-row choice.",
+        "doc": "Aggregation over the pixels of each contour region: \"sum\", \"mean\",\n\"min\", \"max\" (default), \"std\", \"median\", \"percentile\" (with ``q``)\nor \"count\". Accepts a Polars expression for a per-row choice.",
         "default": "max",
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "LabelReduction",
+          "py": "Reduction",
           "variants": [
-            "max",
+            "sum",
             "mean",
-            "sum"
+            "min",
+            "max",
+            "std",
+            "median",
+            "percentile",
+            "count"
           ]
+        }
+      },
+      {
+        "name": "q",
+        "doc": "The percentile, in [0, 100], for ``reduction=\"percentile\"`` only.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
         }
       },
       {

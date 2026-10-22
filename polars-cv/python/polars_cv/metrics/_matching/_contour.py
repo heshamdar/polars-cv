@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 import polars as pl
 
-from ..._types import FloatOrExpr, LabelReduction, LabelRegionMode, dtype_name_for
+from ..._types import FloatOrExpr, LabelRegionMode, Reduction, dtype_name_for
 from ...geometry.schemas import CONTOUR_SET_SCHEMA, CORRESPONDENCE_SCHEMA
 from ...lazy import LazyPipelineExpr
 from ...pipeline import Pipeline
@@ -593,7 +593,7 @@ class ContourMatcher:
             raise ValueError(msg)
         # The accepted spellings are the engine's own enums, not a copy here.
         for name, value, enum in (
-            ("score_reduction", score_reduction, LabelReduction),
+            ("score_reduction", score_reduction, Reduction),
             ("score_region_mode", score_region_mode, LabelRegionMode),
         ):
             allowed = tuple(v.value for v in enum)

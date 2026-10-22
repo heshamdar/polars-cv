@@ -9,6 +9,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **`LabelReduction` is now `Reduction`,** the one reduction every region
+  and mask reducer shares (`label_reduce`, `.contour.label_reduce`, the
+  contour matcher's `score_reduction`). The spellings `"max"`, `"mean"`,
+  `"sum"` are unchanged; only code importing the enum class needs the new
+  name.
 - **`.cv.width()`, `.cv.height()`, `.cv.channels()` and `.cv.image_info()`'s
   size fields are `Int64`, not `UInt32`.** Sizes are for arithmetic, and
   unsigned arithmetic in polars wraps: `pl.col("img").cv.width() - 32` on a
@@ -20,6 +25,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`label_reduce(reduction=...)` takes every reduction:** `"min"`, `"std"`
+  (population), `"median"`, `"percentile"` (with `q`, NumPy's linear
+  interpolation) and `"count"` beside `"max"`, `"mean"` and `"sum"`, on the
+  pipeline op and the `.contour` accessor alike. A minimum no longer needs
+  `neg()` then `max`.
 - **`grayscale(keepdims=False)`** gives `[H, W]` from any input (gray, RGB,
   RGBA). A decoded grayscale image is `[H, W, 1]`, so `reduce_mean(axis=0)`
   gave one-element lists without a `channel_select(0, keepdims=False)` after

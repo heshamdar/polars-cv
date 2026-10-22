@@ -963,6 +963,14 @@ CASES: list[ExprCase] = [
         ),
         ("interior", "boundary", "bbox"),
     ),
+    ExprCase(
+        "label_reduce",
+        "q",
+        lambda v: gray().label_reduce(
+            contours=pl.col(CONTOURS), reduction="percentile", q=v
+        ),
+        (5.0, 50.0, 95.0),
+    ),
 ]
 
 

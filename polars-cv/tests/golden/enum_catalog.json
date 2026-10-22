@@ -170,15 +170,6 @@
     ]
   },
   {
-    "name": "LabelReduction",
-    "doc": "Reduction over a contour region's pixel values (``label_reduce``).",
-    "variants": [
-      "max",
-      "mean",
-      "sum"
-    ]
-  },
-  {
     "name": "LabelRegionMode",
     "doc": "Region selection for ``label_reduce``.\n\n- INTERIOR: Pixels strictly inside the contour polygon.\n- BOUNDARY: Interior pixels plus pixels on the contour boundary.\n- BBOX: All pixels within the bounding box.",
     "variants": [
@@ -248,6 +239,20 @@
       "center",
       "top-left",
       "bottom-right"
+    ]
+  },
+  {
+    "name": "Reduction",
+    "doc": "A reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- PERCENTILE: the ``q``-th, NumPy's linear interpolation\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0).",
+    "variants": [
+      "sum",
+      "mean",
+      "min",
+      "max",
+      "std",
+      "median",
+      "percentile",
+      "count"
     ]
   },
   {

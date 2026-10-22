@@ -163,7 +163,7 @@ registry!(
     crate::geometry::ops::ApproxMethod,
     crate::geometry::ops::LineJoin,
     crate::geometry::ops::LineCap,
-    crate::geometry::label::LabelReduction,
+    crate::ops::reduction::Reduction,
     crate::geometry::label::LabelRegionMode,
     crate::ops::NormalizeMethod,
 );

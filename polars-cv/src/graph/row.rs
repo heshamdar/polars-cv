@@ -204,6 +204,7 @@ pub(crate) fn run_step(
             Role::LabelReduce {
                 contours,
                 reduction,
+                q,
                 region_mode,
             } => {
                 let [buf] = exactly(name, buffers()?)?;
@@ -215,7 +216,7 @@ pub(crate) fn run_step(
                 let Some(contours) = contours else {
                     return Ok(NodeOutput::from_vector(Vec::new()));
                 };
-                score_contours_on_buffer(&buf, &contours, *reduction, *region_mode)
+                score_contours_on_buffer(&buf, &contours, *reduction, *q, *region_mode)
                     .map(NodeOutput::from_vector)
             }
         },

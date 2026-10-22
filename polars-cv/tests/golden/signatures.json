@@ -337,6 +337,11 @@
     "'max'"
    ],
    [
+    "q",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
     "region_mode",
     "KEYWORD_ONLY",
     "'interior'"
@@ -1355,6 +1360,11 @@
     "reduction",
     "KEYWORD_ONLY",
     "'max'"
+   ],
+   [
+    "q",
+    "KEYWORD_ONLY",
+    "None"
    ],
    [
     "region_mode",
@@ -3019,6 +3029,11 @@
     "reduction",
     "KEYWORD_ONLY",
     "'max'"
+   ],
+   [
+    "q",
+    "KEYWORD_ONLY",
+    "None"
    ],
    [
     "region_mode",

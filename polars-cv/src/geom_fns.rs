@@ -14,8 +14,9 @@
 
 use serde::Serialize;
 use view_buffer::geometry::contour::{BorderArc, CoordOrder, Winding};
-use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
+use view_buffer::geometry::label::LabelRegionMode;
 use view_buffer::mode::{ColumnRef, Exec, Mode, OpDesc, Wire, WireOps};
+use view_buffer::ops::Reduction;
 use view_buffer::GeometryOp;
 
 use polars_cv_macros::Ops;
@@ -361,10 +362,13 @@ pub enum ContourFn<M: Mode = Exec> {
     LabelReduce {
         /// Image/array expression aligned by row with contour sets.
         image: ColumnRef,
-        /// Aggregation method over pixels in each contour region. Accepts a
-        /// Polars expression for a per-row choice.
+        /// Aggregation over the pixels of each contour region: "sum", "mean",
+        /// "min", "max" (default), "std", "median", "percentile" (with ``q``)
+        /// or "count". Accepts a Polars expression for a per-row choice.
         #[param(default = "max")]
-        reduction: M::V<LabelReduction>,
+        reduction: M::V<Reduction>,
+        /// The percentile, in [0, 100], for ``reduction="percentile"`` only.
+        q: Option<M::V<f64>>,
         /// Region selector - ``"interior"`` (pixels strictly inside),
         /// ``"boundary"`` (interior plus the contour boundary) or ``"bbox"``
         /// (everything in the bounding box). Accepts a Polars expression.
@@ -674,8 +678,20 @@ pub fn check_call(name: &str, args: serde_json::Value) -> Result<(), String> {
             return op.map_err(named)?.check();
         }
     }
-    parsed(<ContourFn<Wire> as WireOps>::from_wire(name, args.clone()))
-        .or_else(|| parsed(<PointFn<Wire> as WireOps>::from_wire(name, args.clone())))
+    if let Some(fun) = <ContourFn<Wire> as WireOps>::from_wire(name, args.clone()) {
+        // `label_reduce`'s q is read under one reduction alone: the rule the
+        // pipeline op's check states, from the same authority.
+        if let ContourFn::LabelReduce { reduction, q, .. } = fun.map_err(named)? {
+            Reduction::check_q(
+                "label_reduce",
+                view_buffer::mode::known::<Wire, Reduction>(&reduction),
+                q.is_some(),
+                q.as_ref().and_then(view_buffer::mode::known::<Wire, f64>),
+            )?;
+        }
+        return Ok(());
+    }
+    parsed(<PointFn<Wire> as WireOps>::from_wire(name, args.clone()))
         .or_else(|| parsed(<BBoxFn<Wire> as WireOps>::from_wire(name, args)))
         .unwrap_or_else(|| Err(format!("'{name}' is not a geometry accessor function")))
         .map_err(named)

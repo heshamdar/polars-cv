@@ -586,6 +586,7 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
     let ContourFn::LabelReduce {
         image,
         reduction,
+        q,
         region_mode,
     } = &op
     else {
@@ -609,8 +610,9 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
         // Per-row capable, matching `Pipeline.label_reduce`: neither choice
         // affects the output's shape or dtype.
         let reduction = params.value(reduction, i)?;
+        let q = q.as_ref().map(|q| params.value(q, i)).transpose()?;
         let region_mode = params.value(region_mode, i)?;
-        let scores = score_contours_on_buffer(&heatmap, &contours, reduction, region_mode)
+        let scores = score_contours_on_buffer(&heatmap, &contours, reduction, q, region_mode)
             .map_err(|err| polars_err!(ComputeError: "{}", err))?;
         Ok(Some(float_list_anyvalue(
             &scores,

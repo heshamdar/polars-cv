@@ -14,6 +14,107 @@ use crate::ops::Domain;
 use crate::mode::{Exec, Mode};
 use polars_cv_macros::{Ops, Resolve};
 
+/// A reduction of a set of values to one: the one definition every reducer
+/// over a selection of pixels reads (`label_reduce`'s contour regions,
+/// `reduce_masked`'s mask, `statistics()`), so a "median" means the same
+/// wherever it is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Reduction {
+    Sum,
+    Mean,
+    Min,
+    Max,
+    /// Population standard deviation (NumPy's default, `ddof=0`).
+    Std,
+    Median,
+    /// The `q`-th percentile, linearly interpolated as NumPy's default.
+    Percentile,
+    /// How many values there are.
+    Count,
+}
+
+crate::naming::named_variants!(Reduction: "A reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- PERCENTILE: the ``q``-th, NumPy's linear interpolation\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0)." {
+    "sum" => Sum,
+    "mean" => Mean,
+    "min" => Min,
+    "max" => Max,
+    "std" => Std,
+    "median" => Median,
+    "percentile" => Percentile,
+    "count" => Count,
+});
+
+impl Reduction {
+    /// `values` reduced (reordered in place); `q` is read by `Percentile`
+    /// alone. Over no values: NaN, except `Sum` and `Count` (0).
+    pub fn of(self, values: &mut [f64], q: Option<f64>) -> f64 {
+        let n = values.len();
+        match self {
+            Reduction::Count => return n as f64,
+            Reduction::Sum => return values.iter().sum(),
+            _ if n == 0 => return f64::NAN,
+            _ => {}
+        }
+        match self {
+            Reduction::Mean => values.iter().sum::<f64>() / n as f64,
+            Reduction::Min => values.iter().copied().fold(values[0], minimum),
+            Reduction::Max => values.iter().copied().fold(values[0], maximum),
+            Reduction::Std => {
+                let mean = values.iter().sum::<f64>() / n as f64;
+                (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64).sqrt()
+            }
+            Reduction::Median => percentile_of(values, 50.0),
+            Reduction::Percentile => percentile_of(values, q.unwrap_or(f64::NAN)),
+            Reduction::Count | Reduction::Sum => unreachable!("answered above"),
+        }
+    }
+
+    /// Refuse a `q` the reduction does not read, or a percentile without
+    /// one, or a `q` outside `[0, 100]`; `reduction` and `q` are `None` when
+    /// not known (a per-row value at plan time). `op` names the message.
+    pub fn check_q(
+        op: &str,
+        reduction: Option<Reduction>,
+        q_given: bool,
+        q: Option<f64>,
+    ) -> Result<(), String> {
+        match reduction {
+            Some(Reduction::Percentile) if !q_given => {
+                return Err(format!("{op}: reduction=\"percentile\" needs q (0-100)"))
+            }
+            Some(r) if r != Reduction::Percentile && q_given => {
+                return Err(format!("{op}: q applies only to reduction=\"percentile\""))
+            }
+            _ => {}
+        }
+        match q {
+            Some(q) if !(0.0..=100.0).contains(&q) => {
+                Err(format!("{op}: q = {q} is outside [0, 100]"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The `q`-th percentile of `values` (reordered in place) by NumPy's default
+/// linear interpolation; NaN if any value is NaN or there are none. The one
+/// interpolation `reduce_percentile` and every [`Reduction`] read.
+pub fn percentile_of(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() || q.is_nan() || values.iter().any(|v| v.is_nan()) {
+        return f64::NAN;
+    }
+    values.sort_by(f64::total_cmp);
+    let n = values.len();
+    let pos = q.clamp(0.0, 100.0) / 100.0 * (n - 1) as f64;
+    let lo = pos.floor() as usize;
+    let frac = pos - lo as f64;
+    match values.get(lo + 1) {
+        Some(&hi) => values[lo] * (1.0 - frac) + hi * frac,
+        None => values[lo],
+    }
+}
+
 /// The reductions: one variant per wire op (see `crate::mode`).
 #[derive(Debug, Clone, PartialEq, Ops, Resolve)]
 pub enum ReductionOp<M: Mode = Exec> {
@@ -227,34 +328,7 @@ impl ReductionOp {
             DType::F64 => buffer.as_slice::<f64>().to_vec(),
         };
 
-        if values.is_empty() {
-            return ViewBuffer::from_scalar(f64::NAN);
-        }
-
-        if values.iter().any(|v| v.is_nan()) {
-            return ViewBuffer::from_scalar(f64::NAN);
-        }
-        values.sort_by(f64::total_cmp);
-
-        let n = values.len();
-        if n == 1 {
-            return ViewBuffer::from_scalar(values[0]);
-        }
-
-        // Linear interpolation matching numpy.percentile default method
-        let q_frac = q.clamp(0.0, 100.0) / 100.0;
-        let pos = q_frac * (n - 1) as f64;
-        let lo = pos.floor() as usize;
-        let hi = lo + 1;
-        let frac = pos - lo as f64;
-
-        let result = if hi >= n {
-            values[lo]
-        } else {
-            values[lo] * (1.0 - frac) + values[hi] * frac
-        };
-
-        ViewBuffer::from_scalar(result)
+        ViewBuffer::from_scalar(percentile_of(&mut values, q))
     }
 
     fn execute_typed<T>(&self, buffer: &ViewBuffer) -> ViewBuffer
