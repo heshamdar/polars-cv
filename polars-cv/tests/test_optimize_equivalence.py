@@ -17,7 +17,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
-from polars_cv import OptFlags, Pipeline, numpy_from_struct
+from polars_cv import OptFlags, Pipeline, numpy_from_struct, this
 from polars_cv._optimize import PASS_NAMES
 from tests._plan_view import op_names, ops_of
 from tests.conftest import plugin_required
@@ -98,6 +98,34 @@ _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
     ("adjust_contrast", lambda p: p.adjust_contrast(factor=1.5), "numpy"),
     ("pad", lambda p: p.pad(top=1, bottom=2, left=3, right=4), "numpy"),
     ("crop", lambda p: p.crop(top=0, left=0, height=8, width=8), "numpy"),
+    # A window past the edge, padded or clipped: the shape alone does not say
+    # where the data went.
+    (
+        "crop_pad",
+        # The resize lets the plan know the size, so identity elimination
+        # weighs it.
+        lambda p: p.resize(height=20, width=20).crop(
+            top=-2, left=-3, height=20, width=20, bounds="pad"
+        ),
+        "numpy",
+    ),
+    (
+        "crop_clip",
+        lambda p: p.crop(top=-2, left=90, height=8, width=8, bounds="clip"),
+        "numpy",
+    ),
+    ("flip_when", lambda p: p.flip(axes=[0], when=False), "numpy"),
+    # `this` reads the buffer its op is given, so no pass may change which.
+    (
+        "this_before_crop",
+        lambda p: p.cast("f32").scale(this.height).crop(height=4, width=4),
+        "numpy",
+    ),
+    (
+        "this_in_crop",
+        lambda p: p.grayscale().crop(height=this.channels, width=4),
+        "numpy",
+    ),
     ("flip", lambda p: p.flip(axes=[0]), "numpy"),
     ("transpose", lambda p: p.transpose(axes=[1, 0, 2]), "numpy"),
     ("erode", lambda p: p.grayscale().erode(ksize=3, iterations=1), "numpy"),
