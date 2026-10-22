@@ -2846,6 +2846,45 @@
     ]
   },
   {
+    "name": "resize_like",
+    "python": "resize_like",
+    "visibility": "lazy_only",
+    "doc": "Resize this image onto another node's grid: to that buffer's height\nand width, row by row, keeping this image's channels and dtype (a\nheatmap and the image it came from, compared cell by cell).\n\nExample:\n    >>> img.resize_like(heat, filter=\"area\")",
+    "fields": [
+      {
+        "name": "like",
+        "doc": "The node whose height and width this image takes.",
+        "type": {
+          "kind": "node"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resampling filter, as ``resize``'s (default \"lanczos3\"; \"area\" when\nshrinking by a large factor).",
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3",
+            "area"
+          ]
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "resize_max",
     "python": "resize_max",
     "visibility": "public",

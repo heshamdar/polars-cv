@@ -359,6 +359,10 @@ const UNDECLARED: &[(&str, &str)] = &[
         "a graph op run by the executor itself; KNOWN holds its u8 copies",
     ),
     (
+        "resize_like",
+        "a graph op run by the executor, which resizes through the engine",
+    ),
+    (
         "reduce_masked",
         "a graph op run by the executor itself, reading both inputs as f64",
     ),

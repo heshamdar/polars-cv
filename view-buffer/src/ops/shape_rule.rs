@@ -214,6 +214,10 @@ pub enum OpShape {
     /// node, a coordinate grid's `(x, y)` over its own input). No output when
     /// that input has fewer than two axes.
     Canvas { of: usize, channels: usize },
+    /// Input `0` with its H and W taken from input `of` (a resize onto
+    /// another node's grid): `[H_of, W_of, rest of input 0]`. No output when
+    /// either has fewer than two axes.
+    HwOf { of: usize },
 }
 
 /// `n * t / d` rounded to the nearest integer, a tie up, and at least 1: the
@@ -460,6 +464,14 @@ impl OpShape {
                 vec![hw[0], hw[1], channels.map_or(Dim::Unknown, Dim::Known)]
             }
             OpShape::InputRank => vec![Dim::Known(input.len())],
+            OpShape::HwOf { of } => match (input, inputs.get(*of)) {
+                ([_, _, rest @ ..], Some([h, w, ..])) => {
+                    let mut dims = vec![*h, *w];
+                    dims.extend_from_slice(rest);
+                    dims
+                }
+                _ => return None,
+            },
             OpShape::Canvas { of, channels } => match inputs.get(*of) {
                 Some([h, w, ..]) => vec![*h, *w, Dim::Known(*channels)],
                 _ => return None,
@@ -889,6 +901,7 @@ mod symbolic_tests {
                 len: [Some(k(3)), None],
             },
             OpShape::Blocks { h: k(2), w: k(3) },
+            OpShape::HwOf { of: 1 },
             OpShape::Reduce { axis: None },
             OpShape::Reduce { axis: Some(0) },
             OpShape::Reduce { axis: Some(3) },
@@ -926,6 +939,7 @@ mod symbolic_tests {
                 | OpShape::Crop { .. }
                 | OpShape::ClipWindow { .. }
                 | OpShape::Blocks { .. }
+                | OpShape::HwOf { .. }
                 | OpShape::Reduce { .. }
                 | OpShape::Elementwise
                 | OpShape::RemoveAxis(_)

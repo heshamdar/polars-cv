@@ -1305,6 +1305,7 @@ mod tests {
                 Role::Regions(..) => "Regions",
                 Role::ApplyMask { .. } => "ApplyMask",
                 Role::ReduceMasked { .. } => "ReduceMasked",
+                Role::ResizeLike { .. } => "ResizeLike",
                 Role::ChannelMerge { .. } => "ChannelMerge",
                 Role::ExtractShape => "ExtractShape",
                 Role::AssertShape { .. } => "AssertShape",
@@ -1487,6 +1488,23 @@ mod tests {
             &[Series::new("b".into(), &[mask_blob()])],
         );
         assert_eq!(out.f64().unwrap().get(0), Some(255.0));
+
+        // ResizeLike: a buffer onto its own grid is itself.
+        let out = exec(
+            r#"{
+                "version": 2,
+                "nodes": {
+                    "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                    "n1": {"input": {"node": "n0"},
+                           "ops": [{"op": "resize_like", "like": "n0", "filter": "nearest"}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}}
+            }"#,
+            &[Series::new("b".into(), &[mask_blob()])],
+        );
+        let same = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        let input = ViewBuffer::from_blob(&mask_blob()).unwrap();
+        assert_eq!(same.shape(), input.shape());
 
         // ChannelMerge: [2,2] + [2,2] -> [2,2,2].
         let single = ViewBuffer::from_vec_with_shape(vec![1u8, 2, 3, 4], vec![2, 2]).to_blob();
