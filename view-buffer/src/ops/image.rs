@@ -438,15 +438,20 @@ pub enum FilterType {
     CatmullRom,
     Gaussian,
     Lanczos3,
+    /// Area resampling (OpenCV's `INTER_AREA`): shrinking, each output pixel
+    /// is the overlap-weighted mean of the input pixels its footprint covers;
+    /// enlarging, bilinear.
+    Area,
 }
 
 // `Triangle` is surfaced under its API name "bilinear".
-crate::naming::named_variants!(FilterType: "Image resize filter types." {
+crate::naming::named_variants!(FilterType: "Image resize filter types.\n\n- AREA: when shrinking, each output pixel is the overlap-weighted mean of the input pixels its footprint covers (OpenCV's ``INTER_AREA``), with no aliasing at large factors; when enlarging, bilinear." {
     "nearest" => Nearest,
     "bilinear" => Triangle,
     "catmullrom" => CatmullRom,
     "gaussian" => Gaussian,
     "lanczos3" => Lanczos3,
+    "area" => Area,
 });
 
 /// The structuring element of `erode`, `dilate` and `morphology_gradient`.

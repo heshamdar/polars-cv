@@ -343,6 +343,7 @@ fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
         FilterType::CatmullRom => fir::ResizeAlg::Convolution(fir::FilterType::CatmullRom),
         FilterType::Gaussian => fir::ResizeAlg::Convolution(fir::FilterType::Gaussian),
         FilterType::Lanczos3 => fir::ResizeAlg::Convolution(fir::FilterType::Lanczos3),
+        FilterType::Area => unreachable!("area resamples in f64 (`execution::resample`)"),
     }
 }
 
@@ -366,6 +367,12 @@ pub(crate) fn resize_strided(
     let (w, h) = (target_width, target_height);
     if filter == FilterType::Nearest {
         return super::resample::nearest(&buf, w as usize, h as usize);
+    }
+    // fir has no area resampler (its `Box` is a centre-sampled box, which
+    // includes or drops a pixel on a rounding tie): every dtype takes the
+    // exact overlap weights in f64.
+    if filter == FilterType::Area {
+        return super::resample::resample(&buf, w as usize, h as usize, filter);
     }
     let channels = buf.shape().get(2).copied().unwrap_or(1);
     match (buf.dtype(), channels) {

@@ -251,6 +251,30 @@ CASES: list[ExprCase] = [
         (8, 16),
     ),
     ExprCase(
+        "block_reduce",
+        "height",
+        lambda v: rgb().block_reduce(height=v, width=4, reduction="max"),
+        (2, 4, 8),
+    ),
+    ExprCase(
+        "block_reduce",
+        "width",
+        lambda v: rgb().block_reduce(height=4, width=v, reduction="max"),
+        (2, 4, 8),
+    ),
+    ExprCase(
+        "block_reduce",
+        "reduction",
+        lambda v: rgb().block_reduce(height=4, width=4, reduction=v),
+        ("min", "mean", "max"),
+    ),
+    ExprCase(
+        "block_reduce",
+        "q",
+        lambda v: rgb().block_reduce(height=4, width=4, reduction="percentile", q=v),
+        (10.0, 50.0, 90.0),
+    ),
+    ExprCase(
         "flip",
         "when",
         lambda v: rgb().flip(axes=[1], when=v),

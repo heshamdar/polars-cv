@@ -304,6 +304,32 @@ def _flipped(x: np.ndarray, p: Params, flip) -> np.ndarray:
     return flip(x).copy() if p.get("when", True) else x.copy()
 
 
+def _block_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    return {
+        "height": draw(st.integers(1, max(1, x.shape[0])), label="height"),
+        "width": draw(st.integers(1, max(1, x.shape[1])), label="width"),
+        "reduction": draw(
+            st.sampled_from(["mean", "min", "max", "median"]), label="reduction"
+        ),
+    }
+
+
+@quiet
+def _block_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    """Each block (partial at the far edges) reduced per channel, in f64."""
+    fn = {"mean": np.mean, "min": np.min, "max": np.max, "median": np.median}[
+        p["reduction"]
+    ]
+    bh, bw = p["height"], p["width"]
+    h, w = x.shape[:2]
+    out = np.empty((-(-h // bh), -(-w // bw), *x.shape[2:]))
+    for i in range(out.shape[0]):
+        for j in range(out.shape[1]):
+            block = x[i * bh : (i + 1) * bh, j * bw : (j + 1) * bw].astype(np.float64)
+            out[i, j] = fn(block.reshape(-1, *x.shape[2:]), axis=0)
+    return out
+
+
 def _transpose_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {"axes": draw(st.permutations(list(range(x.ndim))), label="axes")}
 
@@ -2314,6 +2340,16 @@ OPS: dict[str, OpSpec] = {
             domain_out="scalar",
             terminal=True,
             note="set bits of each element's two's-complement bytes",
+        ),
+        _spec(
+            "block_reduce",
+            _block_params,
+            ref=_block_ref,
+            accepts=is_rank3,
+            tol=_stat_tol,
+            kind="global",
+            defines_non_finite=True,
+            note="partial edge blocks reduce the pixels they hold",
         ),
         # --- terminal: along an axis (buffer out) ----------------------------------
         _spec(

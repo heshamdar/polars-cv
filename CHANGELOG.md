@@ -25,6 +25,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`resize(filter="area")`** and **`block_reduce(height=, width=,
+  reduction=)`.** Shrinking by a large factor, `"area"` makes each output
+  pixel the mean of its footprint, every input pixel weighted by its overlap
+  (OpenCV's `INTER_AREA`; bilinear when enlarging), where a narrow kernel
+  aliases. `block_reduce` pools fixed blocks with any reduction
+  (`"mean"`, `"max"`, `"median"`, `"percentile"` with `q`, ...); the last row
+  and column of blocks are partial when the size does not divide.
 - **`flip(axes, when=)`, `flip_h(when=)`, `flip_v(when=)`**: a per-row
   condition, e.g. `flip_h(when=pl.col("view").str.starts_with("R"))` to
   orient every view the same way. The shape is the same flipped or not, so

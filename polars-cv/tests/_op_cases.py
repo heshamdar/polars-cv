@@ -117,6 +117,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "reduce_min": (BUFFER, {}),
     "reduce_percentile": (BUFFER, {"q": 50.0}),
     "reduce_median": (BUFFER, {}),
+    "block_reduce": (BUFFER, {"height": 3, "width": 4, "reduction": "max"}),
     "reduce_popcount": (BUFFER, {}),
     "reduce_std": (BUFFER, {}),
     "reduce_sum": (BUFFER, {}),

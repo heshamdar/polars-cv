@@ -115,13 +115,14 @@
   },
   {
     "name": "FilterType",
-    "doc": "Image resize filter types.",
+    "doc": "Image resize filter types.\n\n- AREA: when shrinking, each output pixel is the overlap-weighted mean of the input pixels its footprint covers (OpenCV's ``INTER_AREA``), with no aliasing at large factors; when enlarging, bilinear.",
     "variants": [
       "nearest",
       "bilinear",
       "catmullrom",
       "gaussian",
-      "lanczos3"
+      "lanczos3",
+      "area"
     ]
   },
   {

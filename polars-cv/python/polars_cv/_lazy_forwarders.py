@@ -102,6 +102,24 @@ class _LazyForwardersMixin:
             )
         )
 
+    def block_reduce(
+        self,
+        *,
+        height: IntOrExpr,
+        width: IntOrExpr,
+        reduction: str | pl.Expr = "mean",
+        q: FloatOrExpr | None = None,
+    ) -> LazyPipelineExpr:
+        """Pool fixed blocks: each ``height`` x ``width`` block reduced to one
+
+        Lazy form of :meth:`Pipeline.block_reduce` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().block_reduce(
+                height=height, width=width, reduction=reduction, q=q
+            )
+        )
+
     def blur(self, sigma: FloatOrExpr) -> LazyPipelineExpr:
         """Apply Gaussian blur.
 
