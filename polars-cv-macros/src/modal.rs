@@ -464,7 +464,7 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 });
             }
             visits.push(quote! {
-                ::view_buffer::mode::FieldType::visit_slots(#id, &mut |slot| f(#fname, slot));
+                ::view_buffer::mode::FieldType::visit_inputs(#id, &mut |input| f(#fname, input));
             });
         }
 
@@ -560,9 +560,12 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 match self { #(#fields_arms)* }
             }
 
-            /// Call `f(field, slot)` for every slot a field reads.
+            /// Call `f(field, input)` for every row input a field reads.
             #[allow(unused_variables)]
-            pub fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
+            pub fn visit_inputs(
+                &self,
+                f: &mut dyn FnMut(&'static str, ::view_buffer::mode::RowInput),
+            ) {
                 match self { #(#visit_arms)* }
             }
 
@@ -593,8 +596,11 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
             {
                 Self::wire_fields(self)
             }
-            fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
-                Self::visit_slots(self, f)
+            fn visit_inputs(
+                &self,
+                f: &mut dyn FnMut(&'static str, ::view_buffer::mode::RowInput),
+            ) {
+                Self::visit_inputs(self, f)
             }
             fn catalog() -> ::std::vec::Vec<::view_buffer::mode::OpDesc> {
                 Self::catalog()

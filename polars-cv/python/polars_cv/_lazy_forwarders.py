@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
     import polars as pl
 
-    from polars_cv._types import BoolOrExpr, FloatOrExpr, IntOrExpr
+    from polars_cv._types import BoolOrExpr, FloatOrDimOrExpr, IntOrDimOrExpr
     from polars_cv.lazy import LazyPipelineExpr
     from polars_cv.pipeline import Pipeline
 
@@ -32,7 +32,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().abs())
 
-    def add_constant(self, value: FloatOrExpr) -> LazyPipelineExpr:
+    def add_constant(self, value: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Add a constant to every value (`x + value`).
 
         Lazy form of :meth:`Pipeline.add_constant` on this expression's output.
@@ -40,7 +40,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().add_constant(value=value))
 
     def adjust_brightness(
-        self, *, factor: FloatOrExpr, preserve_dtype: bool = False
+        self, *, factor: FloatOrDimOrExpr, preserve_dtype: bool = False
     ) -> LazyPipelineExpr:
         """Adjust image brightness by scaling pixel values.
 
@@ -52,14 +52,14 @@ class _LazyForwardersMixin:
             )
         )
 
-    def adjust_contrast(self, factor: FloatOrExpr) -> LazyPipelineExpr:
+    def adjust_contrast(self, factor: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Adjust image contrast: `(pixel - mean) * factor + mean`.
 
         Lazy form of :meth:`Pipeline.adjust_contrast` on this expression's output.
         """
         return self.pipe(self._continuation().adjust_contrast(factor=factor))
 
-    def adjust_gamma(self, gamma: FloatOrExpr) -> LazyPipelineExpr:
+    def adjust_gamma(self, gamma: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,
 
         Lazy form of :meth:`Pipeline.adjust_gamma` on this expression's output.
@@ -67,7 +67,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().adjust_gamma(gamma=gamma))
 
     def apply_lut(
-        self, table: Sequence[Sequence[FloatOrExpr]], *, out_dtype: str = "u8"
+        self, table: Sequence[Sequence[FloatOrDimOrExpr]], *, out_dtype: str = "u8"
     ) -> LazyPipelineExpr:
         """Map each value through a lookup table.
 
@@ -88,9 +88,9 @@ class _LazyForwardersMixin:
         self,
         *,
         dims: Sequence[int | None] | None = None,
-        height: IntOrExpr | None = None,
-        width: IntOrExpr | None = None,
-        channels: IntOrExpr | None = None,
+        height: IntOrDimOrExpr | None = None,
+        width: IntOrDimOrExpr | None = None,
+        channels: IntOrDimOrExpr | None = None,
     ) -> LazyPipelineExpr:
         """Declare a shape the planner cannot work out for itself.
 
@@ -105,10 +105,10 @@ class _LazyForwardersMixin:
     def block_reduce(
         self,
         *,
-        height: IntOrExpr,
-        width: IntOrExpr,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
         reduction: str | pl.Expr = "mean",
-        q: FloatOrExpr | None = None,
+        q: FloatOrDimOrExpr | None = None,
     ) -> LazyPipelineExpr:
         """Pool fixed blocks: each ``height`` x ``width`` block reduced to one
 
@@ -120,7 +120,7 @@ class _LazyForwardersMixin:
             )
         )
 
-    def blur(self, sigma: FloatOrExpr) -> LazyPipelineExpr:
+    def blur(self, sigma: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Apply Gaussian blur.
 
         Lazy form of :meth:`Pipeline.blur` on this expression's output.
@@ -142,7 +142,10 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().bounding_box())
 
     def canny(
-        self, *, low_threshold: FloatOrExpr = 50.0, high_threshold: FloatOrExpr = 150.0
+        self,
+        *,
+        low_threshold: FloatOrDimOrExpr = 50.0,
+        high_threshold: FloatOrDimOrExpr = 150.0,
     ) -> LazyPipelineExpr:
         """Canny edge detection, as ``cv2.Canny(image, low, high)`` computes it:
 
@@ -176,7 +179,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().centroid())
 
     def channel_select(
-        self, index: IntOrExpr, *, keepdims: bool = True
+        self, index: IntOrDimOrExpr, *, keepdims: bool = True
     ) -> LazyPipelineExpr:
         """Extract one channel of a multi-channel image: ``[H, W, 1]`` from a
 
@@ -186,7 +189,7 @@ class _LazyForwardersMixin:
             self._continuation().channel_select(index=index, keepdims=keepdims)
         )
 
-    def channel_swap(self, order: Sequence[IntOrExpr]) -> LazyPipelineExpr:
+    def channel_swap(self, order: Sequence[IntOrDimOrExpr]) -> LazyPipelineExpr:
         """Reorder channels in a multi-channel image.
 
         Lazy form of :meth:`Pipeline.channel_swap` on this expression's output.
@@ -195,8 +198,8 @@ class _LazyForwardersMixin:
 
     def clamp(
         self,
-        min_val: FloatOrExpr,
-        max_val: FloatOrExpr,
+        min_val: FloatOrDimOrExpr,
+        max_val: FloatOrDimOrExpr,
         out_dtype: str | None = None,
         preserve_dtype: bool = False,
     ) -> LazyPipelineExpr:
@@ -213,14 +216,14 @@ class _LazyForwardersMixin:
             )
         )
 
-    def clamp_max(self, value: FloatOrExpr) -> LazyPipelineExpr:
+    def clamp_max(self, value: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Cap values at `value` (`min(x, value)`); one-sided clamp.
 
         Lazy form of :meth:`Pipeline.clamp_max` on this expression's output.
         """
         return self.pipe(self._continuation().clamp_max(value=value))
 
-    def clamp_min(self, value: FloatOrExpr) -> LazyPipelineExpr:
+    def clamp_min(self, value: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Floor values at `value` (`max(x, value)`); one-sided clamp.
 
         Lazy form of :meth:`Pipeline.clamp_min` on this expression's output.
@@ -252,7 +255,7 @@ class _LazyForwardersMixin:
 
     def convolve2d(
         self,
-        kernel: Sequence[FloatOrExpr],
+        kernel: Sequence[FloatOrDimOrExpr],
         *,
         normalize: BoolOrExpr = False,
         border: str | pl.Expr = "replicate",
@@ -277,12 +280,12 @@ class _LazyForwardersMixin:
     def crop(
         self,
         *,
-        top: IntOrExpr = 0,
-        left: IntOrExpr = 0,
-        height: IntOrExpr | None = None,
-        width: IntOrExpr | None = None,
+        top: IntOrDimOrExpr = 0,
+        left: IntOrDimOrExpr = 0,
+        height: IntOrDimOrExpr | None = None,
+        width: IntOrDimOrExpr | None = None,
         bounds: str = "error",
-        pad_value: FloatOrExpr | None = None,
+        pad_value: FloatOrDimOrExpr | None = None,
     ) -> LazyPipelineExpr:
         """Extract a rectangular region.
 
@@ -299,7 +302,7 @@ class _LazyForwardersMixin:
             )
         )
 
-    def densify(self, max_segment_length: FloatOrExpr) -> LazyPipelineExpr:
+    def densify(self, max_segment_length: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Add points so no edge is longer than *max_segment_length*: each edge is
 
         Lazy form of :meth:`Pipeline.densify` on this expression's output.
@@ -311,8 +314,8 @@ class _LazyForwardersMixin:
     def dilate(
         self,
         *,
-        ksize: IntOrExpr = 3,
-        iterations: IntOrExpr = 1,
+        ksize: IntOrDimOrExpr = 3,
+        iterations: IntOrDimOrExpr = 1,
         footprint: str | pl.Expr = "square",
     ) -> LazyPipelineExpr:
         """Morphological dilation: the local maximum over a footprint (a
@@ -342,8 +345,8 @@ class _LazyForwardersMixin:
     def erode(
         self,
         *,
-        ksize: IntOrExpr = 3,
-        iterations: IntOrExpr = 1,
+        ksize: IntOrDimOrExpr = 3,
+        iterations: IntOrDimOrExpr = 1,
         footprint: str | pl.Expr = "square",
     ) -> LazyPipelineExpr:
         """Morphological erosion: the local minimum over a footprint (a
@@ -368,8 +371,8 @@ class _LazyForwardersMixin:
         *,
         mode: str | pl.Expr = "external",
         method: str | pl.Expr = "simple",
-        min_area: FloatOrExpr | None = None,
-        min_area_fraction: FloatOrExpr | None = None,
+        min_area: FloatOrDimOrExpr | None = None,
+        min_area_fraction: FloatOrDimOrExpr | None = None,
     ) -> LazyPipelineExpr:
         """Extract contours from binary mask.
 
@@ -429,8 +432,8 @@ class _LazyForwardersMixin:
     def histogram(
         self,
         *,
-        bins: IntOrExpr | Sequence[float] = 256,
-        range: Sequence[FloatOrExpr] | None = None,
+        bins: IntOrDimOrExpr | Sequence[float] = 256,
+        range: Sequence[FloatOrDimOrExpr] | None = None,
         closed: str = "left",
         output: str = "buckets",
     ) -> LazyPipelineExpr:
@@ -456,7 +459,7 @@ class _LazyForwardersMixin:
         contours: pl.Expr,
         *,
         reduction: str | pl.Expr = "max",
-        q: FloatOrExpr | None = None,
+        q: FloatOrDimOrExpr | None = None,
         region_mode: str | pl.Expr = "interior",
     ) -> LazyPipelineExpr:
         """Score contour regions against the current buffer values.
@@ -476,7 +479,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().laplacian())
 
-    def largest(self, *, k: IntOrExpr = 1) -> LazyPipelineExpr:
+    def largest(self, *, k: IntOrDimOrExpr = 1) -> LazyPipelineExpr:
         """Keep the ``k`` largest contours of the set, by area: largest first,
 
         Lazy form of :meth:`Pipeline.largest` on this expression's output.
@@ -486,9 +489,9 @@ class _LazyForwardersMixin:
     def letterbox(
         self,
         *,
-        height: IntOrExpr,
-        width: IntOrExpr,
-        value: FloatOrExpr = 0.0,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
+        value: FloatOrDimOrExpr = 0.0,
         filter: str | pl.Expr = "lanczos3",
     ) -> LazyPipelineExpr:
         """Resize image maintaining aspect ratio and pad to exact target size: fit
@@ -502,7 +505,7 @@ class _LazyForwardersMixin:
         )
 
     def median_filter(
-        self, size: IntOrExpr = 3, *, border: str | pl.Expr = "replicate"
+        self, size: IntOrDimOrExpr = 3, *, border: str | pl.Expr = "replicate"
     ) -> LazyPipelineExpr:
         """Median filter: ``rank_filter(height=size, width=size, q=50)``.
 
@@ -511,7 +514,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().median_filter(size=size, border=border))
 
     def morphology_close(
-        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+        self, *, ksize: IntOrDimOrExpr = 3, footprint: str | pl.Expr = "square"
     ) -> LazyPipelineExpr:
         """Morphological closing (dilate then erode).
 
@@ -522,7 +525,7 @@ class _LazyForwardersMixin:
         )
 
     def morphology_gradient(
-        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+        self, *, ksize: IntOrDimOrExpr = 3, footprint: str | pl.Expr = "square"
     ) -> LazyPipelineExpr:
         """Morphological gradient (dilate - erode): an edge outline. Requires
 
@@ -533,7 +536,7 @@ class _LazyForwardersMixin:
         )
 
     def morphology_open(
-        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+        self, *, ksize: IntOrDimOrExpr = 3, footprint: str | pl.Expr = "square"
     ) -> LazyPipelineExpr:
         """Morphological opening (erode then dilate).
 
@@ -554,10 +557,10 @@ class _LazyForwardersMixin:
         self,
         *,
         method: str = "minmax",
-        mean: Sequence[FloatOrExpr] | None = None,
-        std: Sequence[FloatOrExpr] | None = None,
-        low: FloatOrExpr | None = None,
-        high: FloatOrExpr | None = None,
+        mean: Sequence[FloatOrDimOrExpr] | None = None,
+        std: Sequence[FloatOrDimOrExpr] | None = None,
+        low: FloatOrDimOrExpr | None = None,
+        high: FloatOrDimOrExpr | None = None,
         out_dtype: str | None = None,
     ) -> LazyPipelineExpr:
         """Normalize values to a standard range.
@@ -576,7 +579,7 @@ class _LazyForwardersMixin:
         )
 
     def offset(
-        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
+        self, distance: FloatOrDimOrExpr, *, join: str | pl.Expr = "round"
     ) -> LazyPipelineExpr:
         """Grow the set's regions by *distance* (negative: shrink them): every
 
@@ -601,11 +604,11 @@ class _LazyForwardersMixin:
     def pad(
         self,
         *,
-        top: IntOrExpr = 0,
-        bottom: IntOrExpr = 0,
-        left: IntOrExpr = 0,
-        right: IntOrExpr = 0,
-        value: FloatOrExpr = 0.0,
+        top: IntOrDimOrExpr = 0,
+        bottom: IntOrDimOrExpr = 0,
+        left: IntOrDimOrExpr = 0,
+        right: IntOrDimOrExpr = 0,
+        value: FloatOrDimOrExpr = 0.0,
         mode: str | pl.Expr = "constant",
     ) -> LazyPipelineExpr:
         """Add padding to the image.
@@ -621,10 +624,10 @@ class _LazyForwardersMixin:
     def pad_to_size(
         self,
         *,
-        height: IntOrExpr,
-        width: IntOrExpr,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
         position: str | pl.Expr = "center",
-        value: FloatOrExpr = 0.0,
+        value: FloatOrDimOrExpr = 0.0,
     ) -> LazyPipelineExpr:
         """Pad image to exact target size (computed at runtime). A larger image is
 
@@ -659,9 +662,9 @@ class _LazyForwardersMixin:
     def rank_filter(
         self,
         *,
-        height: IntOrExpr,
-        width: IntOrExpr,
-        q: FloatOrExpr = 50.0,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
+        q: FloatOrDimOrExpr = 50.0,
         border: str | pl.Expr = "replicate",
     ) -> LazyPipelineExpr:
         """Rank filter: each pixel the ``q``-th percentile of its ``height`` x
@@ -677,12 +680,12 @@ class _LazyForwardersMixin:
     def rasterize(
         self,
         *,
-        width: IntOrExpr | None = None,
-        height: IntOrExpr | None = None,
+        width: IntOrDimOrExpr | None = None,
+        height: IntOrDimOrExpr | None = None,
         shape: LazyPipelineExpr | None = None,
-        fill_value: IntOrExpr = 255,
-        background: IntOrExpr = 0,
-        supersample: IntOrExpr = 1,
+        fill_value: IntOrDimOrExpr = 255,
+        background: IntOrDimOrExpr = 0,
+        supersample: IntOrDimOrExpr = 1,
     ) -> LazyPipelineExpr:
         """Rasterize contours to a mask: each region filled.
 
@@ -749,7 +752,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().reduce_min(axis=axis))
 
     def reduce_percentile(
-        self, q: FloatOrExpr, *, axis: int | None = None
+        self, q: FloatOrDimOrExpr, *, axis: int | None = None
     ) -> LazyPipelineExpr:
         """Compute the q-th percentile of all values, or along one axis (linear
 
@@ -765,7 +768,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().reduce_popcount())
 
     def reduce_std(
-        self, *, axis: int | None = None, ddof: IntOrExpr = 0
+        self, *, axis: int | None = None, ddof: IntOrDimOrExpr = 0
     ) -> LazyPipelineExpr:
         """Reduce buffer by computing the standard deviation.
 
@@ -787,7 +790,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().relu())
 
-    def reshape(self, shape: Sequence[IntOrExpr]) -> LazyPipelineExpr:
+    def reshape(self, shape: Sequence[IntOrDimOrExpr]) -> LazyPipelineExpr:
         """Reshape array to new dimensions.
 
         Lazy form of :meth:`Pipeline.reshape` on this expression's output.
@@ -795,7 +798,11 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().reshape(shape=shape))
 
     def resize(
-        self, *, height: IntOrExpr, width: IntOrExpr, filter: str | pl.Expr = "lanczos3"
+        self,
+        *,
+        height: IntOrDimOrExpr,
+        width: IntOrDimOrExpr,
+        filter: str | pl.Expr = "lanczos3",
     ) -> LazyPipelineExpr:
         """Resize image to specified dimensions.
 
@@ -806,7 +813,7 @@ class _LazyForwardersMixin:
         )
 
     def resize_max(
-        self, max_size: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+        self, max_size: IntOrDimOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> LazyPipelineExpr:
         """Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).
 
@@ -817,7 +824,7 @@ class _LazyForwardersMixin:
         )
 
     def resize_min(
-        self, min_size: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+        self, min_size: IntOrDimOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> LazyPipelineExpr:
         """Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).
 
@@ -830,9 +837,9 @@ class _LazyForwardersMixin:
     def resize_scale(
         self,
         *,
-        scale: FloatOrExpr | None = None,
-        scale_x: FloatOrExpr | None = None,
-        scale_y: FloatOrExpr | None = None,
+        scale: FloatOrDimOrExpr | None = None,
+        scale_x: FloatOrDimOrExpr | None = None,
+        scale_y: FloatOrDimOrExpr | None = None,
         filter: str | pl.Expr = "lanczos3",
     ) -> LazyPipelineExpr:
         """Resize image by scale factor.
@@ -846,7 +853,7 @@ class _LazyForwardersMixin:
         )
 
     def resize_to_height(
-        self, height: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+        self, height: IntOrDimOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> LazyPipelineExpr:
         """Resize image to target height, preserving aspect ratio (width is computed at runtime).
 
@@ -857,7 +864,7 @@ class _LazyForwardersMixin:
         )
 
     def resize_to_width(
-        self, width: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+        self, width: IntOrDimOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> LazyPipelineExpr:
         """Resize image to target width, preserving aspect ratio (height is computed at runtime).
 
@@ -869,11 +876,11 @@ class _LazyForwardersMixin:
 
     def rotate(
         self,
-        angle: FloatOrExpr,
+        angle: FloatOrDimOrExpr,
         *,
         expand: bool = False,
         interpolation: str | pl.Expr = "bilinear",
-        border_value: FloatOrExpr = 0.0,
+        border_value: FloatOrDimOrExpr = 0.0,
     ) -> LazyPipelineExpr:
         """Rotate image by specified angle.
 
@@ -891,10 +898,10 @@ class _LazyForwardersMixin:
     def rotate_and_scale(
         self,
         *,
-        angle: FloatOrExpr,
-        center: Sequence[FloatOrExpr],
-        output_size: Sequence[IntOrExpr],
-        scale: FloatOrExpr = 1.0,
+        angle: FloatOrDimOrExpr,
+        center: Sequence[FloatOrDimOrExpr],
+        output_size: Sequence[IntOrDimOrExpr],
+        scale: FloatOrDimOrExpr = 1.0,
     ) -> LazyPipelineExpr:
         """Combined rotation and scaling around a center point.
 
@@ -915,7 +922,7 @@ class _LazyForwardersMixin:
 
     def scale(
         self,
-        factor: FloatOrExpr,
+        factor: FloatOrDimOrExpr,
         out_dtype: str | None = None,
         preserve_dtype: bool = False,
     ) -> LazyPipelineExpr:
@@ -930,7 +937,11 @@ class _LazyForwardersMixin:
         )
 
     def scale_contour(
-        self, *, sx: FloatOrExpr, sy: FloatOrExpr, origin: str | pl.Expr = "centroid"
+        self,
+        *,
+        sx: FloatOrDimOrExpr,
+        sy: FloatOrDimOrExpr,
+        origin: str | pl.Expr = "centroid",
     ) -> LazyPipelineExpr:
         """Scale the contour about *origin*.
 
@@ -940,7 +951,7 @@ class _LazyForwardersMixin:
             self._continuation().scale_contour(sx=sx, sy=sy, origin=origin)
         )
 
-    def sharpen(self, *, strength: FloatOrExpr = 1.0) -> LazyPipelineExpr:
+    def sharpen(self, *, strength: FloatOrDimOrExpr = 1.0) -> LazyPipelineExpr:
         """Sharpen using an unsharp-mask-style kernel.
 
         Lazy form of :meth:`Pipeline.sharpen` on this expression's output.
@@ -950,9 +961,9 @@ class _LazyForwardersMixin:
     def shear(
         self,
         *,
-        sx: FloatOrExpr = 0.0,
-        sy: FloatOrExpr = 0.0,
-        output_size: tuple[IntOrExpr, IntOrExpr],
+        sx: FloatOrDimOrExpr = 0.0,
+        sy: FloatOrDimOrExpr = 0.0,
+        output_size: tuple[IntOrDimOrExpr, IntOrDimOrExpr],
     ) -> LazyPipelineExpr:
         """Apply a shear transformation.
 
@@ -969,14 +980,14 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().sign())
 
-    def simplify(self, tolerance: FloatOrExpr) -> LazyPipelineExpr:
+    def simplify(self, tolerance: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Simplify the contour using the Douglas-Peucker algorithm.
 
         Lazy form of :meth:`Pipeline.simplify` on this expression's output.
         """
         return self.pipe(self._continuation().simplify(tolerance=tolerance))
 
-    def smooth(self, *, iterations: IntOrExpr = 1) -> LazyPipelineExpr:
+    def smooth(self, *, iterations: IntOrDimOrExpr = 1) -> LazyPipelineExpr:
         """Round off corners by Chaikin's corner cutting: each pass replaces every
 
         Lazy form of :meth:`Pipeline.smooth` on this expression's output.
@@ -1014,7 +1025,7 @@ class _LazyForwardersMixin:
     def stroke(
         self,
         *,
-        width: FloatOrExpr = 1.0,
+        width: FloatOrDimOrExpr = 1.0,
         cap: str | pl.Expr = "round",
         join: str | pl.Expr = "round",
     ) -> LazyPipelineExpr:
@@ -1024,14 +1035,14 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().stroke(width=width, cap=cap, join=join))
 
-    def subtract_constant(self, value: FloatOrExpr) -> LazyPipelineExpr:
+    def subtract_constant(self, value: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Subtract a constant from every value (`x - value`).
 
         Lazy form of :meth:`Pipeline.subtract_constant` on this expression's output.
         """
         return self.pipe(self._continuation().subtract_constant(value=value))
 
-    def threshold(self, value: FloatOrExpr) -> LazyPipelineExpr:
+    def threshold(self, value: FloatOrDimOrExpr) -> LazyPipelineExpr:
         """Apply binary threshold: a U8 mask, 255 where the element exceeds `value`
 
         Lazy form of :meth:`Pipeline.threshold` on this expression's output.
@@ -1066,7 +1077,9 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().to_ycbcr())
 
-    def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> LazyPipelineExpr:
+    def translate(
+        self, *, dx: FloatOrDimOrExpr, dy: FloatOrDimOrExpr
+    ) -> LazyPipelineExpr:
         """Translate the contour by an offset.
 
         Lazy form of :meth:`Pipeline.translate` on this expression's output.
@@ -1097,10 +1110,10 @@ class _LazyForwardersMixin:
     def warp_affine(
         self,
         *,
-        matrix: Sequence[FloatOrExpr],
-        output_size: Sequence[IntOrExpr],
+        matrix: Sequence[FloatOrDimOrExpr],
+        output_size: Sequence[IntOrDimOrExpr],
         interpolation: str | pl.Expr = "bilinear",
-        border_value: FloatOrExpr = 0.0,
+        border_value: FloatOrDimOrExpr = 0.0,
     ) -> LazyPipelineExpr:
         """Apply a 2x3 affine transformation matrix.
 

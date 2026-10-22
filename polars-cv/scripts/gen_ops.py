@@ -132,6 +132,11 @@ _SCALAR = {
     "str": ("str", "str"),
 }
 
+#: A pipeline op's per-row numeric parameter also takes ``H``/``W``
+#: (``polars_cv.Dim``): it reads the shape of the buffer the op reads, which
+#: a source or a geometry function has none of.
+_OP_SCALAR = {"IntOrExpr": "IntOrDimOrExpr", "FloatOrExpr": "FloatOrDimOrExpr"}
+
 #: Docstring width, less the method body's eight-space indent.
 _DOC_WIDTH = 88 - 8
 
@@ -139,20 +144,23 @@ _DOC_WIDTH = 88 - 8
 _SECTION = re.compile(r"^(Example|Examples|Returns|Raises|Note|Notes|Warning):\s*$")
 
 
-def annotation(ty: dict[str, Any]) -> str:
-    """The Python annotation for a catalogue field type."""
+def annotation(ty: dict[str, Any], *, op: bool = False) -> str:
+    """The Python annotation for a catalogue field type; *op* for a pipeline
+    op's field, whose numeric per-row parameters also take ``H``/``W``."""
     kind = ty["kind"]
     if kind == "scalar":
         if ty.get("variants"):
             return "str | pl.Expr" if ty["per_row"] else "str"
         per_row, literal = _SCALAR[ty["py"]]
+        if op:
+            per_row = _OP_SCALAR.get(per_row, per_row)
         return per_row if ty["per_row"] else literal
     if kind == "optional":
-        return f"{annotation(ty['inner'])} | None"
+        return f"{annotation(ty['inner'], op=op)} | None"
     if kind in ("array", "list"):
-        return f"Sequence[{annotation(ty['inner'])}]"
+        return f"Sequence[{annotation(ty['inner'], op=op)}]"
     if kind == "one_of":
-        return " | ".join(annotation(option) for option in ty["options"])
+        return " | ".join(annotation(option, op=op) for option in ty["options"])
     if kind == "column":
         return "pl.Expr"
     if kind == "node":
@@ -242,7 +250,7 @@ def method(op: dict[str, Any]) -> str:
     fields = sorted(op["fields"], key=lambda f: f["name"] != first)
     params = ["self", *(["*"] if first is None and fields else [])]
     for field in fields:
-        text = f"{field['name']}: {annotation(field['type'])}"
+        text = f"{field['name']}: {annotation(field['type'], op=True)}"
         default = _default(field)
         if default is not None:
             text += f" = {default}"
@@ -432,7 +440,14 @@ def _imports(methods: str) -> str:
     """The import block: only what the rendered methods name (ruff F401)."""
     aliases = sorted(
         name
-        for name in ("BoolOrExpr", "CloudOptions", "FloatOrExpr", "IntOrExpr")
+        for name in (
+            "BoolOrExpr",
+            "CloudOptions",
+            "FloatOrExpr",
+            "FloatOrDimOrExpr",
+            "IntOrExpr",
+            "IntOrDimOrExpr",
+        )
         if re.search(rf"\b{name}\b", methods)
     )
     lines = []
@@ -575,7 +590,9 @@ _FORWARDER_IMPORTS = {
     "BoolOrExpr": "from polars_cv._types import BoolOrExpr",
     "CloudOptions": "from polars_cv._types import CloudOptions",
     "FloatOrExpr": "from polars_cv._types import FloatOrExpr",
+    "FloatOrDimOrExpr": "from polars_cv._types import FloatOrDimOrExpr",
     "IntOrExpr": "from polars_cv._types import IntOrExpr",
+    "IntOrDimOrExpr": "from polars_cv._types import IntOrDimOrExpr",
     "LazyPipelineExpr": "from polars_cv.lazy import LazyPipelineExpr",
     "Pipeline": "from polars_cv.pipeline import Pipeline",
 }

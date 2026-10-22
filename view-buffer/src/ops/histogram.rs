@@ -129,10 +129,10 @@ impl FieldType for Bins<Wire> {
             ],
         }
     }
-    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
+    fn visit_inputs(&self, f: &mut dyn FnMut(crate::mode::RowInput)) {
         match self {
-            Bins::Count(p) => p.visit_slots(f),
-            Bins::Edges(e) => e.visit_slots(f),
+            Bins::Count(p) => p.visit_inputs(f),
+            Bins::Edges(e) => e.visit_inputs(f),
         }
     }
 }
