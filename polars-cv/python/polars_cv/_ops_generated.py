@@ -304,11 +304,13 @@ class LogicalPass(str, Enum):
 
 
 class NormalizeMethod(str, Enum):
-    """Normalization methods (``PRESET``: channel-wise with preset mean/std values)."""
+    """Normalization methods (``PRESET``: channel-wise with preset mean/std values; ``PERCENTILE``/``RANGE``: a ``low``..``high`` window mapped to [0, 1], clipped)."""
 
     MINMAX = "minmax"
     ZSCORE = "zscore"
     PRESET = "preset"
+    PERCENTILE = "percentile"
+    RANGE = "range"
 
 
 class NullParamPolicy(str, Enum):
@@ -957,7 +959,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": False,
             "py": "NormalizeMethod",
-            "variants": ["minmax", "zscore", "preset"],
+            "variants": ["minmax", "zscore", "preset", "percentile", "range"],
         },
         "mean": {
             "kind": "optional",
@@ -972,6 +974,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
                 "kind": "list",
                 "inner": {"kind": "scalar", "per_row": True, "py": "float"},
             },
+        },
+        "low": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
+        "high": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
         },
         "out_dtype": {
             "kind": "optional",
@@ -2515,6 +2525,8 @@ class _OpsMixin:
         method: str = "minmax",
         mean: Sequence[FloatOrExpr] | None = None,
         std: Sequence[FloatOrExpr] | None = None,
+        low: FloatOrExpr | None = None,
+        high: FloatOrExpr | None = None,
         out_dtype: str | None = None,
     ) -> Pipeline:
         """Normalize values to a standard range.
@@ -2526,7 +2538,10 @@ class _OpsMixin:
                 element min/max; "zscore" standardizes to mean=0, std=1 using per-
                 element statistics; "preset" applies ImageNet-style channel-wise
                 normalization, `(x - mean[c]) / std[c]`, with the given `mean` and
-                `std`.
+                `std`; "percentile" maps the window between the image's own `low`-th and
+                `high`-th percentiles (all channels together) to [0, 1], clipped outside
+                it (robust windowing across devices); "range" maps the window `[low,
+                high]` to [0, 1], clipped.
             mean: Per-channel mean values; required for, and only valid with,
                 method="preset" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element
                 may be a literal float or a Polars expression; the list length is the
@@ -2534,6 +2549,10 @@ class _OpsMixin:
             std: Per-channel standard deviation values; required for, and only valid
                 with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
                 element accepts an expression, as with `mean`.
+            low: The window's lower edge: a percentile in [0, 100] for
+                method="percentile", a value for method="range"; required for, and only
+                valid with, those two. Accepts a Polars expression.
+            high: The window's upper edge, above `low`; as `low`.
             out_dtype: Output dtype (default f32). Normalization computes in f32 and the
                 result is cast to this dtype at execution. For half precision use the
                 sink dtype instead (`.sink("numpy", dtype="f16")`).
@@ -2548,7 +2567,14 @@ class _OpsMixin:
         """
         return self._append_typed(
             "normalize",
-            {"method": method, "mean": mean, "std": std, "out_dtype": out_dtype},
+            {
+                "method": method,
+                "mean": mean,
+                "std": std,
+                "low": low,
+                "high": high,
+                "out_dtype": out_dtype,
+            },
         )
 
     def pad(

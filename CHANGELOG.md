@@ -25,6 +25,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`normalize(method="percentile", low=, high=)`** maps the window between
+  the image's own `low`-th and `high`-th percentiles to [0, 1] (robust
+  windowing across devices), and **`normalize(method="range", low=, high=)`**
+  an explicit window, per row if `low`/`high` are expressions; both clip
+  outside the window.
 - **`statistics(include=[..., "median", "p90", "count"], mask=)`** and
   **`polars_cv.region_stats(regions, {name: (map, statistic)})`.** Statistics
   take the median, any percentile (`"pNN"`) and, under a mask (reduced as

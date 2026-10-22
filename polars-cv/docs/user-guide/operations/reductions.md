@@ -48,6 +48,25 @@ Pipeline().source("image_bytes").grayscale().reduce_percentile(q=50)
 
 # Compute 95th percentile
 Pipeline().source("image_bytes").grayscale().reduce_percentile(q=95)
+
+# Per row (axis=1) or per column (axis=0); reduce_median is q=50
+Pipeline().source("image_bytes").grayscale(keepdims=False).reduce_median(axis=1)
+```
+
+## Masked Reductions
+
+`apply_mask` zeroes outside a mask, and a reduction then counts the zeros.
+`reduce_masked` reduces only the pixels the mask selects (u8 or float, set
+where > 0): every masked pixel, or one value per column (`axis=0`) or row
+(`axis=1`). A line with no masked pixel is NaN (0 for `"sum"` and `"count"`).
+
+```python
+heat = pl.col("heat").cv.pipe(Pipeline().source("array"))
+breast = pl.col("breast").cv.pipe(Pipeline().source("array"))
+
+heat.reduce_masked(breast, reduction="median", axis=1).sink("numpy")    # per row
+heat.reduce_masked(breast, reduction="percentile", q=75, axis=0).sink("numpy")
+heat.statistics(include=["mean", "median", "p10", "p90", "count"], mask=breast)
 ```
 
 ## Popcount
@@ -77,7 +96,9 @@ result = df.with_columns(
 )
 ```
 
-**Reductions:** `"max"`, `"mean"`, `"sum"`.
+**Reductions:** `"sum"`, `"mean"`, `"min"`, `"max"` (default), `"std"`
+(population), `"median"`, `"percentile"` (with `q`) and `"count"` — the same
+set `reduce_masked` takes.
 **Region modes:** `"interior"` (filled area), `"boundary"` (contour edge), `"bbox"` (bounding rectangle).
 
 ## Convenience Methods
@@ -89,4 +110,18 @@ df.with_columns(
     stats=pl.col("image").cv.pipe(pipe).statistics()
 )
 # Returns a struct with {mean, std, min, max}
+```
+
+`include=` also takes `"sum"`, `"median"`, `"pNN"` (any percentile, e.g.
+`"p97.5"`) and, with `mask=`, `"count"`.
+
+Several maps over each region at once — regionprops for any per-pixel map:
+
+```python
+stats = polars_cv.region_stats(pl.col("regions"), {
+    "heat_max": (heat, "max"),
+    "heat_p90": (heat, "p90"),
+    "skin_min": (skin_distance, "min"),
+})
+df.with_columns(stats=stats).unnest("stats").explode(["heat_max", "heat_p90", "skin_min"])
 ```

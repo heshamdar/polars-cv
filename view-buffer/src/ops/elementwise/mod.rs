@@ -130,9 +130,11 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
             method,
             mean,
             std,
+            low,
+            high,
             out_dtype,
         } => lower_normalize(
-            &ComputeOp::normalization(*method, mean, std),
+            &ComputeOp::normalization(*method, mean, std, *low, *high),
             out_dtype.unwrap_or(DType::F32),
             buf,
         ),
@@ -236,7 +238,34 @@ fn lower_normalize(normalization: &Normalization, out_dtype: DType, buf: &ViewBu
         Normalization::Preset { mean, std } => {
             Lowered::Kernels(mean.iter().zip(std).map(|(&m, &s)| affine(m, s)).collect())
         }
+        Normalization::Percentile { low, high } => {
+            // The image's own percentiles, every channel together, by the
+            // one interpolation (`reduction::percentile_of`).
+            let values = buf.cast_to(DType::F64).to_contiguous();
+            let mut values = values.as_slice::<f64>().to_vec();
+            let lo = crate::ops::reduction::percentile_of(&mut values, f64::from(*low)) as f32;
+            let hi = crate::ops::reduction::percentile_of(&mut values, f64::from(*high)) as f32;
+            window(lo, hi, out_dtype)
+        }
+        Normalization::Range { low, high } => window(*low, *high, out_dtype),
     }
+}
+
+/// `[lo, hi]` mapped to [0, 1], clipped outside it; an empty window has no
+/// spread, so every element is zero (as minmax over a constant image).
+fn window(lo: f32, hi: f32, out_dtype: DType) -> Lowered {
+    if hi.partial_cmp(&lo) != Some(std::cmp::Ordering::Greater) {
+        return Lowered::Zeros(out_dtype);
+    }
+    Lowered::Kernels(vec![FusedKernel {
+        ops: vec![
+            ScalarOp::Sub(lo),
+            ScalarOp::Div(hi - lo),
+            ScalarOp::Max(0.0),
+            ScalarOp::Min(1.0),
+        ],
+        out_dtype,
+    }])
 }
 
 fn zeros(out_dtype: DType, shape: &[usize]) -> ViewBuffer {

@@ -309,6 +309,18 @@ CASES: list[ExprCase] = [
         (0.5, 1.0, 2.0),
     ),
     ExprCase(
+        "normalize",
+        "low",
+        lambda v: rgb().normalize(method="range", low=v, high=250.0),
+        (0.0, 50.0, 100.0),
+    ),
+    ExprCase(
+        "normalize",
+        "high",
+        lambda v: rgb().normalize(method="range", low=0.0, high=v),
+        (100.0, 150.0, 200.0),
+    ),
+    ExprCase(
         "clamp",
         "min_val",
         lambda v: rgb().clamp(min_val=v, max_val=255.0),
