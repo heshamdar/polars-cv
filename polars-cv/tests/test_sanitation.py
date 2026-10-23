@@ -647,9 +647,9 @@ def _binary_op_names_from_source() -> set[str]:
     """The element-wise binary ops among :func:`_binary_op_calls_from_source`.
 
     ``_binary_op`` builds any node-plus-one-operand op, so the contour set ops
-    (``union``, ``intersection``, …, CR-99) go through it too; the element-wise
-    ones are those that read numbers (``buffer``/``vector``), as their
-    catalogued domains say.
+    (``union``, ``intersection``, …, CR-99) and ``masked_select`` go through it
+    too; the element-wise ones are those that read any numeric container, a
+    ``buffer`` and a ``vector`` alike, as their catalogued domains say.
     """
     from polars_cv._ops_generated import OP_DOMAINS
 
@@ -657,7 +657,7 @@ def _binary_op_names_from_source() -> set[str]:
     return {
         n
         for n in _binary_op_calls_from_source()
-        if {d["input"] for d in OP_DOMAINS[n]} <= numeric
+        if {d["input"] for d in OP_DOMAINS[n]} == numeric
     }
 
 

@@ -338,6 +338,43 @@ class TestMasked:
             _masked("mean", axis=2, img=RGB)
 
 
+def _selected(**frame) -> np.ndarray:
+    img = pl.col("a").cv.pipe(Pipeline().source("array"))
+    mask = pl.col("m").cv.pipe(Pipeline().source("array"))
+    out = _masked_frame(**frame).select(img.masked_select(mask).sink("numpy"))
+    from polars_cv import numpy_from_struct
+
+    return numpy_from_struct(out.item())
+
+
+class TestMaskedSelect:
+    """``masked_select`` is the values a mask selects, as NumPy's boolean
+    indexing gives them: row-major, every channel of a pixel together, in the
+    image's dtype."""
+
+    def test_is_numpys_boolean_index(self) -> None:
+        got = _selected()
+        want = IMG[MASK > 0].ravel()
+        assert got.dtype == want.dtype
+        np.testing.assert_array_equal(got, want)
+
+    def test_keeps_every_channel_of_a_selected_pixel(self) -> None:
+        np.testing.assert_array_equal(_selected(img=RGB), RGB[MASK > 0].ravel())
+
+    def test_a_float_or_one_channel_mask_selects_its_positive_pixels(self) -> None:
+        soft = np.where(MASK > 0, 0.25, 0.0)
+        np.testing.assert_array_equal(_selected(mask=soft), IMG[MASK > 0])
+        np.testing.assert_array_equal(_selected(mask=MASK[..., None]), IMG[MASK > 0])
+
+    def test_no_selected_pixel_is_an_empty_vector(self) -> None:
+        got = _selected(mask=np.zeros_like(MASK))
+        assert got.shape == (0,)
+
+    def test_another_mask_dtype_is_refused_by_name(self) -> None:
+        with pytest.raises(pl.exceptions.ComputeError, match="masked_select.*mask"):
+            _selected(mask=MASK.astype(np.int32))
+
+
 class TestStatistics:
     def _img(self):
         return pl.col("a").cv.pipe(Pipeline().source("array"))
@@ -364,6 +401,20 @@ class TestStatistics:
         assert set(got) == set(include)
         for name, value in want.items():
             np.testing.assert_allclose(got[name], value, err_msg=name)
+
+    def test_masked_statistics_gather_the_masked_values_once(self) -> None:
+        """Every statistic reads one ``masked_select`` node rather than
+        casting and scanning the image and mask again per statistic
+        (CR-131)."""
+        from tests._plan_view import op_names
+
+        include = ["mean", "std", "min", "max", "p90"]
+        stats = self._img().statistics_lazy(include=include, mask=self._mask())
+        ops = [
+            op for node in stats._collect_dependency_graph() for op in op_names(node)
+        ]
+        assert ops.count("masked_select") == 1, ops
+        assert "reduce_masked" not in ops, ops
 
     def test_unmasked_median_and_percentiles(self) -> None:
         got = (

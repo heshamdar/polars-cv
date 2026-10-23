@@ -440,7 +440,7 @@ def lazy_method(op: dict[str, Any]) -> str:
     return (
         f"    def {op['python']}(self, {name}: LazyPipelineExpr) -> LazyPipelineExpr:\n"
         f'        """{doc}\n        """\n'
-        f'        return self._binary_op("{op["name"]}", {name})\n'
+        f'        return self._binary_op("{op["name"]}", "{name}", {name})\n'
     )
 
 
@@ -611,7 +611,7 @@ def render(
         + "\n\nclass _LazyOpsMixin:\n"
         + '    """The generated binary-op methods ``LazyPipelineExpr`` inherits."""\n\n'
         + "    if TYPE_CHECKING:\n\n"
-        + "        def _binary_op(self, op: str, other: LazyPipelineExpr) -> LazyPipelineExpr: ...\n\n"
+        + "        def _binary_op(\n            self, op: str, field: str, other: LazyPipelineExpr\n        ) -> LazyPipelineExpr: ...\n\n"
         + lazy_methods
         + "\n\n"
         + geom_methods
