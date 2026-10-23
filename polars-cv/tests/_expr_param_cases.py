@@ -331,6 +331,32 @@ CASES: list[ExprCase] = [
         lambda v: rgb().crop(top=0, left=0, height=6, width=v),
         (4, 8, 12),
     ),
+    # Windows reaching past the top-left and the bottom-right edges, so the
+    # clip is in the output.
+    ExprCase(
+        "crop_clip",
+        "top",
+        lambda v: rgb().crop_clip(top=v, left=0, height=6, width=6),
+        (-2, 0, 12),
+    ),
+    ExprCase(
+        "crop_clip",
+        "left",
+        lambda v: rgb().crop_clip(top=0, left=v, height=6, width=6),
+        (-2, 0, 12),
+    ),
+    ExprCase(
+        "crop_clip",
+        "height",
+        lambda v: rgb().crop_clip(top=10, left=0, height=v, width=6),
+        (2, 4, 8),
+    ),
+    ExprCase(
+        "crop_clip",
+        "width",
+        lambda v: rgb().crop_clip(top=0, left=10, height=6, width=v),
+        (2, 4, 8),
+    ),
     # A window past the bottom-right corner, so the fill is in the output.
     ExprCase(
         "crop_pad",

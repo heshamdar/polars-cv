@@ -111,7 +111,7 @@ _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
     ),
     (
         "crop_clip",
-        lambda p: p.crop(top=-2, left=90, height=8, width=8, bounds="clip"),
+        lambda p: p.crop_clip(top=-2, left=90, height=8, width=8),
         "numpy",
     ),
     ("flip_when", lambda p: p.flip(axes=[0], when=False), "numpy"),

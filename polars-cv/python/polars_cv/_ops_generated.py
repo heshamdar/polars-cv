@@ -36,7 +36,6 @@ __all__ = [
     "BorderMode",
     "ColorSpace",
     "CoordOrder",
-    "CropBounds",
     "DType",
     "Domain",
     "ExtractMode",
@@ -123,17 +122,6 @@ class CoordOrder(str, Enum):
 
     XY = "xy"
     YX = "yx"
-
-
-class CropBounds(str, Enum):
-    """What a crop keeps of a window reaching past the input's edge (``crop_pad`` pads it to its size instead).
-
-    - ERROR: refuse the row (default)
-    - CLIP: keep the part inside the input, which may be smaller than asked
-    """
-
-    ERROR = "error"
-    CLIP = "clip"
 
 
 class DType(str, Enum):
@@ -541,6 +529,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "convolve2d",
         "coordinate_grid",
         "crop",
+        "crop_clip",
         "crop_pad",
         "cvt_color",
         "difference",
@@ -903,12 +892,17 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "optional",
             "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         },
-        "bounds": {
-            "kind": "scalar",
-            "per_row": False,
-            "py": "CropBounds",
-            "this": False,
-            "variants": ["error", "clip"],
+    },
+    "crop_clip": {
+        "top": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "left": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "height": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        },
+        "width": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         },
     },
     "crop_pad": {
@@ -1597,7 +1591,8 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "contour_stroke": {"width": 1.0, "cap": "round", "join": "round"},
     "convolve2d": {"normalize": False, "border": "replicate"},
     "coordinate_grid": {"normalized": False},
-    "crop": {"top": 0, "left": 0, "bounds": "error"},
+    "crop": {"top": 0, "left": 0},
+    "crop_clip": {"top": 0, "left": 0},
     "crop_pad": {"top": 0, "left": 0, "value": 0.0},
     "dilate": {"ksize": 3, "iterations": 1, "footprint": "square"},
     "distance_transform": {"signed": False},
@@ -1701,6 +1696,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "convolve2d": [{"input": "buffer", "output": "buffer"}],
     "coordinate_grid": [{"input": "buffer", "output": "buffer"}],
     "crop": [{"input": "buffer", "output": "buffer"}],
+    "crop_clip": [{"input": "buffer", "output": "buffer"}],
     "crop_pad": [{"input": "buffer", "output": "buffer"}],
     "cvt_color": [{"input": "buffer", "output": "buffer"}],
     "difference": [{"input": "contour", "output": "contour"}],
@@ -2514,37 +2510,51 @@ class _OpsMixin:
         left: IntOrThisOrExpr = 0,
         height: IntOrThisOrExpr | None = None,
         width: IntOrThisOrExpr | None = None,
-        bounds: str = "error",
     ) -> Pipeline:
-        """Extract a rectangular region.
+        """Extract a rectangular region inside the input.
 
-        A window reaching past the input's edge is refused by default;
-        ``bounds="clip"`` keeps the part inside the input (strips, tiles and
-        sliding windows near a border), where offsets may be negative.
-        ``crop_pad`` keeps the requested size instead.
+        A window reaching past the input's edge is refused. ``crop_clip``
+        keeps the part of such a window inside the input, and ``crop_pad``
+        keeps its requested size, filled outside.
 
         Domain: buffer → buffer
 
         Args:
-            top: Top offset; negative only with ``bounds="clip"``.
-            left: Left offset; negative only with ``bounds="clip"``.
+            top: Top offset.
+            left: Left offset.
             height: Crop height (None = to end).
             width: Crop width (None = to end).
-            bounds: What a window past the input's edge keeps: "error" (default) or
-                "clip".
-
-        Example:
-            >>> pipe = Pipeline().source("image_bytes").crop(left=8, width=24, bounds="clip")
         """
         return self._append_typed(
-            "crop",
-            {
-                "top": top,
-                "left": left,
-                "height": height,
-                "width": width,
-                "bounds": bounds,
-            },
+            "crop", {"top": top, "left": left, "height": height, "width": width}
+        )
+
+    def crop_clip(
+        self,
+        *,
+        top: IntOrThisOrExpr = 0,
+        left: IntOrThisOrExpr = 0,
+        height: IntOrThisOrExpr | None = None,
+        width: IntOrThisOrExpr | None = None,
+    ) -> Pipeline:
+        """Extract the part of a window that lies inside the input: strips, tiles
+        and sliding windows near a border. Offsets may be negative, and the
+        output is smaller than asked where the window reaches past the edge; a
+        window with nothing inside the input is refused.
+
+        Domain: buffer → buffer
+
+        Args:
+            top: Top offset; may be negative.
+            left: Left offset; may be negative.
+            height: Window height (None = to end).
+            width: Window width (None = to end).
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").crop_clip(left=8, width=24)
+        """
+        return self._append_typed(
+            "crop_clip", {"top": top, "left": left, "height": height, "width": width}
         )
 
     def crop_pad(

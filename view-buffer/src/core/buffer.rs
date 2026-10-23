@@ -1736,7 +1736,6 @@ mod reshape_offset_tests {
             left: 0,
             height: Some(2),
             width: Some(2),
-            bounds: crate::ops::view::CropBounds::Error,
         });
         let select = ViewDto::View(ViewOp::ChannelSelect {
             index: 0,

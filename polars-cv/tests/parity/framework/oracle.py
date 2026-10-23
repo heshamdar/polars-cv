@@ -275,18 +275,14 @@ def _no_params(draw: st.DrawFn, x: np.ndarray) -> Params:
 
 def _crop_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     h, w = x.shape[:2]
-    bounds = draw(st.sampled_from(["error", "clip"]), label="bounds")
-    if bounds == "error":
-        top = draw(st.integers(0, h - 1), label="top")
-        left = draw(st.integers(0, w - 1), label="left")
-        return {
-            "top": top,
-            "left": left,
-            "height": draw(st.integers(1, h - top), label="height"),
-            "width": draw(st.integers(1, w - left), label="width"),
-            "bounds": bounds,
-        }
-    return {**_window_past_the_edge(draw, x), "bounds": bounds}
+    top = draw(st.integers(0, h - 1), label="top")
+    left = draw(st.integers(0, w - 1), label="left")
+    return {
+        "top": top,
+        "left": left,
+        "height": draw(st.integers(1, h - top), label="height"),
+        "width": draw(st.integers(1, w - left), label="width"),
+    }
 
 
 def _window_past_the_edge(draw: st.DrawFn, x: np.ndarray) -> Params:
@@ -1831,6 +1827,13 @@ OPS: dict[str, OpSpec] = {
     for spec in (
         # --- data movement ---------------------------------------------------
         _spec("crop", _crop_params, accepts=is_rank3, ref=_crop_ref, **_movement),
+        _spec(
+            "crop_clip",
+            _window_past_the_edge,
+            accepts=is_rank3,
+            ref=_crop_ref,
+            **_movement,
+        ),
         _spec(
             "crop_pad", _crop_pad_params, accepts=is_rank3, ref=_crop_ref, **_movement
         ),

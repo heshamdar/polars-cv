@@ -70,7 +70,7 @@ result in an image format; `show_images` takes a struct field as
 ```python
 from polars_cv import show_images
 
-strip = img.pipe(Pipeline().crop(left=8, width=24, bounds="clip")).alias("strip")
+strip = img.pipe(Pipeline().crop_clip(left=8, width=24)).alias("strip")
 final = strip.pipe(Pipeline().blur(2.0)).alias("out")
 
 debug = df.head(4).with_columns(

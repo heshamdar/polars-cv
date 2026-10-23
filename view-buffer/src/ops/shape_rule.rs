@@ -182,7 +182,7 @@ pub enum OpShape {
     Blocks { h: Sym<usize>, w: Sym<usize> },
     /// H and W windowed by `start` (which may be negative) and `len` (to the
     /// end when `None`), clipped to the input: the part of the window inside
-    /// it. Later axes are kept whole.
+    /// it ([`place_axis`]). Later axes are kept whole.
     ClipWindow {
         start: [Sym<i64>; 2],
         len: [Option<Sym<usize>>; 2],
@@ -218,6 +218,22 @@ pub enum OpShape {
     /// another node's grid): `[H_of, W_of, rest of input 0]`. No output when
     /// either has fewer than two axes.
     HwOf { of: usize },
+}
+
+/// One axis of a window that may reach past its input: `origin` (which may
+/// be negative) and `extent` (to the end when `None`) against an axis of
+/// `dim`. Returns the in-bounds `lo..hi` and the padding before and after
+/// it. The one rule for a window past the edge, read by the shape authority
+/// (`OpShape::ClipWindow`) and by execution (`ViewOp::place`) alike.
+pub fn place_axis(origin: i64, extent: Option<u64>, dim: usize) -> (usize, usize, u64, u64) {
+    let dim_i = dim as i64;
+    let end = extent.map_or(dim_i, |e| origin.saturating_add(e as i64));
+    let lo = origin.clamp(0, dim_i);
+    let hi = end.clamp(lo, dim_i);
+    let total = end - origin;
+    let before = (-origin).clamp(0, total.max(0));
+    let after = total - before - (hi - lo);
+    (lo as usize, hi as usize, before as u64, after.max(0) as u64)
 }
 
 /// `n * t / d` rounded to the nearest integer, a tie up, and at least 1: the
@@ -402,13 +418,13 @@ impl OpShape {
                     let (Some(n), Some(origin)) = (d.known(), start[axis].known()) else {
                         return Dim::Unknown;
                     };
-                    let end = match len[axis] {
-                        None => n as i64,
-                        Some(Sym::Known(len)) => origin + len as i64,
+                    let extent = match len[axis] {
+                        None => None,
+                        Some(Sym::Known(len)) => Some(len as u64),
                         Some(Sym::PerRow) => return Dim::Unknown,
                     };
-                    let lo = origin.clamp(0, n as i64);
-                    Dim::Known((end.clamp(lo, n as i64) - lo) as usize)
+                    let (lo, hi, _, _) = place_axis(origin, extent, n);
+                    Dim::Known(hi - lo)
                 })
                 .collect(),
             OpShape::Crop { start, len } => input

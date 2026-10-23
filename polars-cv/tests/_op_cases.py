@@ -58,6 +58,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "convert_color": (BUFFER, {"from_space": "rgb", "to_space": "hsv"}),
     "convolve2d": (BUFFER, {"kernel": [0.0] * 9}),
     "crop": (BUFFER, {"top": 0, "left": 0, "height": 50, "width": 50}),
+    "crop_clip": (BUFFER, {"top": -5, "left": 80, "height": 50, "width": 50}),
     "crop_pad": (BUFFER, {"top": -5, "left": 80, "height": 50, "width": 50}),
     "dilate": (BUFFER, {"ksize": 3}),
     "coordinate_grid": (BUFFER, {}),

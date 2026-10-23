@@ -1152,11 +1152,11 @@
     "name": "crop",
     "python": "crop",
     "visibility": "public",
-    "doc": "Extract a rectangular region.\n\nA window reaching past the input's edge is refused by default;\n``bounds=\"clip\"`` keeps the part inside the input (strips, tiles and\nsliding windows near a border), where offsets may be negative.\n``crop_pad`` keeps the requested size instead.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").crop(left=8, width=24, bounds=\"clip\")",
+    "doc": "Extract a rectangular region inside the input.\n\nA window reaching past the input's edge is refused. ``crop_clip``\nkeeps the part of such a window inside the input, and ``crop_pad``\nkeeps its requested size, filled outside.",
     "fields": [
       {
         "name": "top",
-        "doc": "Top offset; negative only with ``bounds=\"clip\"``.",
+        "doc": "Top offset.",
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1167,7 +1167,7 @@
       },
       {
         "name": "left",
-        "doc": "Left offset; negative only with ``bounds=\"clip\"``.",
+        "doc": "Left offset.",
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1201,20 +1201,67 @@
             "this": true
           }
         }
-      },
+      }
+    ],
+    "domains": [
       {
-        "name": "bounds",
-        "doc": "What a window past the input's edge keeps: \"error\" (default) or\n\"clip\".",
-        "default": "error",
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
+    "name": "crop_clip",
+    "python": "crop_clip",
+    "visibility": "public",
+    "doc": "Extract the part of a window that lies inside the input: strips, tiles\nand sliding windows near a border. Offsets may be negative, and the\noutput is smaller than asked where the window reaches past the edge; a\nwindow with nothing inside the input is refused.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").crop_clip(left=8, width=24)",
+    "fields": [
+      {
+        "name": "top",
+        "doc": "Top offset; may be negative.",
+        "default": 0,
         "type": {
           "kind": "scalar",
-          "per_row": false,
-          "py": "CropBounds",
-          "this": false,
-          "variants": [
-            "error",
-            "clip"
-          ]
+          "per_row": true,
+          "py": "int",
+          "this": true
+        }
+      },
+      {
+        "name": "left",
+        "doc": "Left offset; may be negative.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int",
+          "this": true
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Window height (None = to end).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int",
+            "this": true
+          }
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Window width (None = to end).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int",
+            "this": true
+          }
         }
       }
     ],
