@@ -2014,11 +2014,11 @@
     "name": "normalize",
     "python": "normalize",
     "visibility": "public",
-    "doc": "Normalize values to a standard range.\n\nExample:\n    >>> Pipeline().source().normalize(method=\"minmax\")\n    >>> Pipeline().source().normalize(\n    ...     method=\"preset\",\n    ...     mean=[0.485, 0.456, 0.406],\n    ...     std=[0.229, 0.224, 0.225],\n    ... )",
+    "doc": "Normalize values by the image's own statistics.\n\nExample:\n    >>> Pipeline().source().normalize(method=\"minmax\")",
     "fields": [
       {
         "name": "method",
-        "doc": "Normalization method: \"minmax\" scales values to [0, 1] using\nper-element min/max; \"zscore\" standardizes to mean=0, std=1 using\nper-element statistics; \"preset\" applies ImageNet-style channel-wise\nnormalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.\nA window is ``normalize_percentile`` or ``normalize_range``.",
+        "doc": "Normalization method: \"minmax\" scales values to [0, 1] using\nper-element min/max; \"zscore\" standardizes to mean=0, std=1 using\nper-element statistics. Given statistics are ``normalize_preset``;\na window is ``normalize_percentile`` or ``normalize_range``.",
         "default": "minmax",
         "type": {
           "kind": "scalar",
@@ -2026,39 +2026,8 @@
           "py": "NormalizeMethod",
           "variants": [
             "minmax",
-            "zscore",
-            "preset"
+            "zscore"
           ]
-        }
-      },
-      {
-        "name": "mean",
-        "doc": "Per-channel mean values; required for, and only valid with,\nmethod=\"preset\" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element may\nbe a literal float or a Polars expression; the list length is the channel\ncount.",
-        "type": {
-          "kind": "optional",
-          "inner": {
-            "kind": "list",
-            "inner": {
-              "kind": "scalar",
-              "per_row": true,
-              "py": "float"
-            }
-          }
-        }
-      },
-      {
-        "name": "std",
-        "doc": "Per-channel standard deviation values; required for, and only valid\nwith, method=\"preset\" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each\nelement accepts an expression, as with `mean`.",
-        "type": {
-          "kind": "optional",
-          "inner": {
-            "kind": "list",
-            "inner": {
-              "kind": "scalar",
-              "per_row": true,
-              "py": "float"
-            }
-          }
         }
       },
       {
@@ -2115,6 +2084,68 @@
           "kind": "scalar",
           "per_row": true,
           "py": "float"
+        }
+      },
+      {
+        "name": "out_dtype",
+        "doc": "Output dtype (default f32), as ``normalize``'s.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "DType",
+            "variants": [
+              "u8",
+              "i8",
+              "u16",
+              "i16",
+              "u32",
+              "i32",
+              "u64",
+              "i64",
+              "f32",
+              "f64"
+            ]
+          }
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
+    "name": "normalize_preset",
+    "python": "normalize_preset",
+    "visibility": "public",
+    "doc": "Normalize each channel by given statistics, ``(x - mean[c]) / std[c]``\n(ImageNet-style preprocessing).\n\nExample:\n    >>> Pipeline().source().normalize_preset(\n    ...     mean=[0.485, 0.456, 0.406],\n    ...     std=[0.229, 0.224, 0.225],\n    ... )",
+    "fields": [
+      {
+        "name": "mean",
+        "doc": "Per-channel means (e.g. ImageNet ``[0.485, 0.456, 0.406]``), one\nper channel. Each element may be a literal float or a Polars\nexpression; the list length is the channel count.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "std",
+        "doc": "Per-channel standard deviations (e.g. ImageNet\n``[0.229, 0.224, 0.225]``), as many as ``mean``. Each element\naccepts an expression, as with ``mean``.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
         }
       },
       {

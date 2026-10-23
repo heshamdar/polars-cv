@@ -688,15 +688,21 @@ def _gamma_ref_accepts(x: np.ndarray, p: Params) -> bool:
 
 
 def _normalize_params(draw: st.DrawFn, x: np.ndarray) -> Params:
-    method = draw(st.sampled_from(["minmax", "zscore", "preset"]), label="method")
-    if method != "preset":
-        return {"method": method}
+    return {"method": draw(st.sampled_from(["minmax", "zscore"]), label="method")}
+
+
+def _normalize_preset_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     c = x.shape[2]
     return {
-        "method": method,
         "mean": draw(st.lists(_nice(0, 1), min_size=c, max_size=c), label="mean"),
         "std": draw(st.lists(_nice(0.125, 1), min_size=c, max_size=c), label="std"),
     }
+
+
+@quiet
+def _normalize_preset_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    xf = x.astype(np.float64)
+    return ((xf - np.asarray(p["mean"])) / np.asarray(p["std"])).astype(np.float32)
 
 
 @quiet
@@ -704,16 +710,14 @@ def _normalize_ref(x: np.ndarray, p: Params) -> np.ndarray:
     xf = x.astype(np.float64)
     if p["method"] == "minmax":
         out = (xf - xf.min()) / (xf.max() - xf.min())
-    elif p["method"] == "zscore":
-        out = (xf - xf.mean()) / xf.std()
     else:
-        out = (xf - np.asarray(p["mean"])) / np.asarray(p["std"])
+        out = (xf - xf.mean()) / xf.std()
     return out.astype(np.float32)
 
 
 def _normalize_ref_accepts(x: np.ndarray, p: Params) -> bool:
     # A constant image has no range or spread; the op documents no result.
-    return p["method"] == "preset" or bool(x.size and x.max() != x.min())
+    return bool(x.size and x.max() != x.min())
 
 
 def _window_params(draw: st.DrawFn, x: np.ndarray) -> Params:
@@ -760,8 +764,6 @@ def _finite(x: np.ndarray, p: Params) -> bool:
 
 
 def _normalize_tol(x: np.ndarray, p: Params) -> Tol:
-    if p["method"] == "preset":
-        return close(atol=1e-6, rtol=1e-5)
     # Dividing by a small range or spread amplifies f32 accumulation error.
     xf = x.astype(np.float64)
     spread = (xf.max() - xf.min()) if p["method"] == "minmax" else xf.std()
@@ -2056,7 +2058,16 @@ OPS: dict[str, OpSpec] = {
             tol=_normalize_tol,
             kind="global",
             gain=_INF,
-            note="minmax/zscore over every element; preset per channel on raw values",
+            note="minmax/zscore over every element",
+        ),
+        _spec(
+            "normalize_preset",
+            _normalize_preset_params,
+            accepts=is_rank3,
+            ref=_normalize_preset_ref,
+            tol=lambda x, p: close(atol=1e-6, rtol=1e-5),
+            gain=_INF,
+            note="(x - mean[c]) / std[c] per channel on raw values",
         ),
         _spec(
             "normalize_percentile",

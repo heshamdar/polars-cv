@@ -78,8 +78,7 @@ class TestMLPreprocessingPipeline:
             .crop(top=16, left=16, height=224, width=224)
             .cast("f32")
             .scale(1.0 / 255.0)
-            .normalize(
-                method="preset",
+            .normalize_preset(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225],
             )
@@ -101,8 +100,7 @@ class TestMLPreprocessingPipeline:
             .resize(height=64, width=64)
             .cast("f32")
             .scale(1.0 / 255.0)
-            .normalize(
-                method="preset",
+            .normalize_preset(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225],
             )

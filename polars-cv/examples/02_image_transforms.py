@@ -108,7 +108,7 @@ def run_value_transform_showcase(df: pl.DataFrame) -> None:
         minmax=expr.pipe(Pipeline().normalize(method="minmax")).sink("numpy"),
         zscore=expr.pipe(Pipeline().normalize(method="zscore")).sink("numpy"),
         imagenet=expr.pipe(
-            Pipeline().normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD),
+            Pipeline().normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ).sink("numpy"),
         scaled=expr.pipe(Pipeline().cast("f32").scale(factor=0.2)).sink("numpy"),
         clamped=expr.pipe(

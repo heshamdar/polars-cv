@@ -207,11 +207,10 @@
   },
   {
     "name": "NormalizeMethod",
-    "doc": "Normalization methods (``PRESET``: channel-wise with preset mean/std values). A ``low``..``high`` window is its own op: ``normalize_percentile``, ``normalize_range``.",
+    "doc": "``normalize``'s methods. Channel-wise statistics are ``normalize_preset``; a ``low``..``high`` window is ``normalize_percentile`` or ``normalize_range``.",
     "variants": [
       "minmax",
-      "zscore",
-      "preset"
+      "zscore"
     ]
   },
   {

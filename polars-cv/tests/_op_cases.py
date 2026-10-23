@@ -75,6 +75,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "morphology_gradient": (BUFFER, {"ksize": 3}),
     "morphology_open": (BUFFER, {"ksize": 3}),
     "normalize": (BUFFER, {"method": "minmax"}),
+    "normalize_preset": (BUFFER, {"mean": [0.5, 0.5, 0.5], "std": [0.25, 0.25, 0.25]}),
     "normalize_percentile": (BUFFER, {"low": 2.0, "high": 98.0}),
     "normalize_range": (BUFFER, {"low": 10.0, "high": 200.0}),
     "pad": (BUFFER, {"top": 10, "bottom": 10, "left": 0, "right": 0}),

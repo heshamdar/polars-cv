@@ -515,3 +515,41 @@ class TestOnePercentileRule:
             match=r"reduce_percentile: q: .*150 is outside \[0, 100\]",
         ):
             frame.select(pl.col("a").cv.pipe(pipe).sink("native"))
+
+
+class TestNormalizePreset:
+    """``normalize_preset(mean, std)``: ``(x - mean[c]) / std[c]`` per channel.
+    Its own op, so ``mean`` and ``std`` are required rather than ``normalize``
+    fields read by one method."""
+
+    RGB = np.random.default_rng(3).random((4, 5, 3)).astype(np.float32)
+
+    def _run(self, pipe: Pipeline) -> np.ndarray:
+        from polars_cv import numpy_from_struct
+
+        frame = pl.DataFrame({"a": pl.Series("a", self.RGB[np.newaxis])})
+        out = frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+        return numpy_from_struct(out)
+
+    def test_matches_numpy(self) -> None:
+        mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+        got = self._run(Pipeline().source("array").normalize_preset(mean=mean, std=std))
+        want = (self.RGB - np.asarray(mean, np.float32)) / np.asarray(std, np.float32)
+        np.testing.assert_allclose(got, want, rtol=1e-6)
+
+    @pytest.mark.parametrize(
+        ("mean", "std", "match"),
+        [
+            (
+                [0.5, 0.5],
+                [0.5, 0.5, 0.5],
+                r"mean length \(2\) must match std length \(3\)",
+            ),
+            ([0.5], [0.5], "channel count"),
+        ],
+    )
+    def test_refusals(self, mean, std, match) -> None:
+        with pytest.raises(ValueError, match=match):
+            Pipeline().source("array", dtype="f32").assert_shape(
+                dims=[4, 5, 3]
+            ).normalize_preset(mean=mean, std=std)

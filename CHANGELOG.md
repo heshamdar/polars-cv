@@ -9,6 +9,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **`normalize(method="preset", mean=, std=)` is now
+  `normalize_preset(mean=, std=)`.** `mean` and `std` were optional fields
+  read under one method only (refused with any other); they are now the
+  required fields of their own op, and `normalize`'s methods are `"minmax"`
+  and `"zscore"`. Replace `normalize(method="preset", mean=m, std=s)` with
+  `normalize_preset(mean=m, std=s)`; results are byte-identical. A preset
+  normalization reads one pixel per output, so it is now declared pointwise:
+  a crop may move ahead of it.
+
 - **`LabelReduction` is now `Statistic`,** the named half of the one
   reduction every region, mask and block reducer shares (`label_reduce`,
   `.contour.label_reduce`, `reduce_masked`, `block_reduce`, `reduce`, the

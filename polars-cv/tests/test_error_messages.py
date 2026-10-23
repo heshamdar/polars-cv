@@ -45,7 +45,10 @@ REFUSALS = {
     "clamp": ("clamp", lambda: _image().clamp(5.0, 1.0)),
     "rotate": ("rotate", lambda: _image().rotate(math.nan)),
     "blur": ("blur", lambda: _image().blur(-1.0)),
-    "normalize": ("normalize", lambda: _image().normalize(mean=[0.5], std=[0.2])),
+    "normalize_preset": (
+        "normalize_preset",
+        lambda: _image().normalize_preset(mean=[0.5], std=[0.2, 0.3]),
+    ),
     "perceptual_hash": (
         "perceptual_hash",
         lambda: _image().perceptual_hash(hash_size=0),

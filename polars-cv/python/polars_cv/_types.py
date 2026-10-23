@@ -91,7 +91,7 @@ def dtype_name_for(dtype: pl.DataType) -> str:
 
 # ImageNet normalization constants
 # These are the standard normalization values computed from the ImageNet dataset.
-# Use with: normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
+# Use with: normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD)
 IMAGENET_MEAN: list[float] = [0.485, 0.456, 0.406]
 IMAGENET_STD: list[float] = [0.229, 0.224, 0.225]
 

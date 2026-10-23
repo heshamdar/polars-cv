@@ -127,6 +127,7 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
     match op {
         ComputeOp::Fused(kernel) => Lowered::Kernels(vec![kernel.clone()]),
         ComputeOp::Normalize { .. }
+        | ComputeOp::NormalizePreset { .. }
         | ComputeOp::NormalizePercentile { .. }
         | ComputeOp::NormalizeRange { .. } => {
             let (normalization, out_dtype) = op

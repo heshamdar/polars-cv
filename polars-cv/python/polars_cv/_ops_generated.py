@@ -315,11 +315,10 @@ class LogicalPass(str, Enum):
 
 
 class NormalizeMethod(str, Enum):
-    """Normalization methods (``PRESET``: channel-wise with preset mean/std values). A ``low``..``high`` window is its own op: ``normalize_percentile``, ``normalize_range``."""
+    """``normalize``'s methods. Channel-wise statistics are ``normalize_preset``; a ``low``..``high`` window is ``normalize_percentile`` or ``normalize_range``."""
 
     MINMAX = "minmax"
     ZSCORE = "zscore"
-    PRESET = "preset"
 
 
 class NullParamPolicy(str, Enum):
@@ -568,6 +567,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "neg",
         "normalize",
         "normalize_percentile",
+        "normalize_preset",
         "normalize_range",
         "pad",
         "pad_to_size",
@@ -1027,21 +1027,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": False,
             "py": "NormalizeMethod",
-            "variants": ["minmax", "zscore", "preset"],
-        },
-        "mean": {
-            "kind": "optional",
-            "inner": {
-                "kind": "list",
-                "inner": {"kind": "scalar", "per_row": True, "py": "float"},
-            },
-        },
-        "std": {
-            "kind": "optional",
-            "inner": {
-                "kind": "list",
-                "inner": {"kind": "scalar", "per_row": True, "py": "float"},
-            },
+            "variants": ["minmax", "zscore"],
         },
         "out_dtype": {
             "kind": "optional",
@@ -1067,6 +1053,36 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "normalize_percentile": {
         "low": {"kind": "scalar", "per_row": True, "py": "float"},
         "high": {"kind": "scalar", "per_row": True, "py": "float"},
+        "out_dtype": {
+            "kind": "optional",
+            "inner": {
+                "kind": "scalar",
+                "per_row": False,
+                "py": "DType",
+                "variants": [
+                    "u8",
+                    "i8",
+                    "u16",
+                    "i16",
+                    "u32",
+                    "i32",
+                    "u64",
+                    "i64",
+                    "f32",
+                    "f64",
+                ],
+            },
+        },
+    },
+    "normalize_preset": {
+        "mean": {
+            "kind": "list",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
+        "std": {
+            "kind": "list",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
         "out_dtype": {
             "kind": "optional",
             "inner": {
@@ -1586,6 +1602,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "neg": [{"input": "buffer", "output": "buffer"}],
     "normalize": [{"input": "buffer", "output": "buffer"}],
     "normalize_percentile": [{"input": "buffer", "output": "buffer"}],
+    "normalize_preset": [{"input": "buffer", "output": "buffer"}],
     "normalize_range": [{"input": "buffer", "output": "buffer"}],
     "pad": [{"input": "buffer", "output": "buffer"}],
     "pad_to_size": [{"input": "buffer", "output": "buffer"}],
@@ -2783,45 +2800,26 @@ class _OpsMixin:
         return self._append_typed("neg", {})
 
     def normalize(
-        self,
-        *,
-        method: str = "minmax",
-        mean: Sequence[FloatOrThisOrExpr] | None = None,
-        std: Sequence[FloatOrThisOrExpr] | None = None,
-        out_dtype: str | None = None,
+        self, *, method: str = "minmax", out_dtype: str | None = None
     ) -> Pipeline:
-        """Normalize values to a standard range.
+        """Normalize values by the image's own statistics.
 
         Domain: buffer → buffer
 
         Args:
             method: Normalization method: "minmax" scales values to [0, 1] using per-
                 element min/max; "zscore" standardizes to mean=0, std=1 using per-
-                element statistics; "preset" applies ImageNet-style channel-wise
-                normalization, `(x - mean[c]) / std[c]`, with the given `mean` and
-                `std`. A window is ``normalize_percentile`` or ``normalize_range``.
-            mean: Per-channel mean values; required for, and only valid with,
-                method="preset" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element
-                may be a literal float or a Polars expression; the list length is the
-                channel count.
-            std: Per-channel standard deviation values; required for, and only valid
-                with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
-                element accepts an expression, as with `mean`.
+                element statistics. Given statistics are ``normalize_preset``; a window
+                is ``normalize_percentile`` or ``normalize_range``.
             out_dtype: Output dtype (default f32). Normalization computes in f32 and the
                 result is cast to this dtype at execution. For half precision use the
                 sink dtype instead (`.sink("numpy", dtype="f16")`).
 
         Example:
             >>> Pipeline().source().normalize(method="minmax")
-            >>> Pipeline().source().normalize(
-            ...     method="preset",
-            ...     mean=[0.485, 0.456, 0.406],
-            ...     std=[0.229, 0.224, 0.225],
-            ... )
         """
         return self._append_typed(
-            "normalize",
-            {"method": method, "mean": mean, "std": std, "out_dtype": out_dtype},
+            "normalize", {"method": method, "out_dtype": out_dtype}
         )
 
     def normalize_percentile(
@@ -2850,6 +2848,37 @@ class _OpsMixin:
         """
         return self._append_typed(
             "normalize_percentile", {"low": low, "high": high, "out_dtype": out_dtype}
+        )
+
+    def normalize_preset(
+        self,
+        *,
+        mean: Sequence[FloatOrThisOrExpr],
+        std: Sequence[FloatOrThisOrExpr],
+        out_dtype: str | None = None,
+    ) -> Pipeline:
+        """Normalize each channel by given statistics, ``(x - mean[c]) / std[c]``
+        (ImageNet-style preprocessing).
+
+        Domain: buffer → buffer
+
+        Args:
+            mean: Per-channel means (e.g. ImageNet ``[0.485, 0.456, 0.406]``), one per
+                channel. Each element may be a literal float or a Polars expression; the
+                list length is the channel count.
+            std: Per-channel standard deviations (e.g. ImageNet ``[0.229, 0.224,
+                0.225]``), as many as ``mean``. Each element accepts an expression, as
+                with ``mean``.
+            out_dtype: Output dtype (default f32), as ``normalize``'s.
+
+        Example:
+            >>> Pipeline().source().normalize_preset(
+            ...     mean=[0.485, 0.456, 0.406],
+            ...     std=[0.229, 0.224, 0.225],
+            ... )
+        """
+        return self._append_typed(
+            "normalize_preset", {"mean": mean, "std": std, "out_dtype": out_dtype}
         )
 
     def normalize_range(

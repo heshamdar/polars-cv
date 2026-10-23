@@ -243,8 +243,6 @@ mod tests {
         assert_eq!(
             ComputeOp::Normalize {
                 method: crate::ops::compute::NormalizeMethod::MinMax,
-                mean: None,
-                std: None,
                 out_dtype: None,
             }
             .spatial_dependency(),

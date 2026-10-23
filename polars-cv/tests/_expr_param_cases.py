@@ -376,15 +376,15 @@ CASES: list[ExprCase] = [
         (-1.0, 0.0, 2.0),
     ),
     ExprCase(
-        "normalize",
+        "normalize_preset",
         "mean",
-        lambda v: rgb().normalize(method="preset", mean=[v, 0.5, 0.5], std=[1.0] * 3),
+        lambda v: rgb().normalize_preset(mean=[v, 0.5, 0.5], std=[1.0] * 3),
         (0.0, 0.25, 0.5),
     ),
     ExprCase(
-        "normalize",
+        "normalize_preset",
         "std",
-        lambda v: rgb().normalize(method="preset", mean=[0.5] * 3, std=[v, 1.0, 1.0]),
+        lambda v: rgb().normalize_preset(mean=[0.5] * 3, std=[v, 1.0, 1.0]),
         (0.5, 1.0, 2.0),
     ),
     ExprCase(
