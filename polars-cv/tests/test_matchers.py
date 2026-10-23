@@ -534,3 +534,22 @@ def _heatmap_with(pixels: list[tuple[int, int]], value: float = 0.5) -> np.ndarr
     for r, c in pixels:
         heatmap[r, c] = value
     return heatmap
+
+
+def test_a_detection_scored_nan_carries_no_evidence() -> None:
+    """A region with no pixels scores NaN (``label_reduce``'s reduction over
+    nothing), and polars orders NaN above every number: kept, it would be
+    the most confident detection. It carries no evidence, as a 0.0 does not,
+    so the zero-score filter drops it with the zeros and keeps the scores
+    aligned with their contours."""
+    from polars_cv.metrics._matching._contour import _filter_zero_score_detections
+
+    lf = pl.LazyFrame(
+        {
+            "_pred_scores_raw": [[0.5, float("nan"), 0.0, 0.25]],
+            "_pred_contours": [["a", "b", "c", "d"]],
+        }
+    )
+    out = _filter_zero_score_detections(lf).collect()
+    assert out["_pred_scores"].to_list() == [[0.5, 0.25]]
+    assert out["_pred_contours"].to_list() == [["a", "d"]]
