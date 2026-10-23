@@ -392,7 +392,15 @@ async fn read_object(
                         // (`GetRange::Bounded`). The raw store's `get_range`,
                         // inside the one budget permit this read holds:
                         // `PolarsObjectStore::get_range` would take a second.
-                        Reach::Prefix(n) => store.get_range(key, 0..n).await,
+                        Reach::Prefix(n) => match store.get_range(key, 0..n).await {
+                            // An empty object has no byte 0 to start a range
+                            // at (S3's `InvalidRange`, HTTP 416), which
+                            // `object_store` reports as `Generic`. Any refusal
+                            // a whole read would not meet the same way is
+                            // retried as one, inside this read's permit.
+                            Err(e) if !fails_whole_too(&e) => store.get(key).await?.bytes().await,
+                            other => other,
+                        },
                     }
                 }
             })
@@ -400,6 +408,17 @@ async fn read_object(
             .map(|bytes| bytes.to_vec())
             .map_err(|e| CloudError::ReadError(e.to_string()))
     }
+}
+
+/// Whether a ranged read's error is about the object or its credentials
+/// (a whole read fails the same way), rather than about the range.
+fn fails_whole_too(e: &object_store::Error) -> bool {
+    matches!(
+        e,
+        object_store::Error::NotFound { .. }
+            | object_store::Error::PermissionDenied { .. }
+            | object_store::Error::Unauthenticated { .. }
+    )
 }
 
 /// What [`check_access`] found for one remote path.
@@ -596,14 +615,24 @@ async fn read_http(url: &str, reach: Reach) -> Result<Vec<u8>, CloudError> {
 
     {
         let client = http_client();
-        let mut request = client.get(&url_string);
-        if let Reach::Prefix(n) = reach {
-            request = request.header(reqwest::header::RANGE, format!("bytes=0-{}", n - 1));
-        }
-        let response = request
-            .send()
+        let send = |reach: Reach| {
+            let mut request = client.get(&url_string);
+            if let Reach::Prefix(n) = reach {
+                request = request.header(reqwest::header::RANGE, format!("bytes=0-{}", n - 1));
+            }
+            request.send()
+        };
+        let mut response = send(reach)
             .await
             .map_err(|e| CloudError::ReadError(format!("HTTP request failed: {e}")))?;
+        // A range nothing satisfies: an empty object has no byte 0. Read it
+        // whole, as any other object a header is not found in.
+        if reach != Reach::Whole && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+        {
+            response = send(Reach::Whole)
+                .await
+                .map_err(|e| CloudError::ReadError(format!("HTTP request failed: {e}")))?;
+        }
 
         if !response.status().is_success() {
             return Err(CloudError::ReadError(format!(
