@@ -747,12 +747,14 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().reciprocal())
 
-    def reduce(self, reduction: str | pl.Expr) -> LazyPipelineExpr:
-        """Reduce every value (every channel) to one, by any reduction: the
+    def reduce(
+        self, reduction: str | pl.Expr, *, axis: int | None = None
+    ) -> LazyPipelineExpr:
+        """Reduce every value (every channel) to one, or along one axis, by any
 
         Lazy form of :meth:`Pipeline.reduce` on this expression's output.
         """
-        return self.pipe(self._continuation().reduce(reduction=reduction))
+        return self.pipe(self._continuation().reduce(reduction=reduction, axis=axis))
 
     def reduce_argmax(self, axis: int) -> LazyPipelineExpr:
         """Index of the maximum value along an axis.

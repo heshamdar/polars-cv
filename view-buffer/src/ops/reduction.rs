@@ -376,18 +376,23 @@ pub enum ReductionOp<M: Mode = Exec> {
         #[param(default = "mean")]
         reduction: M::V<Reduction>,
     },
-    /// Reduce every value (every channel) to one, by any reduction: the
-    /// statistic named, or a percentile "pNN". Over no values: NaN, or 0 for
+    /// Reduce every value (every channel) to one, or along one axis, by any
+    /// reduction: the statistic named, or a percentile "pNN". Each is
+    /// computed by its dedicated op's kernel (``reduce("mean")`` is
+    /// ``reduce_mean()``'s value, in f64). Over no values: NaN, or 0 for
     /// "sum" and "count".
     ///
     /// Example:
     ///     >>> Pipeline().source("image_bytes").reduce("p90")
-    #[op(name = "reduce", sample = {"reduction": "p90"})]
+    #[op(name = "reduce", sample = {"reduction": "p90", "axis": 0})]
     By {
         /// "sum", "mean", "min", "max", "std" (population), "median",
         /// "count", or a percentile "pNN" ("p90", "p62.5"). Accepts a Polars
         /// expression for a per-row choice.
         reduction: M::V<Reduction>,
+        /// Axis to reduce along. None for global reduction. It fixes the
+        /// output rank, so it is literal-only.
+        axis: Option<M::L<u32>>,
     },
     /// Compute the q-th percentile of all values, or along one axis (linear
     /// interpolation, as numpy's default).
@@ -441,11 +446,12 @@ impl<M: Mode> ReductionOp<M> {
             | ReductionOp::Mean { axis }
             | ReductionOp::Sum { axis }
             | ReductionOp::Percentile { axis, .. }
+            | ReductionOp::By { axis, .. }
             | ReductionOp::Std { axis, .. } => axis.as_ref().map(|a| M::lit(a) as usize),
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => {
                 Some(M::lit(axis) as usize)
             }
-            ReductionOp::PopCount | ReductionOp::Blocks { .. } | ReductionOp::By { .. } => None,
+            ReductionOp::PopCount | ReductionOp::Blocks { .. } => None,
         }
     }
 
@@ -486,10 +492,8 @@ impl ReductionOp {
             return pool_blocks(&contig, *height as usize, *width as usize, *reduction);
         }
 
-        if let ReductionOp::By { reduction } = self {
-            let values = contig.cast_to(DType::F64).to_contiguous();
-            let mut values = values.as_slice::<f64>().to_vec();
-            return ViewBuffer::from_scalar(reduction.of(&mut values));
+        if let ReductionOp::By { reduction, axis } = self {
+            return reduce_by(&contig, *reduction, *axis);
         }
 
         // PopCount has special handling for each type
@@ -1026,6 +1030,49 @@ impl<M: Mode> Op for ReductionOp<M> {
     }
 }
 
+/// `reduce(reduction, axis)`: the dedicated op's kernel for the statistic
+/// (the one implementation of each over a whole buffer), its result in f64.
+/// A count is the line length, and no values reduce to what
+/// [`Reduction::of`] gives over none, which the dedicated ops refuse.
+fn reduce_by(buf: &ViewBuffer, reduction: Reduction, axis: Option<u32>) -> ViewBuffer {
+    let shape = buf.shape();
+    let dedicated = match reduction {
+        Reduction::Named(stat) => match stat {
+            Statistic::Sum => Some(ReductionOp::Sum { axis }),
+            Statistic::Mean => Some(ReductionOp::Mean { axis }),
+            Statistic::Min => Some(ReductionOp::Min { axis }),
+            Statistic::Max => Some(ReductionOp::Max { axis }),
+            Statistic::Std => Some(ReductionOp::Std { axis, ddof: 0 }),
+            Statistic::Median => Some(ReductionOp::Percentile { q: 50.0, axis }),
+            Statistic::Count => None,
+        },
+        Reduction::Percentile(p) => Some(ReductionOp::Percentile { q: p.q(), axis }),
+    };
+    let line = axis.map_or(shape.iter().product(), |a| shape[a as usize]);
+    match dedicated {
+        Some(op) if line > 0 => op.execute(buf).cast_to(DType::F64),
+        // A count, or lines of no values: one value fills the output.
+        _ => {
+            let value = match reduction {
+                Reduction::Named(Statistic::Count) => line as f64,
+                _ => reduction.of(&mut []),
+            };
+            match axis {
+                None => ViewBuffer::from_scalar(value),
+                Some(a) => {
+                    let mut out: Vec<usize> = shape.to_vec();
+                    out.remove(a as usize);
+                    if out.is_empty() {
+                        out.push(1);
+                    }
+                    let n = out.iter().product();
+                    ViewBuffer::from_vec_with_shape(vec![value; n], out)
+                }
+            }
+        }
+    }
+}
+
 /// `[H, W(, C)]` pooled in `bh` x `bw` blocks (partial at the far edges),
 /// each block and channel reduced by `reduction`: `[ceil(H/bh), ceil(W/bw)(, C)]`.
 fn pool_blocks(buf: &ViewBuffer, bh: usize, bw: usize, reduction: Reduction) -> ViewBuffer {
@@ -1293,5 +1340,87 @@ mod reduction_value_tests {
         // NumPy: np.percentile([1, 2, 3, 4], 62.5) == 2.875
         assert_eq!(p.of(&mut values), 2.875);
         assert!(p.of(&mut []).is_nan());
+    }
+}
+
+#[cfg(test)]
+mod one_implementation_tests {
+    use super::*;
+
+    /// Every reduction of a whole buffer (`reduce`, through the dedicated
+    /// kernels) is [`Reduction::of`] over the same values (the masks',
+    /// regions' and blocks' reduction): globally and per line, on integers,
+    /// floats with a NaN, and no values. Swept over every `Statistic`, so a
+    /// new one is held to it.
+    #[test]
+    fn a_whole_buffer_reduces_as_its_values_do() {
+        let mut reductions: Vec<Reduction> = Statistic::NAMED
+            .iter()
+            .map(|&(_, s)| Reduction::Named(s))
+            .collect();
+        for q in [0.0, 37.5, 90.0, 100.0] {
+            reductions.push(Reduction::Percentile(Percent::new(q).unwrap()));
+        }
+        let ints: Vec<i32> = vec![5, -3, 7, 7, 0, 12, -8, 1, 4, 4, 9, -2];
+        let mut floats: Vec<f32> = ints.iter().map(|&v| v as f32 * 0.37).collect();
+        floats[5] = f32::NAN;
+        let buffers = [
+            ViewBuffer::from_vec_with_shape(
+                ints.iter().map(|&v| (v + 8) as u8).collect(),
+                vec![3, 4],
+            ),
+            ViewBuffer::from_vec_with_shape(ints.clone(), vec![3, 4]),
+            ViewBuffer::from_vec_with_shape(
+                ints.iter().map(|&v| v as f32 * 0.37).collect(),
+                vec![3, 4],
+            ),
+            ViewBuffer::from_vec_with_shape(floats, vec![3, 4]),
+            ViewBuffer::from_vec_with_shape(Vec::<f32>::new(), vec![0, 4]),
+        ];
+        for buf in &buffers {
+            let (h, w) = (buf.shape()[0], buf.shape()[1]);
+            let values: Vec<f64> = buf
+                .cast_to(DType::F64)
+                .to_contiguous()
+                .as_slice::<f64>()
+                .to_vec();
+            for &reduction in &reductions {
+                for axis in [None, Some(0u32), Some(1)] {
+                    let got = ReductionOp::By { reduction, axis }.execute(buf);
+                    let got = got.to_contiguous();
+                    let got = got.as_slice::<f64>();
+                    let lines: Vec<Vec<f64>> = match axis {
+                        None => vec![values.clone()],
+                        Some(0) => (0..w)
+                            .map(|x| (0..h).map(|y| values[y * w + x]).collect())
+                            .collect(),
+                        Some(_) => (0..h)
+                            .map(|y| values[y * w..(y + 1) * w].to_vec())
+                            .collect(),
+                    };
+                    let want: Vec<f64> = lines
+                        .into_iter()
+                        .map(|mut l| reduction.of(&mut l))
+                        .collect();
+                    assert_eq!(
+                        got.len(),
+                        want.len(),
+                        "{reduction:?} {axis:?} {:?}",
+                        buf.shape()
+                    );
+                    for (g, w) in got.iter().zip(&want) {
+                        let same = (g.is_nan() && w.is_nan())
+                            || g == w
+                            || (g - w).abs() <= 1e-12 * w.abs().max(1.0);
+                        assert!(
+                            same,
+                            "{reduction:?} {axis:?} {:?} {}: {g} vs {w}",
+                            buf.shape(),
+                            buf.dtype().short_name()
+                        );
+                    }
+                }
+            }
+        }
     }
 }

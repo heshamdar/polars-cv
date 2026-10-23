@@ -2521,7 +2521,7 @@
     "name": "reduce",
     "python": "reduce",
     "visibility": "public",
-    "doc": "Reduce every value (every channel) to one, by any reduction: the\nstatistic named, or a percentile \"pNN\". Over no values: NaN, or 0 for\n\"sum\" and \"count\".\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").reduce(\"p90\")",
+    "doc": "Reduce every value (every channel) to one, or along one axis, by any\nreduction: the statistic named, or a percentile \"pNN\". Each is\ncomputed by its dedicated op's kernel (``reduce(\"mean\")`` is\n``reduce_mean()``'s value, in f64). Over no values: NaN, or 0 for\n\"sum\" and \"count\".\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").reduce(\"p90\")",
     "fields": [
       {
         "name": "reduction",
@@ -2540,16 +2540,28 @@
             "count"
           ]
         }
+      },
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
       }
     ],
     "domains": [
       {
         "input": "buffer",
-        "output": "scalar"
+        "output": "buffer"
       },
       {
         "input": "vector",
-        "output": "scalar"
+        "output": "buffer"
       }
     ]
   },

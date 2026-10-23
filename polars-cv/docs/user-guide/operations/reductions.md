@@ -16,7 +16,13 @@ Pipeline().source("image_bytes").grayscale().reduce_std()
 # Any reduction by name: a statistic, or a percentile spelled "pNN"
 Pipeline().source("image_bytes").grayscale().reduce("p90")
 Pipeline().source("image_bytes").grayscale().reduce(pl.col("which"))  # per row
+Pipeline().source("image_bytes").grayscale().reduce("p90", axis=0)  # per column
 ```
+
+`reduce("mean")` is `reduce_mean()`'s value, computed by the same kernel, in
+f64. The dedicated ops remain for what a per-row reduction cannot be:
+`reduce_min`/`reduce_max` along an axis keep the input's dtype, and
+`reduce_std` takes `ddof`.
 
 Every reduction parameter (`reduce`, `reduce_masked`, `block_reduce`,
 `label_reduce`) takes the same spellings: `"sum"`, `"mean"`, `"min"`, `"max"`,
