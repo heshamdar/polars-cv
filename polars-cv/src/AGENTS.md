@@ -178,8 +178,12 @@ Key functions in `contour.rs`:
 - Graph-side `label_reduce` (`GraphOp::LabelReduce` in `ops/graph.rs`: buffer + contour column operand → vector)
 
 `contour_label_reduce` and the graph-side `label_reduce` are two entry points onto
-**one** implementation: both call `view_buffer::geometry::label::score_contours_on_buffer`
-and parse their `reduction`/`region_mode` against that module's `NAMED` tables. Do not
+**one** implementation: `view_buffer::geometry::label`'s `region_pixels` (which pixels
+a region holds) then `reduce_regions` (the reduction over them), which
+`score_contours_on_buffer` composes. The graph side takes the regions through the row's
+`RegionCache` (`graph/row.rs`), so every `label_reduce` over the same contours in a row
+(`region_stats` runs one per map) shares one scan. Both parse their
+`reduction`/`region_mode` against that module's `NAMED` tables. Do not
 reintroduce a plugin-local scorer — the previous one drifted into a second dialect with
 no `boundary` mode and no centroid fallback, and the only parity test covered `bbox`,
 the one mode where the two happened to agree.

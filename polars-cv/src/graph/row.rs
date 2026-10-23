@@ -19,10 +19,11 @@
 //! `rasterize(shape=<node>)` had a resolver of its own (CR-117).
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use smallvec::SmallVec;
-use view_buffer::geometry::label::score_contours_on_buffer;
+use view_buffer::geometry::label::{label_plane, reduce_regions, region_pixels, LabelRegionMode};
 use view_buffer::ops::{Domain, NodeOutput};
 use view_buffer::ViewBuffer;
 
@@ -39,18 +40,59 @@ pub(crate) type Operands<'o> = SmallVec<[&'o NodeOutput; 4]>;
 /// error under `on_error="null"`).
 pub(crate) struct RowOutputs {
     outputs: Vec<Option<NodeOutput>>,
+    regions: RegionCache,
+}
+
+/// One row's contour regions, rasterised once for every `label_reduce` that
+/// scores a map over them (`region_stats` runs one per map): the same
+/// contour column, region mode and plane give the same pixels, so the scan
+/// that finds them (most of a label reduction's cost) runs once per row.
+/// Owned by [`RowOutputs`], so it is forgotten with the row's outputs.
+#[derive(Default)]
+pub(crate) struct RegionCache {
+    entries: RefCell<Vec<(RegionKey, Regions)>>,
+}
+
+/// What a row's regions depend on: the contour column, the region mode and
+/// the `(height, width)` of the plane they are found in.
+type RegionKey = (usize, LabelRegionMode, (usize, usize));
+
+/// Each contour's pixels, as `region_pixels` finds them.
+type Regions = Arc<Vec<Vec<usize>>>;
+
+impl RegionCache {
+    /// The regions for `key`, from `compute` the first time this row asks.
+    fn get(&self, key: RegionKey, compute: impl FnOnce() -> Vec<Vec<usize>>) -> Regions {
+        if let Some((_, regions)) = self.entries.borrow().iter().find(|(k, _)| *k == key) {
+            return Arc::clone(regions);
+        }
+        let regions = Arc::new(compute());
+        self.entries.borrow_mut().push((key, Arc::clone(&regions)));
+        regions
+    }
+
+    fn clear(&self) {
+        self.entries.borrow_mut().clear();
+    }
 }
 
 impl RowOutputs {
     pub(crate) fn new(nodes: usize) -> Self {
         RowOutputs {
             outputs: vec![None; nodes],
+            regions: RegionCache::default(),
         }
     }
 
     /// Forget the previous row.
     pub(crate) fn clear(&mut self) {
         self.outputs.iter_mut().for_each(|o| *o = None);
+        self.regions.clear();
+    }
+
+    /// This row's contour regions, shared by the steps that score over them.
+    pub(crate) fn regions(&self) -> &RegionCache {
+        &self.regions
     }
 
     /// The input of a node that reads node `upstream`: moved out when the
@@ -96,6 +138,7 @@ pub(crate) fn run_step(
     operands: &[&NodeOutput],
     ctx: &ParamCtx<'_>,
     row_idx: usize,
+    regions: &RegionCache,
 ) -> Result<NodeOutput, String> {
     let named = |e: String| format!("{name}: {e}");
     let buffers = || step_buffers(step, name, &input, operands);
@@ -240,7 +283,8 @@ pub(crate) fn run_step(
                 region_mode,
             } => {
                 let [buf] = exactly(name, buffers()?)?;
-                let column = ctx.col(contours.0).map_err(|e| e.to_string())?;
+                let contours_col = contours.0;
+                let column = ctx.col(contours_col).map_err(|e| e.to_string())?;
                 let (series, row) = column.at(row_idx);
                 let contours = crate::geom_columns::ContourColumn::new(series)
                     .row(row)
@@ -248,8 +292,13 @@ pub(crate) fn run_step(
                 let Some(contours) = contours else {
                     return Ok(NodeOutput::from_vector(Vec::new()));
                 };
-                score_contours_on_buffer(&buf, &contours, *reduction, *region_mode)
-                    .map(NodeOutput::from_vector)
+                let (height, width) = label_plane(&buf).map_err(named)?;
+                let found = regions.get((contours_col, *region_mode, (height, width)), || {
+                    region_pixels(&contours, width, height, *region_mode)
+                });
+                Ok(NodeOutput::from_vector(reduce_regions(
+                    &buf, &found, *reduction,
+                )))
             }
         },
     }
@@ -422,4 +471,43 @@ fn check_declared_shape(shape: &[usize], dims: &[Option<u32>], exact: bool) -> R
          what the data is; it does not change it. Correct the assertion, or drop it \
          and let the planner infer the shape."
     ))
+}
+
+#[cfg(test)]
+mod region_cache_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A row's regions are found once per contour column, region mode and
+    /// plane, and forgotten with the row.
+    #[test]
+    fn a_rows_regions_are_found_once_per_key() {
+        let mut row = RowOutputs::new(1);
+        let scans = Cell::new(0);
+        let get = |row: &RowOutputs, key: RegionKey| {
+            row.regions().get(key, || {
+                scans.set(scans.get() + 1);
+                vec![vec![key.0]]
+            })
+        };
+        let key = (0, LabelRegionMode::Interior, (4, 5));
+        assert_eq!(*get(&row, key), vec![vec![0]]);
+        assert_eq!(*get(&row, key), vec![vec![0]]);
+        assert_eq!(scans.get(), 1, "the same regions are not found again");
+        for other in [
+            (1, LabelRegionMode::Interior, (4, 5)),
+            (0, LabelRegionMode::Bbox, (4, 5)),
+            (0, LabelRegionMode::Interior, (5, 4)),
+        ] {
+            get(&row, other);
+        }
+        assert_eq!(
+            scans.get(),
+            4,
+            "another column, mode or plane is found anew"
+        );
+        row.clear();
+        get(&row, key);
+        assert_eq!(scans.get(), 5, "the next row finds its own");
+    }
 }

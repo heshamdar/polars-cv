@@ -6,7 +6,7 @@
 //! contiguous buffer directly through a dtype-dispatched flat accessor.
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::DType;
+use crate::core::convert::CastFrom;
 use crate::geometry::contour::{BoundingBox, Contour, Point};
 use crate::geometry::{measures, pairwise, predicates};
 use crate::ops::reduction::Reduction;
@@ -37,72 +37,90 @@ crate::naming::named_variants!(LabelRegionMode: "Region selection for ``label_re
 /// (a point or a line) or whose region contains no pixel centre (a sub-pixel
 /// contour) is scored on the pixels its outline passes through instead, in
 /// every region mode, rather than as 0.0. A contour that touches no in-bounds
-/// pixel scores 0.0.
+/// pixel scores what the reduction gives over none (NaN; 0 for "sum" and
+/// "count").
 pub fn score_contours_on_buffer(
     buffer: &ViewBuffer,
     contours: &[Contour],
     reduction: Reduction,
     region_mode: LabelRegionMode,
 ) -> Result<Vec<f64>, String> {
+    let (height, width) = label_plane(buffer)?;
+    let regions = region_pixels(contours, width, height, region_mode);
+    Ok(reduce_regions(buffer, &regions, reduction))
+}
+
+/// The `(height, width)` of a buffer `label_reduce` can score: `[H, W]` or
+/// `[H, W, 1]`.
+pub fn label_plane(buffer: &ViewBuffer) -> Result<(usize, usize), String> {
     let shape = buffer.shape();
     if shape.len() < 2 {
         return Err(format!(
             "label_reduce requires at least 2D buffer input, got shape {shape:?}"
         ));
     }
-    let height = shape[0];
-    let width = shape[1];
     let channels = if shape.len() > 2 { shape[2] } else { 1 };
     if channels != 1 {
         return Err(format!(
             "label_reduce currently requires a single-channel buffer, got {channels} channels"
         ));
     }
-
-    let contig = buffer.to_contiguous();
-
-    // Dtype-dispatched flat accessor: (y, x) -> f64, no grid copy.
-    macro_rules! with_accessor {
-        ($t:ty) => {{
-            let data = contig.as_slice::<$t>();
-            let at = |y: usize, x: usize| -> f64 { data[y * width + x] as f64 };
-            contours
-                .iter()
-                .map(|c| score_one(c, &at, width, height, reduction, region_mode))
-                .collect()
-        }};
-    }
-    let scores: Vec<f64> = match contig.dtype() {
-        DType::U8 => with_accessor!(u8),
-        DType::I8 => with_accessor!(i8),
-        DType::U16 => with_accessor!(u16),
-        DType::I16 => with_accessor!(i16),
-        DType::U32 => with_accessor!(u32),
-        DType::I32 => with_accessor!(i32),
-        DType::U64 => with_accessor!(u64),
-        DType::I64 => with_accessor!(i64),
-        DType::F32 => with_accessor!(f32),
-        DType::F64 => with_accessor!(f64),
-    };
-    Ok(scores)
+    Ok((shape[0], shape[1]))
 }
 
-fn score_one(
-    contour: &Contour,
-    at: &dyn Fn(usize, usize) -> f64,
+/// Each contour's region in a `width` x `height` plane under `region_mode`
+/// (see [`score_contours_on_buffer`]), as the linear indices (`y * width +
+/// x`) of its pixels in raster order; empty for a contour that touches no
+/// in-bounds pixel.
+///
+/// The half of a label reduction that reads no values: the regions of one set
+/// of contours serve every map scored over them (`region_stats`).
+pub fn region_pixels(
+    contours: &[Contour],
     width: usize,
     height: usize,
-    reduction: Reduction,
     region_mode: LabelRegionMode,
-) -> f64 {
-    // No pixels: what the reduction gives over none (NaN, or 0 for a sum or
-    // a count), from the one authority.
-    let none = || reduction.of(&mut []);
+) -> Vec<Vec<usize>> {
+    contours
+        .iter()
+        .map(|c| region_of(c, width, height, region_mode))
+        .collect()
+}
+
+/// `reduction` of a single-channel buffer over each region of
+/// [`region_pixels`] (computed for this buffer's plane, [`label_plane`]):
+/// over no pixel, what the reduction gives over none.
+pub fn reduce_regions(
+    buffer: &ViewBuffer,
+    regions: &[Vec<usize>],
+    reduction: Reduction,
+) -> Vec<f64> {
+    let contig = buffer.to_contiguous();
+    crate::core::dtype::with_dtype!(contig.dtype(), T => {
+        let data = contig.as_slice::<T>();
+        let mut values = Vec::new();
+        regions
+            .iter()
+            .map(|region| {
+                values.clear();
+                values.extend(region.iter().map(|&i| f64::cast_from(data[i])));
+                reduction.of(&mut values)
+            })
+            .collect()
+    })
+}
+
+fn region_of(
+    contour: &Contour,
+    width: usize,
+    height: usize,
+    region_mode: LabelRegionMode,
+) -> Vec<usize> {
     if width == 0 || height == 0 {
-        return none();
+        return Vec::new();
     }
     let Some(bbox) = contour.bounding_box() else {
-        return none();
+        return Vec::new();
     };
 
     // A point or a line has no region to scan in any mode: its pixels are the
@@ -117,8 +135,8 @@ fn score_one(
     let y1 = (bbox.y + bbox.height).ceil().min(height as f64).max(0.0) as usize;
     let (x1, y1) = if degenerate { (x0, y0) } else { (x1, y1) };
 
-    let mut values = Vec::new();
-    let mut take = |x: usize, y: usize| values.push(at(y, x));
+    let mut pixels = Vec::new();
+    let mut take = |x: usize, y: usize| pixels.push(y * width + x);
     match region_mode {
         LabelRegionMode::Bbox => {
             for y in y0..y1 {
@@ -132,19 +150,16 @@ fn score_one(
             for_each_region_pixel(contour, include_boundary, (x0, x1), (y0, y1), take);
         }
     }
-    if values.is_empty() {
+    if pixels.is_empty() {
         // A degenerate contour, or a sub-pixel one whose region holds no
         // pixel centre: its pixels are the ones its outline passes through.
-        values.extend(
+        pixels.extend(
             path_pixels(&contour.exterior, width, height)
                 .into_iter()
-                .map(|(x, y)| at(y, x)),
+                .map(|(x, y)| y * width + x),
         );
-        if values.is_empty() {
-            return none();
-        }
     }
-    reduction.of(&mut values)
+    pixels
 }
 
 /// Visit, in raster order, every pixel `(x, y)` of `xs` x `ys` whose centre

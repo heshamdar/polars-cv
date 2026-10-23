@@ -15,6 +15,7 @@ import pytest
 
 from polars_cv import Pipeline
 from polars_cv.geometry.schemas import CONTOUR_SET_SCHEMA
+from polars_cv.lazy import LazyPipelineExpr
 
 from .conftest import plugin_required
 
@@ -466,6 +467,51 @@ class TestRegionStats:
         # One row per region, as the struct of equal-length lists explodes.
         rows = out.unnest("stats").explode(pl.all())
         assert rows.height == len(REGIONS)
+
+    def test_regions_shared_in_a_row_are_only_those_of_one_mode_and_plane(
+        self,
+    ) -> None:
+        """The steps of one row share a contour set's regions (one scan for
+        every map), but only at one region mode and plane size: each output
+        here is what its own graph gives."""
+        sizes = {"a": IMG, "b": np.pad(IMG, ((0, 3), (0, 5)))}
+        # A triangle (its bbox holds more pixels than it) and a square whose
+        # edges run through pixel centres (its boundary holds more), so the
+        # three modes find three different regions.
+        triangle = {
+            "exterior": [{"x": x, "y": y} for x, y in [(0, 0), (7, 0), (0, 7)]],
+            "holes": [],
+            "is_closed": True,
+        }
+        frame = pl.DataFrame(
+            {
+                "a": pl.Series("a", IMG[np.newaxis]),
+                "c": [[triangle, _square(1.5, 1.5, 5.5, 5.5)]],
+            },
+            schema_overrides={"c": CONTOUR_SET_SCHEMA},
+        ).with_columns(b=pl.Series("b", sizes["b"][np.newaxis]))
+
+        def reduced(col: str, mode: str) -> LazyPipelineExpr:
+            img = pl.col(col).cv.pipe(Pipeline().source("array"))
+            step = Pipeline().label_reduce(
+                pl.col("c"), reduction="sum", region_mode=mode
+            )
+            return img.pipe(step).alias(f"{col}_{mode}")
+
+        cases = [(c, m) for c in sizes for m in ("interior", "boundary", "bbox")]
+        nodes = [reduced(c, m) for c, m in cases]
+        together = frame.select(
+            s=nodes[0]
+            .merge_pipe(*nodes[1:])
+            .sink({f"{c}_{m}": "native" for c, m in cases})
+        ).item()
+        for c, m in cases:
+            alone = frame.select(reduced(c, m).sink("native")).item()
+            np.testing.assert_array_equal(
+                together[f"{c}_{m}"], alone, err_msg=f"{c}_{m}"
+            )
+        modes = [together[f"a_{m}"] for m in ("interior", "boundary", "bbox")]
+        assert len({tuple(v) for v in modes}) == 3, modes
 
 
 class TestNormalizeWindows:
