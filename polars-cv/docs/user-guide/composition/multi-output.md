@@ -76,7 +76,7 @@ final = strip.pipe(Pipeline().blur(2.0)).alias("out")
 debug = df.head(4).with_columns(
     maps=final.sink({"out": "png", "strip": "png"})
 )
-show_images(debug, "maps.strip")
+show_images(debug, pl.col("maps").struct.field("strip"))
 ```
 
 ## Common Subexpression Elimination (CSE)

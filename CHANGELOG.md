@@ -191,8 +191,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   it, as a local file already was. An empty remote object, whose range
   servers refuse (HTTP 416, S3's `InvalidRange`), is read whole and has no
   header: a null, as before.
-- **`show_images(df, "col.field")`** shows one field of a struct column, such
-  as an aliased intermediate sunk beside the result with a dict sink.
+- **`show_images(df, pl.col("out").struct.field("strip"))`**: the column may
+  be an expression, so one field of a struct column shows, such as an
+  aliased intermediate sunk beside the result with a dict sink.
 - **A failing row is named once, within its batch: `(row 11 of 12 in this
   batch)`,** by the pipeline and every `.contour`/`.point`/`.bbox` accessor
   alike (`polars-cv/src/row_ref.rs`). A plugin call is one batch of the frame

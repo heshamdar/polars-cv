@@ -208,7 +208,7 @@ class TestShowImages:
 
 
 class TestStructFields:
-    """``"col.field"`` shows one field of a struct column: what a dict sink
+    """An expression selects one field of a struct column: what a dict sink
     of an aliased intermediate (``{"out": ..., "bg_strip": "png"}``) holds."""
 
     def test_a_field_is_shown_as_its_own_column(
@@ -216,15 +216,16 @@ class TestStructFields:
     ) -> None:
         png = create_test_png(width=6, height=4)
         df = pl.DataFrame({"out": [{"final": b"random bytes", "tap": png}]})
-        show_images(df, "out.tap")
+        show_images(df, pl.col("out").struct.field("tap"))
         assert "image/png" in capsys.readouterr().out
 
-    def test_a_missing_field_names_the_fields(self) -> None:
+    def test_a_missing_field_is_polars_own_error(self) -> None:
         df = pl.DataFrame({"out": [{"final": b"x", "tap": b"y"}]})
-        with pytest.raises(KeyError, match="final.*tap"):
-            show_images(df, "out.nope")
+        with pytest.raises(pl.exceptions.PolarsError, match="nope"):
+            show_images(df, pl.col("out").struct.field("nope"))
 
-    def test_a_column_named_with_a_dot_wins(self, capsys) -> None:
+    def test_a_name_is_a_column_name(self, capsys) -> None:
+        """A string names a column, dots and all: no field syntax of its own."""
         df = pl.DataFrame({"a.b": [b"random bytes"]})
         show_images(df, "a.b")
         assert "unknown format" in capsys.readouterr().out
