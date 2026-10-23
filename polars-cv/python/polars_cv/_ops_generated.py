@@ -493,6 +493,10 @@ class This:
 this = This()
 
 
+#: The operators a ``this`` expression is built with (Rust's ``ThisOp``).
+THIS_OPERATORS: tuple[str, ...] = ("+", "-", "*", "/", "//")
+
+
 #: Ops whose wire form is typed (bare values and slots).
 TYPED_OPS: frozenset[str] = frozenset(
     [
@@ -2131,7 +2135,7 @@ class _OpsMixin:
         """
         return self._append_typed("contour_convex_hull", {})
 
-    def densify(self, max_segment_length: FloatOrThisOrExpr) -> Pipeline:
+    def densify(self, max_segment_length: FloatOrExpr) -> Pipeline:
         """Add points so no edge is longer than *max_segment_length*: each edge is
         split into ``ceil(length / max_segment_length)`` equal parts, and every
         existing point is kept. A region's closing edges are split too.
@@ -2146,7 +2150,7 @@ class _OpsMixin:
             "contour_densify", {"max_segment_length": max_segment_length}
         )
 
-    def largest(self, *, k: IntOrThisOrExpr = 1) -> Pipeline:
+    def largest(self, *, k: IntOrExpr = 1) -> Pipeline:
         """Keep the ``k`` largest contours of the set, by area: largest first,
         equal areas in their input order. A set of fewer keeps them all.
 
@@ -2158,7 +2162,7 @@ class _OpsMixin:
         return self._append_typed("contour_largest", {"k": k})
 
     def offset(
-        self, distance: FloatOrThisOrExpr, *, join: str | pl.Expr = "round"
+        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
     ) -> Pipeline:
         """Grow the set's regions by *distance* (negative: shrink them): every
         point within *distance* of their union, or inside it and at least
@@ -2191,11 +2195,7 @@ class _OpsMixin:
         return self._append_typed("contour_perimeter", {})
 
     def scale_contour(
-        self,
-        *,
-        sx: FloatOrThisOrExpr,
-        sy: FloatOrThisOrExpr,
-        origin: str | pl.Expr = "centroid",
+        self, *, sx: FloatOrExpr, sy: FloatOrExpr, origin: str | pl.Expr = "centroid"
     ) -> Pipeline:
         """Scale the contour about *origin*.
 
@@ -2213,7 +2213,7 @@ class _OpsMixin:
             "contour_scale", {"sx": sx, "sy": sy, "origin": origin}
         )
 
-    def simplify(self, tolerance: FloatOrThisOrExpr) -> Pipeline:
+    def simplify(self, tolerance: FloatOrExpr) -> Pipeline:
         """Simplify the contour using the Douglas-Peucker algorithm.
 
         Domain: contour → contour
@@ -2223,7 +2223,7 @@ class _OpsMixin:
         """
         return self._append_typed("contour_simplify", {"tolerance": tolerance})
 
-    def smooth(self, *, iterations: IntOrThisOrExpr = 1) -> Pipeline:
+    def smooth(self, *, iterations: IntOrExpr = 1) -> Pipeline:
         """Round off corners by Chaikin's corner cutting: each pass replaces every
         edge by its points a quarter and three quarters along, doubling the
         point count. A region's rings are cut all the way round; an open line
@@ -2241,7 +2241,7 @@ class _OpsMixin:
     def stroke(
         self,
         *,
-        width: FloatOrThisOrExpr = 1.0,
+        width: FloatOrExpr = 1.0,
         cap: str | pl.Expr = "round",
         join: str | pl.Expr = "round",
     ) -> Pipeline:
@@ -2270,7 +2270,7 @@ class _OpsMixin:
             "contour_stroke", {"width": width, "cap": cap, "join": join}
         )
 
-    def translate(self, *, dx: FloatOrThisOrExpr, dy: FloatOrThisOrExpr) -> Pipeline:
+    def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> Pipeline:
         """Translate the contour by an offset.
 
         Domain: contour → contour
@@ -2997,11 +2997,11 @@ class _OpsMixin:
 
     def _rasterize(
         self,
-        size: Sequence[IntOrThisOrExpr] | LazyPipelineExpr,
+        size: Sequence[IntOrExpr] | LazyPipelineExpr,
         *,
-        fill_value: IntOrThisOrExpr = 255,
-        background: IntOrThisOrExpr = 0,
-        supersample: IntOrThisOrExpr = 1,
+        fill_value: IntOrExpr = 255,
+        background: IntOrExpr = 0,
+        supersample: IntOrExpr = 1,
     ) -> Pipeline:
         """Rasterize contours to a mask: each region filled. An open line has no
         region to fill and is refused; ``stroke()`` it first to draw it.

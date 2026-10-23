@@ -291,6 +291,17 @@
     ]
   },
   {
+    "name": "ThisOp",
+    "doc": "The operators a ``this`` expression combines attributes and numbers with (``//`` floors).",
+    "variants": [
+      "+",
+      "-",
+      "*",
+      "/",
+      "//"
+    ]
+  },
+  {
     "name": "Winding",
     "doc": "Winding direction of a contour ring (``.contour.ensure_winding``).\n\nLong spellings included: the plugin has always accepted\n``\"clockwise\"``/``\"counterclockwise\"`` alongside the short forms.",
     "variants": [

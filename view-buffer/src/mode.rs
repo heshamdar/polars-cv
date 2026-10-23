@@ -230,24 +230,17 @@ pub enum ThisOp {
     FloorDiv,
 }
 
+// Each operator's wire (and Python) spelling: the one table, which Python's
+// `THIS_OPERATORS` is generated from.
+crate::naming::named_variants!(ThisOp: "The operators a ``this`` expression combines attributes and numbers with (``//`` floors)." {
+    "+" => Add,
+    "-" => Sub,
+    "*" => Mul,
+    "/" => Div,
+    "//" => FloorDiv,
+});
+
 impl ThisOp {
-    /// Each operator and its wire (and Python) spelling.
-    const SPELLINGS: [(ThisOp, &'static str); 5] = [
-        (ThisOp::Add, "+"),
-        (ThisOp::Sub, "-"),
-        (ThisOp::Mul, "*"),
-        (ThisOp::Div, "/"),
-        (ThisOp::FloorDiv, "//"),
-    ];
-
-    fn spelling(self) -> &'static str {
-        Self::SPELLINGS
-            .iter()
-            .find(|(op, _)| *op == self)
-            .map(|(_, s)| *s)
-            .expect("every operator has a spelling")
-    }
-
     /// `a op b`.
     fn apply(self, a: f64, b: f64) -> Result<f64, String> {
         Ok(match self {
@@ -291,11 +284,13 @@ impl ThisExpr {
             Value::Array(items) if items.len() == 3 => {
                 let op = items[0]
                     .as_str()
-                    .and_then(|s| ThisOp::SPELLINGS.iter().find(|(_, sp)| *sp == s))
-                    .map(|(op, _)| *op)
+                    .and_then(|s| crate::naming::lookup(ThisOp::NAMED, s))
                     .ok_or_else(|| {
-                        let known: Vec<&str> = ThisOp::SPELLINGS.iter().map(|(_, s)| *s).collect();
-                        format!("unknown operator {}, expected one of {known:?}", items[0])
+                        format!(
+                            "unknown operator {}, expected one of {:?}",
+                            items[0],
+                            crate::naming::names(ThisOp::NAMED)
+                        )
                     })?;
                 let a = Self::from_json(&items[1])?;
                 let b = Self::from_json(&items[2])?;
@@ -1057,8 +1052,21 @@ mod this_tests {
         }
     }
 
-    /// The same text Python's `repr` gives, so an error quotes the
-    /// expression as the user wrote it.
+    /// The same text Python's `repr` gives (`tests/test_this.py` reads the
+    /// same file), so an error quotes the expression as the user wrote it.
+    #[test]
+    fn it_displays_as_the_shared_golden_says() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../../polars-cv/tests/golden/this_render.json"
+        ))
+        .unwrap();
+        let cases = golden["cases"].as_array().unwrap();
+        assert!(cases.len() > 5, "the golden file holds almost nothing");
+        for case in cases {
+            assert_eq!(tree(case[0].clone()).to_string(), case[1].as_str().unwrap());
+        }
+    }
+
     #[test]
     fn it_displays_as_python_reads_it() {
         for (wire, text) in [

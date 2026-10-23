@@ -12,7 +12,13 @@ if TYPE_CHECKING:
 
     import polars as pl
 
-    from polars_cv._types import BoolOrExpr, FloatOrThisOrExpr, IntOrThisOrExpr
+    from polars_cv._types import (
+        BoolOrExpr,
+        FloatOrExpr,
+        FloatOrThisOrExpr,
+        IntOrExpr,
+        IntOrThisOrExpr,
+    )
     from polars_cv.lazy import LazyPipelineExpr
     from polars_cv.pipeline import Pipeline
 
@@ -314,7 +320,7 @@ class _LazyForwardersMixin:
             )
         )
 
-    def densify(self, max_segment_length: FloatOrThisOrExpr) -> LazyPipelineExpr:
+    def densify(self, max_segment_length: FloatOrExpr) -> LazyPipelineExpr:
         """Add points so no edge is longer than *max_segment_length*: each edge is
 
         Lazy form of :meth:`Pipeline.densify` on this expression's output.
@@ -490,7 +496,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().laplacian())
 
-    def largest(self, *, k: IntOrThisOrExpr = 1) -> LazyPipelineExpr:
+    def largest(self, *, k: IntOrExpr = 1) -> LazyPipelineExpr:
         """Keep the ``k`` largest contours of the set, by area: largest first,
 
         Lazy form of :meth:`Pipeline.largest` on this expression's output.
@@ -617,7 +623,7 @@ class _LazyForwardersMixin:
         )
 
     def offset(
-        self, distance: FloatOrThisOrExpr, *, join: str | pl.Expr = "round"
+        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
     ) -> LazyPipelineExpr:
         """Grow the set's regions by *distance* (negative: shrink them): every
 
@@ -718,12 +724,12 @@ class _LazyForwardersMixin:
     def rasterize(
         self,
         *,
-        width: IntOrThisOrExpr | None = None,
-        height: IntOrThisOrExpr | None = None,
+        width: IntOrExpr | None = None,
+        height: IntOrExpr | None = None,
         shape: LazyPipelineExpr | None = None,
-        fill_value: IntOrThisOrExpr = 255,
-        background: IntOrThisOrExpr = 0,
-        supersample: IntOrThisOrExpr = 1,
+        fill_value: IntOrExpr = 255,
+        background: IntOrExpr = 0,
+        supersample: IntOrExpr = 1,
     ) -> LazyPipelineExpr:
         """Rasterize contours to a mask: each region filled.
 
@@ -984,11 +990,7 @@ class _LazyForwardersMixin:
         )
 
     def scale_contour(
-        self,
-        *,
-        sx: FloatOrThisOrExpr,
-        sy: FloatOrThisOrExpr,
-        origin: str | pl.Expr = "centroid",
+        self, *, sx: FloatOrExpr, sy: FloatOrExpr, origin: str | pl.Expr = "centroid"
     ) -> LazyPipelineExpr:
         """Scale the contour about *origin*.
 
@@ -1027,14 +1029,14 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().sign())
 
-    def simplify(self, tolerance: FloatOrThisOrExpr) -> LazyPipelineExpr:
+    def simplify(self, tolerance: FloatOrExpr) -> LazyPipelineExpr:
         """Simplify the contour using the Douglas-Peucker algorithm.
 
         Lazy form of :meth:`Pipeline.simplify` on this expression's output.
         """
         return self.pipe(self._continuation().simplify(tolerance=tolerance))
 
-    def smooth(self, *, iterations: IntOrThisOrExpr = 1) -> LazyPipelineExpr:
+    def smooth(self, *, iterations: IntOrExpr = 1) -> LazyPipelineExpr:
         """Round off corners by Chaikin's corner cutting: each pass replaces every
 
         Lazy form of :meth:`Pipeline.smooth` on this expression's output.
@@ -1072,7 +1074,7 @@ class _LazyForwardersMixin:
     def stroke(
         self,
         *,
-        width: FloatOrThisOrExpr = 1.0,
+        width: FloatOrExpr = 1.0,
         cap: str | pl.Expr = "round",
         join: str | pl.Expr = "round",
     ) -> LazyPipelineExpr:
@@ -1124,9 +1126,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().to_ycbcr())
 
-    def translate(
-        self, *, dx: FloatOrThisOrExpr, dy: FloatOrThisOrExpr
-    ) -> LazyPipelineExpr:
+    def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> LazyPipelineExpr:
         """Translate the contour by an offset.
 
         Lazy form of :meth:`Pipeline.translate` on this expression's output.

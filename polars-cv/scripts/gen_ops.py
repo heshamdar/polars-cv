@@ -84,6 +84,8 @@ NOT_GENERATED = {
     "SinkDType": "validated by the typed sink",
     # Generated as `This`'s properties instead (`this_class`).
     "ThisAttr": "the attributes of `this`",
+    # Generated as `THIS_OPERATORS`, the spellings `_this.ThisExpr` builds.
+    "ThisOp": "the operators of `this` expressions",
 }
 OUTPUT = _PKG / "python" / "polars_cv" / "_ops_generated.py"
 FORWARDERS = _PKG / "python" / "polars_cv" / "_lazy_forwarders.py"
@@ -147,8 +149,9 @@ _SECTION = re.compile(r"^(Example|Examples|Returns|Raises|Note|Notes|Warning):\s
 
 
 def annotation(ty: dict[str, Any], *, op: bool = False) -> str:
-    """The Python annotation for a catalogue field type; *op* for a pipeline
-    op's field, whose numeric per-row parameters also take ``this``."""
+    """The Python annotation for a catalogue field type; *op* for the field of
+    a pipeline op that reads a buffer, whose numeric per-row parameters also
+    take ``this``."""
     kind = ty["kind"]
     if kind == "scalar":
         if ty.get("variants"):
@@ -251,8 +254,11 @@ def method(op: dict[str, Any]) -> str:
     first = positional(op)
     fields = sorted(op["fields"], key=lambda f: f["name"] != first)
     params = ["self", *(["*"] if first is None and fields else [])]
+    # `this` reads the buffer an op is given: only such an op's numeric
+    # per-row fields take it (the planner refuses it on any other input).
+    reads_buffer = any(d["input"] == "buffer" for d in op["domains"])
     for field in fields:
-        text = f"{field['name']}: {annotation(field['type'], op=True)}"
+        text = f"{field['name']}: {annotation(field['type'], op=reads_buffer)}"
         default = _default(field)
         if default is not None:
             text += f" = {default}"
@@ -554,6 +560,7 @@ def render(
     ]
     enum_names = sorted(name for name, _ in enum_classes)
     (this_attrs,) = [e for e in enums if e["name"] == "ThisAttr"]
+    (this_ops,) = [e for e in enums if e["name"] == "ThisOp"]
     text = (
         _HEADER.format(imports=_imports(methods + lazy_methods + geom_methods))
         + "\n\n#: The generated enums, which ``_types`` re-exports.\n"
@@ -562,6 +569,8 @@ def render(
         + "\n\n".join(text for _, text in enum_classes)
         + "\n\n"
         + this_class(this_attrs)
+        + "\n\n#: The operators a ``this`` expression is built with (Rust's ``ThisOp``).\n"
+        + f"THIS_OPERATORS: tuple[str, ...] = {tuple(this_ops['variants'])!r}\n"
         + "\n\n#: Ops whose wire form is typed (bare values and slots).\n"
         + f"TYPED_OPS: frozenset[str] = frozenset({names!r})\n\n"
         + "#: Every optimisation pass, in the order they apply: (name, tier, summary).\n"

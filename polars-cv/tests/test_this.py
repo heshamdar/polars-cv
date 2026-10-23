@@ -259,3 +259,70 @@ class TestRefusals:
         pipe = Pipeline().source("list").crop(height=this.height - 100)
         with pytest.raises(pl.exceptions.ComputeError, match="height.*negative"):
             _run(pipe, _img(4, 4))
+
+
+def test_a_parameter_takes_this_only_where_its_op_reads_a_buffer() -> None:
+    """The annotations say what is accepted: ``IntOrThisOrExpr`` on an op whose
+    input may be a buffer, never on one that only reads contours or vectors
+    (``rasterize``, the contour ops), where ``this`` is always refused."""
+    import inspect
+
+    from polars_cv._ops_generated import OP_DOMAINS, TYPED_OPS
+
+    catalogue = {
+        op["python"]: op["name"]
+        for op in __import__("json").loads(
+            __import__("polars_cv._lib", fromlist=["op_catalog"]).op_catalog()
+        )
+    }
+    wrong = []
+    for python, name in sorted(catalogue.items()):
+        method = getattr(Pipeline, python, None)
+        if method is None or name not in TYPED_OPS:
+            continue
+        reads_buffer = any(d["input"] == "buffer" for d in OP_DOMAINS[name])
+        for param in inspect.signature(method).parameters.values():
+            takes_this = "ThisOr" in str(param.annotation)
+            if takes_this and not reads_buffer:
+                wrong.append(
+                    f"{python}({param.name}) takes this, input {OP_DOMAINS[name]}"
+                )
+    assert not wrong, wrong
+    # The sweep saw both kinds.
+    assert "ThisOr" in str(
+        inspect.signature(Pipeline.crop).parameters["top"].annotation
+    )
+
+
+def _golden_render_cases() -> list:
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).parent / "golden" / "this_render.json"
+    return json.loads(path.read_text())["cases"]
+
+
+@pytest.mark.parametrize(("tree", "text"), _golden_render_cases())
+def test_reads_as_the_shared_golden_says(tree, text) -> None:
+    """The text Rust's ``Display`` gives the same tree (``mode.rs`` reads this
+    file too), so an error quotes the expression as Python writes it."""
+    from polars_cv._this import ThisExpr
+
+    assert repr(ThisExpr(tree)) == text
+
+
+def test_the_operators_are_the_engines() -> None:
+    """Each operator the engine spells (``ThisOp``, generated) is reachable
+    from Python, and Python builds no other."""
+    from polars_cv._ops_generated import THIS_OPERATORS
+    from polars_cv._this import _PRECEDENCE
+
+    built = {
+        (this.height + 1)._tree[0],
+        (this.height - 1)._tree[0],
+        (this.height * 1)._tree[0],
+        (this.height / 1)._tree[0],
+        (this.height // 1)._tree[0],
+        (-this.height)._tree[0],
+    }
+    assert built == set(THIS_OPERATORS) == set(_PRECEDENCE)
