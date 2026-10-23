@@ -331,14 +331,36 @@ CASES: list[ExprCase] = [
         lambda v: rgb().crop(top=0, left=0, height=6, width=v),
         (4, 8, 12),
     ),
+    # A window past the bottom-right corner, so the fill is in the output.
     ExprCase(
-        "crop",
-        "pad_value",
-        # A window past the bottom-right corner, so the fill is in the output.
-        lambda v: rgb().crop(
-            top=12, left=12, height=6, width=6, bounds="pad", pad_value=v
-        ),
+        "crop_pad",
+        "value",
+        lambda v: rgb().crop_pad(top=12, left=12, height=6, width=6, value=v),
         (0.0, 7.0, 200.0),
+    ),
+    ExprCase(
+        "crop_pad",
+        "top",
+        lambda v: rgb().crop_pad(top=v, left=0, height=6, width=6),
+        (-2, 0, 12),
+    ),
+    ExprCase(
+        "crop_pad",
+        "left",
+        lambda v: rgb().crop_pad(top=0, left=v, height=6, width=6),
+        (-2, 0, 12),
+    ),
+    ExprCase(
+        "crop_pad",
+        "height",
+        lambda v: rgb().crop_pad(top=12, left=0, height=v, width=6),
+        (4, 8, 12),
+    ),
+    ExprCase(
+        "crop_pad",
+        "width",
+        lambda v: rgb().crop_pad(top=0, left=12, height=6, width=v),
+        (4, 8, 12),
     ),
     # --- scalar arithmetic -------------------------------------------------
     ExprCase("scale", "factor", lambda v: rgb().scale(v), (0.5, 1.0, 2.0)),
@@ -366,16 +388,28 @@ CASES: list[ExprCase] = [
         (0.5, 1.0, 2.0),
     ),
     ExprCase(
-        "normalize",
+        "normalize_range",
         "low",
-        lambda v: rgb().normalize(method="range", low=v, high=250.0),
+        lambda v: rgb().normalize_range(low=v, high=250.0),
         (0.0, 50.0, 100.0),
     ),
     ExprCase(
-        "normalize",
+        "normalize_range",
         "high",
-        lambda v: rgb().normalize(method="range", low=0.0, high=v),
+        lambda v: rgb().normalize_range(low=0.0, high=v),
         (100.0, 150.0, 200.0),
+    ),
+    ExprCase(
+        "normalize_percentile",
+        "low",
+        lambda v: rgb().normalize_percentile(low=v, high=99.0),
+        (0.0, 5.0, 25.0),
+    ),
+    ExprCase(
+        "normalize_percentile",
+        "high",
+        lambda v: rgb().normalize_percentile(low=1.0, high=v),
+        (75.0, 95.0, 100.0),
     ),
     ExprCase(
         "clamp",

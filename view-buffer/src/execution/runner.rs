@@ -62,7 +62,11 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
         ),
         ViewOp::Flip { when: false, .. } => buf,
         ViewOp::Flip { .. } => buf.flip(&op.axes()),
-        ViewOp::Crop { .. } | ViewOp::Slice { .. } => unreachable!("windows are sliced above"),
+        // `ViewExpr::apply_op` places every crop in its input and applies it
+        // as a slice (and a padded one's `pad`), so none reaches here.
+        ViewOp::Crop { .. } | ViewOp::CropPad { .. } | ViewOp::Slice { .. } => {
+            unreachable!("crops are placed as slices by ViewExpr::apply_op")
+        }
         ViewOp::Rotate90 => {
             // Rotate90: transpose [1,0] then flip axis 1 (width)
             // For HWC layout: transpose swaps H and W, then flip W

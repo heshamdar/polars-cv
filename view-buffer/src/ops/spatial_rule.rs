@@ -245,8 +245,6 @@ mod tests {
                 method: crate::ops::compute::NormalizeMethod::MinMax,
                 mean: None,
                 std: None,
-                low: None,
-                high: None,
                 out_dtype: None,
             }
             .spatial_dependency(),

@@ -140,9 +140,9 @@ impl ViewExpr {
                 // A flip a row declines is no node: every flip node flips.
                 ViewOp::Flip { when: false, .. } => self.clone(),
                 ViewOp::Flip { .. } => self.flip(view.axes()),
-                ViewOp::Crop { .. } => {
+                ViewOp::Crop { .. } | ViewOp::CropPad { .. } => {
                     // The window placed in this input: its in-bounds part,
-                    // then any padding as the `pad` op (`bounds="pad"`).
+                    // then a padded crop's padding as the `pad` op.
                     let placed = view.place(&self.shape).expect("a crop has a placement");
                     let cropped = self.crop(placed.start, placed.end);
                     match placed.pad {

@@ -49,7 +49,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-130 | Errors | Design | Row errors are composed by inspecting other error strings; the row number is morsel-local under streaming |
 | CR-131 | Performance | Low | `rank_filter` sorts every window; `statistics(mask=)` and `region_stats` repeat work per statistic/map; the ADC file is re-read per remote object |
 | CR-132 | Fetch | Low | A ranged header read of a zero-byte remote object may get HTTP 416 / `InvalidRange` (unverified) |
-| CR-133 | Params | Design | `normalize`'s `mean`/`std`/`low`/`high` are optional fields read under one method each |
+| CR-133 | Params | Decision | `normalize(method="preset")`'s `mean`/`std` are optional fields read under one method |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -356,7 +356,7 @@ four phases are closed below (CR-119 to CR-128); this is what remains.
 
 ### CR-129 — Masked percentile `normalize`
 
-- `normalize(method="percentile", low=, high=)` takes its window from the
+- `normalize_percentile(low=, high=)` takes its window from the
   whole image. The proposal also wanted it from a mask's pixels (a lesion's
   1st–99th percentile), which needs a parameter computed from *another
   node's* values per row. `this` (CR-123) reads only the op's own input
@@ -407,14 +407,16 @@ An independent review of the downstream-proposal branch. Its bugs are fixed
   `InvalidRange` and an HTTP server may answer 416 where a whole read would
   succeed. Not verified; fall back to a whole read on that error if it holds.
 
-### CR-133 — `normalize`'s per-method fields
+### CR-133 — `normalize(method="preset")`'s `mean`/`std` **decision**
 
-- `normalize(method=, mean=, std=, low=, high=)` carries four optional
-  fields, each read under one method (`check` refuses a missing one, and
-  `ComputeOp::normalization` now `expect`s it). CLAUDE.md's rule is that such
-  a parameter becomes an enum variant: the method as a value carrying its own
-  fields, as `Reduction` now carries its percentile. That changes the wire
-  form and the Python signature, so it is its own change.
+- The windows this release added are their own ops (`normalize_percentile`,
+  `normalize_range`, required `low`/`high`), as the padded crop is
+  (`crop_pad`). What remains is released API: `normalize(method=, mean=,
+  std=)` carries two optional fields read only under `"preset"` (`check`
+  refuses them elsewhere, and `ComputeOp::normalization` `expect`s them).
+  CLAUDE.md's rule makes `preset` an op of its own (`normalize_preset(mean,
+  std)`); that is a breaking change to a released signature, so it waits on
+  the owner.
 
 ## Extension types
 
@@ -652,11 +654,11 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-123 | No way to size a parameter by the image (B4) | Fixed (unreleased): `polars_cv.this` (`.height`, `.width`, `.channels`, `.ndim`) with `+ - * / //`, `{"$this": tree}` on the wire, resolved per row from the shape of the buffer each op reads, carried through a node's steps by their shape rules; integers round to nearest (`test_this.py`). An attribute of another node (CR-129) would be the same entity on a `LazyPipelineExpr` |
 | CR-122 | No rank/median filter, no flat-fielding, no per-row flip, no per-pixel table of stacked maps (C2/B7/B6) | Fixed (unreleased): `rank_filter`/`median_filter`, `background_divide`, `flip_h`/`flip_v(when=)`, `sink("long", names=, where=)`; no `stack()`, since `channel_merge` is that op (`test_rank_filters.py`, `test_conditional_flip.py`, `test_long_sink.py`) |
 | CR-121 | No resize onto another node's grid, no area filter, no block reduction (B5) | Fixed (unreleased): `resize_like(other)` as a graph op (not a shared `SizeSpec`: rasterize's size is a literal, resize_like's another node's per-row shape), `resize(filter="area")` with OpenCV `INTER_AREA`'s exact overlap weights, `block_reduce` (`test_resampling.py`) |
-| CR-120 | `normalize` had no percentile window and no explicit bounds (C3) | Fixed (unreleased): `method="percentile"`/`"range"` with `low`/`high` (`TestNormalizeWindows`) |
+| CR-120 | `normalize` had no percentile window and no explicit bounds (C3) | Fixed (unreleased): `normalize_percentile`/`normalize_range` with `low`/`high` (`TestNormalizeWindows`) |
 | CR-119 | Reductions counted the zeros outside a mask; no median, no axis on sum/percentile; `label_reduce` had max/mean/sum only (B2/C1) | Fixed (unreleased): one `Reduction` authority; `reduce_masked`, `reduce_median`, `axis=` on sum/percentile, `statistics(mask=, "pNN", "count")`, `region_stats` (`test_reductions.py`) |
 | CR-128 | Remote header-only metadata fetched the whole object; `show_images` could not show a dict sink's field (C4/C6) | Fixed (unreleased): a header fetcher reads a 64 KiB prefix first (`test_remote_header_reads.py`); `show_images(df, "col.field")` |
 | CR-127 | Grayscale kept `[H, W, 1]`, so axis reductions gave one-element lists (B3) | Fixed (unreleased): `grayscale(keepdims=False)` (`test_channel_control.py`); a decode-time `source(channels=)` was added and removed as redundant with `grayscale()` |
-| CR-126 | A crop window past the image's edge could only be refused (B1) | Fixed (unreleased): `crop(bounds="clip" \| "pad", pad_value=)`, signed offsets (`test_crop_bounds.py`) |
+| CR-126 | A crop window past the image's edge could only be refused (B1) | Fixed (unreleased): `crop(bounds="clip")`, `crop_pad(..., value=)`, signed offsets (`test_crop_bounds.py`) |
 | CR-125 | `UInt32` image sizes wrapped below zero in polars, so a computed crop offset failed as a ~2^32 window; row errors named no row (A2/C5) | Fixed (unreleased): `Int64` sizes; `(row n)` and the parameter's name in errors (`TestSignedMetadata`, `test_error_messages.py`) |
 | CR-124 | A federated gcloud ADC was used only when some `CloudOptions` was passed (A1) | Fixed (unreleased): ambient detection with no options; `check_cloud_access()`; failures name the credential (`test_cloud_credentials.py`) |
 | CR-115 | `average`/`difference`/`blockhash` hashes packed bits LSB-first while `perceptual` packed MSB-first, so one hash column type held two bit orders | Fixed (0.40.0): `HasherConfig::bit_order(BitOrder::MsbFirst)`; every algorithm is MSB-first, row-major (`every_algorithm_packs_bits_msb_first`, Rust and `test_perceptual_hash_ref.py`) |

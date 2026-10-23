@@ -52,27 +52,24 @@ pub enum NormalizeMethod {
     MinMax,
     ZScore,
     Preset,
-    Percentile,
-    Range,
 }
 
-crate::naming::named_variants!(NormalizeMethod: "Normalization methods (``PRESET``: channel-wise with preset mean/std values; ``PERCENTILE``/``RANGE``: a ``low``..``high`` window mapped to [0, 1], clipped)." {
+crate::naming::named_variants!(NormalizeMethod: "Normalization methods (``PRESET``: channel-wise with preset mean/std values). A ``low``..``high`` window is its own op: ``normalize_percentile``, ``normalize_range``." {
     "minmax" => MinMax,
     "zscore" => ZScore,
     "preset" => Preset,
-    "percentile" => Percentile,
-    "range" => Range,
 });
 
 impl Normalization {
     /// The method this normalization is.
-    pub fn method(&self) -> NormalizeMethod {
+    /// `normalize`'s method for this normalization; `None` for a window,
+    /// which is an op of its own.
+    pub fn method(&self) -> Option<NormalizeMethod> {
         match self {
-            Normalization::MinMax => NormalizeMethod::MinMax,
-            Normalization::ZScore => NormalizeMethod::ZScore,
-            Normalization::Preset { .. } => NormalizeMethod::Preset,
-            Normalization::Percentile { .. } => NormalizeMethod::Percentile,
-            Normalization::Range { .. } => NormalizeMethod::Range,
+            Normalization::MinMax => Some(NormalizeMethod::MinMax),
+            Normalization::ZScore => Some(NormalizeMethod::ZScore),
+            Normalization::Preset { .. } => Some(NormalizeMethod::Preset),
+            Normalization::Percentile { .. } | Normalization::Range { .. } => None,
         }
     }
 }
@@ -115,11 +112,8 @@ pub enum ComputeOp<M: Mode = Exec> {
         /// Normalization method: "minmax" scales values to [0, 1] using
         /// per-element min/max; "zscore" standardizes to mean=0, std=1 using
         /// per-element statistics; "preset" applies ImageNet-style channel-wise
-        /// normalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`;
-        /// "percentile" maps the window between the image's own `low`-th and
-        /// `high`-th percentiles (all channels together) to [0, 1], clipped
-        /// outside it (robust windowing across devices); "range" maps the
-        /// window `[low, high]` to [0, 1], clipped.
+        /// normalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.
+        /// A window is ``normalize_percentile`` or ``normalize_range``.
         #[param(default = "minmax")]
         method: M::L<NormalizeMethod>,
         /// Per-channel mean values; required for, and only valid with,
@@ -131,15 +125,40 @@ pub enum ComputeOp<M: Mode = Exec> {
         /// with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
         /// element accepts an expression, as with `mean`.
         std: Option<Vec<M::V<f32>>>,
-        /// The window's lower edge: a percentile in [0, 100] for
-        /// method="percentile", a value for method="range"; required for,
-        /// and only valid with, those two. Accepts a Polars expression.
-        low: Option<M::V<f32>>,
-        /// The window's upper edge, above `low`; as `low`.
-        high: Option<M::V<f32>>,
         /// Output dtype (default f32). Normalization computes in f32 and the result
         /// is cast to this dtype at execution. For half precision use the sink
         /// dtype instead (`.sink("numpy", dtype="f16")`).
+        out_dtype: Option<M::L<DType>>,
+    },
+    /// Map the window between the image's own ``low``-th and ``high``-th
+    /// percentiles (every channel together, NumPy's linear interpolation) to
+    /// [0, 1], clipping outside it: windowing that adapts to each image, as
+    /// across devices. An image with a NaN pixel has no window and is NaN.
+    ///
+    /// Example:
+    ///     >>> Pipeline().source("array").normalize_percentile(low=1.0, high=99.0)
+    #[op(name = "normalize_percentile", sample = {"low": 2.0, "high": 98.0})]
+    NormalizePercentile {
+        /// The window's lower percentile, in [0, 100]. Accepts a Polars
+        /// expression.
+        low: M::V<f32>,
+        /// The window's upper percentile, in [0, 100] and above ``low``.
+        /// Accepts a Polars expression.
+        high: M::V<f32>,
+        /// Output dtype (default f32), as ``normalize``'s.
+        out_dtype: Option<M::L<DType>>,
+    },
+    /// Map the window ``[low, high]`` to [0, 1], clipping outside it.
+    ///
+    /// Example:
+    ///     >>> Pipeline().source("array").normalize_range(low=-1000.0, high=400.0)
+    #[op(name = "normalize_range", sample = {"low": 10.0, "high": 200.0})]
+    NormalizeRange {
+        /// The window's lower edge. Accepts a Polars expression.
+        low: M::V<f32>,
+        /// The window's upper edge, above ``low``. Accepts a Polars expression.
+        high: M::V<f32>,
+        /// Output dtype (default f32), as ``normalize``'s.
         out_dtype: Option<M::L<DType>>,
     },
     /// Clamp values to a range.
@@ -505,54 +524,46 @@ impl<M: Mode> ComputeOp<M> {
             }
             return Ok(());
         }
+        // A window's edges, read wherever they are known.
+        let window = |name: &str, low: &M::V<f32>, high: &M::V<f32>, percentile: bool| {
+            let (low, high) = (M::sym(low).known(), M::sym(high).known());
+            if percentile {
+                if let Some(q) = [low, high]
+                    .into_iter()
+                    .flatten()
+                    .find(|q| !(0.0..=100.0).contains(q))
+                {
+                    return Err(format!("{name}: percentile {q} is outside [0, 100]"));
+                }
+            }
+            if let (Some(low), Some(high)) = (low, high) {
+                if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
+                    return Err(format!("{name}: low ({low}) must be below high ({high})"));
+                }
+            }
+            Ok(())
+        };
+        match self {
+            ComputeOp::NormalizePercentile { low, high, .. } => {
+                return window("normalize_percentile", low, high, true)
+            }
+            ComputeOp::NormalizeRange { low, high, .. } => {
+                return window("normalize_range", low, high, false)
+            }
+            _ => {}
+        }
         let ComputeOp::Normalize {
-            method,
-            mean,
-            std,
-            low,
-            high,
-            ..
+            method, mean, std, ..
         } = self
         else {
             return Ok(());
         };
         let method = M::lit(method);
-        let windowed = matches!(method, NormalizeMethod::Percentile | NormalizeMethod::Range);
-        if !windowed && (low.is_some() || high.is_some()) {
-            return Err(
-                "normalize: low/high are only valid for method='percentile' or 'range'".into(),
-            );
-        }
         if method != NormalizeMethod::Preset && (mean.is_some() || std.is_some()) {
             return Err("normalize: mean/std parameters are only valid for method='preset'".into());
         }
         match method {
             NormalizeMethod::MinMax | NormalizeMethod::ZScore => {}
-            NormalizeMethod::Percentile | NormalizeMethod::Range => {
-                let (Some(low), Some(high)) = (low, high) else {
-                    return Err(format!(
-                        "normalize: method='{}' requires both 'low' and 'high'",
-                        method.spelling()
-                    ));
-                };
-                let (low, high) = (M::sym(low).known(), M::sym(high).known());
-                if method == NormalizeMethod::Percentile {
-                    if let Some(q) = [low, high]
-                        .into_iter()
-                        .flatten()
-                        .find(|q| !(0.0..=100.0).contains(q))
-                    {
-                        return Err(format!("normalize: percentile {q} is outside [0, 100]"));
-                    }
-                }
-                if let (Some(low), Some(high)) = (low, high) {
-                    if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
-                        return Err(format!(
-                            "normalize: low ({low}) must be below high ({high})"
-                        ));
-                    }
-                }
-            }
             NormalizeMethod::Preset => {
                 let (Some(mean), Some(std)) = (mean, std) else {
                     return Err(
@@ -691,56 +702,85 @@ impl ComputeOp {
         })
     }
 
-    /// A `Normalize` op performing `normalization`, emitting `out_dtype`.
+    /// The op performing `normalization`, emitting `out_dtype`.
     pub fn from_normalization(normalization: Normalization, out_dtype: DType) -> Self {
-        let method = normalization.method();
-        let (mut mean, mut std, mut low, mut high) = (None, None, None, None);
+        let out_dtype = Some(out_dtype);
         match normalization {
-            Normalization::Preset { mean: m, std: s } => (mean, std) = (Some(m), Some(s)),
-            Normalization::Percentile { low: l, high: h }
-            | Normalization::Range { low: l, high: h } => (low, high) = (Some(l), Some(h)),
-            Normalization::MinMax | Normalization::ZScore => {}
-        }
-        ComputeOp::Normalize {
-            method,
-            mean,
-            std,
-            low,
-            high,
-            out_dtype: Some(out_dtype),
+            Normalization::Percentile { low, high } => ComputeOp::NormalizePercentile {
+                low,
+                high,
+                out_dtype,
+            },
+            Normalization::Range { low, high } => ComputeOp::NormalizeRange {
+                low,
+                high,
+                out_dtype,
+            },
+            Normalization::Preset { mean, std } => ComputeOp::Normalize {
+                method: NormalizeMethod::Preset,
+                mean: Some(mean),
+                std: Some(std),
+                out_dtype,
+            },
+            Normalization::MinMax | Normalization::ZScore => ComputeOp::Normalize {
+                method: normalization.method().expect("a method of normalize"),
+                mean: None,
+                std: None,
+                out_dtype,
+            },
         }
     }
 
-    /// The normalization a `Normalize` op performs (its parameters having
-    /// passed [`check`](Self::check)).
-    pub fn normalization(
-        method: NormalizeMethod,
-        mean: &Option<Vec<f32>>,
-        std: &Option<Vec<f32>>,
-        low: Option<f32>,
-        high: Option<f32>,
-    ) -> Normalization {
-        // `check` refuses a method without the fields it reads, before any
-        // op executes; a missing one here is that contract broken, not a
-        // value to stand in for.
-        const CHECKED: &str = "normalize's check requires the fields its method reads";
-        let window = || (low.expect(CHECKED), high.expect(CHECKED));
-        match method {
-            NormalizeMethod::MinMax => Normalization::MinMax,
-            NormalizeMethod::ZScore => Normalization::ZScore,
-            NormalizeMethod::Preset => Normalization::Preset {
-                mean: mean.clone().expect(CHECKED),
-                std: std.clone().expect(CHECKED),
-            },
-            NormalizeMethod::Percentile => {
-                let (low, high) = window();
-                Normalization::Percentile { low, high }
-            }
-            NormalizeMethod::Range => {
-                let (low, high) = window();
-                Normalization::Range { low, high }
-            }
-        }
+    /// The normalization this op performs and the dtype it emits; `None`
+    /// for an op that is not a normalization. Its parameters have passed
+    /// [`check`](Self::check).
+    pub fn normalization(&self) -> Option<(Normalization, DType)> {
+        // `check` refuses `preset` without its mean and std before any op
+        // executes; a missing one here is that contract broken, not a value
+        // to stand in for.
+        const CHECKED: &str = "normalize's check requires preset's mean and std";
+        let (normalization, out_dtype) = match self {
+            ComputeOp::Normalize {
+                method,
+                mean,
+                std,
+                out_dtype,
+            } => (
+                match method {
+                    NormalizeMethod::MinMax => Normalization::MinMax,
+                    NormalizeMethod::ZScore => Normalization::ZScore,
+                    NormalizeMethod::Preset => Normalization::Preset {
+                        mean: mean.clone().expect(CHECKED),
+                        std: std.clone().expect(CHECKED),
+                    },
+                },
+                out_dtype,
+            ),
+            ComputeOp::NormalizePercentile {
+                low,
+                high,
+                out_dtype,
+            } => (
+                Normalization::Percentile {
+                    low: *low,
+                    high: *high,
+                },
+                out_dtype,
+            ),
+            ComputeOp::NormalizeRange {
+                low,
+                high,
+                out_dtype,
+            } => (
+                Normalization::Range {
+                    low: *low,
+                    high: *high,
+                },
+                out_dtype,
+            ),
+            _ => return None,
+        };
+        Some((normalization, out_dtype.unwrap_or(DType::F32)))
     }
 }
 
@@ -768,6 +808,8 @@ impl<M: Mode> Op for ComputeOp<M> {
             ComputeOp::Relu => "Relu",
             ComputeOp::Fused(_) => "Fused",
             ComputeOp::Normalize { .. } => "Normalize",
+            ComputeOp::NormalizePercentile { .. } => "NormalizePercentile",
+            ComputeOp::NormalizeRange { .. } => "NormalizeRange",
             ComputeOp::Clamp { .. } => "Clamp",
             ComputeOp::AdjustContrast { .. } => "AdjustContrast",
             ComputeOp::AdjustGamma { .. } => "AdjustGamma",
@@ -815,10 +857,11 @@ impl<M: Mode> Op for ComputeOp<M> {
 
     fn spatial_dependency(&self) -> SpatialDependency {
         match self {
-            // Read a global statistic (min/max/mean/std) over all pixels.
-            ComputeOp::Normalize { .. } | ComputeOp::AdjustContrast { .. } => {
-                SpatialDependency::Global
-            }
+            // Read a global statistic (min/max/mean/std) over all pixels;
+            // a range window reads none, but is one value map like them.
+            ComputeOp::Normalize { .. }
+            | ComputeOp::NormalizePercentile { .. }
+            | ComputeOp::AdjustContrast { .. } => SpatialDependency::Global,
             // Resample onto a transformed coordinate grid.
             ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
@@ -900,6 +943,9 @@ impl<M: Mode> Op for ComputeOp<M> {
                 }
                 Ok(())
             }
+            ComputeOp::NormalizePercentile { .. } | ComputeOp::NormalizeRange { .. } => self
+                .check()
+                .map_err(|message| ValidationError::Generic { message }),
             ComputeOp::WarpAffine { .. } | ComputeOp::RotateAndScale { .. } => {
                 self.check()
                     .map_err(|message| ValidationError::Generic { message })?;
@@ -928,6 +974,8 @@ impl<M: Mode> Op for ComputeOp<M> {
     fn working_dtype(&self) -> Option<DType> {
         match self {
             ComputeOp::Normalize { .. }
+            | ComputeOp::NormalizePercentile { .. }
+            | ComputeOp::NormalizeRange { .. }
             | ComputeOp::Scale { .. }
             | ComputeOp::Clamp { .. }
             | ComputeOp::Relu
@@ -943,7 +991,9 @@ impl<M: Mode> Op for ComputeOp<M> {
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
             // Computation happens in f32; the result is cast to `out_dtype`.
-            ComputeOp::Normalize { out_dtype, .. } => {
+            ComputeOp::Normalize { out_dtype, .. }
+            | ComputeOp::NormalizePercentile { out_dtype, .. }
+            | ComputeOp::NormalizeRange { out_dtype, .. } => {
                 OutputDTypeRule::Fixed(out_dtype.as_ref().map_or(DType::F32, M::lit))
             }
             ComputeOp::Cast { dtype } => OutputDTypeRule::Fixed(M::lit(dtype)),

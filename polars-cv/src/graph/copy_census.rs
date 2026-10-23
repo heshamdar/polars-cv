@@ -96,6 +96,7 @@ const KNOWN: &[(&str, [usize; 4], &str)] = &[
     ("histogram", [1, 1, 1, 1], PACKED_FIRST),
     ("morphology_gradient", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("pad", [0, 0, 1, 1], PACKED_ROWS_ONLY),
+    ("crop_pad", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("pad_to_size", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("perceptual_hash", [1, 1, 1, 1], PACKED_FIRST),
     ("block_reduce", [1, 1, 1, 1], PACKED_FIRST),

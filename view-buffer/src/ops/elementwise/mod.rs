@@ -126,18 +126,14 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
     };
     match op {
         ComputeOp::Fused(kernel) => Lowered::Kernels(vec![kernel.clone()]),
-        ComputeOp::Normalize {
-            method,
-            mean,
-            std,
-            low,
-            high,
-            out_dtype,
-        } => lower_normalize(
-            &ComputeOp::normalization(*method, mean, std, *low, *high),
-            out_dtype.unwrap_or(DType::F32),
-            buf,
-        ),
+        ComputeOp::Normalize { .. }
+        | ComputeOp::NormalizePercentile { .. }
+        | ComputeOp::NormalizeRange { .. } => {
+            let (normalization, out_dtype) = op
+                .normalization()
+                .expect("a normalize op is a normalization");
+            lower_normalize(&normalization, out_dtype, buf)
+        }
         ComputeOp::AdjustContrast { factor } => {
             if dtype.accumulator() == DType::F64 {
                 let mean = stats::mean_f64(buf);
@@ -240,9 +236,9 @@ fn lower_normalize(normalization: &Normalization, out_dtype: DType, buf: &ViewBu
         }
         Normalization::Percentile { low, high } => {
             // The image's own percentiles, every channel together, by the
-            // one interpolation (`reduction::percentile_of`).
-            let values = buf.cast_to(DType::F64).to_contiguous();
-            let mut values = values.as_slice::<f64>().to_vec();
+            // one interpolation (`reduction::percentile_of`), over the one
+            // owned copy a selection needs, read from the view where it lies.
+            let mut values = stats::values_f64(buf);
             let lo = crate::ops::reduction::percentile_of(&mut values, f64::from(*low)) as f32;
             let hi = crate::ops::reduction::percentile_of(&mut values, f64::from(*high)) as f32;
             window(lo, hi, out_dtype)
@@ -1047,6 +1043,16 @@ pub(crate) mod stats {
             None => f32_read_sum(buf, |x| x),
         };
         sum as f32 / n as f32
+    }
+
+    /// The elements as f64, in element order, read from the view where it
+    /// lies (no packed copy first): for a statistic that reorders them.
+    pub(crate) fn values_f64(buf: &ViewBuffer) -> Vec<f64> {
+        let mut values = Vec::with_capacity(buf.shape().iter().product());
+        with_dtype!(buf.dtype(), T => for_each_run::<T>(buf, |run| {
+            values.extend(run.iter().map(|&x| f64::cast_from(x)));
+        }));
+        values
     }
 
     /// The f64 mean of a buffer whose accumulator is f64 (f64, and the

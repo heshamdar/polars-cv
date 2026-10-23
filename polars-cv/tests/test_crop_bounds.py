@@ -1,8 +1,8 @@
-"""``crop(bounds=...)``: what a window reaching past the image's edge means.
+"""A window reaching past the image's edge.
 
-``"error"`` (the default) refuses it, ``"clip"`` keeps the part inside the
-image, and ``"pad"`` keeps the requested size, filling outside with
-``pad_value``. Checked against NumPy slicing and ``np.pad``.
+``crop(bounds=...)``: ``"error"`` (the default) refuses it and ``"clip"``
+keeps the part inside the image. ``crop_pad`` keeps the requested size,
+filling outside with ``value``. Checked against NumPy slicing and ``np.pad``.
 """
 
 from __future__ import annotations
@@ -78,7 +78,15 @@ class TestClip:
             _run(_crop(left=40, width=4, bounds="clip"))
 
 
+def _crop_pad(**kwargs) -> Pipeline:
+    return Pipeline().source("image_bytes").crop_pad(**kwargs)
+
+
 class TestPad:
+    """``crop_pad``: the window at its requested size, outside the image
+    filled with ``value``. Its own op, so the size it pads to is required
+    and the fill exists only where it is read."""
+
     @pytest.mark.parametrize(
         ("top", "left", "height", "width"),
         [
@@ -91,32 +99,30 @@ class TestPad:
     )
     def test_matches_np_pad(self, top, left, height, width) -> None:
         (got,) = _run(
-            _crop(
-                top=top,
-                left=left,
-                height=height,
-                width=width,
-                bounds="pad",
-                pad_value=7,
-            )
+            _crop_pad(top=top, left=left, height=height, width=width, value=7)
         )
         assert got.shape == (height, width, 3)
         np.testing.assert_array_equal(got, _pad_reference(top, left, height, width, 7))
 
-    def test_pad_value_defaults_to_zero(self) -> None:
-        (got,) = _run(_crop(left=28, height=H, width=6, bounds="pad"))
+    def test_value_defaults_to_zero(self) -> None:
+        (got,) = _run(_crop_pad(left=28, height=H, width=6))
         np.testing.assert_array_equal(got, _pad_reference(0, 28, H, 6, 0))
 
     def test_a_window_entirely_outside_is_all_padding(self) -> None:
-        (got,) = _run(_crop(left=40, height=3, width=4, bounds="pad", pad_value=9))
+        (got,) = _run(_crop_pad(left=40, height=3, width=4, value=9))
         np.testing.assert_array_equal(got, np.full((3, 4, 3), 9, np.uint8))
+
+    def test_a_per_row_fill(self) -> None:
+        got = _run(_crop_pad(left=29, height=2, width=4, value=pl.col("v")), v=[3, 200])
+        for row, value in zip(got, [3, 200]):
+            np.testing.assert_array_equal(row, _pad_reference(0, 29, 2, 4, value))
 
     def test_the_lazy_schema_knows_the_padded_size(self) -> None:
         frame = pl.DataFrame({"img": [_png(IMAGE)]}).lazy()
         pipe = (
             Pipeline()
             .source("image_bytes", dtype="u8")
-            .crop(left=8, height=12, width=24, bounds="pad")
+            .crop_pad(left=8, height=12, width=24)
             # A decoded image's channel count is unknown at plan time.
             .channel_select(0, keepdims=False)
         )
@@ -137,10 +143,34 @@ class TestRefused:
         ):
             _run(_crop(left=pl.col("l"), width=4), l=[-2])
 
-    def test_pad_value_without_pad_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="pad_value"):
-            _crop(width=4, bounds="clip", pad_value=1)
+    def test_a_padded_window_is_crop_pad_not_a_bound(self) -> None:
+        """``crop``'s bounds are what a window past the edge keeps: an error
+        or the part inside. Padding is ``crop_pad``, whose fill and size are
+        its own required fields rather than ``crop`` fields read under one
+        bound only."""
+        with pytest.raises(
+            ValueError,
+            match=r'unknown CropBounds "pad", expected one of \["error", "clip"\]',
+        ):
+            _crop(left=2, height=2, width=4, bounds="pad")
 
-    def test_pad_needs_both_extents(self) -> None:
-        with pytest.raises(ValueError, match="height and width"):
-            _crop(left=2, width=4, bounds="pad")
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda p: p.crop(top=-1, height=2, width=2, bounds="clip"),
+            lambda p: p.crop_pad(top=-1, height=2, width=2),
+        ],
+    )
+    def test_a_window_on_a_1d_buffer_is_refused_not_panicked(self, build) -> None:
+        """A window is over the image plane. A 1-D buffer has none: refused
+        as the pipeline is built (the rank is known), where it used to reach
+        the engine and panic placing the window."""
+        frame = pl.DataFrame(
+            {"a": pl.Series([[1, 2, 3, 4]], dtype=pl.Array(pl.UInt8, 4))}
+        )
+        with pytest.raises((ValueError, pl.exceptions.ComputeError)) as err:
+            frame.select(
+                pl.col("a").cv.pipe(build(Pipeline().source("array"))).sink("list")
+            )
+        assert "panicked" not in str(err.value), str(err.value)
+        assert "[H, W]" in str(err.value), str(err.value)

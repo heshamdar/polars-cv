@@ -349,8 +349,9 @@ class TestRegionStats:
 
 
 class TestNormalizeWindows:
-    """``normalize(method="percentile" | "range")``: a window mapped to [0, 1],
-    clipped outside it."""
+    """``normalize_percentile`` / ``normalize_range``: a window mapped to
+    [0, 1], clipped outside it. Each its own op, so ``low`` and ``high`` are
+    required fields rather than ``normalize`` fields read by two methods."""
 
     def _run(self, pipe: Pipeline, **columns) -> np.ndarray:
         from polars_cv import numpy_from_struct
@@ -363,9 +364,7 @@ class TestNormalizeWindows:
     @pytest.mark.parametrize(("low", "high"), [(2.0, 98.0), (0.0, 100.0), (25.0, 30.0)])
     def test_percentile_window(self, low: float, high: float) -> None:
         got = self._run(
-            Pipeline()
-            .source("array")
-            .normalize(method="percentile", low=low, high=high)
+            Pipeline().source("array").normalize_percentile(low=low, high=high)
         )
         lo, hi = np.percentile(IMG, [low, high])
         np.testing.assert_allclose(
@@ -381,43 +380,31 @@ class TestNormalizeWindows:
         img = np.arange(16, dtype=np.float32).reshape(4, 4)
         img[1, 2] = np.nan
         frame = pl.DataFrame({"a": pl.Series("a", img[np.newaxis])})
-        for kwargs in (
-            {"method": "percentile", "low": 2.0, "high": 98.0},
-            {"method": "minmax"},
+        for pipe in (
+            Pipeline().source("array").normalize_percentile(low=2.0, high=98.0),
+            Pipeline().source("array").normalize(method="minmax"),
         ):
-            pipe = Pipeline().source("array").normalize(**kwargs)
             out = frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
-            assert np.isnan(numpy_from_struct(out)).all(), kwargs
+            assert np.isnan(numpy_from_struct(out)).all(), pipe
 
     def test_range_window_per_row(self) -> None:
         pipe = (
             Pipeline()
             .source("array")
-            .normalize(method="range", low=pl.col("lo"), high=pl.col("hi"))
+            .normalize_range(low=pl.col("lo"), high=pl.col("hi"))
         )
         got = self._run(pipe, lo=20.0, hi=60.0)
         np.testing.assert_allclose(got, np.clip((IMG - 20) / 40, 0, 1), atol=1e-6)
 
     @pytest.mark.parametrize(
-        ("kwargs", "match"),
+        ("op", "low", "high", "match"),
         [
-            ({"method": "percentile", "low": 2.0}, "low.*high"),
-            ({"method": "range"}, "low.*high"),
-            ({"method": "minmax", "low": 1.0, "high": 2.0}, "low"),
-            ({"method": "percentile", "low": -1.0, "high": 50.0}, r"\[0, 100\]"),
-            ({"method": "range", "low": 5.0, "high": 5.0}, "below"),
-            (
-                {
-                    "method": "percentile",
-                    "low": 2.0,
-                    "high": 98.0,
-                    "mean": [0.5],
-                    "std": [1.0],
-                },
-                "preset",
-            ),
+            ("normalize_percentile", -1.0, 50.0, r"\[0, 100\]"),
+            ("normalize_percentile", 50.0, 150.0, r"\[0, 100\]"),
+            ("normalize_percentile", 60.0, 40.0, "below"),
+            ("normalize_range", 5.0, 5.0, "below"),
         ],
     )
-    def test_refusals(self, kwargs: dict, match: str) -> None:
+    def test_refusals(self, op: str, low: float, high: float, match: str) -> None:
         with pytest.raises(ValueError, match=match):
-            Pipeline().source("array").normalize(**kwargs)
+            getattr(Pipeline().source("array"), op)(low=low, high=high)

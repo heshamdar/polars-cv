@@ -1136,11 +1136,38 @@
     "bounds",
     "KEYWORD_ONLY",
     "'error'"
+   ]
+  ],
+  "crop_pad": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ],
    [
-    "pad_value",
+    "top",
     "KEYWORD_ONLY",
-    "None"
+    "0"
+   ],
+   [
+    "left",
+    "KEYWORD_ONLY",
+    "0"
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "value",
+    "KEYWORD_ONLY",
+    "0.0"
    ]
   ],
   "densify": [
@@ -1607,14 +1634,48 @@
     "None"
    ],
    [
-    "low",
+    "out_dtype",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "normalize_percentile": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "low",
+    "KEYWORD_ONLY",
+    ""
    ],
    [
     "high",
     "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "out_dtype",
+    "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "normalize_range": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "low",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "high",
+    "KEYWORD_ONLY",
+    ""
    ],
    [
     "out_dtype",
@@ -2979,11 +3040,38 @@
     "bounds",
     "KEYWORD_ONLY",
     "'error'"
+   ]
+  ],
+  "crop_pad": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ],
    [
-    "pad_value",
+    "top",
     "KEYWORD_ONLY",
-    "None"
+    "0"
+   ],
+   [
+    "left",
+    "KEYWORD_ONLY",
+    "0"
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "value",
+    "KEYWORD_ONLY",
+    "0.0"
    ]
   ],
   "current_domain": [
@@ -3397,14 +3485,48 @@
     "None"
    ],
    [
-    "low",
+    "out_dtype",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "normalize_percentile": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "low",
+    "KEYWORD_ONLY",
+    ""
    ],
    [
     "high",
     "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "out_dtype",
+    "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "normalize_range": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "low",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "high",
+    "KEYWORD_ONLY",
+    ""
    ],
    [
     "out_dtype",
