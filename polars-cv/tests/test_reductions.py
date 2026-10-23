@@ -89,7 +89,7 @@ class TestLabelReduce:
         pipe = (
             Pipeline()
             .source("array")
-            .label_reduce(pl.col("c"), reduction="percentile", q=q, region_mode="bbox")
+            .label_reduce(pl.col("c"), reduction=f"p{q:g}", region_mode="bbox")
         )
         got = _frame().select(pl.col("a").cv.pipe(pipe).sink("native")).item()
         np.testing.assert_allclose(got, [np.percentile(s, q) for s in SLICES])
@@ -99,22 +99,25 @@ class TestLabelReduce:
             _frame()
             .select(
                 pl.col("c").contour.label_reduce(
-                    pl.col("a"), reduction="percentile", q=90.0, region_mode="bbox"
+                    pl.col("a"), reduction="p90", region_mode="bbox"
                 )
             )
             .item()
         )
         np.testing.assert_allclose(got, [np.percentile(s, 90.0) for s in SLICES])
 
-    def test_percentile_needs_q(self) -> None:
-        with pytest.raises(ValueError, match="q"):
-            Pipeline().source("array").label_reduce(pl.col("c"), reduction="percentile")
-
-    def test_q_without_percentile_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="q"):
-            Pipeline().source("array").label_reduce(
-                pl.col("c"), reduction="mean", q=5.0
-            )
+    @pytest.mark.parametrize(
+        ("reduction", "match"),
+        [
+            ("percentile", r"unknown reduction 'percentile'.*p90"),
+            ("p150", r"p150.*outside \[0, 100\]"),
+            ("p9.999", "two decimal places"),
+            ("pmax", "unknown reduction 'pmax'"),
+        ],
+    )
+    def test_a_percentile_is_spelled_pNN(self, reduction: str, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            Pipeline().source("array").label_reduce(pl.col("c"), reduction=reduction)
 
 
 def _reduce(pipe: Pipeline) -> np.ndarray:
@@ -134,6 +137,15 @@ class TestAxes:
     def test_reduce_percentile_along_an_axis(self, q: float, axis: int) -> None:
         got = _reduce(Pipeline().source("array").reduce_percentile(q, axis=axis))
         np.testing.assert_allclose(got, np.percentile(IMG, q, axis=axis))
+
+    def test_reduce_percentile_refuses_q_outside_0_100(self) -> None:
+        """As every percentile here does; it used to clamp to the max."""
+        with pytest.raises(ValueError, match=r"outside \[0, 100\]"):
+            Pipeline().source("array").reduce_percentile(150.0)
+        pipe = Pipeline().source("array").reduce_percentile(pl.col("q"))
+        frame = _frame().with_columns(q=pl.lit(150.0))
+        with pytest.raises(pl.exceptions.ComputeError, match=r"outside \[0, 100\]"):
+            frame.select(pl.col("a").cv.pipe(pipe).sink("native"))
 
     @pytest.mark.parametrize("axis", [None, 0, 1])
     def test_reduce_median(self, axis: int | None) -> None:
@@ -160,10 +172,10 @@ def _masked_frame(mask: np.ndarray = MASK, img: np.ndarray = IMG) -> pl.DataFram
     )
 
 
-def _masked(reduction: str, axis: int | None = None, q: float | None = None, **frame):
+def _masked(reduction: str, axis: int | None = None, **frame):
     img = pl.col("a").cv.pipe(Pipeline().source("array"))
     mask = pl.col("m").cv.pipe(Pipeline().source("array"))
-    expr = img.reduce_masked(mask, reduction=reduction, q=q, axis=axis)
+    expr = img.reduce_masked(mask, reduction=reduction, axis=axis)
     out = _masked_frame(**frame).select(
         expr.sink("native" if axis is None else "numpy")
     )
@@ -174,9 +186,7 @@ def _masked(reduction: str, axis: int | None = None, q: float | None = None, **f
     return numpy_from_struct(out.item())
 
 
-def _numpy_masked(
-    values: np.ndarray, keep: np.ndarray, reduction: str, q=None
-) -> float:
+def _numpy_masked(values: np.ndarray, keep: np.ndarray, reduction: str) -> float:
     selected = values[keep]
     if reduction == "count":
         return float(selected.size)
@@ -184,8 +194,8 @@ def _numpy_masked(
         return float(selected.sum())
     if selected.size == 0:
         return float("nan")
-    if reduction == "percentile":
-        return float(np.percentile(selected, q))
+    if reduction.startswith("p") and reduction[1:].replace(".", "").isdigit():
+        return float(np.percentile(selected, float(reduction[1:])))
     return float(NUMPY[reduction](selected))
 
 
@@ -195,11 +205,10 @@ class TestMasked:
         got = _masked(reduction)
         np.testing.assert_allclose(got, _numpy_masked(IMG, MASK > 0, reduction))
 
-    @pytest.mark.parametrize("reduction", [*sorted(NUMPY), "percentile"])
+    @pytest.mark.parametrize("reduction", [*sorted(NUMPY), "p75"])
     @pytest.mark.parametrize("axis", [0, 1])
     def test_along_an_axis_matches_numpy(self, reduction: str, axis: int) -> None:
-        q = 75.0 if reduction == "percentile" else None
-        got = _masked(reduction, axis=axis, q=q)
+        got = _masked(reduction, axis=axis)
         keep = MASK > 0
         lines = range(W) if axis == 0 else range(H)
         want = [
@@ -207,11 +216,26 @@ class TestMasked:
                 IMG[:, i] if axis == 0 else IMG[i],
                 keep[:, i] if axis == 0 else keep[i],
                 reduction,
-                q,
             )
             for i in lines
         ]
         np.testing.assert_allclose(got, want)
+
+    def test_a_per_row_reduction_may_mix_percentiles_and_statistics(self) -> None:
+        """The percentile is part of the reduction's value, so a column of
+        them is one parameter; a separate ``q`` could only fit one kind."""
+        frame = pl.concat([_masked_frame(), _masked_frame()]).with_columns(
+            r=pl.Series(["p90", "mean"])
+        )
+        img = pl.col("a").cv.pipe(Pipeline().source("array"))
+        mask = pl.col("m").cv.pipe(Pipeline().source("array"))
+        got = frame.select(
+            img.reduce_masked(mask, reduction=pl.col("r")).sink("native")
+        ).to_series()
+        np.testing.assert_allclose(
+            got.to_list(),
+            [_numpy_masked(IMG, MASK > 0, "p90"), _numpy_masked(IMG, MASK > 0, "mean")],
+        )
 
     def test_a_line_with_no_masked_pixel_is_nan_and_counts_zero(self) -> None:
         assert np.isnan(_masked("median", axis=0)[3])
@@ -282,13 +306,13 @@ class TestStatistics:
         np.testing.assert_allclose(got["p25"], np.percentile(IMG, 25))
         np.testing.assert_allclose(got["p62.5"], np.percentile(IMG, 62.5))
 
-    def test_count_needs_a_mask(self) -> None:
-        with pytest.raises(ValueError, match="count"):
-            self._img().statistics(include=["count"])
+    def test_count_without_a_mask_counts_every_value(self) -> None:
+        got = _frame().select(self._img().statistics(include=["count"])).item()
+        assert got["count"] == IMG.size
 
     @pytest.mark.parametrize("name", ["p101", "p", "px", "mode"])
     def test_an_unknown_statistic_is_refused(self, name: str) -> None:
-        with pytest.raises(ValueError, match="statistic"):
+        with pytest.raises(ValueError, match=f"reduction '{name}'"):
             self._img().statistics(include=[name])
 
 

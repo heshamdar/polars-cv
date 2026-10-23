@@ -119,9 +119,7 @@ class TestBlockReduce:
 
     def test_percentile_with_q(self) -> None:
         pipe = (
-            Pipeline()
-            .source("array")
-            .block_reduce(height=4, width=4, reduction="percentile", q=90.0)
+            Pipeline().source("array").block_reduce(height=4, width=4, reduction="p90")
         )
         np.testing.assert_allclose(
             _run_array(pipe, MAP),

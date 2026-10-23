@@ -282,16 +282,14 @@ pub enum GraphOp<M: Mode = Exec> {
     /// Example:
     ///     >>> heat.reduce_masked(breast, reduction="median", axis=1)  # per-row median
     #[op(name = "reduce_masked", visibility = LazyOnly,
-         sample = {"mask": "n0", "reduction": "percentile", "q": 75.0, "axis": 1})]
+         sample = {"mask": "n0", "reduction": "p75", "axis": 1})]
     ReduceMasked {
         /// The mask's node.
         mask: NodeRef,
         /// The reduction: "sum", "mean" (default), "min", "max", "std",
-        /// "median", "percentile" (with ``q``) or "count".
+        /// "median", "count", or a percentile "pNN" ("p90", "p62.5").
         #[param(default = "mean")]
         reduction: M::V<Reduction>,
-        /// The percentile, in [0, 100], for ``reduction="percentile"`` only.
-        q: Option<M::V<f64>>,
         /// None for one value over every masked pixel, 0 for one per column,
         /// 1 for one per row. It fixes the output rank, so it is literal-only.
         axis: Option<M::L<u32>>,
@@ -363,12 +361,10 @@ pub enum GraphOp<M: Mode = Exec> {
         /// Contour-set expression (`List[Contour]`) to score.
         contours: ColumnRef,
         /// Reduction over each region's pixel values: "sum", "mean", "min",
-        /// "max" (default), "std", "median", "percentile" (with ``q``) or
-        /// "count".
+        /// "max" (default), "std", "median", "count", or a percentile "pNN"
+        /// ("p90", "p62.5").
         #[param(default = "max")]
         reduction: M::V<Reduction>,
-        /// The percentile, in [0, 100], for ``reduction="percentile"`` only.
-        q: Option<M::V<f64>>,
         /// Region selection mode. ``"interior"`` — only pixels strictly inside the
         /// contour polygon. ``"boundary"`` — interior pixels *plus* pixels whose
         /// centre lies on the contour boundary.
@@ -413,12 +409,10 @@ impl<M: Mode> GraphOp<M> {
             GraphOp::ReduceMasked {
                 mask,
                 reduction,
-                q,
                 axis,
             } => Role::ReduceMasked {
                 mask,
                 reduction,
-                q,
                 axis: axis.as_ref().map(|a| M::lit(a) as usize),
             },
             GraphOp::ResizeLike { like, filter } => Role::ResizeLike { like, filter },
@@ -428,12 +422,10 @@ impl<M: Mode> GraphOp<M> {
             GraphOp::LabelReduce {
                 contours,
                 reduction,
-                q,
                 region_mode,
             } => Role::LabelReduce {
                 contours,
                 reduction,
-                q,
                 region_mode,
             },
         }
@@ -676,28 +668,15 @@ impl<M: Mode> GraphOp<M> {
                 }
                 Ok(())
             }
-            GraphOp::ReduceMasked {
-                reduction, q, axis, ..
-            } => {
+            GraphOp::ReduceMasked { axis, .. } => {
                 if let Some(axis) = axis.as_ref().map(M::lit).filter(|&a| a > 1) {
                     return Err(format!(
                         "reduce_masked: axis = {axis}, but a mask selects pixels of the \
                          image plane: axis 0 (per column), 1 (per row) or None"
                     ));
                 }
-                Reduction::check_q(
-                    "reduce_masked",
-                    view_buffer::mode::known::<M, Reduction>(reduction),
-                    q.is_some(),
-                    q.as_ref().and_then(view_buffer::mode::known::<M, f64>),
-                )
+                Ok(())
             }
-            GraphOp::LabelReduce { reduction, q, .. } => Reduction::check_q(
-                "label_reduce",
-                view_buffer::mode::known::<M, Reduction>(reduction),
-                q.is_some(),
-                q.as_ref().and_then(view_buffer::mode::known::<M, f64>),
-            ),
             _ => Ok(()),
         }
     }
@@ -717,7 +696,6 @@ pub enum Role<'a, M: Mode> {
     ReduceMasked {
         mask: &'a NodeRef,
         reduction: &'a M::V<Reduction>,
-        q: &'a Option<M::V<f64>>,
         axis: Option<usize>,
     },
     ChannelMerge {
@@ -735,7 +713,6 @@ pub enum Role<'a, M: Mode> {
     LabelReduce {
         contours: &'a ColumnRef,
         reduction: &'a M::V<Reduction>,
-        q: &'a Option<M::V<f64>>,
         region_mode: &'a M::V<LabelRegionMode>,
     },
 }

@@ -169,11 +169,11 @@ pub(crate) fn run_step(
                 )))
             }
             Role::ReduceMasked {
-                reduction, q, axis, ..
+                reduction, axis, ..
             } => {
                 let [image, mask] = exactly(name, buffers()?)?;
                 Ok(
-                    match view_buffer::ops::reduce_masked(&image, &mask, *reduction, *q, axis) {
+                    match view_buffer::ops::reduce_masked(&image, &mask, *reduction, axis) {
                         view_buffer::ops::Masked::Scalar(value) => NodeOutput::from_scalar(value),
                         view_buffer::ops::Masked::Along(buf) => NodeOutput::from_buffer(buf),
                     },
@@ -231,7 +231,6 @@ pub(crate) fn run_step(
             Role::LabelReduce {
                 contours,
                 reduction,
-                q,
                 region_mode,
             } => {
                 let [buf] = exactly(name, buffers()?)?;
@@ -243,7 +242,7 @@ pub(crate) fn run_step(
                 let Some(contours) = contours else {
                     return Ok(NodeOutput::from_vector(Vec::new()));
                 };
-                score_contours_on_buffer(&buf, &contours, *reduction, *q, *region_mode)
+                score_contours_on_buffer(&buf, &contours, *reduction, *region_mode)
                     .map(NodeOutput::from_vector)
             }
         },

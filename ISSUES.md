@@ -357,7 +357,7 @@ four phases are closed below (CR-119 to CR-128); this is what remains.
   1st–99th percentile), which needs a parameter computed from *another
   node's* values per row. `this` (CR-123) reads only the op's own input
   shape, so they do not provide it.
-- Today: `reduce_masked(mask, reduction="percentile", q=...)` computes the
+- Today: `reduce_masked(mask, reduction="p1")` computes the
   bounds as a scalar, but a scalar cannot yet feed another op's parameter.
   A general "parameter from a node" mechanism (a `Param` variant naming a
   scalar node) would cover it; decide whether that is worth its planner

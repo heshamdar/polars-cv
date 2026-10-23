@@ -169,7 +169,7 @@ registry!(
     crate::geometry::ops::ApproxMethod,
     crate::geometry::ops::LineJoin,
     crate::geometry::ops::LineCap,
-    crate::ops::reduction::Reduction,
+    crate::ops::reduction::Statistic,
     crate::geometry::label::LabelRegionMode,
     crate::ops::NormalizeMethod,
 );
@@ -185,12 +185,30 @@ pub fn names<'a, T>(table: &'a [(&'a str, T)]) -> Vec<&'a str> {
 }
 
 /// A scalar parameter value as it appears on the wire or in a per-row column.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// A string is borrowed when read and usually when written (a `NAMED`
+/// spelling); a value that spells itself (`Reduction`'s `"p62.5"`) owns it.
+#[derive(Debug, Clone, PartialEq)]
 pub enum WireValue<'a> {
     Int(i64),
     Float(f64),
     Bool(bool),
-    Str(&'a str),
+    Str(std::borrow::Cow<'a, str>),
+}
+
+impl<'a> WireValue<'a> {
+    /// A borrowed string value.
+    pub fn str(s: &'a str) -> Self {
+        WireValue::Str(std::borrow::Cow::Borrowed(s))
+    }
+
+    /// The string, when the value is one.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            WireValue::Str(s) => Some(s),
+            WireValue::Int(_) | WireValue::Float(_) | WireValue::Bool(_) => None,
+        }
+    }
 }
 
 /// Which kind of per-row column a [`WireScalar`] reads from.
@@ -283,11 +301,11 @@ impl WireScalar for core::num::NonZeroU32 {
 /// and writes them (as Python's encoder, `_types._literal`, does), so a
 /// non-finite literal crosses the wire like any other and meets the op's own
 /// check rather than the decoder's "expected value".
-fn non_finite_from_wire(value: WireValue<'_>) -> Option<f64> {
-    match value {
-        WireValue::Str("nan") => Some(f64::NAN),
-        WireValue::Str("inf") => Some(f64::INFINITY),
-        WireValue::Str("-inf") => Some(f64::NEG_INFINITY),
+fn non_finite_from_wire(value: &WireValue<'_>) -> Option<f64> {
+    match value.as_str()? {
+        "nan" => Some(f64::NAN),
+        "inf" => Some(f64::INFINITY),
+        "-inf" => Some(f64::NEG_INFINITY),
         _ => None,
     }
 }
@@ -296,11 +314,11 @@ fn non_finite_from_wire(value: WireValue<'_>) -> Option<f64> {
 /// a number.
 fn float_to_wire(f: f64) -> WireValue<'static> {
     if f.is_nan() {
-        WireValue::Str("nan")
+        WireValue::str("nan")
     } else if f == f64::INFINITY {
-        WireValue::Str("inf")
+        WireValue::str("inf")
     } else if f == f64::NEG_INFINITY {
-        WireValue::Str("-inf")
+        WireValue::str("-inf")
     } else {
         WireValue::Float(f)
     }
@@ -340,7 +358,7 @@ macro_rules! wire_float {
                     // An integer is a float the caller did not write a `.0` on.
                     WireValue::Int(i) => Ok(i as $t),
                     WireValue::Float(f) => Ok(f as $t),
-                    other => non_finite_from_wire(other).map(|f| f as $t).ok_or_else(|| {
+                    other => non_finite_from_wire(&other).map(|f| f as $t).ok_or_else(|| {
                         format!(
                             "expected a number, \"nan\", \"inf\" or \"-inf\", got {}",
                             describe_wire(other)
@@ -383,7 +401,7 @@ pub fn named_from_wire<T: Copy>(
     value: WireValue<'_>,
 ) -> Result<T, String> {
     match value {
-        WireValue::Str(s) => lookup(table, s).ok_or_else(|| {
+        WireValue::Str(s) => lookup(table, &s).ok_or_else(|| {
             format!(
                 "unknown {type_name} {s:?}, expected one of {:?}",
                 names(table)
@@ -399,7 +417,7 @@ pub fn named_from_wire<T: Copy>(
 
 /// [`WireScalar::to_wire`] for a named enum: the variant's canonical name.
 pub fn named_to_wire<T: Copy + PartialEq>(table: &[(&'static str, T)], v: T) -> WireValue<'static> {
-    WireValue::Str(spelling_of(table, v))
+    WireValue::str(spelling_of(table, v))
 }
 
 /// `v`'s canonical (first-listed) spelling in a `NAMED` table.
@@ -429,12 +447,12 @@ mod float_wire_tests {
             );
             assert_eq!(f32::from_wire(f.to_wire()).unwrap().is_nan(), f.is_nan());
         }
-        assert!(f64::from_wire(WireValue::Str("Infinity")).is_err());
+        assert!(f64::from_wire(WireValue::str("Infinity")).is_err());
         assert_eq!(
-            Bound::from_wire(WireValue::Str("-inf")).unwrap(),
+            Bound::from_wire(WireValue::str("-inf")).unwrap(),
             Bound(f64::NEG_INFINITY)
         );
-        assert!(Bound::from_wire(WireValue::Str("nan")).is_err());
+        assert!(Bound::from_wire(WireValue::str("nan")).is_err());
         assert!(Bound::from_wire(WireValue::Float(f64::NAN)).is_err());
     }
 }

@@ -335,22 +335,47 @@ def _flipped(x: np.ndarray, p: Params, flip) -> np.ndarray:
     return flip(x).copy() if p.get("when", True) else x.copy()
 
 
+def _numpy_reduction(name: str) -> Callable[..., Any]:
+    """A reduction's spelling (``"mean"``, ``"p62.5"``) as NumPy's function
+    over ``axis``: the engine's ``Reduction`` (``reduction.rs``), restated
+    independently."""
+    if name.startswith("p"):
+        q = float(name[1:])
+        return lambda a, axis=None: np.percentile(a, q, axis=axis)
+    if name == "count":
+        return lambda a, axis=None: np.float64(
+            np.size(a) if axis is None else a.shape[axis]
+        )
+    return {
+        "sum": np.sum,
+        "mean": np.mean,
+        "min": np.min,
+        "max": np.max,
+        "std": np.std,
+        "median": np.median,
+    }[name]
+
+
 def _block_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {
         "height": draw(st.integers(1, max(1, x.shape[0])), label="height"),
         "width": draw(st.integers(1, max(1, x.shape[1])), label="width"),
         "reduction": draw(
-            st.sampled_from(["mean", "min", "max", "median"]), label="reduction"
+            st.sampled_from(["mean", "min", "max", "median", "p62.5"]),
+            label="reduction",
         ),
     }
+
+
+def _reduce_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    names = ["sum", "mean", "min", "max", "std", "median", "count", "p90", "p62.5"]
+    return {"reduction": draw(st.sampled_from(names), label="reduction")}
 
 
 @quiet
 def _block_ref(x: np.ndarray, p: Params) -> np.ndarray:
     """Each block (partial at the far edges) reduced per channel, in f64."""
-    fn = {"mean": np.mean, "min": np.min, "max": np.max, "median": np.median}[
-        p["reduction"]
-    ]
+    fn = _numpy_reduction(p["reduction"])
     bh, bw = p["height"], p["width"]
     h, w = x.shape[:2]
     out = np.empty((-(-h // bh), -(-w // bw), *x.shape[2:]))
@@ -2384,6 +2409,21 @@ OPS: dict[str, OpSpec] = {
             domain_out="scalar",
             terminal=True,
             note="linear interpolation, as numpy's default",
+        ),
+        _spec(
+            "reduce",
+            _reduce_params,
+            ref=_scalar_result(
+                lambda x, p: _numpy_reduction(p["reduction"])(x.astype(np.float64))
+            ),
+            # As reduce_percentile: numpy interpolates an infinity into NaN.
+            ref_accepts=lambda x, p: not np.isinf(x).any(),
+            tol=_stat_tol,
+            kind="global",
+            defines_non_finite=True,
+            domain_out="scalar",
+            terminal=True,
+            note="the shared Reduction, every channel together",
         ),
         _spec(
             "reduce_median",

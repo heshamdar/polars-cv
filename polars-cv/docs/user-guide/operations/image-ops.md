@@ -32,7 +32,7 @@ heat.resize_like(img, filter="bilinear").sink("numpy")
 
 `block_reduce` reduces each non-overlapping `height x width` block to one
 value (`"mean"`, `"sum"`, `"min"`, `"max"`, `"std"`, `"median"`,
-`"percentile"` with `q`, `"count"`), per channel. A partial block at the
+a percentile `"p90"`, `"count"`), per channel. A partial block at the
 right or bottom edge reduces only its in-bounds pixels, so the output is
 `ceil(H / height) x ceil(W / width)`.
 
