@@ -45,18 +45,10 @@ pub(super) fn apply(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
                 apply_fused_kernel(&buf, kernel)
             }
         }
-        ComputeOp::Normalize {
-            method,
-            ref mean,
-            ref std,
-            low,
-            high,
-            out_dtype,
-        } => apply_normalize(
-            &buf,
-            &ComputeOp::normalization(method, mean, std, low, high),
-            out_dtype.unwrap_or(DType::F32),
-        ),
+        ComputeOp::Normalize { .. } => {
+            let (normalization, out_dtype) = op.normalization().expect("a normalization");
+            apply_normalize(&buf, &normalization, out_dtype)
+        }
         ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
             buf,
             move |x: f32| x.clamp(min, max),

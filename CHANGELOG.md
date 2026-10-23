@@ -77,11 +77,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   condition, e.g. `flip_h(when=pl.col("view").str.starts_with("R"))` to
   orient every view the same way. The shape is the same flipped or not, so
   `when` may be an expression; a row it declines is left as it is.
-- **`normalize(method="percentile", low=, high=)`** maps the window between
-  the image's own `low`-th and `high`-th percentiles to [0, 1] (robust
-  windowing across devices), and **`normalize(method="range", low=, high=)`**
-  an explicit window, per row if `low`/`high` are expressions; both clip
-  outside the window.
+- **`normalize_percentile(low=, high=)`** maps the window between the
+  image's own `low`-th and `high`-th percentiles to [0, 1] (robust windowing
+  across devices), and **`normalize_range(low=, high=)`** an explicit window,
+  per row if `low`/`high` are expressions; both clip outside the window. Each
+  is its own op, so `low` and `high` are required fields rather than
+  `normalize` fields read by two of its methods.
 - **`statistics(include=[..., "median", "p90", "count"], mask=)`** and
   **`polars_cv.region_stats(regions, {name: (map, statistic)})`.** Statistics
   take the median, any percentile (`"pNN"`) and, under a mask (reduced as
@@ -112,14 +113,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   RGBA). A decoded grayscale image is `[H, W, 1]`, so `reduce_mean(axis=0)`
   gave one-element lists without a `channel_select(0, keepdims=False)` after
   the decode.
-- **`crop(bounds="clip" | "pad")`** for windows that reach past the image's
-  edge, as strips, tiles and sliding windows near a border do.
-  `bounds="clip"` keeps the part inside the image; `bounds="pad"` keeps the
-  requested `height` x `width`, filling outside with `pad_value` (default 0),
-  as the in-bounds crop followed by a constant `pad`. `top` and `left` may be
-  negative under either; the default, `bounds="error"`, refuses a negative
-  offset as `crop: top = -1 is negative (...)` and a window past the edge as
-  before.
+- **`crop(bounds="clip")` and `crop_pad(top=, left=, height=, width=,
+  value=0)`** for windows that reach past the image's edge, as strips, tiles
+  and sliding windows near a border do. `bounds="clip"` keeps the part inside
+  the image; `crop_pad` keeps the requested `height` x `width`, filling
+  outside with `value`, as the in-bounds crop followed by a constant `pad`.
+  `top` and `left` may be negative in either; the default,
+  `bounds="error"`, refuses a negative offset as `crop: top = -1 is negative
+  (...)` and a window past the edge as before. A window on a buffer with no
+  image plane (1-D) is refused as the pipeline is built.
 - **`polars_cv.check_cloud_access(path, cloud_options=None)`** resolves the
   credential a read of `path` would use and exercises it once (a `HEAD`, or a
   one-level listing of a prefix), before any row is read. It returns
@@ -156,7 +158,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   was 0 and the image was divided by epsilon alone (a 1e6 spike). The
   background is now computed in the image's float (f32, or f64 for a
   32/64-bit image).
-- **`normalize(method="percentile")` over an image with a NaN pixel** gave
+- **`normalize_percentile` over an image with a NaN pixel** gave
   all zeros, as if the window were empty; it is now NaN, as `minmax` and
   `np.percentile` give.
 - **`label_reduce` and `region_stats` over a region with no pixels** (outside
@@ -167,8 +169,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `scale(this.height).crop(height=2, width=2)` scaled by 2, not the input's
   height; a crop no longer crosses an op that reads its input's shape, and a
   crop that reads `this` is not moved. `identity_elimination` deleted a padded
-  crop whose window kept the input's size but moved it (`crop(top=-1,
-  height=H, bounds="pad")`); a padded crop is never an identity. The
+  crop whose window kept the input's size but moved it (`crop_pad(top=-1,
+  height=H, width=W)`); a padded crop is never an identity. The
   optimizer-equivalence table and the parity sweep now draw padded and
   clipped crops, `flip(when=)` and `this`, which is what let both through.
 

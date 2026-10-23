@@ -110,6 +110,8 @@ RULES: tuple[tuple[str, str], ...] = (
         "polars-cv/src/row_split.rs",
         f"{_OPS},{_GEOM},targeted:split_*,targeted:sink_*,{_PARALLEL}",
     ),
+    # Renders a failing row's reference: only an error path reads it.
+    ("polars-cv/src/row_ref.rs", _NONE),
     ("polars-cv/src/geom_*.rs", _GEOM),
     ("polars-cv/src/contour.rs", _GEOM),
     ("polars-cv/src/point.rs", _GEOM),

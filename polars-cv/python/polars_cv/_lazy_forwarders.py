@@ -284,7 +284,6 @@ class _LazyForwardersMixin:
         height: IntOrThisOrExpr | None = None,
         width: IntOrThisOrExpr | None = None,
         bounds: str = "error",
-        pad_value: FloatOrThisOrExpr | None = None,
     ) -> LazyPipelineExpr:
         """Extract a rectangular region.
 
@@ -292,12 +291,26 @@ class _LazyForwardersMixin:
         """
         return self.pipe(
             self._continuation().crop(
-                top=top,
-                left=left,
-                height=height,
-                width=width,
-                bounds=bounds,
-                pad_value=pad_value,
+                top=top, left=left, height=height, width=width, bounds=bounds
+            )
+        )
+
+    def crop_pad(
+        self,
+        *,
+        top: IntOrThisOrExpr = 0,
+        left: IntOrThisOrExpr = 0,
+        height: IntOrThisOrExpr,
+        width: IntOrThisOrExpr,
+        value: FloatOrThisOrExpr = 0.0,
+    ) -> LazyPipelineExpr:
+        """Extract a ``height`` x ``width`` window at its requested size, filling
+
+        Lazy form of :meth:`Pipeline.crop_pad` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().crop_pad(
+                top=top, left=left, height=height, width=width, value=value
             )
         )
 
@@ -557,8 +570,6 @@ class _LazyForwardersMixin:
         method: str = "minmax",
         mean: Sequence[FloatOrThisOrExpr] | None = None,
         std: Sequence[FloatOrThisOrExpr] | None = None,
-        low: FloatOrThisOrExpr | None = None,
-        high: FloatOrThisOrExpr | None = None,
         out_dtype: str | None = None,
     ) -> LazyPipelineExpr:
         """Normalize values to a standard range.
@@ -567,12 +578,41 @@ class _LazyForwardersMixin:
         """
         return self.pipe(
             self._continuation().normalize(
-                method=method,
-                mean=mean,
-                std=std,
-                low=low,
-                high=high,
-                out_dtype=out_dtype,
+                method=method, mean=mean, std=std, out_dtype=out_dtype
+            )
+        )
+
+    def normalize_percentile(
+        self,
+        *,
+        low: FloatOrThisOrExpr,
+        high: FloatOrThisOrExpr,
+        out_dtype: str | None = None,
+    ) -> LazyPipelineExpr:
+        """Map the window between the image's own ``low``-th and ``high``-th
+
+        Lazy form of :meth:`Pipeline.normalize_percentile` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().normalize_percentile(
+                low=low, high=high, out_dtype=out_dtype
+            )
+        )
+
+    def normalize_range(
+        self,
+        *,
+        low: FloatOrThisOrExpr,
+        high: FloatOrThisOrExpr,
+        out_dtype: str | None = None,
+    ) -> LazyPipelineExpr:
+        """Map the window ``[low, high]`` to [0, 1], clipping outside it.
+
+        Lazy form of :meth:`Pipeline.normalize_range` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().normalize_range(
+                low=low, high=high, out_dtype=out_dtype
             )
         )
 

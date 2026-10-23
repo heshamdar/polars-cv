@@ -186,26 +186,14 @@ class TestEnumValuesExecutable:
         )
         _run(pipe, "list", image_bytes)
 
-    @pytest.mark.parametrize(
-        "method", ["minmax", "zscore", "preset", "percentile", "range"]
-    )
+    @pytest.mark.parametrize("method", ["minmax", "zscore", "preset"])
     def test_normalize_methods(self, image_bytes: bytes, method: str) -> None:
-        assert {m.value for m in NormalizeMethod} == {
-            "minmax",
-            "zscore",
-            "preset",
-            "percentile",
-            "range",
-        }
+        assert {m.value for m in NormalizeMethod} == {"minmax", "zscore", "preset"}
         pipe = Pipeline().source("image_bytes")
         if method == "preset":
             pipe = pipe.normalize(
                 method=method, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]
             )
-        elif method == "percentile":
-            pipe = pipe.normalize(method=method, low=1.0, high=99.0)
-        elif method == "range":
-            pipe = pipe.normalize(method=method, low=10.0, high=200.0)
         else:
             pipe = pipe.normalize(method=method)
         _run(pipe, "numpy", image_bytes)

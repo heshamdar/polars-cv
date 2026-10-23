@@ -126,16 +126,14 @@ class CoordOrder(str, Enum):
 
 
 class CropBounds(str, Enum):
-    """What a crop window reaching past the input's edge means.
+    """What a crop keeps of a window reaching past the input's edge (``crop_pad`` pads it to its size instead).
 
     - ERROR: refuse the row (default)
     - CLIP: keep the part inside the input, which may be smaller than asked
-    - PAD: keep the requested size, filling outside the input with ``pad_value``
     """
 
     ERROR = "error"
     CLIP = "clip"
-    PAD = "pad"
 
 
 class DType(str, Enum):
@@ -317,13 +315,11 @@ class LogicalPass(str, Enum):
 
 
 class NormalizeMethod(str, Enum):
-    """Normalization methods (``PRESET``: channel-wise with preset mean/std values; ``PERCENTILE``/``RANGE``: a ``low``..``high`` window mapped to [0, 1], clipped)."""
+    """Normalization methods (``PRESET``: channel-wise with preset mean/std values). A ``low``..``high`` window is its own op: ``normalize_percentile``, ``normalize_range``."""
 
     MINMAX = "minmax"
     ZSCORE = "zscore"
     PRESET = "preset"
-    PERCENTILE = "percentile"
-    RANGE = "range"
 
 
 class NullParamPolicy(str, Enum):
@@ -542,6 +538,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "convolve2d",
         "coordinate_grid",
         "crop",
+        "crop_pad",
         "cvt_color",
         "difference",
         "dilate",
@@ -566,6 +563,8 @@ TYPED_OPS: frozenset[str] = frozenset(
         "multiply",
         "neg",
         "normalize",
+        "normalize_percentile",
+        "normalize_range",
         "pad",
         "pad_to_size",
         "perceptual_hash",
@@ -858,12 +857,15 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": False,
             "py": "CropBounds",
-            "variants": ["error", "clip", "pad"],
+            "variants": ["error", "clip"],
         },
-        "pad_value": {
-            "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
-        },
+    },
+    "crop_pad": {
+        "top": {"kind": "scalar", "per_row": True, "py": "int"},
+        "left": {"kind": "scalar", "per_row": True, "py": "int"},
+        "height": {"kind": "scalar", "per_row": True, "py": "int"},
+        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "value": {"kind": "scalar", "per_row": True, "py": "float"},
     },
     "cvt_color": {
         "from_space": {
@@ -1021,7 +1023,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": False,
             "py": "NormalizeMethod",
-            "variants": ["minmax", "zscore", "preset", "percentile", "range"],
+            "variants": ["minmax", "zscore", "preset"],
         },
         "mean": {
             "kind": "optional",
@@ -1037,14 +1039,54 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
                 "inner": {"kind": "scalar", "per_row": True, "py": "float"},
             },
         },
-        "low": {
+        "out_dtype": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {
+                "kind": "scalar",
+                "per_row": False,
+                "py": "DType",
+                "variants": [
+                    "u8",
+                    "i8",
+                    "u16",
+                    "i16",
+                    "u32",
+                    "i32",
+                    "u64",
+                    "i64",
+                    "f32",
+                    "f64",
+                ],
+            },
         },
-        "high": {
+    },
+    "normalize_percentile": {
+        "low": {"kind": "scalar", "per_row": True, "py": "float"},
+        "high": {"kind": "scalar", "per_row": True, "py": "float"},
+        "out_dtype": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {
+                "kind": "scalar",
+                "per_row": False,
+                "py": "DType",
+                "variants": [
+                    "u8",
+                    "i8",
+                    "u16",
+                    "i16",
+                    "u32",
+                    "i32",
+                    "u64",
+                    "i64",
+                    "f32",
+                    "f64",
+                ],
+            },
         },
+    },
+    "normalize_range": {
+        "low": {"kind": "scalar", "per_row": True, "py": "float"},
+        "high": {"kind": "scalar", "per_row": True, "py": "float"},
         "out_dtype": {
             "kind": "optional",
             "inner": {
@@ -1392,6 +1434,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "convolve2d": {"normalize": False, "border": "replicate"},
     "coordinate_grid": {"normalized": False},
     "crop": {"top": 0, "left": 0, "bounds": "error"},
+    "crop_pad": {"top": 0, "left": 0, "value": 0.0},
     "dilate": {"ksize": 3, "iterations": 1, "footprint": "square"},
     "distance_transform": {"signed": False},
     "erode": {"ksize": 3, "iterations": 1, "footprint": "square"},
@@ -1494,6 +1537,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "convolve2d": [{"input": "buffer", "output": "buffer"}],
     "coordinate_grid": [{"input": "buffer", "output": "buffer"}],
     "crop": [{"input": "buffer", "output": "buffer"}],
+    "crop_pad": [{"input": "buffer", "output": "buffer"}],
     "cvt_color": [{"input": "buffer", "output": "buffer"}],
     "difference": [{"input": "contour", "output": "contour"}],
     "dilate": [{"input": "buffer", "output": "buffer"}],
@@ -1533,6 +1577,8 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     ],
     "neg": [{"input": "buffer", "output": "buffer"}],
     "normalize": [{"input": "buffer", "output": "buffer"}],
+    "normalize_percentile": [{"input": "buffer", "output": "buffer"}],
+    "normalize_range": [{"input": "buffer", "output": "buffer"}],
     "pad": [{"input": "buffer", "output": "buffer"}],
     "pad_to_size": [{"input": "buffer", "output": "buffer"}],
     "perceptual_hash": [{"input": "buffer", "output": "vector"}],
@@ -2301,26 +2347,23 @@ class _OpsMixin:
         height: IntOrThisOrExpr | None = None,
         width: IntOrThisOrExpr | None = None,
         bounds: str = "error",
-        pad_value: FloatOrThisOrExpr | None = None,
     ) -> Pipeline:
         """Extract a rectangular region.
 
         A window reaching past the input's edge is refused by default;
         ``bounds="clip"`` keeps the part inside the input (strips, tiles and
-        sliding windows near a border), and ``bounds="pad"`` keeps the
-        requested ``height`` x ``width``, filling outside with ``pad_value``.
-        Offsets may be negative under either.
+        sliding windows near a border), where offsets may be negative.
+        ``crop_pad`` keeps the requested size instead.
 
         Domain: buffer → buffer
 
         Args:
-            top: Top offset; negative only with ``bounds="clip"`` or ``"pad"``.
-            left: Left offset; negative only with ``bounds="clip"`` or ``"pad"``.
+            top: Top offset; negative only with ``bounds="clip"``.
+            left: Left offset; negative only with ``bounds="clip"``.
             height: Crop height (None = to end).
             width: Crop width (None = to end).
-            bounds: What a window past the input's edge means: "error" (default), "clip"
-                or "pad".
-            pad_value: The fill outside the input under ``bounds="pad"`` (default 0).
+            bounds: What a window past the input's edge keeps: "error" (default) or
+                "clip".
 
         Example:
             >>> pipe = Pipeline().source("image_bytes").crop(left=8, width=24, bounds="clip")
@@ -2333,7 +2376,43 @@ class _OpsMixin:
                 "height": height,
                 "width": width,
                 "bounds": bounds,
-                "pad_value": pad_value,
+            },
+        )
+
+    def crop_pad(
+        self,
+        *,
+        top: IntOrThisOrExpr = 0,
+        left: IntOrThisOrExpr = 0,
+        height: IntOrThisOrExpr,
+        width: IntOrThisOrExpr,
+        value: FloatOrThisOrExpr = 0.0,
+    ) -> Pipeline:
+        """Extract a ``height`` x ``width`` window at its requested size, filling
+        what lies outside the input with ``value``: the in-bounds crop
+        followed by a constant ``pad``. Offsets may be negative, and a window
+        entirely outside the input is all fill.
+
+        Domain: buffer → buffer
+
+        Args:
+            top: Top offset; may be negative.
+            left: Left offset; may be negative.
+            height: Window height: the output's.
+            width: Window width: the output's.
+            value: The fill outside the input.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").crop_pad(top=-8, left=-8, height=64, width=64)
+        """
+        return self._append_typed(
+            "crop_pad",
+            {
+                "top": top,
+                "left": left,
+                "height": height,
+                "width": width,
+                "value": value,
             },
         )
 
@@ -2705,8 +2784,6 @@ class _OpsMixin:
         method: str = "minmax",
         mean: Sequence[FloatOrThisOrExpr] | None = None,
         std: Sequence[FloatOrThisOrExpr] | None = None,
-        low: FloatOrThisOrExpr | None = None,
-        high: FloatOrThisOrExpr | None = None,
         out_dtype: str | None = None,
     ) -> Pipeline:
         """Normalize values to a standard range.
@@ -2718,10 +2795,7 @@ class _OpsMixin:
                 element min/max; "zscore" standardizes to mean=0, std=1 using per-
                 element statistics; "preset" applies ImageNet-style channel-wise
                 normalization, `(x - mean[c]) / std[c]`, with the given `mean` and
-                `std`; "percentile" maps the window between the image's own `low`-th and
-                `high`-th percentiles (all channels together) to [0, 1], clipped outside
-                it (robust windowing across devices); "range" maps the window `[low,
-                high]` to [0, 1], clipped.
+                `std`. A window is ``normalize_percentile`` or ``normalize_range``.
             mean: Per-channel mean values; required for, and only valid with,
                 method="preset" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element
                 may be a literal float or a Polars expression; the list length is the
@@ -2729,10 +2803,6 @@ class _OpsMixin:
             std: Per-channel standard deviation values; required for, and only valid
                 with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
                 element accepts an expression, as with `mean`.
-            low: The window's lower edge: a percentile in [0, 100] for
-                method="percentile", a value for method="range"; required for, and only
-                valid with, those two. Accepts a Polars expression.
-            high: The window's upper edge, above `low`; as `low`.
             out_dtype: Output dtype (default f32). Normalization computes in f32 and the
                 result is cast to this dtype at execution. For half precision use the
                 sink dtype instead (`.sink("numpy", dtype="f16")`).
@@ -2747,14 +2817,58 @@ class _OpsMixin:
         """
         return self._append_typed(
             "normalize",
-            {
-                "method": method,
-                "mean": mean,
-                "std": std,
-                "low": low,
-                "high": high,
-                "out_dtype": out_dtype,
-            },
+            {"method": method, "mean": mean, "std": std, "out_dtype": out_dtype},
+        )
+
+    def normalize_percentile(
+        self,
+        *,
+        low: FloatOrThisOrExpr,
+        high: FloatOrThisOrExpr,
+        out_dtype: str | None = None,
+    ) -> Pipeline:
+        """Map the window between the image's own ``low``-th and ``high``-th
+        percentiles (every channel together, NumPy's linear interpolation) to
+        [0, 1], clipping outside it: windowing that adapts to each image, as
+        across devices. An image with a NaN pixel has no window and is NaN.
+
+        Domain: buffer → buffer
+
+        Args:
+            low: The window's lower percentile, in [0, 100]. Accepts a Polars
+                expression.
+            high: The window's upper percentile, in [0, 100] and above ``low``. Accepts
+                a Polars expression.
+            out_dtype: Output dtype (default f32), as ``normalize``'s.
+
+        Example:
+            >>> Pipeline().source("array").normalize_percentile(low=1.0, high=99.0)
+        """
+        return self._append_typed(
+            "normalize_percentile", {"low": low, "high": high, "out_dtype": out_dtype}
+        )
+
+    def normalize_range(
+        self,
+        *,
+        low: FloatOrThisOrExpr,
+        high: FloatOrThisOrExpr,
+        out_dtype: str | None = None,
+    ) -> Pipeline:
+        """Map the window ``[low, high]`` to [0, 1], clipping outside it.
+
+        Domain: buffer → buffer
+
+        Args:
+            low: The window's lower edge. Accepts a Polars expression.
+            high: The window's upper edge, above ``low``. Accepts a Polars expression.
+            out_dtype: Output dtype (default f32), as ``normalize``'s.
+
+        Example:
+            >>> Pipeline().source("array").normalize_range(low=-1000.0, high=400.0)
+        """
+        return self._append_typed(
+            "normalize_range", {"low": low, "high": high, "out_dtype": out_dtype}
         )
 
     def pad(

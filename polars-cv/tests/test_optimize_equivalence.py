@@ -104,8 +104,8 @@ _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
         "crop_pad",
         # The resize lets the plan know the size, so identity elimination
         # weighs it.
-        lambda p: p.resize(height=20, width=20).crop(
-            top=-2, left=-3, height=20, width=20, bounds="pad"
+        lambda p: p.resize(height=20, width=20).crop_pad(
+            top=-2, left=-3, height=20, width=20
         ),
         "numpy",
     ),

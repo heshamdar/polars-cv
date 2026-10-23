@@ -275,7 +275,7 @@ def _no_params(draw: st.DrawFn, x: np.ndarray) -> Params:
 
 def _crop_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     h, w = x.shape[:2]
-    bounds = draw(st.sampled_from(["error", "clip", "pad"]), label="bounds")
+    bounds = draw(st.sampled_from(["error", "clip"]), label="bounds")
     if bounds == "error":
         top = draw(st.integers(0, h - 1), label="top")
         left = draw(st.integers(0, w - 1), label="left")
@@ -286,21 +286,27 @@ def _crop_params(draw: st.DrawFn, x: np.ndarray) -> Params:
             "width": draw(st.integers(1, w - left), label="width"),
             "bounds": bounds,
         }
-    # A window that may reach past any edge, overlapping the input by at least
-    # one pixel (a clip with nothing left is its own refusal).
+    return {**_window_past_the_edge(draw, x), "bounds": bounds}
+
+
+def _window_past_the_edge(draw: st.DrawFn, x: np.ndarray) -> Params:
+    """A window that may reach past any edge, overlapping the input by at
+    least one pixel (a clip with nothing left is its own refusal)."""
+    h, w = x.shape[:2]
     height = draw(st.integers(1, 2 * h), label="height")
     width = draw(st.integers(1, 2 * w), label="width")
-    params: Params = {
+    return {
         "top": draw(st.integers(1 - height, h - 1), label="top"),
         "left": draw(st.integers(1 - width, w - 1), label="left"),
         "height": height,
         "width": width,
-        "bounds": bounds,
     }
-    if bounds == "pad":
-        # Whole and within every dtype, so the fill is the value itself.
-        params["pad_value"] = draw(st.integers(0, 100), label="pad_value")
-    return params
+
+
+def _crop_pad_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    # Whole and within every dtype, so the fill is the value itself.
+    value = draw(st.integers(0, 100), label="value")
+    return {**_window_past_the_edge(draw, x), "value": value}
 
 
 def _crop_ref(x: np.ndarray, p: Params) -> np.ndarray:
@@ -308,9 +314,9 @@ def _crop_ref(x: np.ndarray, p: Params) -> np.ndarray:
     h, w = x.shape[:2]
     rows = slice(max(top, 0), min(top + height, h))
     cols = slice(max(left, 0), min(left + width, w))
-    if p.get("bounds", "error") != "pad":
+    if "value" not in p:
         return x[rows, cols].copy()
-    out = np.full((height, width, *x.shape[2:]), p.get("pad_value", 0), dtype=x.dtype)
+    out = np.full((height, width, *x.shape[2:]), p["value"], dtype=x.dtype)
     out[rows.start - top : rows.stop - top, cols.start - left : cols.stop - left] = x[
         rows, cols
     ]
@@ -708,6 +714,49 @@ def _normalize_ref(x: np.ndarray, p: Params) -> np.ndarray:
 def _normalize_ref_accepts(x: np.ndarray, p: Params) -> bool:
     # A constant image has no range or spread; the op documents no result.
     return p["method"] == "preset" or bool(x.size and x.max() != x.min())
+
+
+def _window_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    """``normalize_range``'s edges: a window of at least 1 from 0..64."""
+    low = draw(_nice(0, 64), label="low")
+    return {"low": low, "high": low + draw(_nice(1, 256), label="span")}
+
+
+def _percentile_window_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    low = draw(st.sampled_from([0.0, 1.0, 2.5, 10.0, 25.0, 49.0]), label="low")
+    high = draw(st.sampled_from([51.0, 75.0, 90.0, 97.5, 99.0, 100.0]), label="high")
+    return {"low": low, "high": high}
+
+
+@quiet
+def _window_ref(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """``[lo, hi]`` mapped to [0, 1] and clipped; no spread is zeros, a NaN
+    edge NaN, as the engine's window (f32 edges, as it computes)."""
+    lo, hi = float(np.float32(lo)), float(np.float32(hi))
+    xf = x.astype(np.float64)
+    if not hi > lo and not (math.isnan(lo) or math.isnan(hi)):
+        return np.zeros(x.shape, np.float32)
+    return np.clip((xf - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+
+
+def _percentile_window_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    lo, hi = np.percentile(x.astype(np.float64), [p["low"], p["high"]])
+    return _window_ref(x, lo, hi)
+
+
+def _window_tol(x: np.ndarray, p: Params, lo: float, hi: float) -> Tol:
+    # f32 arithmetic over the window's width: the input's magnitude in it.
+    spread = max(hi - lo, 1e-30)
+    return close(atol=1e-5 * magnitude(x) / spread + 1e-6, rtol=1e-5)
+
+
+def _percentile_window_tol(x: np.ndarray, p: Params) -> Tol:
+    lo, hi = np.percentile(x.astype(np.float64), [p["low"], p["high"]])
+    return _window_tol(x, p, float(lo), float(hi))
+
+
+def _finite(x: np.ndarray, p: Params) -> bool:
+    return bool(x.size) and bool(np.isfinite(x.astype(np.float64)).all())
 
 
 def _normalize_tol(x: np.ndarray, p: Params) -> Tol:
@@ -1781,6 +1830,9 @@ OPS: dict[str, OpSpec] = {
         # --- data movement ---------------------------------------------------
         _spec("crop", _crop_params, accepts=is_rank3, ref=_crop_ref, **_movement),
         _spec(
+            "crop_pad", _crop_pad_params, accepts=is_rank3, ref=_crop_ref, **_movement
+        ),
+        _spec(
             "flip",
             _flip_params,
             ref=lambda x, p: _flipped(x, p, lambda a: np.flip(a, p["axes"])),
@@ -2005,6 +2057,27 @@ OPS: dict[str, OpSpec] = {
             kind="global",
             gain=_INF,
             note="minmax/zscore over every element; preset per channel on raw values",
+        ),
+        _spec(
+            "normalize_percentile",
+            _percentile_window_params,
+            accepts=is_rank3,
+            ref=_percentile_window_ref,
+            ref_accepts=_finite,
+            tol=_percentile_window_tol,
+            kind="global",
+            gain=_INF,
+            note="np.percentile over every element (linear), then clip((x-lo)/(hi-lo))",
+        ),
+        _spec(
+            "normalize_range",
+            _window_params,
+            accepts=is_rank3,
+            ref=lambda x, p: _window_ref(x, p["low"], p["high"]),
+            ref_accepts=_finite,
+            tol=lambda x, p: _window_tol(x, p, p["low"], p["high"]),
+            gain=_INF,
+            note="clip((x - low) / (high - low), 0, 1) in f32",
         ),
         # --- colour -------------------------------------------------------------
         _spec(
