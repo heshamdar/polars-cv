@@ -46,8 +46,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
 | CR-129 | Params | Feature | Masked percentile `normalize`: a window from another node's pixels (C3 remainder) |
-| CR-130 | Errors | Design | Row errors are composed by inspecting other error strings; the row number is morsel-local under streaming |
-| CR-131 | Performance | Low | `rank_filter` sorts every window; `statistics(mask=)` and `region_stats` repeat work per statistic/map; the ADC file is re-read per remote object |
+| CR-131 | Performance | Low | `rank_filter` gathers every window afresh (no running histogram); `statistics(mask=)` and `region_stats` repeat work per statistic/map; the ADC file is re-read per remote object |
 | CR-133 | Params | Decision | `normalize(method="preset")`'s `mean`/`std` are optional fields read under one method |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
@@ -374,18 +373,6 @@ four phases are closed below (CR-119 to CR-128); this is what remains.
 An independent review of the downstream-proposal branch. Its bugs are fixed
 (see Closed findings); these are the design and performance points left.
 
-### CR-130 — Structured error context
-
-- `compiled.rs` builds a row error's prefix by testing the message it wraps
-  (`e.starts_with("{name}:")`, `msg.contains(" at row {row}:")`): two sites
-  that depend on the exact wording of messages written elsewhere.
-- The `(row n)` suffix is the row within the plugin call. Under the
-  streaming engine that is a morsel, so `n` is not the frame's row; the error
-  tests pin `in_memory_engine` for exactly this reason.
-- **Fix:** carry row, op and field as structured context on the error and
-  render it once; say "row n of this batch" (or omit the number) when the
-  call is a morsel.
-
 ### CR-131 — Repeated work in the new reductions
 
 - `rank_filter` selects each window's percentile (`percentile_of` by
@@ -644,6 +631,8 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-130 | Row errors composed by inspecting other errors' text; `(row n)` was a streaming batch's index presented as the frame's | Fixed (unreleased): `row_ref.rs` names a row once, `(row i of n in this batch)`, from the pipeline's and the geometry functions' row loops; `ResolveError` replaces the text tests (`test_row_ref_guard.py`, `test_error_messages.py`) |
+| CR-132 | A ranged header read of an empty remote object was refused (HTTP 416, S3 `InvalidRange`) | Fixed (unreleased): read whole on a range refusal (`test_remote_header_reads.py`, `test_cloud_access_probe.py`) |
 | CR-134 | Review of the downstream-proposal branch: optimizations changed results on `this` and padded crops; `background_divide` on integers; NaN percentile windows; empty regions; a per-row reduction could not mix percentiles; `reduce_percentile` clamped `q`; `this` after `rasterize`; `this` accepted where it could never work; a whole body fetched twice | Fixed (unreleased): see the CHANGELOG's Fixed section and the commits after `5a37467` |
 | CR-123 | No way to size a parameter by the image (B4) | Fixed (unreleased): `polars_cv.this` (`.height`, `.width`, `.channels`, `.ndim`) with `+ - * / //`, `{"$this": tree}` on the wire, resolved per row from the shape of the buffer each op reads, carried through a node's steps by their shape rules; integers round to nearest (`test_this.py`). An attribute of another node (CR-129) would be the same entity on a `LazyPipelineExpr` |
 | CR-122 | No rank/median filter, no flat-fielding, no per-row flip, no per-pixel table of stacked maps (C2/B7/B6) | Fixed (unreleased): `rank_filter`/`median_filter`, `background_divide`, `flip_h`/`flip_v(when=)`, `sink("long", names=, where=)`; no `stack()`, since `channel_merge` is that op (`test_rank_filters.py`, `test_conditional_flip.py`, `test_long_sink.py`) |

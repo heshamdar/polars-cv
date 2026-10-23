@@ -139,16 +139,17 @@ mod tests {
         if format == "long" {
             wire["names"] = serde_json::json!(["v"]);
         }
+        let sink: crate::formats::sink::Sink = serde_json::from_value(wire).unwrap();
         OutputSpec {
             node: "n".to_string(),
-            sink: serde_json::from_value(wire).unwrap(),
+            long_layout: sink.long_layout(),
+            sink,
             expected_domain: view_buffer::naming::lookup(Domain::NAMED, domain).unwrap(),
             expected_dtype: view_buffer::PlannedDType::Known(view_buffer::DType::U8),
             expected_shape: None,
             expected_ndim: None,
             expected_channels: None,
             histogram_buckets: false,
-            long_layout: None,
         }
     }
 
