@@ -27,7 +27,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `reduce_percentile(q)`, `rank_filter(q)`, `normalize_percentile`'s edges) is
   the one `Percent`, refused outside [0, 100] in the same words as it is read,
   literal or per row. The spellings `"max"`, `"mean"`, `"sum"` are
-  unchanged; only code importing the enum class needs the new name.
+  unchanged; only code importing the enum class needs the new name. The
+  rule for which spelling an op takes: an op that *is* a percentile takes
+  `q` (a float: `reduce_percentile`, `rank_filter`, the `normalize_percentile`
+  windows); an op that *chooses* a reduction takes `reduction` (a name or
+  `"pNN"`), and never also a `q`.
 - **`.cv.width()`, `.cv.height()`, `.cv.channels()` and `.cv.image_info()`'s
   size fields are `Int64`, not `UInt32`.** Sizes are for arithmetic, and
   unsigned arithmetic in polars wraps: `pl.col("img").cv.width() - 32` on a
@@ -127,7 +131,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   through it, so it reads no list of names of its own. Each statistic is its
   dedicated op's kernel (`reduce("mean")` is `reduce_mean()`'s value, bit for
   bit), always in f64; a Rust sweep over every statistic pins those kernels
-  to the reduction masks, regions and blocks use.
+  to the reduction masks, regions and blocks use. It is the one way to reduce
+  along an axis by any reduction: `reduce_sum` and `reduce_percentile` stay
+  global (`reduce("sum", axis=0)`, `reduce("p90", axis=1)`), and there is no
+  `reduce_median` (`reduce("median")`).
 - **`img.reduce_masked(mask, reduction=, axis=)`** reduces an image over
   the pixels a mask selects (u8 or float, set where > 0): one value, or one
   per column (`axis=0`) or row (`axis=1`), with every reduction `label_reduce`
@@ -135,10 +142,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   counted; a masked median, mean or percentile per row no longer needs nested
   lists filtered in polars. A line with no masked pixel is NaN (0 for `sum`
   and `count`).
-- **`reduce_sum(axis=)` and `reduce_percentile(q, axis=)`** reduce along one
-  axis, as `reduce_mean`/`reduce_max`/... already did, and
-  **`reduce_median(axis=None)`** is `reduce_percentile(50)`. A per-row
-  median of a map no longer needs nested lists filtered in polars.
 - **`label_reduce(reduction=...)` takes every reduction:** `"min"`, `"std"`
   (population), `"median"`, a percentile `"pNN"` (NumPy's linear
   interpolation) and `"count"` beside `"max"`, `"mean"` and `"sum"`, on the

@@ -277,7 +277,8 @@ pub enum GraphOp<M: Mode = Exec> {
     /// ``[H, W, 1]`` of the image's size) is > 0, so ``apply_mask``'s
     /// zeros are not counted. Channels are reduced together, or kept along
     /// an axis. A line with no masked pixel is NaN (0 for "sum" and
-    /// "count").
+    /// "count"). Over every masked pixel (``axis=None``) it is
+    /// ``masked_select(mask)`` then ``reduce(reduction)``, which it runs.
     ///
     /// Example:
     ///     >>> heat.reduce_masked(breast, reduction="median", axis=1)  # per-row median

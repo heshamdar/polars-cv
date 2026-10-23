@@ -67,8 +67,8 @@ Pipeline().source("image_bytes").grayscale().reduce_percentile(q=50)
 # Compute 95th percentile
 Pipeline().source("image_bytes").grayscale().reduce_percentile(q=95)
 
-# Per row (axis=1) or per column (axis=0); reduce_median is q=50
-Pipeline().source("image_bytes").grayscale(keepdims=False).reduce_median(axis=1)
+# Along an axis, by reduce(): per row (axis=1) or per column (axis=0)
+Pipeline().source("image_bytes").grayscale(keepdims=False).reduce("median", axis=1)
 ```
 
 ## Masked Reductions

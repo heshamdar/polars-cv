@@ -143,15 +143,17 @@ def _reduce(pipe: Pipeline) -> np.ndarray:
     return numpy_from_struct(out)
 
 
-#: A statistic's dedicated op, as ``reduce`` must compute it.
+#: A statistic's dedicated op, as ``reduce`` must compute it: the axis is
+#: ``None`` for an op that is global only (``reduce_sum``,
+#: ``reduce_percentile``), whose axis form is ``reduce``'s own.
 DEDICATED = {
-    "sum": lambda p, axis: p.reduce_sum(axis=axis),
-    "mean": lambda p, axis: p.reduce_mean(axis=axis),
-    "min": lambda p, axis: p.reduce_min(axis=axis),
-    "max": lambda p, axis: p.reduce_max(axis=axis),
-    "std": lambda p, axis: p.reduce_std(axis=axis),
-    "median": lambda p, axis: p.reduce_median(axis=axis),
-    "p90": lambda p, axis: p.reduce_percentile(90.0, axis=axis),
+    "sum": (lambda p, axis: p.reduce_sum(), (None,)),
+    "mean": (lambda p, axis: p.reduce_mean(axis=axis), (None, 0, 1)),
+    "min": (lambda p, axis: p.reduce_min(axis=axis), (None, 0, 1)),
+    "max": (lambda p, axis: p.reduce_max(axis=axis), (None, 0, 1)),
+    "std": (lambda p, axis: p.reduce_std(axis=axis), (None, 0, 1)),
+    "median": (lambda p, axis: p.reduce_percentile(50.0), (None,)),
+    "p90": (lambda p, axis: p.reduce_percentile(90.0), (None,)),
 }
 
 
@@ -183,9 +185,11 @@ class TestReduce:
             want = NUMPY[reduction](x, axis=axis)
         np.testing.assert_allclose(got, want, rtol=1e-12)
 
-    @pytest.mark.parametrize("axis", [None, 0, 1])
     @pytest.mark.parametrize("dtype", [np.uint8, np.float32])
-    @pytest.mark.parametrize("reduction", sorted(DEDICATED))
+    @pytest.mark.parametrize(
+        ("reduction", "axis"),
+        [(r, axis) for r, (_, axes) in sorted(DEDICATED.items()) for axis in axes],
+    )
     def test_is_the_dedicated_ops_result(self, reduction: str, dtype, axis) -> None:
         """Bit for bit, NaN included: one implementation per statistic."""
         arr = IMG.astype(dtype)
@@ -193,21 +197,11 @@ class TestReduce:
             arr[2, 3] = np.nan
         base = Pipeline().source("array")
         got = _reduced(arr, base.reduce(reduction, axis=axis))
-        want = _reduced(arr, DEDICATED[reduction](base, axis))
+        want = _reduced(arr, DEDICATED[reduction][0](base, axis))
         np.testing.assert_array_equal(got, want)
 
 
 class TestAxes:
-    @pytest.mark.parametrize("axis", [0, 1])
-    def test_reduce_sum_along_an_axis(self, axis: int) -> None:
-        got = _reduce(Pipeline().source("array").reduce_sum(axis=axis))
-        np.testing.assert_allclose(got, IMG.sum(axis=axis))
-
-    @pytest.mark.parametrize(("q", "axis"), [(10.0, 0), (75.0, 1), (100.0, 1)])
-    def test_reduce_percentile_along_an_axis(self, q: float, axis: int) -> None:
-        got = _reduce(Pipeline().source("array").reduce_percentile(q, axis=axis))
-        np.testing.assert_allclose(got, np.percentile(IMG, q, axis=axis))
-
     def test_reduce_percentile_refuses_q_outside_0_100(self) -> None:
         """As every percentile here does; it used to clamp to the max."""
         with pytest.raises(ValueError, match=r"outside \[0, 100\]"):
@@ -216,15 +210,6 @@ class TestAxes:
         frame = _frame().with_columns(q=pl.lit(150.0))
         with pytest.raises(pl.exceptions.ComputeError, match=r"outside \[0, 100\]"):
             frame.select(pl.col("a").cv.pipe(pipe).sink("native"))
-
-    @pytest.mark.parametrize("axis", [None, 0, 1])
-    def test_reduce_median(self, axis: int | None) -> None:
-        pipe = Pipeline().source("array").reduce_median(axis=axis)
-        if axis is None:
-            got = _frame().select(pl.col("a").cv.pipe(pipe).sink("native")).item()
-        else:
-            got = _reduce(pipe)
-        np.testing.assert_allclose(got, np.median(IMG, axis=axis))
 
 
 RNG = np.random.default_rng(11)
