@@ -269,7 +269,7 @@
   },
   {
     "name": "Statistic",
-    "doc": "A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``\"pNN\"``: ``\"p90\"``, ``\"p62.5\"`` (NumPy's linear interpolation, at most two decimals).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0).",
+    "doc": "A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``\"pNN\"``: ``\"p90\"``, ``\"p62.5\"`` (its digits only; NumPy's linear interpolation).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0).",
     "variants": [
       "sum",
       "mean",

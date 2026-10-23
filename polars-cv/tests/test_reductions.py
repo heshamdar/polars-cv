@@ -119,8 +119,13 @@ class TestLabelReduce:
         [
             ("percentile", r"unknown reduction 'percentile'.*p90"),
             ("p150", r"p150.*outside \[0, 100\]"),
-            ("p9.999", "two decimal places"),
             ("pmax", "unknown reduction 'pmax'"),
+            # The digits of a percentile only: no sign, exponent or space.
+            ("p+50", "unknown reduction 'p\\+50'"),
+            ("p5e1", "unknown reduction 'p5e1'"),
+            ("p 50", "unknown reduction 'p 50'"),
+            ("p50.", "unknown reduction 'p50.'"),
+            ("pinf", "unknown reduction 'pinf'"),
         ],
     )
     def test_a_percentile_is_spelled_pNN(self, reduction: str, match: str) -> None:
@@ -470,3 +475,41 @@ class TestNormalizeWindows:
     def test_refusals(self, op: str, low: float, high: float, match: str) -> None:
         with pytest.raises(ValueError, match=match):
             getattr(Pipeline().source("array"), op)(low=low, high=high)
+
+
+class TestOnePercentileRule:
+    """Every percentile is the one ``Percent``: ``reduce("pNN")``,
+    ``reduce_percentile(q)``, ``rank_filter(q)`` and ``normalize_percentile``'s
+    edges take the same values and refuse the same ones, in the same words."""
+
+    BUILD = {
+        "reduce": lambda p, q: p.reduce(f"p{q}"),
+        "reduce_percentile": lambda p, q: p.reduce_percentile(q),
+        "rank_filter": lambda p, q: p.rank_filter(height=3, width=3, q=q),
+        "normalize_percentile": lambda p, q: p.normalize_percentile(low=0.0, high=q),
+    }
+
+    @pytest.mark.parametrize("op", sorted(BUILD))
+    @pytest.mark.parametrize("q", [100.5, 250])
+    def test_outside_0_100_is_refused_alike(self, op: str, q: float) -> None:
+        with pytest.raises(ValueError, match=rf"{q} is outside \[0, 100\]"):
+            self.BUILD[op](Pipeline().source("array"), q)
+
+    @pytest.mark.parametrize("op", sorted(BUILD))
+    def test_any_decimals_are_taken_alike(self, op: str) -> None:
+        self.BUILD[op](Pipeline().source("array"), 33.333)
+
+    def test_a_percentile_with_decimals_matches_numpy(self) -> None:
+        got = _reduced(
+            IMG.astype(np.float32), Pipeline().source("array").reduce("p33.333")
+        )
+        np.testing.assert_allclose(got, np.percentile(IMG, 33.333), rtol=1e-12)
+
+    def test_a_per_row_q_outside_0_100_names_its_op_and_field(self) -> None:
+        frame = _frame().with_columns(q=pl.lit(150.0))
+        pipe = Pipeline().source("array").reduce_percentile(pl.col("q"))
+        with pytest.raises(
+            pl.exceptions.ComputeError,
+            match=r"reduce_percentile: q: .*150 is outside \[0, 100\]",
+        ):
+            frame.select(pl.col("a").cv.pipe(pipe).sink("native"))

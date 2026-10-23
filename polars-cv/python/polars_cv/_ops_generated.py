@@ -390,7 +390,7 @@ class ScaleOrigin(str, Enum):
 
 
 class Statistic(str, Enum):
-    """A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``"pNN"``: ``"p90"``, ``"p62.5"`` (NumPy's linear interpolation, at most two decimals).
+    """A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``"pNN"``: ``"p90"``, ``"p62.5"`` (its digits only; NumPy's linear interpolation).
 
     - SUM, MEAN, MIN, MAX
     - STD: population standard deviation

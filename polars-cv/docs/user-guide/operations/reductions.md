@@ -27,7 +27,9 @@ f64. The dedicated ops remain for what a per-row reduction cannot be:
 Every reduction parameter (`reduce`, `reduce_masked`, `block_reduce`,
 `label_reduce`) takes the same spellings: `"sum"`, `"mean"`, `"min"`, `"max"`,
 `"std"` (population), `"median"`, `"count"`, or a percentile `"pNN"` (`"p90"`,
-`"p62.5"`, at most two decimals, NumPy's linear interpolation). Over no values
+`"p62.5"`: digits only, NumPy's linear interpolation). Every percentile —
+`"pNN"`, `reduce_percentile(q)`, `rank_filter(q)`, `normalize_percentile`'s
+edges — is refused outside [0, 100] by the same rule. Over no values
 each is NaN, except `"sum"` and `"count"` (0).
 
 ## Axis Reductions

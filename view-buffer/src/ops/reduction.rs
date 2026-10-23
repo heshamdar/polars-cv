@@ -30,7 +30,7 @@ pub enum Statistic {
     Count,
 }
 
-crate::naming::named_variants!(Statistic: "A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``\"pNN\"``: ``\"p90\"``, ``\"p62.5\"`` (NumPy's linear interpolation, at most two decimals).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0)." {
+crate::naming::named_variants!(Statistic: "A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``\"pNN\"``: ``\"p90\"``, ``\"p62.5\"`` (its digits only; NumPy's linear interpolation).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0)." {
     "sum" => Sum,
     "mean" => Mean,
     "min" => Min,
@@ -40,29 +40,46 @@ crate::naming::named_variants!(Statistic: "A named reduction of a set of pixel v
     "count" => Count,
 });
 
-/// A percentile, held in hundredths (`"p62.5"` is 6250), so a reduction is a
-/// plain value that compares and hashes exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Percent(u16);
+/// A percentile: `q` in `[0, 100]`. The one percentile type: a reduction's
+/// `"pNN"`, `reduce_percentile(q)`, `rank_filter(q)` and
+/// `normalize_percentile`'s edges all hold one, so each is checked by the
+/// same rule as it is read (literal or per row), and none can skip it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Percent(f64);
+
+// Exact: `new` admits no NaN, and stores no negative zero.
+impl Eq for Percent {}
 
 impl Percent {
-    /// `q` in `[0, 100]`, with at most two decimals.
+    /// The median.
+    pub const MEDIAN: Percent = Percent(50.0);
+
+    /// `q`, when it is in `[0, 100]`.
     pub fn new(q: f64) -> Result<Self, String> {
         if !(0.0..=100.0).contains(&q) {
             return Err(format!("q = {q} is outside [0, 100]"));
         }
-        let hundredths = (q * 100.0).round();
-        if (hundredths - q * 100.0).abs() > 1e-6 {
-            return Err(format!(
-                "q = {q}: a percentile has at most two decimal places"
-            ));
-        }
-        Ok(Percent(hundredths as u16))
+        // `-0.0` is in range and is 0.
+        Ok(Percent(q + 0.0))
     }
 
     /// The percentile, in `[0, 100]`.
     pub fn q(self) -> f64 {
-        f64::from(self.0) / 100.0
+        self.0
+    }
+}
+
+impl crate::naming::WireScalar for Percent {
+    const KIND: crate::naming::WireKind = crate::naming::WireKind::Float;
+    const PY_TYPE: &'static str = "float";
+    fn from_wire(value: crate::naming::WireValue<'_>) -> Result<Self, String> {
+        Percent::new(f64::from_wire(value)?)
+    }
+    fn to_wire(self) -> crate::naming::WireValue<'static> {
+        self.0.to_wire()
+    }
+    fn spellings() -> Vec<&'static str> {
+        Vec::new()
     }
 }
 
@@ -114,7 +131,18 @@ impl Reduction {
         if let Some(stat) = crate::naming::lookup(Statistic::NAMED, s) {
             return Ok(Reduction::Named(stat));
         }
-        if let Some(q) = s.strip_prefix('p').and_then(|q| q.parse::<f64>().ok()) {
+        // A percentile's digits only: no sign, exponent, space or bare dot,
+        // which `f64::from_str` would otherwise take.
+        let digits = s.strip_prefix('p').filter(|q| {
+            let mut parts = q.split('.');
+            let whole = parts.next().unwrap_or("");
+            let frac = parts.next();
+            parts.next().is_none()
+                && !whole.is_empty()
+                && whole.bytes().all(|b| b.is_ascii_digit())
+                && frac.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
+        });
+        if let Some(q) = digits.and_then(|q| q.parse::<f64>().ok()) {
             return Percent::new(q)
                 .map(Reduction::Percentile)
                 .map_err(|e| format!("reduction '{s}': {e}"));
@@ -400,7 +428,7 @@ pub enum ReductionOp<M: Mode = Exec> {
     Percentile {
         /// Percentile to compute, in [0, 100]. Accepts a Polars expression for
         /// per-row dynamic values.
-        q: M::V<f64>,
+        q: M::V<Percent>,
         /// Axis to reduce along. None for global reduction. It fixes the
         /// output rank, so it is literal-only.
         axis: Option<M::L<u32>>,
@@ -408,8 +436,8 @@ pub enum ReductionOp<M: Mode = Exec> {
 }
 
 impl<M: Mode> ReductionOp<M> {
-    /// A block of no pixels, and a percentile outside `[0, 100]`, are
-    /// refused (a reduction's own `"pNN"` is checked as it is parsed).
+    /// A block of no pixels is refused (every percentile is a [`Percent`],
+    /// checked as it is read).
     pub fn check(&self) -> Result<(), String> {
         match self {
             ReductionOp::Blocks { height, width, .. } => {
@@ -420,13 +448,8 @@ impl<M: Mode> ReductionOp<M> {
                 }
                 Ok(())
             }
-            ReductionOp::Percentile { q, .. } => match known::<M, f64>(q) {
-                Some(q) if !(0.0..=100.0).contains(&q) => {
-                    Err(format!("reduce_percentile: q = {q} is outside [0, 100]"))
-                }
-                _ => Ok(()),
-            },
             ReductionOp::Max { .. }
+            | ReductionOp::Percentile { .. }
             | ReductionOp::Min { .. }
             | ReductionOp::Mean { .. }
             | ReductionOp::Sum { .. }
@@ -503,7 +526,7 @@ impl ReductionOp {
 
         // A global percentile has special handling (needs sorting)
         if let ReductionOp::Percentile { q, axis: None } = self {
-            return self.execute_percentile(&contig, *q);
+            return self.execute_percentile(&contig, q.q());
         }
 
         match buffer.dtype() {
@@ -717,7 +740,7 @@ impl ReductionOp {
                 })
             }
             ReductionOp::Percentile { q, axis: Some(ax) } => {
-                let q = *q;
+                let q = q.q();
                 self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, move |slice: &[T]| {
                     let mut values: Vec<f64> = slice
                         .iter()
@@ -1043,10 +1066,13 @@ fn reduce_by(buf: &ViewBuffer, reduction: Reduction, axis: Option<u32>) -> ViewB
             Statistic::Min => Some(ReductionOp::Min { axis }),
             Statistic::Max => Some(ReductionOp::Max { axis }),
             Statistic::Std => Some(ReductionOp::Std { axis, ddof: 0 }),
-            Statistic::Median => Some(ReductionOp::Percentile { q: 50.0, axis }),
+            Statistic::Median => Some(ReductionOp::Percentile {
+                q: Percent::MEDIAN,
+                axis,
+            }),
             Statistic::Count => None,
         },
-        Reduction::Percentile(p) => Some(ReductionOp::Percentile { q: p.q(), axis }),
+        Reduction::Percentile(q) => Some(ReductionOp::Percentile { q, axis }),
     };
     let line = axis.map_or(shape.iter().product(), |a| shape[a as usize]);
     match dedicated {
@@ -1180,7 +1206,7 @@ mod tests {
                 ReductionOp::Max { axis: None },
                 ReductionOp::Min { axis: None },
                 ReductionOp::Percentile {
-                    q: 50.0,
+                    q: Percent::MEDIAN,
                     axis: None,
                 },
             ] {
@@ -1227,8 +1253,9 @@ mod tests {
                 assert!(out.as_slice::<f32>()[0].is_nan(), "{op:?} of {data:?}");
             }
             for q in [0.0, 50.0, 100.0] {
+                let q = Percent::new(q).unwrap();
                 let out = ReductionOp::Percentile { q, axis: None }.execute(&buffer);
-                assert!(out.as_slice::<f64>()[0].is_nan(), "p{q} of {data:?}");
+                assert!(out.as_slice::<f64>()[0].is_nan(), "{q:?} of {data:?}");
             }
             for op in [
                 ReductionOp::ArgMax { axis: 0 },
@@ -1248,7 +1275,7 @@ mod tests {
             .collect();
         let buffer = ViewBuffer::from_vec_with_shape(data, vec![64]);
         let out = ReductionOp::Percentile {
-            q: 25.0,
+            q: Percent::new(25.0).unwrap(),
             axis: None,
         }
         .execute(&buffer);
@@ -1307,7 +1334,10 @@ mod reduction_value_tests {
 
     #[test]
     fn a_reduction_is_a_name_or_a_percentile_and_spells_itself_back() {
-        for spelling in ["mean", "count", "p90", "p62.5", "p0", "p100", "p33.33"] {
+        // Any decimals: a percentile is the one `Percent`, as `q` is.
+        for spelling in [
+            "mean", "count", "p90", "p62.5", "p0", "p100", "p33.33", "p9.999",
+        ] {
             let r = Reduction::parse(spelling).unwrap();
             assert_eq!(r.spelling(), spelling);
             assert_eq!(Reduction::from_wire(r.to_wire()).unwrap(), r);
@@ -1316,6 +1346,8 @@ mod reduction_value_tests {
             Reduction::parse("p62.5").unwrap(),
             Reduction::Percentile(Percent::new(62.5).unwrap())
         );
+        // `"p50.0"` is p50, spelled back the shortest way.
+        assert_eq!(Reduction::parse("p50.0").unwrap().spelling(), "p50");
     }
 
     #[test]
@@ -1323,9 +1355,13 @@ mod reduction_value_tests {
         for (spelling, says) in [
             ("percentile", "unknown reduction 'percentile'"),
             ("p150", "outside [0, 100]"),
-            ("p-1", "outside [0, 100]"),
-            ("p9.999", "two decimal places"),
-            ("pnan", "outside [0, 100]"),
+            ("p-1", "unknown reduction 'p-1'"),
+            // The digits of a percentile only.
+            ("pnan", "unknown reduction 'pnan'"),
+            ("p+50", "unknown reduction 'p+50'"),
+            ("p5e1", "unknown reduction 'p5e1'"),
+            ("p50.", "unknown reduction 'p50.'"),
+            ("p.5", "unknown reduction 'p.5'"),
             ("p", "unknown reduction 'p'"),
         ] {
             let err = Reduction::parse(spelling).unwrap_err();

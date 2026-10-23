@@ -239,8 +239,8 @@ fn lower_normalize(normalization: &Normalization, out_dtype: DType, buf: &ViewBu
             // one interpolation (`reduction::percentile_of`), over the one
             // owned copy a selection needs, read from the view where it lies.
             let mut values = stats::values_f64(buf);
-            let lo = crate::ops::reduction::percentile_of(&mut values, f64::from(*low)) as f32;
-            let hi = crate::ops::reduction::percentile_of(&mut values, f64::from(*high)) as f32;
+            let lo = crate::ops::reduction::percentile_of(&mut values, low.q()) as f32;
+            let hi = crate::ops::reduction::percentile_of(&mut values, high.q()) as f32;
             window(lo, hi, out_dtype)
         }
         Normalization::Range { low, high } => window(*low, *high, out_dtype),
