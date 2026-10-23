@@ -135,6 +135,12 @@ impl FieldType for Bins<Wire> {
             Bins::Edges(e) => e.visit_inputs(f),
         }
     }
+    fn bind_this(&mut self, planned: &crate::mode::PlannedThis<'_>) -> Result<(), String> {
+        match self {
+            Bins::Count(p) => p.bind_this(planned),
+            Bins::Edges(e) => e.bind_this(planned),
+        }
+    }
 }
 
 /// `range`'s one rule: finite ends, the first not past the second. The

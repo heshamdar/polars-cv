@@ -80,8 +80,8 @@ struct NodePlan {
     input: PlannedInput,
     /// The node's ops, compiled.
     steps: Vec<CompiledStep>,
-    /// A step reads its input's shape through `this`, so each row carries the shape
-    /// through the steps as they resolve ([`next_shape`]).
+    /// A step reads its input's shape through `this`, so each row carries the
+    /// shape through the steps as they resolve ([`Carried`]).
     reads_shape: bool,
 }
 
@@ -642,17 +642,14 @@ impl CompiledGraph {
             // The shape each step reads, for a node whose `this` parameters
             // read it: the input's, then each resolved step's output over it
             // (`None` once it is not known before the step runs).
-            let mut shape: Option<Vec<usize>> = if np.reads_shape {
-                input.as_buffer().map(|b| b.shape().to_vec())
-            } else {
-                None
-            };
+            let mut carried = np.reads_shape.then(|| Carried::of(&input));
             for step in &np.steps {
                 match &step.resolver {
                     OpResolver::Static(resolved) => dto_scratch.push(Cow::Borrowed(resolved)),
                     OpResolver::Dynamic(spec) => {
                         ctx.clear_null();
-                        match spec.resolve_on(row_idx, ctx, shape.as_deref()) {
+                        let shape = carried.as_ref().and_then(|c| c.shape.as_deref());
+                        match spec.resolve_on(row_idx, ctx, shape) {
                             Ok(resolved) => dto_scratch.push(Cow::Owned(resolved)),
                             // Under `on_null_param="null"` a null parameter is
                             // not a failure — this node just has no output for
@@ -673,9 +670,9 @@ impl CompiledGraph {
                         }
                     }
                 }
-                if np.reads_shape {
+                if let Some(c) = carried.as_mut() {
                     let resolved = dto_scratch.last().expect("the step was pushed above");
-                    shape = next_shape(resolved, shape.as_deref(), node_outputs, &step.operands);
+                    *c = c.after(resolved, node_outputs, &step.operands);
                 }
             }
             let mut current_output = input;
@@ -983,21 +980,62 @@ fn node_readers(
     readers
 }
 
-/// The shape `step` outputs over `input` and the buffers of the nodes it
-/// reads, by its shape rule: `None` when any of them is not a known buffer or
-/// the output's size is decided by the data.
-fn next_shape(
-    step: &GraphStep,
-    input: Option<&[usize]>,
-    outputs: &RowOutputs,
-    operands: &[usize],
-) -> Option<Vec<usize>> {
-    let mut shapes: Vec<&[usize]> = vec![input?];
-    for operand in outputs.operands(operands)? {
-        shapes.push(operand.as_buffer()?.shape());
+/// What a node's next step is given, as its `this` parameters read it: the
+/// domain, and for a buffer its shape when known before the step runs.
+struct Carried {
+    domain: Domain,
+    shape: Option<Vec<usize>>,
+}
+
+impl Carried {
+    /// The node's input.
+    fn of(input: &NodeOutput) -> Self {
+        Carried {
+            domain: input.domain(),
+            shape: input.as_buffer().map(|b| b.shape().to_vec()),
+        }
     }
-    let out = step.shape().concrete(&shapes);
-    (!out.is_empty()).then_some(out)
+
+    /// What `step` outputs, by its domain rule and its shape rule over its
+    /// input and the buffers of the nodes it reads. An input that is not a
+    /// buffer has no sizes to give (`rasterize` takes its own, or its
+    /// operand's); a size the rule cannot state from known ones, or a buffer
+    /// input of unknown size, leaves the shape unknown.
+    fn after(&self, step: &GraphStep, outputs: &RowOutputs, operands: &[usize]) -> Self {
+        let domain = step.output_domain(self.domain);
+        let unknown = Carried {
+            domain,
+            shape: None,
+        };
+        if domain != Domain::Buffer {
+            return unknown;
+        }
+        let input: Vec<view_buffer::ops::Dim> = match (self.domain, &self.shape) {
+            (Domain::Buffer, Some(shape)) => shape
+                .iter()
+                .map(|&n| view_buffer::ops::Dim::Known(n))
+                .collect(),
+            (Domain::Buffer, None) => return unknown,
+            _ => Vec::new(),
+        };
+        let mut shapes: Vec<Vec<view_buffer::ops::Dim>> = vec![input];
+        let Some(read) = outputs.operands(operands) else {
+            return unknown;
+        };
+        for operand in read {
+            let Some(buffer) = operand.as_buffer() else {
+                return unknown;
+            };
+            shapes.push(view_buffer::ops::shape_rule::known_dims(buffer.shape()));
+        }
+        let refs: Vec<&[view_buffer::ops::Dim]> = shapes.iter().map(Vec::as_slice).collect();
+        let shape = step
+            .shape()
+            .dims(&refs)
+            .and_then(|dims| dims.iter().map(|d| d.known()).collect::<Option<Vec<_>>>())
+            .filter(|dims| !dims.is_empty());
+        Carried { domain, shape }
+    }
 }
 
 /// Prepare every parameter in the graph for execution, returning how many

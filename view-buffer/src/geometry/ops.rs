@@ -303,6 +303,12 @@ impl FieldType for RasterSize<Wire> {
             RasterSize::FromNode(node) => node.visit_inputs(f),
         }
     }
+    fn bind_this(&mut self, planned: &crate::mode::PlannedThis<'_>) -> Result<(), String> {
+        match self {
+            RasterSize::Fixed(dims) => dims.bind_this(planned),
+            RasterSize::FromNode(node) => node.bind_this(planned),
+        }
+    }
 }
 
 impl<M: Mode> GeometryOp<M> {

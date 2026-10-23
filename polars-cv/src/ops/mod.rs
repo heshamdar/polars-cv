@@ -103,6 +103,17 @@ macro_rules! typed_ops {
                 }
             }
 
+            /// Bind every `this` parameter over what the planner knows of
+            /// the op's input (`FieldType::bind_this`).
+            pub fn bind_this(
+                &mut self,
+                planned: &view_buffer::mode::PlannedThis<'_>,
+            ) -> Result<(), String> {
+                match self {
+                    $($($at)::+($($inner)*) => $op.bind_this(planned),)*
+                }
+            }
+
             /// One valid instance of every typed op, in `names()` order.
             pub fn samples() -> Vec<TypedOp> {
                 let mut samples: Vec<TypedOp> = Vec::new();

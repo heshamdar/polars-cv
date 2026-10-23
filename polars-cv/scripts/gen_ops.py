@@ -82,6 +82,8 @@ NOT_GENERATED = {
     "BinaryOp": "the binary ops are methods",
     # `.sink(dtype=)` passes the keyword through; the typed sink validates it.
     "SinkDType": "validated by the typed sink",
+    # Generated as `This`'s properties instead (`this_class`).
+    "ThisAttr": "the attributes of `this`",
 }
 OUTPUT = _PKG / "python" / "polars_cv" / "_ops_generated.py"
 FORWARDERS = _PKG / "python" / "polars_cv" / "_lazy_forwarders.py"
@@ -455,7 +457,9 @@ def _imports(methods: str) -> str:
         lines.append("from collections.abc import Sequence")
     lines.append("from dataclasses import dataclass")
     lines.append("from enum import Enum")
-    lines.append("from typing import TYPE_CHECKING, Any\n\nif TYPE_CHECKING:")
+    lines.append("from typing import TYPE_CHECKING, Any\n")
+    # At run time: `This`'s properties build one.
+    lines.append("from polars_cv._this import ThisExpr\n\nif TYPE_CHECKING:")
     if "pl.Expr" in methods:
         lines.append("    import polars as pl\n")
     if aliases:
@@ -486,6 +490,31 @@ def named_enum(desc: dict[str, Any]) -> str:
     )
     doc = _indent(desc["doc"], "    ").lstrip()
     return f'class {desc["name"]}(str, Enum):\n    """{doc}\n    """\n\n{members}'
+
+
+def this_class(desc: dict[str, Any]) -> str:
+    """``This``, one property per ``ThisAttr`` variant, and its instance
+    ``this``: an attribute is added by adding the Rust variant."""
+    props = "".join(
+        f"    @property\n"
+        f"    def {v}(self) -> ThisExpr:\n"
+        f'        """``this.{v}``, the input\'s {v} (see :class:`This`)."""\n'
+        f'        return ThisExpr("{v}")\n\n'
+        for v in desc["variants"]
+    )
+    doc = _indent(desc["doc"], "    ").lstrip()
+    return (
+        "class This:\n"
+        f'    """{doc}\n\n'
+        "    Use the instance :data:`this`; each attribute is a :class:`ThisExpr`.\n"
+        '    """\n\n'
+        "    __slots__ = ()\n\n"
+        f"{props}"
+        "    def __repr__(self) -> str:\n"
+        '        return "this"\n\n\n'
+        "#: The buffer an op reads, as its parameters see it.\n"
+        "this = This()\n"
+    )
 
 
 def opt_flag_fields(passes: list[dict[str, Any]]) -> str:
@@ -524,12 +553,15 @@ def render(
         ("SinkFormat", format_enum("SinkFormat", "sink", io["sinks"])),
     ]
     enum_names = sorted(name for name, _ in enum_classes)
+    (this_attrs,) = [e for e in enums if e["name"] == "ThisAttr"]
     text = (
         _HEADER.format(imports=_imports(methods + lazy_methods + geom_methods))
         + "\n\n#: The generated enums, which ``_types`` re-exports.\n"
         + f"__all__ = {enum_names!r}\n"
         + "\n\n"
         + "\n\n".join(text for _, text in enum_classes)
+        + "\n\n"
+        + this_class(this_attrs)
         + "\n\n#: Ops whose wire form is typed (bare values and slots).\n"
         + f"TYPED_OPS: frozenset[str] = frozenset({names!r})\n\n"
         + "#: Every optimisation pass, in the order they apply: (name, tier, summary).\n"

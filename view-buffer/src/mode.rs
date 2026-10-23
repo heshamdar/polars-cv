@@ -170,21 +170,41 @@ pub enum ThisAttr {
     Ndim,
 }
 
-impl ThisAttr {
-    /// Each attribute and its wire (and Python) name.
-    const NAMES: [(ThisAttr, &'static str); 4] = [
-        (ThisAttr::Height, "height"),
-        (ThisAttr::Width, "width"),
-        (ThisAttr::Channels, "channels"),
-        (ThisAttr::Ndim, "ndim"),
-    ];
+crate::naming::named_variants!(ThisAttr: "The buffer an op reads, as its parameters see it (``polars_cv.this``): its attributes, each known before the op runs.\n\n- HEIGHT: axis 0 of an ``[H, W]`` or ``[H, W, C]`` buffer\n- WIDTH: axis 1 of an ``[H, W]`` or ``[H, W, C]`` buffer\n- CHANNELS: axis 2 of an ``[H, W, C]`` buffer; 1 for an ``[H, W]`` one\n- NDIM: the rank, of any buffer" {
+    "height" => Height,
+    "width" => Width,
+    "channels" => Channels,
+    "ndim" => Ndim,
+});
 
+impl ThisAttr {
     fn name(self) -> &'static str {
-        Self::NAMES
-            .iter()
-            .find(|(attr, _)| *attr == self)
-            .map(|(_, n)| *n)
-            .expect("every attribute has a name")
+        self.spelling()
+    }
+
+    /// The attribute over what the planner knows of the input: `None` when
+    /// it does not know it, an error when no input of that rank has it.
+    fn of_planned(self, planned: &PlannedThis<'_>) -> Result<Option<usize>, String> {
+        let Some(rank) = planned.rank else {
+            return Ok(None);
+        };
+        let axis = |i: usize| planned.dims.get(i).copied().flatten();
+        match (self, rank) {
+            (ThisAttr::Ndim, _) => Ok(Some(rank)),
+            (ThisAttr::Height, 2 | 3) => Ok(axis(0)),
+            (ThisAttr::Width, 2 | 3) => Ok(axis(1)),
+            (ThisAttr::Channels, 2) => Ok(Some(1)),
+            (ThisAttr::Channels, 3) => Ok(axis(2)),
+            (attr, _) => Err(attr.rank_error(&format!("rank {rank}"))),
+        }
+    }
+
+    fn rank_error(self, has: &str) -> String {
+        format!(
+            "this.{} reads an [H, W] or [H, W, C] buffer, and this op's input \
+             has {has}",
+            self.name()
+        )
     }
 
     /// The attribute of a buffer of `shape`.
@@ -195,11 +215,7 @@ impl ThisAttr {
             (ThisAttr::Width, [_, w] | [_, w, _]) => Ok(*w),
             (ThisAttr::Channels, [_, _]) => Ok(1),
             (ThisAttr::Channels, [_, _, c]) => Ok(*c),
-            (attr, _) => Err(format!(
-                "this.{} reads an [H, W] or [H, W, C] buffer, and this op's input \
-                 has shape {shape:?}",
-                attr.name()
-            )),
+            (attr, _) => Err(attr.rank_error(&format!("shape {shape:?}"))),
         }
     }
 }
@@ -232,6 +248,20 @@ impl ThisOp {
             .expect("every operator has a spelling")
     }
 
+    /// `a op b`.
+    fn apply(self, a: f64, b: f64) -> Result<f64, String> {
+        Ok(match self {
+            ThisOp::Add => a + b,
+            ThisOp::Sub => a - b,
+            ThisOp::Mul => a * b,
+            ThisOp::Div | ThisOp::FloorDiv if b == 0.0 => {
+                return Err("division by zero".to_string())
+            }
+            ThisOp::Div => a / b,
+            ThisOp::FloorDiv => (a / b).floor(),
+        })
+    }
+
     /// How tightly it binds, as in Python (for display).
     fn precedence(self) -> u8 {
         match self {
@@ -246,13 +276,13 @@ impl ThisExpr {
     pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
         use serde_json::Value;
         match value {
-            Value::String(s) => ThisAttr::NAMES
-                .iter()
-                .find(|(_, n)| n == s)
-                .map(|(attr, _)| ThisExpr::Attr(*attr))
+            Value::String(s) => crate::naming::lookup(ThisAttr::NAMED, s)
+                .map(ThisExpr::Attr)
                 .ok_or_else(|| {
-                    let known: Vec<&str> = ThisAttr::NAMES.iter().map(|(_, n)| *n).collect();
-                    format!("unknown attribute of `this` {s:?}, expected one of {known:?}")
+                    format!(
+                        "unknown attribute of `this` {s:?}, expected one of {:?}",
+                        crate::naming::names(ThisAttr::NAMED)
+                    )
                 }),
             Value::Number(n) => match n.as_f64() {
                 Some(f) if f.is_finite() => Ok(ThisExpr::Num(f)),
@@ -288,6 +318,22 @@ impl ThisExpr {
         }
     }
 
+    /// The value over what the planner knows of the input: `None` while a
+    /// size it reads is unknown; an error when it can never be computed.
+    pub fn eval_planned(&self, planned: &PlannedThis<'_>) -> Result<Option<f64>, String> {
+        Ok(match self {
+            ThisExpr::Attr(attr) => attr.of_planned(planned)?.map(|n| n as f64),
+            ThisExpr::Num(f) => Some(*f),
+            ThisExpr::Op(op, args) => {
+                let (a, b) = (args.0.eval_planned(planned)?, args.1.eval_planned(planned)?);
+                match (a, b) {
+                    (Some(a), Some(b)) => Some(op.apply(a, b).map_err(|e| format!("{self}: {e}"))?),
+                    _ => None,
+                }
+            }
+        })
+    }
+
     /// The value over a buffer of `shape`.
     pub fn eval(&self, shape: &[usize]) -> Result<f64, String> {
         Ok(match self {
@@ -295,16 +341,7 @@ impl ThisExpr {
             ThisExpr::Num(f) => *f,
             ThisExpr::Op(op, args) => {
                 let (a, b) = (args.0.eval(shape)?, args.1.eval(shape)?);
-                match op {
-                    ThisOp::Add => a + b,
-                    ThisOp::Sub => a - b,
-                    ThisOp::Mul => a * b,
-                    ThisOp::Div | ThisOp::FloorDiv if b == 0.0 => {
-                        return Err(format!("{self}: division by zero"))
-                    }
-                    ThisOp::Div => a / b,
-                    ThisOp::FloorDiv => (a / b).floor(),
-                }
+                op.apply(a, b).map_err(|e| format!("{self}: {e}"))?
             }
         })
     }
@@ -364,8 +401,14 @@ pub fn this_value<T: WireScalar>(expr: &ThisExpr, shape: Option<&[usize]>) -> Re
         ));
     };
     let value = expr.eval(shape)?;
+    this_as(expr, value, &format!("an input of shape {shape:?}"))
+}
+
+/// `expr`'s `value` as a `T`, by the rule [`this_value`] states; `over`
+/// says what it was computed over, for a message.
+fn this_as<T: WireScalar>(expr: &ThisExpr, value: f64, over: &str) -> Result<T, String> {
     if !value.is_finite() {
-        return Err(format!("{expr} is {value} for an input of shape {shape:?}"));
+        return Err(format!("{expr} is {value} for {over}"));
     }
     let wire = match T::KIND {
         WireKind::Float => WireValue::Float(value),
@@ -380,7 +423,18 @@ pub fn this_value<T: WireScalar>(expr: &ThisExpr, shape: Option<&[usize]>) -> Re
             return Err(this_kind_error::<T>());
         }
     };
-    T::from_wire(wire).map_err(|e| format!("{expr} = {value} for an input of shape {shape:?}: {e}"))
+    T::from_wire(wire).map_err(|e| format!("{expr} = {value} for {over}: {e}"))
+}
+
+/// What the planner knows of the buffer an op reads, which a `this`
+/// parameter is bound over when every size it reads is known
+/// ([`FieldType::bind_this`]).
+#[derive(Debug, Clone, Copy)]
+pub struct PlannedThis<'a> {
+    /// The rank, when known.
+    pub rank: Option<usize>,
+    /// Each axis's size, when known.
+    pub dims: &'a [Option<usize>],
 }
 
 /// The refusal of a `this` expression where the parameter is not a number.
@@ -440,6 +494,9 @@ pub trait WireOps: Sized {
     fn wire_fields(&self) -> Option<serde_json::Map<String, serde_json::Value>>;
     /// Call `f(field, input)` for every row input a field reads.
     fn visit_inputs(&self, f: &mut dyn FnMut(&'static str, RowInput));
+    /// Bind every field's `this` parameters over `planned`
+    /// ([`FieldType::bind_this`]); an error names its field.
+    fn bind_this(&mut self, planned: &PlannedThis<'_>) -> Result<(), String>;
     /// Every op's catalogue entry, in declaration order.
     fn catalog() -> Vec<OpDesc>;
 }
@@ -690,6 +747,9 @@ pub trait FieldType {
     fn describe() -> TypeDesc;
     /// Call `f` with every row input the value reads.
     fn visit_inputs(&self, f: &mut dyn FnMut(RowInput));
+    /// Replace each `this` parameter whose value `planned` decides with that
+    /// value; refuse one that no input of that rank can have.
+    fn bind_this(&mut self, planned: &PlannedThis<'_>) -> Result<(), String>;
 }
 
 fn scalar_desc<T: WireScalar>(per_row: bool) -> TypeDesc {
@@ -711,6 +771,14 @@ impl<T: WireScalar> FieldType for Param<T> {
             Param::This(_) => f(RowInput::Shape),
         }
     }
+    fn bind_this(&mut self, planned: &PlannedThis<'_>) -> Result<(), String> {
+        if let Param::This(expr) = self {
+            if let Some(value) = expr.eval_planned(planned)? {
+                *self = Param::Lit(this_as(expr, value, "the planned input")?);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<T: WireScalar> FieldType for Literal<T> {
@@ -718,6 +786,9 @@ impl<T: WireScalar> FieldType for Literal<T> {
         scalar_desc::<T>(false)
     }
     fn visit_inputs(&self, _f: &mut dyn FnMut(RowInput)) {}
+    fn bind_this(&mut self, _planned: &PlannedThis<'_>) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Literal text (a path root, say): never per-row.
@@ -730,6 +801,9 @@ impl FieldType for String {
         }
     }
     fn visit_inputs(&self, _f: &mut dyn FnMut(RowInput)) {}
+    fn bind_this(&mut self, _planned: &PlannedThis<'_>) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl FieldType for std::collections::HashMap<String, String> {
@@ -737,6 +811,9 @@ impl FieldType for std::collections::HashMap<String, String> {
         TypeDesc::Map
     }
     fn visit_inputs(&self, _f: &mut dyn FnMut(RowInput)) {}
+    fn bind_this(&mut self, _planned: &PlannedThis<'_>) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl<F: FieldType> FieldType for Option<F> {
@@ -748,6 +825,12 @@ impl<F: FieldType> FieldType for Option<F> {
     fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
         if let Some(v) = self {
             v.visit_inputs(f);
+        }
+    }
+    fn bind_this(&mut self, planned: &PlannedThis<'_>) -> Result<(), String> {
+        match self {
+            Some(v) => v.bind_this(planned),
+            None => Ok(()),
         }
     }
 }
@@ -762,6 +845,9 @@ impl<F: FieldType, const N: usize> FieldType for [F; N] {
     fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
         self.iter().for_each(|v| v.visit_inputs(f));
     }
+    fn bind_this(&mut self, planned: &PlannedThis<'_>) -> Result<(), String> {
+        self.iter_mut().try_for_each(|v| v.bind_this(planned))
+    }
 }
 
 impl<F: FieldType> FieldType for Vec<F> {
@@ -772,6 +858,9 @@ impl<F: FieldType> FieldType for Vec<F> {
     }
     fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
         self.iter().for_each(|v| v.visit_inputs(f));
+    }
+    fn bind_this(&mut self, planned: &PlannedThis<'_>) -> Result<(), String> {
+        self.iter_mut().try_for_each(|v| v.bind_this(planned))
     }
 }
 
@@ -917,6 +1006,9 @@ impl FieldType for ColumnRef {
     fn visit_inputs(&self, f: &mut dyn FnMut(RowInput)) {
         f(RowInput::Slot(self.0));
     }
+    fn bind_this(&mut self, _planned: &PlannedThis<'_>) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl FieldType for NodeRef {
@@ -924,6 +1016,9 @@ impl FieldType for NodeRef {
         TypeDesc::Node
     }
     fn visit_inputs(&self, _f: &mut dyn FnMut(RowInput)) {}
+    fn bind_this(&mut self, _planned: &PlannedThis<'_>) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

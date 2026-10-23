@@ -170,6 +170,7 @@ registry!(
     crate::geometry::ops::LineJoin,
     crate::geometry::ops::LineCap,
     crate::ops::reduction::Statistic,
+    crate::mode::ThisAttr,
     crate::geometry::label::LabelRegionMode,
     crate::ops::NormalizeMethod,
 );

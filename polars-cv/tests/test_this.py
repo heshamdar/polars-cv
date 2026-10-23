@@ -51,6 +51,10 @@ class TestExpressions:
         assert (2 / this.width)._wire() == {"$this": ["/", 2, "width"]}
         assert (-this.channels)._wire() == {"$this": ["-", 0, "channels"]}
 
+    def test_a_numpy_scalar_is_a_number(self) -> None:
+        assert (this.height * np.int64(2))._wire() == {"$this": ["*", "height", 2]}
+        assert (np.float32(0.5) * this.width)._wire() == {"$this": ["*", 0.5, "width"]}
+
     def test_reads_as_written(self) -> None:
         assert repr((this.height - 4) * 0.5) == "(this.height - 4) * 0.5"
         assert repr(this.height / (this.width + 1)) == "this.height / (this.width + 1)"
@@ -99,6 +103,28 @@ class TestPerRow:
         (got,) = _run(pipe, gray)
         np.testing.assert_array_equal(got, np.minimum(gray.ravel(), 1))
 
+    def test_an_op_after_rasterize_reads_the_raster(self) -> None:
+        """The op before was given a contour set, not a buffer; the size of
+        what it made is still known before the crop runs."""
+        from polars_cv import CONTOUR_SET_SCHEMA
+
+        square = {
+            "exterior": [{"x": x, "y": y} for x, y in [(1, 1), (6, 1), (6, 5), (1, 5)]],
+            "holes": [],
+            "is_closed": True,
+        }
+        frame = pl.DataFrame(
+            {"c": [[square]]}, schema_overrides={"c": CONTOUR_SET_SCHEMA}
+        )
+        pipe = (
+            Pipeline()
+            .source("contour")
+            .rasterize(width=10, height=8)
+            .crop(height=this.height // 2, width=this.width - 1)
+        )
+        out = frame.select(pl.col("c").cv.pipe(pipe).sink("numpy"))
+        assert numpy_from_struct(out.item()).shape[:2] == (4, 9)
+
     def test_an_integer_parameter_rounds_to_nearest(self) -> None:
         # 0.29 * 100 is 28.999999999999996 in floating point.
         pipe = Pipeline().source("list").crop(height=0.29 * this.height)
@@ -137,12 +163,29 @@ class TestPerRow:
         )
         np.testing.assert_array_equal(got, want)
 
-    def test_the_planned_size_is_per_row(self) -> None:
-        """A size from ``this`` is unknown when the query is planned, as a
-        column's is; the axes it does not set stay known."""
+    def test_the_plan_uses_this_where_it_knows_the_size(self) -> None:
+        """After a resize the plan knows the height, so ``this.height // 2`` is
+        4 when the query is planned; over a size it does not know, the axis is
+        unknown, as for a column."""
         base = Pipeline().source("image_bytes").resize(height=8, width=8)
-        assert state_of(base.crop(height=4)).dims == (4, 8, None)
-        assert state_of(base.crop(height=this.height // 2)).dims == (None, 8, None)
+        assert state_of(base.crop(height=this.height // 2)).dims == (4, 8, None)
+        unsized = Pipeline().source("image_bytes")
+        assert state_of(unsized.crop(height=this.height // 2)).dims == (
+            None,
+            None,
+            None,
+        )
+
+    def test_a_planned_size_reaches_a_fixed_shape_sink(self) -> None:
+        pipe = (
+            Pipeline()
+            .source("list", dtype="u8")
+            .assert_shape(dims=[10, 8])
+            .crop(height=this.height // 2, width=this.width - 4)
+        )
+        frame = _column(_img(10, 8))
+        out = frame.select(pl.col("a").cv.pipe(pipe).sink("array"))
+        assert out.schema["a"] == pl.Array(pl.UInt8, (5, 4))
 
 
 @plugin_required
@@ -161,11 +204,47 @@ class TestRefusals:
             Pipeline().source("list").flip_h(when=this.height)  # type: ignore[arg-type]
 
     def test_an_attribute_the_buffer_does_not_have_is_refused(self) -> None:
-        pipe = Pipeline().source("list").reshape([9]).clamp_max(this.height)
-        with pytest.raises(
-            pl.exceptions.ComputeError, match=r"this.height reads an \[H, W\]"
-        ):
-            _run(pipe, _img(3, 3))
+        # The rank is known when the pipeline is built, so it is refused then.
+        with pytest.raises(ValueError, match=r"this.height reads an \[H, W\]"):
+            Pipeline().source("list").reshape([9]).clamp_max(this.height)
+
+    def test_an_op_given_no_buffer_refuses_this_as_it_is_built(self) -> None:
+        with pytest.raises(ValueError, match="`this` reads the buffer an op is given"):
+            Pipeline().source("contour").rasterize(width=this.width, height=10)
+
+    def test_a_value_the_plan_knows_is_wrong_is_refused_as_it_is_built(self) -> None:
+        base = Pipeline().source("image_bytes").resize(height=8, width=8)
+        with pytest.raises(ValueError, match="height.*negative"):
+            base.crop(height=this.height - 100)
+
+    @pytest.mark.parametrize(
+        ("divides", "around"),
+        [
+            (
+                (this.height - this.height) * 2 // (this.width - this.width),
+                lambda e: e + 1,
+            ),
+            ((this.height - this.height) / (0 * this.ndim), lambda e: 10 - e),
+            (this.height / (this.width - this.width), lambda e: e),
+            # Parenthesised only by precedence: `//` binds tighter than `-`.
+            (
+                (this.height - this.height // 1) // (this.width - this.width),
+                lambda e: e,
+            ),
+        ],
+        ids=["floordiv", "nested", "div", "precedence"],
+    )
+    def test_the_engine_quotes_an_expression_as_python_writes_it(
+        self, divides: object, around: object
+    ) -> None:
+        """The operators are Python's syntax and the engine's display: both
+        sides write each one, so the error quotes the dividing part as
+        ``repr`` writes it."""
+        expr = around(divides)  # type: ignore[operator]
+        pipe = Pipeline().source("list").blur(sigma=expr)
+        with pytest.raises(pl.exceptions.ComputeError) as err:
+            _run(pipe, _img(4, 4))
+        assert f"{divides!r}: division by zero" in str(err.value)
 
     def test_division_by_zero_is_an_error_naming_the_parameter(self) -> None:
         pipe = (

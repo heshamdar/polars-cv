@@ -100,6 +100,7 @@ const KNOWN: &[(&str, [usize; 4], &str)] = &[
     ("perceptual_hash", [1, 1, 1, 1], PACKED_FIRST),
     ("block_reduce", [1, 1, 1, 1], PACKED_FIRST),
     ("rank_filter", [1, 1, 1, 1], PACKED_FIRST),
+    ("reduce", [1, 1, 1, 1], PACKED_FIRST),
     ("reduce_argmax", [1, 1, 1, 1], PACKED_FIRST),
     ("reduce_argmin", [1, 1, 1, 1], PACKED_FIRST),
     ("reduce_max", [1, 1, 1, 1], PACKED_FIRST),

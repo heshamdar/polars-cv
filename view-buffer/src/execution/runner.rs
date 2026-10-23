@@ -1691,6 +1691,7 @@ pub(crate) fn apply_image_inner(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
 /// (`reduction::percentile_of`, the one interpolation), outside the image
 /// read by `border` as `convolve2d` reads it; the result in the input's
 /// dtype. `check` keeps both sides odd.
+#[cfg(feature = "image_interop")]
 fn apply_rank_filter(
     buf: &ViewBuffer,
     height: usize,
