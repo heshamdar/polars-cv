@@ -360,6 +360,8 @@ Rust: view-buffer (the engine)
 | `_plugin.py` | `call()` — the one way into the compiled plugin: pins polars to the imported `.so`, passes every argument as `.ext.storage()` |
 | `extension_types.py` | `NdArrayType`/`PointType`/`ContourType`/`BBoxType` Arrow extension types, registered at import; `NUMPY_OUTPUT_SCHEMA` |
 | `display.py` | `show_images()` — notebook rendering of image columns |
+| `_this.py` | `ThisExpr`: `polars_cv.this` arithmetic, sent as `{"$this": tree}` (its `repr` is the engine's); `This`/`this` are generated from Rust's `ThisAttr` |
+| `_cloud.py` | `check_cloud_access()` / `CloudCredentialError`: a remote path's credential exercised once, before any row |
 | `_graph_viz.py` | Graph visualization (networkx/graphviz/pydot) |
 | `geometry/` | Point/contour/bbox schemas and Polars expression namespaces |
 | `metrics/` | Detection metrics (PR curves, AP, FROC, LROC, bootstrap, AUC) |
@@ -375,6 +377,7 @@ Rust: view-buffer (the engine)
 - `params.rs` — `ParamCtx`/`ParamCol`: the per-call view of the expression-parameter columns every `Param<T>` reads, with the null policy
 - `cloud.rs` — remote/cloud transport (`object_store` backends, `cloud_options`, bounded-concurrency reads)
 - `fetch.rs` — stage one of every path-based read: path column → bytes (`Fetcher`: a window of fetches ahead of each row thread; `parse_on_error`), shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy` (the `allowed_roots` sandbox)
+- `row_ref.rs` — the one rendering of a failing row, `(row i of n in this batch)`, attached by the code that owns each row loop (`test_row_ref_guard.py` rejects a hand-rolled one)
 - `read_bytes.rs` — `read_file_bytes` plugin function (`.cv.read_bytes()`) — `fetch.rs` with the decode omitted, for byte-identical passthrough
 - `image_metadata.rs` — header-only metadata plugin functions (`.cv.width()`/`height()`/`channels()`/`image_dtype()`)
 - `output.rs` — zero-copy numpy/torch struct output encoding

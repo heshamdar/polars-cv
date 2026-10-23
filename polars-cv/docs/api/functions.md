@@ -134,6 +134,40 @@ result = df.with_columns(
 )
 ```
 
+## Parameters From the Buffer
+
+`this` is the buffer an op reads, as its parameters see it
+(see [Parameters](../user-guide/concepts/parameters.md)).
+
+::: polars_cv.This
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: polars_cv.ThisExpr
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+## Region Statistics
+
+::: polars_cv.region_stats
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+## Cloud Access
+
+::: polars_cv.check_cloud_access
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: polars_cv.CloudCredentialError
+    options:
+      show_root_heading: true
+      heading_level: 3
+
 ## Display
 
 ### show_images

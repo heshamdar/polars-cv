@@ -10,7 +10,7 @@
 //!
 //! Every per-row error is rendered through [`RowRef`] (or [`at_row`]), once,
 //! by the code that owns the row loop; a message written inside the loop
-//! names no row of its own. `tests/test_sanitation.py::
+//! names no row of its own. `tests/test_row_ref_guard.py::
 //! test_rows_are_named_only_through_row_ref` rejects a hand-rolled one.
 
 use core::fmt;

@@ -235,6 +235,37 @@ Reorder channels in a multi-channel image.
 Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
 ```
 
+## Normalization
+
+Each normalization is its own op, with only the parameters it reads:
+
+```python
+# By the image's own statistics: [0, 1] by min/max, or mean 0 / std 1
+Pipeline().source("image_bytes").normalize(method="minmax")
+Pipeline().source("image_bytes").normalize(method="zscore")
+
+# By given per-channel statistics (ImageNet-style preprocessing)
+Pipeline().source("image_bytes").normalize_preset(
+    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+)
+
+# A window mapped to [0, 1], clipped outside: the image's own 1st-99th
+# percentiles, or fixed edges (CT Hounsfield units, say)
+Pipeline().source("image_bytes").normalize_percentile(low=1.0, high=99.0)
+Pipeline().source("array").normalize_range(low=-1000.0, high=400.0)
+```
+
+Every one computes in f32 and takes `out_dtype=` (default `"f32"`). A window
+with no spread (a constant image) gives zeros, as `minmax` does.
+`normalize_percentile_masked` takes its window from the pixels a mask
+selects, a lesion's 1st-99th say, and applies it to the whole image:
+
+```python
+ct = pl.col("ct").cv.pipe(Pipeline().source("array"))
+lesion = pl.col("lesion").cv.pipe(Pipeline().source("array"))
+ct.normalize_percentile_masked(lesion, low=1.0, high=99.0).sink("numpy")
+```
+
 ## Intensity Adjustments
 
 ### Contrast
