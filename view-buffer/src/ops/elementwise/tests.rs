@@ -8,7 +8,7 @@
 use super::{apply, legacy, strategy, Strategy};
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{with_dtype, DType};
-use crate::ops::compute::{ComputeOp, Normalization};
+use crate::ops::compute::{ComputeOp, NormalizeMethod};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 
 /// Pseudo-random `u64`s (an LCG), deterministic per call.
@@ -188,16 +188,17 @@ fn per_value_ops() -> Vec<ComputeOp> {
         ComputeOp::AdjustContrast { factor: 1.7 },
     ]);
     for out in [DType::F32, DType::U8, DType::I16, DType::F64] {
-        ops.push(ComputeOp::from_normalization(Normalization::MinMax, out));
+        ops.push(ComputeOp::Normalize {
+            method: NormalizeMethod::MinMax,
+            out_dtype: Some(out),
+        });
     }
     for out in [DType::F32, DType::U8] {
-        ops.push(ComputeOp::from_normalization(
-            Normalization::Preset {
-                mean: vec![100.5, -3.25, 17.0],
-                std: vec![57.1, 3.0, 0.5],
-            },
-            out,
-        ));
+        ops.push(ComputeOp::NormalizePreset {
+            mean: vec![100.5, -3.25, 17.0],
+            std: vec![57.1, 3.0, 0.5],
+            out_dtype: Some(out),
+        });
     }
     // Integer affine chains (the integer strategy when the output dtype is
     // the input's): a shifted invert, and a large shift that saturates.
@@ -397,14 +398,10 @@ fn channel_first(parent: &ViewBuffer) -> ViewBuffer {
 fn per_channel_kernels_match_the_legacy_code_across_blocks_and_runs() {
     let ops: Vec<ComputeOp> = [DType::F32, DType::U8, DType::I16]
         .into_iter()
-        .map(|out| {
-            ComputeOp::from_normalization(
-                Normalization::Preset {
-                    mean: vec![100.5, -3.25, 17.0],
-                    std: vec![57.1, 3.0, 0.5],
-                },
-                out,
-            )
+        .map(|out| ComputeOp::NormalizePreset {
+            mean: vec![100.5, -3.25, 17.0],
+            std: vec![57.1, 3.0, 0.5],
+            out_dtype: Some(out),
         })
         .collect();
     for dtype in [DType::U8, DType::I16, DType::U32, DType::F32] {
@@ -586,7 +583,10 @@ fn the_strategy_tables_only_costly_kernels_over_enumerable_input() {
 /// transform is `(x - mean) / std` in f32, as before.
 #[test]
 fn zscore_uses_exact_statistics() {
-    let op = |out| ComputeOp::from_normalization(Normalization::ZScore, out);
+    let op = |out| ComputeOp::Normalize {
+        method: NormalizeMethod::ZScore,
+        out_dtype: Some(out),
+    };
     for dtype in DType::ALL.iter().copied() {
         let parent = sample(dtype, 9, 11, 3);
         for (layout, view) in layouts(&parent, true) {
@@ -632,11 +632,14 @@ fn zscore_uses_exact_statistics() {
 /// A constant buffer has no spread: min-max and z-score give zeros, as before.
 #[test]
 fn a_constant_buffer_normalizes_to_zeros() {
-    for method in [Normalization::MinMax, Normalization::ZScore] {
+    for method in [NormalizeMethod::MinMax, NormalizeMethod::ZScore] {
         let buf = ViewBuffer::from_vec_with_shape(vec![42u8; 24], vec![2, 4, 3]);
         let got = apply(
             buf,
-            &ComputeOp::from_normalization(method.clone(), DType::F32),
+            &ComputeOp::Normalize {
+                method,
+                out_dtype: Some(DType::F32),
+            },
         );
         assert!(
             got.as_slice::<f32>().iter().all(|&x| x == 0.0),

@@ -45,9 +45,8 @@ pub(super) fn apply(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
                 apply_fused_kernel(&buf, kernel)
             }
         }
-        ComputeOp::Normalize { .. } | ComputeOp::NormalizePreset { .. } => {
-            let (normalization, out_dtype) = op.normalization().expect("a normalization");
-            apply_normalize(&buf, &normalization, out_dtype)
+        ComputeOp::Normalize { out_dtype, .. } | ComputeOp::NormalizePreset { out_dtype, .. } => {
+            apply_normalize(&buf, &op, out_dtype.unwrap_or(DType::F32))
         }
         ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
             buf,
@@ -102,11 +101,7 @@ fn apply_scalar_op_f64(buf: &ViewBuffer, op: &ScalarOp) -> ViewBuffer {
 /// dtype — without it the planner could declare, say, `u8` while execution
 /// emitted `f32` (a plan/execution contract violation guarded by the
 /// dtype-contract tests).
-fn apply_normalize(
-    buf: &ViewBuffer,
-    method: &crate::ops::Normalization,
-    out_dtype: DType,
-) -> ViewBuffer {
+fn apply_normalize(buf: &ViewBuffer, method: &ComputeOp, out_dtype: DType) -> ViewBuffer {
     let normalized = apply_normalize_f32(buf, method);
     if out_dtype == DType::F32 {
         normalized
@@ -124,8 +119,8 @@ fn apply_normalize(
 /// - **Constant array (min == max)**: Returns 0.0 for all elements (MinMax) or 0.0 (ZScore)
 /// - **NaN values**: Propagated according to IEEE 754 semantics
 /// - **Inf values**: Handled naturally by min/max/mean calculations
-fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> ViewBuffer {
-    use crate::ops::Normalization;
+fn apply_normalize_f32(buf: &ViewBuffer, method: &ComputeOp) -> ViewBuffer {
+    use crate::ops::NormalizeMethod;
 
     // Cast to f32 working dtype if needed (dtype promotion)
     let work_buf = if buf.dtype() != DType::F32 {
@@ -141,10 +136,10 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
     {
         if let Ok(view) = work_buf.as_array_view::<f32>() {
             match method {
-                Normalization::Percentile { .. } | Normalization::Range { .. } => {
-                    unreachable!("the oracle predates percentile/range normalize")
-                }
-                Normalization::MinMax => {
+                ComputeOp::Normalize {
+                    method: NormalizeMethod::MinMax,
+                    ..
+                } => {
                     let min = view
                         .iter()
                         .cloned()
@@ -161,7 +156,10 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
                     let result = view.mapv(|x| (x - min) / range);
                     return ViewBuffer::from_array(result.into_owned());
                 }
-                Normalization::ZScore => {
+                ComputeOp::Normalize {
+                    method: NormalizeMethod::ZScore,
+                    ..
+                } => {
                     let n = view.len() as f32;
                     let mean = view.iter().sum::<f32>() / n;
                     let variance = view.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
@@ -173,7 +171,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
                     let result = view.mapv(|x| (x - mean) / std_val);
                     return ViewBuffer::from_array(result.into_owned());
                 }
-                Normalization::Preset { mean, std } => {
+                ComputeOp::NormalizePreset { mean, std, .. } => {
                     // Channel-wise normalization - need to iterate with channel awareness
                     let channels = if shape.len() == 3 { shape[2] } else { 1 };
                     assert_eq!(
@@ -202,6 +200,9 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
                         .collect();
                     return ViewBuffer::from_vec(new_data).reshape(shape);
                 }
+                other => {
+                    unreachable!("the oracle covers normalize and normalize_preset: {other:?}")
+                }
             }
         }
     }
@@ -212,10 +213,10 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
     let src = contig.as_slice::<f32>();
 
     let new_data: Vec<f32> = match method {
-        Normalization::Percentile { .. } | Normalization::Range { .. } => {
-            unreachable!("the oracle predates percentile/range normalize")
-        }
-        Normalization::MinMax => {
+        ComputeOp::Normalize {
+            method: NormalizeMethod::MinMax,
+            ..
+        } => {
             let min = src
                 .iter()
                 .cloned()
@@ -231,7 +232,10 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
                 src.iter().map(|&x| (x - min) / range).collect()
             }
         }
-        Normalization::ZScore => {
+        ComputeOp::Normalize {
+            method: NormalizeMethod::ZScore,
+            ..
+        } => {
             let n = count as f32;
             let mean = src.iter().sum::<f32>() / n;
             let variance = src.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
@@ -242,7 +246,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
                 src.iter().map(|&x| (x - mean) / std_val).collect()
             }
         }
-        Normalization::Preset { mean, std } => {
+        ComputeOp::NormalizePreset { mean, std, .. } => {
             let channels = if shape.len() == 3 { shape[2] } else { 1 };
             assert_eq!(
                 mean.len(),
@@ -266,6 +270,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
                 })
                 .collect()
         }
+        other => unreachable!("the oracle covers normalize and normalize_preset: {other:?}"),
     };
 
     ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())

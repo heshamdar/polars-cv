@@ -5,7 +5,7 @@
 
 #![cfg(all(feature = "ndarray_interop", feature = "image_interop"))]
 
-use view_buffer::{FilterType, Normalization, ViewBuffer, ViewExpr};
+use view_buffer::{FilterType, NormalizeMethod, ViewBuffer, ViewExpr};
 
 /// Helper to create a test RGB image buffer.
 fn make_rgb_image(h: usize, w: usize) -> ViewBuffer {
@@ -185,7 +185,7 @@ fn test_normalize_on_transposed_buffer() {
 
     // Normalize should work on transposed buffer via ndarray
     let normalized = ViewExpr::new_source(transposed)
-        .normalize(Normalization::MinMax, view_buffer::DType::F32)
+        .normalize(NormalizeMethod::MinMax, view_buffer::DType::F32)
         .plan()
         .execute();
 
@@ -207,7 +207,7 @@ fn test_normalize_on_flipped_buffer() {
     assert_zero_copy(&buf, &flipped);
 
     let normalized = ViewExpr::new_source(flipped)
-        .normalize(Normalization::ZScore, view_buffer::DType::F32)
+        .normalize(NormalizeMethod::ZScore, view_buffer::DType::F32)
         .plan()
         .execute();
 

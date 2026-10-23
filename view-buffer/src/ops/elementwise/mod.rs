@@ -39,7 +39,7 @@ use crate::core::convert::{convert_slice, CastFrom};
 use crate::core::dispatch::{dispatch_mut, SimdKernelMut};
 use crate::core::dtype::{with_dtype, DType, ViewType};
 use crate::core::map::{map_new, map_owned, ElementMap, ElementMapInPlace};
-use crate::ops::compute::{ComputeOp, Normalization};
+use crate::ops::compute::{ComputeOp, NormalizeMethod};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::Op;
 
@@ -126,15 +126,38 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
     };
     match op {
         ComputeOp::Fused(kernel) => Lowered::Kernels(vec![kernel.clone()]),
-        ComputeOp::Normalize { .. }
-        | ComputeOp::NormalizePreset { .. }
-        | ComputeOp::NormalizePercentile { .. }
-        | ComputeOp::NormalizeRange { .. } => {
-            let (normalization, out_dtype) = op
-                .normalization()
-                .expect("a normalize op is a normalization");
-            lower_normalize(&normalization, out_dtype, buf)
+        ComputeOp::Normalize { method, out_dtype } => {
+            lower_normalize(*method, normalized(out_dtype), buf)
         }
+        ComputeOp::NormalizePreset {
+            mean,
+            std,
+            out_dtype,
+        } => {
+            let out_dtype = normalized(out_dtype);
+            Lowered::Kernels(
+                mean.iter()
+                    .zip(std)
+                    .map(|(&m, &s)| affine(m, s, out_dtype))
+                    .collect(),
+            )
+        }
+        ComputeOp::NormalizePercentile {
+            low,
+            high,
+            out_dtype,
+        } => {
+            // The image's own percentiles, every channel together, over the
+            // one owned copy a selection needs, read from the view where it
+            // lies.
+            let (lo, hi) = percentile_window(buf, *low, *high);
+            window(lo, hi, normalized(out_dtype))
+        }
+        ComputeOp::NormalizeRange {
+            low,
+            high,
+            out_dtype,
+        } => window(*low, *high, normalized(out_dtype)),
         ComputeOp::AdjustContrast { factor } => {
             if dtype.accumulator() == DType::F64 {
                 let mean = stats::mean_f64(buf);
@@ -208,41 +231,42 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
     }
 }
 
-fn lower_normalize(normalization: &Normalization, out_dtype: DType, buf: &ViewBuffer) -> Lowered {
-    let affine = |sub: f32, div: f32| FusedKernel {
+/// A normalize op's output dtype: computed in f32, then cast to `out_dtype`
+/// (f32 when none is given), as its `output_dtype_rule` states.
+fn normalized(out_dtype: &Option<DType>) -> DType {
+    out_dtype.unwrap_or(DType::F32)
+}
+
+/// `(x - sub) / div`, as `out_dtype`.
+fn affine(sub: f32, div: f32, out_dtype: DType) -> FusedKernel {
+    FusedKernel {
         ops: vec![ScalarOp::Sub(sub), ScalarOp::Div(div)],
         out_dtype,
-    };
-    match normalization {
-        Normalization::MinMax => {
+    }
+}
+
+/// `normalize(method=)`: by the image's own min/max or mean/std; a buffer
+/// with no spread is zeros.
+fn lower_normalize(method: NormalizeMethod, out_dtype: DType, buf: &ViewBuffer) -> Lowered {
+    match method {
+        NormalizeMethod::MinMax => {
             let (min, max) = stats::min_max_f32(buf);
             let range = max - min;
             if range == 0.0 {
                 Lowered::Zeros(out_dtype)
             } else {
-                Lowered::Kernels(vec![affine(min, range)])
+                Lowered::Kernels(vec![affine(min, range, out_dtype)])
             }
         }
-        Normalization::ZScore => {
+        NormalizeMethod::ZScore => {
             let (mean, var) = stats::mean_var_f64(buf);
             let std = var.sqrt() as f32;
             if std == 0.0 {
                 Lowered::Zeros(out_dtype)
             } else {
-                Lowered::Kernels(vec![affine(mean as f32, std)])
+                Lowered::Kernels(vec![affine(mean as f32, std, out_dtype)])
             }
         }
-        Normalization::Preset { mean, std } => {
-            Lowered::Kernels(mean.iter().zip(std).map(|(&m, &s)| affine(m, s)).collect())
-        }
-        Normalization::Percentile { low, high } => {
-            // The image's own percentiles, every channel together, over the
-            // one owned copy a selection needs, read from the view where it
-            // lies.
-            let (lo, hi) = percentile_window(buf, *low, *high);
-            window(lo, hi, out_dtype)
-        }
-        Normalization::Range { low, high } => window(*low, *high, out_dtype),
     }
 }
 

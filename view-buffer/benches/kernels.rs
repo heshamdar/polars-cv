@@ -25,7 +25,7 @@ use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
 use view_buffer::{
     BinaryOp, ComputeOp, DType, FilterType, Footprint, ImageAdapter, InterpolationType,
-    Normalization, ViewBuffer, ViewDto, ViewExpr,
+    NormalizeMethod, ViewBuffer, ViewDto, ViewExpr,
 };
 
 const SIZES: [usize; 3] = [256, 512, 1024];
@@ -152,17 +152,15 @@ fn value_kernels(c: &mut Criterion) {
     });
     bench_sizes(c, "normalize_preset_u8_to_f32", rgb, |b| {
         exec(b, |e| {
-            e.normalize(
-                Normalization::Preset {
-                    mean: vec![123.7, 116.3, 103.5],
-                    std: vec![58.4, 57.1, 57.4],
-                },
+            e.normalize_preset(
+                vec![123.7, 116.3, 103.5],
+                vec![58.4, 57.1, 57.4],
                 DType::F32,
             )
         })
     });
     bench_sizes(c, "normalize_zscore_u8", rgb, |b| {
-        exec(b, |e| e.normalize(Normalization::ZScore, DType::F32))
+        exec(b, |e| e.normalize(NormalizeMethod::ZScore, DType::F32))
     });
     bench_sizes(c, "adjust_contrast_u8", rgb, |b| {
         exec(b, |e| e.adjust_contrast(1.4))
@@ -172,11 +170,9 @@ fn value_kernels(c: &mut Criterion) {
     // The per-channel float path (no lookup table for f32 input).
     bench_sizes(c, "normalize_preset_f32", rgb_f32, |b| {
         exec(b, |e| {
-            e.normalize(
-                Normalization::Preset {
-                    mean: vec![123.7, 116.3, 103.5],
-                    std: vec![58.4, 57.1, 57.4],
-                },
+            e.normalize_preset(
+                vec![123.7, 116.3, 103.5],
+                vec![58.4, 57.1, 57.4],
                 DType::F32,
             )
         })
@@ -200,7 +196,7 @@ fn value_kernels(c: &mut Criterion) {
         exec(b, |e| e.fused(k.clone()))
     });
     bench_sizes(c, "normalize_zscore_f32", rgb_f32, |b| {
-        exec(b, |e| e.normalize(Normalization::ZScore, DType::F32))
+        exec(b, |e| e.normalize(NormalizeMethod::ZScore, DType::F32))
     });
 }
 
