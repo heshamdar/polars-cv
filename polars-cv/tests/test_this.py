@@ -200,8 +200,23 @@ class TestRefusals:
             contours.contour.simplify(tolerance=this.height / 2)
 
     def test_a_non_numeric_parameter_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="`this` attributes give a number"):
+        with pytest.raises(ValueError, match="does not take `this`"):
             Pipeline().source("list").flip_h(when=this.height)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda p: p.reduce_percentile(this.height),
+            lambda p: p.normalize_percentile(low=1.0, high=this.width),
+            lambda p: p.rank_filter(height=3, width=3, q=this.height // 2),
+        ],
+        ids=["reduce_percentile", "normalize_percentile", "rank_filter"],
+    )
+    def test_a_percentile_is_refused(self, build) -> None:
+        """A percentile is a rank in the values, not a size: its type
+        (``Percent``) takes no ``this``, as the pipeline is built."""
+        with pytest.raises(ValueError, match=r"\(a float\) does not take `this`"):
+            build(Pipeline().source("list"))
 
     def test_an_attribute_the_buffer_does_not_have_is_refused(self) -> None:
         # The rank is known when the pipeline is built, so it is refused then.
@@ -261,6 +276,16 @@ class TestRefusals:
             _run(pipe, _img(4, 4))
 
 
+#: Percentile fields, whose type takes no ``this``: the sweep below holds
+#: their annotations to it.
+PERCENTILES = {
+    ("reduce_percentile", "q"),
+    ("rank_filter", "q"),
+    ("normalize_percentile", "low"),
+    ("normalize_percentile", "high"),
+}
+
+
 def test_a_parameter_takes_this_only_where_its_op_reads_a_buffer() -> None:
     """The annotations say what is accepted: ``IntOrThisOrExpr`` on an op whose
     input may be a buffer, never on one that only reads contours or vectors
@@ -287,6 +312,8 @@ def test_a_parameter_takes_this_only_where_its_op_reads_a_buffer() -> None:
                 wrong.append(
                     f"{python}({param.name}) takes this, input {OP_DOMAINS[name]}"
                 )
+            if takes_this and (python, param.name) in PERCENTILES:
+                wrong.append(f"{python}({param.name}) is a percentile")
     assert not wrong, wrong
     # The sweep saw both kinds.
     assert "ThisOr" in str(
@@ -294,28 +321,33 @@ def test_a_parameter_takes_this_only_where_its_op_reads_a_buffer() -> None:
     )
 
 
-def _golden_render_cases() -> list:
-    import json
-    from pathlib import Path
-
-    path = Path(__file__).parent / "golden" / "this_render.json"
-    return json.loads(path.read_text())["cases"]
-
-
-@pytest.mark.parametrize(("tree", "text"), _golden_render_cases())
-def test_reads_as_the_shared_golden_says(tree, text) -> None:
-    """The text Rust's ``Display`` gives the same tree (``mode.rs`` reads this
-    file too), so an error quotes the expression as Python writes it."""
-    from polars_cv._this import ThisExpr
-
-    assert repr(ThisExpr(tree)) == text
+@pytest.mark.parametrize(
+    "expr",
+    [
+        (this.height - 4) * 0.5,
+        this.height / (this.width + 1),
+        this.height - (this.width - 1),
+        this.height + this.width + 1,
+        this.height - this.width - 1,
+        this.height * this.width * 2,
+        this.height / (this.width * 2),
+        (this.height + 1) // 2,
+        0.25 * this.height + this.width // 3,
+        -this.channels,
+        1.5 * this.ndim,
+    ],
+)
+@plugin_required
+def test_repr_reads_back_as_the_same_expression(expr) -> None:
+    """``repr`` is the engine's text (the one errors quote), and Python reads
+    it as the tree it came from: parentheses exactly where Python needs them."""
+    assert eval(repr(expr), {"this": this})._tree == expr._tree
 
 
 def test_the_operators_are_the_engines() -> None:
     """Each operator the engine spells (``ThisOp``, generated) is reachable
     from Python, and Python builds no other."""
     from polars_cv._ops_generated import THIS_OPERATORS
-    from polars_cv._this import _PRECEDENCE
 
     built = {
         (this.height + 1)._tree[0],
@@ -325,4 +357,4 @@ def test_the_operators_are_the_engines() -> None:
         (this.height // 1)._tree[0],
         (-this.height)._tree[0],
     }
-    assert built == set(THIS_OPERATORS) == set(_PRECEDENCE)
+    assert built == set(THIS_OPERATORS)

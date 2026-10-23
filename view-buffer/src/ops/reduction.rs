@@ -72,6 +72,8 @@ impl Percent {
 impl crate::naming::WireScalar for Percent {
     const KIND: crate::naming::WireKind = crate::naming::WireKind::Float;
     const PY_TYPE: &'static str = "float";
+    // A rank in the value distribution, not a size.
+    const TAKES_THIS: bool = false;
     fn from_wire(value: crate::naming::WireValue<'_>) -> Result<Self, String> {
         Percent::new(f64::from_wire(value)?)
     }
@@ -168,6 +170,7 @@ impl Reduction {
 impl crate::naming::WireScalar for Reduction {
     const KIND: crate::naming::WireKind = crate::naming::WireKind::Name;
     const PY_TYPE: &'static str = "str";
+    const TAKES_THIS: bool = false;
     fn from_wire(value: crate::naming::WireValue<'_>) -> Result<Self, String> {
         match value.as_str() {
             Some(s) => Reduction::parse(s),

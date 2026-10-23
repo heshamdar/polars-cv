@@ -17,6 +17,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "DType",
+              "this": false,
               "variants": [
                 "u8",
                 "i8",
@@ -39,7 +40,8 @@
           "type": {
             "kind": "scalar",
             "per_row": false,
-            "py": "bool"
+            "py": "bool",
+            "this": false
           }
         },
         {
@@ -50,6 +52,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "FetchErrorPolicy",
+            "this": false,
             "variants": [
               "raise",
               "null"
@@ -73,6 +76,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "DType",
+              "this": false,
               "variants": [
                 "u8",
                 "i8",
@@ -95,7 +99,8 @@
           "type": {
             "kind": "scalar",
             "per_row": false,
-            "py": "bool"
+            "py": "bool",
+            "this": false
           }
         },
         {
@@ -118,7 +123,8 @@
               "inner": {
                 "kind": "scalar",
                 "per_row": false,
-                "py": "str"
+                "py": "str",
+                "this": false
               }
             }
           }
@@ -131,7 +137,8 @@
             "inner": {
               "kind": "scalar",
               "per_row": false,
-              "py": "int"
+              "py": "int",
+              "this": false
             }
           }
         },
@@ -143,6 +150,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "FetchErrorPolicy",
+            "this": false,
             "variants": [
               "raise",
               "null"
@@ -166,6 +174,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "DType",
+              "this": false,
               "variants": [
                 "u8",
                 "i8",
@@ -189,6 +198,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "FetchErrorPolicy",
+            "this": false,
             "variants": [
               "raise",
               "null"
@@ -211,6 +221,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "FetchErrorPolicy",
+            "this": false,
             "variants": [
               "raise",
               "null"
@@ -234,6 +245,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "DType",
+              "this": false,
               "variants": [
                 "u8",
                 "i8",
@@ -269,7 +281,8 @@
               "inner": {
                 "kind": "scalar",
                 "per_row": false,
-                "py": "str"
+                "py": "str",
+                "this": false
               }
             }
           }
@@ -282,7 +295,8 @@
             "inner": {
               "kind": "scalar",
               "per_row": false,
-              "py": "int"
+              "py": "int",
+              "this": false
             }
           }
         },
@@ -294,6 +308,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "FetchErrorPolicy",
+            "this": false,
             "variants": [
               "raise",
               "null"
@@ -317,6 +332,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "DType",
+              "this": false,
               "variants": [
                 "u8",
                 "i8",
@@ -340,7 +356,8 @@
             "inner": {
               "kind": "scalar",
               "per_row": false,
-              "py": "int"
+              "py": "int",
+              "this": false
             }
           }
         },
@@ -352,6 +369,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "FetchErrorPolicy",
+            "this": false,
             "variants": [
               "raise",
               "null"
@@ -375,6 +393,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "DType",
+              "this": false,
               "variants": [
                 "u8",
                 "i8",
@@ -397,7 +416,8 @@
           "type": {
             "kind": "scalar",
             "per_row": false,
-            "py": "bool"
+            "py": "bool",
+            "this": false
           }
         },
         {
@@ -408,6 +428,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "FetchErrorPolicy",
+            "this": false,
             "variants": [
               "raise",
               "null"
@@ -429,6 +450,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "DType",
+            "this": false,
             "variants": [
               "u8",
               "i8",
@@ -451,6 +473,7 @@
             "kind": "scalar",
             "per_row": false,
             "py": "FetchErrorPolicy",
+            "this": false,
             "variants": [
               "raise",
               "null"
@@ -477,7 +500,8 @@
               "inner": {
                 "kind": "scalar",
                 "per_row": false,
-                "py": "int"
+                "py": "int",
+                "this": false
               }
             }
           }
@@ -504,7 +528,8 @@
           "type": {
             "kind": "scalar",
             "per_row": false,
-            "py": "int"
+            "py": "int",
+            "this": false
           }
         }
       ]
@@ -530,7 +555,8 @@
             "inner": {
               "kind": "scalar",
               "per_row": false,
-              "py": "str"
+              "py": "str",
+              "this": false
             }
           }
         },
@@ -542,7 +568,8 @@
             "inner": {
               "kind": "scalar",
               "per_row": false,
-              "py": "str"
+              "py": "str",
+              "this": false
             }
           }
         }
@@ -570,6 +597,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "SinkDType",
+              "this": false,
               "variants": [
                 "f16",
                 "float16"
@@ -584,7 +612,8 @@
           "type": {
             "kind": "scalar",
             "per_row": false,
-            "py": "bool"
+            "py": "bool",
+            "this": false
           }
         }
       ]
@@ -604,6 +633,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "SinkDType",
+              "this": false,
               "variants": [
                 "f16",
                 "float16"
@@ -618,7 +648,8 @@
           "type": {
             "kind": "scalar",
             "per_row": false,
-            "py": "bool"
+            "py": "bool",
+            "this": false
           }
         }
       ]
@@ -652,6 +683,7 @@
               "kind": "scalar",
               "per_row": false,
               "py": "SinkDType",
+              "this": false,
               "variants": [
                 "f16",
                 "float16"
@@ -666,7 +698,8 @@
           "type": {
             "kind": "scalar",
             "per_row": false,
-            "py": "bool"
+            "py": "bool",
+            "this": false
           }
         }
       ]

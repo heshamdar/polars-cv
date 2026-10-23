@@ -22,9 +22,6 @@ from typing import Any, Union
 #: A wire tree: an attribute name, a number, or ``[op, a, b]``.
 _Tree = Union[str, int, float, list[Any]]
 
-#: How tightly each operator binds, as in Python (for ``repr``).
-_PRECEDENCE = {"+": 1, "-": 1, "*": 2, "/": 2, "//": 2}
-
 
 class ThisExpr:
     """A number computed, per row, from the buffer an op reads: an attribute
@@ -91,7 +88,13 @@ class ThisExpr:
         raise TypeError(msg)
 
     def __repr__(self) -> str:
-        return _render(self._tree)
+        # The engine's text for the tree, which its errors quote too: one
+        # renderer, so the two cannot read differently.
+        import json
+
+        from polars_cv import _lib
+
+        return _lib._this_repr(json.dumps(self._tree))
 
 
 def _operand(value: Any) -> _Tree | None:
@@ -108,19 +111,3 @@ def _operand(value: Any) -> _Tree | None:
     if not math.isfinite(value):
         return None
     return value
-
-
-def _render(tree: _Tree, parent: str | None = None, *, right: bool = False) -> str:
-    if isinstance(tree, str):
-        return f"this.{tree}"
-    if not isinstance(tree, list):
-        return str(tree)
-    op, a, b = tree
-    text = f"{_render(a, op)} {op} {_render(b, op, right=True)}"
-    if parent is None:
-        return text
-    child, outer = _PRECEDENCE[op], _PRECEDENCE[parent]
-    loose = child < outer or (
-        right and child == outer and not (op == parent and op in ("+", "*"))
-    )
-    return f"({text})" if loose else text

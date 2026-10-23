@@ -679,21 +679,33 @@ class _OptFlagFields:
 OP_FIELDS: dict[str, dict[str, Any]] = {
     "abs": {},
     "add": {"other": {"kind": "node"}},
-    "add_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
-    "adjust_contrast": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
-    "adjust_gamma": {"gamma": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "add_constant": {
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
+    },
+    "adjust_contrast": {
+        "factor": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
+    },
+    "adjust_gamma": {
+        "gamma": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
+    },
     "apply_lut": {
         "table": {
             "kind": "list",
             "inner": {
                 "kind": "list",
-                "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+                "inner": {
+                    "kind": "scalar",
+                    "per_row": True,
+                    "py": "float",
+                    "this": True,
+                },
             },
         },
         "out_dtype": {
             "kind": "scalar",
             "per_row": False,
             "py": "DType",
+            "this": False,
             "variants": [
                 "u8",
                 "i8",
@@ -710,42 +722,54 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "apply_mask": {
         "mask": {"kind": "node"},
-        "invert": {"kind": "scalar", "per_row": True, "py": "bool"},
+        "invert": {"kind": "scalar", "per_row": True, "py": "bool", "this": False},
     },
     "assert_shape": {
         "dims": {
             "kind": "list",
             "inner": {
                 "kind": "optional",
-                "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+                "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
             },
         },
-        "exact": {"kind": "scalar", "per_row": False, "py": "bool"},
+        "exact": {"kind": "scalar", "per_row": False, "py": "bool", "this": False},
     },
     "bitwise_and": {"other": {"kind": "node"}},
     "bitwise_or": {"other": {"kind": "node"}},
     "bitwise_xor": {"other": {"kind": "node"}},
     "blend": {"other": {"kind": "node"}},
     "block_reduce": {
-        "height": {"kind": "scalar", "per_row": True, "py": "int"},
-        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "height": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "width": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "reduction": {
             "kind": "scalar",
             "per_row": True,
             "py": "str",
+            "this": False,
             "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
         },
     },
-    "blur": {"sigma": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "blur": {"sigma": {"kind": "scalar", "per_row": True, "py": "float", "this": True}},
     "canny": {
-        "low_threshold": {"kind": "scalar", "per_row": True, "py": "float"},
-        "high_threshold": {"kind": "scalar", "per_row": True, "py": "float"},
+        "low_threshold": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "float",
+            "this": True,
+        },
+        "high_threshold": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "float",
+            "this": True,
+        },
     },
     "cast": {
         "dtype": {
             "kind": "scalar",
             "per_row": False,
             "py": "DType",
+            "this": False,
             "variants": [
                 "u8",
                 "i8",
@@ -763,195 +787,233 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "ceil": {},
     "channel_merge": {"others": {"kind": "list", "inner": {"kind": "node"}}},
     "channel_select": {
-        "index": {"kind": "scalar", "per_row": True, "py": "int"},
-        "keepdims": {"kind": "scalar", "per_row": False, "py": "bool"},
+        "index": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "keepdims": {"kind": "scalar", "per_row": False, "py": "bool", "this": False},
     },
     "channel_swap": {
         "order": {
             "kind": "list",
-            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         }
     },
     "clamp": {
-        "min": {"kind": "scalar", "per_row": True, "py": "float"},
-        "max": {"kind": "scalar", "per_row": True, "py": "float"},
+        "min": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
+        "max": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
     },
-    "clamp_max": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
-    "clamp_min": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
-    "contour_area": {"signed": {"kind": "scalar", "per_row": True, "py": "bool"}},
+    "clamp_max": {
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
+    },
+    "clamp_min": {
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
+    },
+    "contour_area": {
+        "signed": {"kind": "scalar", "per_row": True, "py": "bool", "this": False}
+    },
     "contour_boundary": {},
     "contour_bounding_box": {},
     "contour_centroid": {},
     "contour_close": {},
     "contour_convex_hull": {},
     "contour_densify": {
-        "max_segment_length": {"kind": "scalar", "per_row": True, "py": "float"}
+        "max_segment_length": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "float",
+            "this": True,
+        }
     },
-    "contour_largest": {"k": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "contour_largest": {
+        "k": {"kind": "scalar", "per_row": True, "py": "int", "this": True}
+    },
     "contour_offset": {
-        "distance": {"kind": "scalar", "per_row": True, "py": "float"},
+        "distance": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         "join": {
             "kind": "scalar",
             "per_row": True,
             "py": "LineJoin",
+            "this": False,
             "variants": ["round", "miter", "bevel"],
         },
     },
     "contour_perimeter": {},
     "contour_scale": {
-        "sx": {"kind": "scalar", "per_row": True, "py": "float"},
-        "sy": {"kind": "scalar", "per_row": True, "py": "float"},
+        "sx": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
+        "sy": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         "origin": {
             "kind": "scalar",
             "per_row": True,
             "py": "ScaleOrigin",
+            "this": False,
             "variants": ["centroid", "bbox_center", "origin"],
         },
     },
     "contour_simplify": {
-        "tolerance": {"kind": "scalar", "per_row": True, "py": "float"}
+        "tolerance": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
     },
-    "contour_smooth": {"iterations": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "contour_smooth": {
+        "iterations": {"kind": "scalar", "per_row": True, "py": "int", "this": True}
+    },
     "contour_stroke": {
-        "width": {"kind": "scalar", "per_row": True, "py": "float"},
+        "width": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         "cap": {
             "kind": "scalar",
             "per_row": True,
             "py": "LineCap",
+            "this": False,
             "variants": ["round", "square", "butt"],
         },
         "join": {
             "kind": "scalar",
             "per_row": True,
             "py": "LineJoin",
+            "this": False,
             "variants": ["round", "miter", "bevel"],
         },
     },
     "contour_translate": {
-        "dx": {"kind": "scalar", "per_row": True, "py": "float"},
-        "dy": {"kind": "scalar", "per_row": True, "py": "float"},
+        "dx": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
+        "dy": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
     },
     "contour_union_all": {},
     "convolve2d": {
         "kernel": {
             "kind": "list",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         },
-        "normalize": {"kind": "scalar", "per_row": True, "py": "bool"},
+        "normalize": {"kind": "scalar", "per_row": True, "py": "bool", "this": False},
         "border": {
             "kind": "scalar",
             "per_row": True,
             "py": "BorderMode",
+            "this": False,
             "variants": ["replicate", "zero", "reflect"],
         },
     },
     "coordinate_grid": {
-        "normalized": {"kind": "scalar", "per_row": True, "py": "bool"}
+        "normalized": {"kind": "scalar", "per_row": True, "py": "bool", "this": False}
     },
     "crop": {
-        "top": {"kind": "scalar", "per_row": True, "py": "int"},
-        "left": {"kind": "scalar", "per_row": True, "py": "int"},
+        "top": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "left": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "height": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         },
         "width": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         },
         "bounds": {
             "kind": "scalar",
             "per_row": False,
             "py": "CropBounds",
+            "this": False,
             "variants": ["error", "clip"],
         },
     },
     "crop_pad": {
-        "top": {"kind": "scalar", "per_row": True, "py": "int"},
-        "left": {"kind": "scalar", "per_row": True, "py": "int"},
-        "height": {"kind": "scalar", "per_row": True, "py": "int"},
-        "width": {"kind": "scalar", "per_row": True, "py": "int"},
-        "value": {"kind": "scalar", "per_row": True, "py": "float"},
+        "top": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "left": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "height": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "width": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
     },
     "cvt_color": {
         "from_space": {
             "kind": "scalar",
             "per_row": False,
             "py": "ColorSpace",
+            "this": False,
             "variants": ["rgb", "bgr", "hsv", "lab", "ycbcr", "gray"],
         },
         "to_space": {
             "kind": "scalar",
             "per_row": False,
             "py": "ColorSpace",
+            "this": False,
             "variants": ["rgb", "bgr", "hsv", "lab", "ycbcr", "gray"],
         },
     },
     "difference": {"other": {"kind": "node"}},
     "dilate": {
-        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
-        "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+        "ksize": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "iterations": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "footprint": {
             "kind": "scalar",
             "per_row": True,
             "py": "Footprint",
+            "this": False,
             "variants": ["square", "disk"],
         },
     },
-    "distance_transform": {"signed": {"kind": "scalar", "per_row": True, "py": "bool"}},
+    "distance_transform": {
+        "signed": {"kind": "scalar", "per_row": True, "py": "bool", "this": False}
+    },
     "divide": {"other": {"kind": "node"}},
     "equalize_histogram": {},
     "erode": {
-        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
-        "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+        "ksize": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "iterations": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "footprint": {
             "kind": "scalar",
             "per_row": True,
             "py": "Footprint",
+            "this": False,
             "variants": ["square", "disk"],
         },
     },
-    "expand_dims": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
+    "expand_dims": {
+        "axis": {"kind": "scalar", "per_row": False, "py": "int", "this": False}
+    },
     "extract_contours": {
         "mode": {
             "kind": "scalar",
             "per_row": True,
             "py": "ExtractMode",
+            "this": False,
             "variants": ["external", "all"],
         },
         "method": {
             "kind": "scalar",
             "per_row": True,
             "py": "ApproxMethod",
+            "this": False,
             "variants": ["none", "simple", "approx"],
         },
         "min_area": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         },
         "min_area_fraction": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         },
     },
     "extract_shape": {},
     "flip": {
         "axes": {
             "kind": "list",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
         },
-        "when": {"kind": "scalar", "per_row": True, "py": "bool"},
+        "when": {"kind": "scalar", "per_row": True, "py": "bool", "this": False},
     },
     "floor": {},
-    "grayscale": {"keepdims": {"kind": "scalar", "per_row": False, "py": "bool"}},
+    "grayscale": {
+        "keepdims": {"kind": "scalar", "per_row": False, "py": "bool", "this": False}
+    },
     "histogram": {
         "bins": {
             "kind": "one_of",
             "options": [
-                {"kind": "scalar", "per_row": True, "py": "int"},
+                {"kind": "scalar", "per_row": True, "py": "int", "this": True},
                 {
                     "kind": "list",
-                    "inner": {"kind": "scalar", "per_row": False, "py": "bound"},
+                    "inner": {
+                        "kind": "scalar",
+                        "per_row": False,
+                        "py": "bound",
+                        "this": False,
+                    },
                 },
             ],
         },
@@ -960,19 +1022,26 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "inner": {
                 "kind": "array",
                 "len": 2,
-                "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+                "inner": {
+                    "kind": "scalar",
+                    "per_row": True,
+                    "py": "float",
+                    "this": True,
+                },
             },
         },
         "closed": {
             "kind": "scalar",
             "per_row": False,
             "py": "HistogramClosed",
+            "this": False,
             "variants": ["left", "right"],
         },
         "output": {
             "kind": "scalar",
             "per_row": False,
             "py": "HistogramOutput",
+            "this": False,
             "variants": ["counts", "normalized", "quantized", "edges", "buckets"],
         },
     },
@@ -984,23 +1053,26 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "str",
+            "this": False,
             "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
         },
         "region_mode": {
             "kind": "scalar",
             "per_row": True,
             "py": "LabelRegionMode",
+            "this": False,
             "variants": ["interior", "boundary", "bbox"],
         },
     },
     "letterbox": {
-        "height": {"kind": "scalar", "per_row": True, "py": "int"},
-        "width": {"kind": "scalar", "per_row": True, "py": "int"},
-        "value": {"kind": "scalar", "per_row": True, "py": "float"},
+        "height": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "width": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         "filter": {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
+            "this": False,
             "variants": [
                 "nearest",
                 "bilinear",
@@ -1015,11 +1087,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "maximum": {"other": {"kind": "node"}},
     "minimum": {"other": {"kind": "node"}},
     "morphology_gradient": {
-        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
+        "ksize": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "footprint": {
             "kind": "scalar",
             "per_row": True,
             "py": "Footprint",
+            "this": False,
             "variants": ["square", "disk"],
         },
     },
@@ -1030,6 +1103,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": False,
             "py": "NormalizeMethod",
+            "this": False,
             "variants": ["minmax", "zscore"],
         },
         "out_dtype": {
@@ -1038,6 +1112,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
                 "kind": "scalar",
                 "per_row": False,
                 "py": "DType",
+                "this": False,
                 "variants": [
                     "u8",
                     "i8",
@@ -1054,14 +1129,15 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "normalize_percentile": {
-        "low": {"kind": "scalar", "per_row": True, "py": "float"},
-        "high": {"kind": "scalar", "per_row": True, "py": "float"},
+        "low": {"kind": "scalar", "per_row": True, "py": "float", "this": False},
+        "high": {"kind": "scalar", "per_row": True, "py": "float", "this": False},
         "out_dtype": {
             "kind": "optional",
             "inner": {
                 "kind": "scalar",
                 "per_row": False,
                 "py": "DType",
+                "this": False,
                 "variants": [
                     "u8",
                     "i8",
@@ -1079,14 +1155,15 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "normalize_percentile_masked": {
         "mask": {"kind": "node"},
-        "low": {"kind": "scalar", "per_row": True, "py": "float"},
-        "high": {"kind": "scalar", "per_row": True, "py": "float"},
+        "low": {"kind": "scalar", "per_row": True, "py": "float", "this": False},
+        "high": {"kind": "scalar", "per_row": True, "py": "float", "this": False},
         "out_dtype": {
             "kind": "optional",
             "inner": {
                 "kind": "scalar",
                 "per_row": False,
                 "py": "DType",
+                "this": False,
                 "variants": [
                     "u8",
                     "i8",
@@ -1105,11 +1182,11 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "normalize_preset": {
         "mean": {
             "kind": "list",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         },
         "std": {
             "kind": "list",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         },
         "out_dtype": {
             "kind": "optional",
@@ -1117,6 +1194,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
                 "kind": "scalar",
                 "per_row": False,
                 "py": "DType",
+                "this": False,
                 "variants": [
                     "u8",
                     "i8",
@@ -1133,14 +1211,15 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "normalize_range": {
-        "low": {"kind": "scalar", "per_row": True, "py": "float"},
-        "high": {"kind": "scalar", "per_row": True, "py": "float"},
+        "low": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
+        "high": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         "out_dtype": {
             "kind": "optional",
             "inner": {
                 "kind": "scalar",
                 "per_row": False,
                 "py": "DType",
+                "this": False,
                 "variants": [
                     "u8",
                     "i8",
@@ -1157,46 +1236,50 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "pad": {
-        "top": {"kind": "scalar", "per_row": True, "py": "int"},
-        "bottom": {"kind": "scalar", "per_row": True, "py": "int"},
-        "left": {"kind": "scalar", "per_row": True, "py": "int"},
-        "right": {"kind": "scalar", "per_row": True, "py": "int"},
-        "value": {"kind": "scalar", "per_row": True, "py": "float"},
+        "top": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "bottom": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "left": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "right": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         "mode": {
             "kind": "scalar",
             "per_row": True,
             "py": "PadMode",
+            "this": False,
             "variants": ["constant", "edge", "reflect", "symmetric"],
         },
     },
     "pad_to_size": {
-        "height": {"kind": "scalar", "per_row": True, "py": "int"},
-        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "height": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "width": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "position": {
             "kind": "scalar",
             "per_row": True,
             "py": "PadPosition",
+            "this": False,
             "variants": ["center", "top-left", "bottom-right"],
         },
-        "value": {"kind": "scalar", "per_row": True, "py": "float"},
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
     },
     "perceptual_hash": {
         "algorithm": {
             "kind": "scalar",
             "per_row": False,
             "py": "HashAlgorithm",
+            "this": False,
             "variants": ["average", "difference", "perceptual", "blockhash"],
         },
-        "hash_size": {"kind": "scalar", "per_row": False, "py": "int"},
+        "hash_size": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
     },
     "rank_filter": {
-        "height": {"kind": "scalar", "per_row": True, "py": "int"},
-        "width": {"kind": "scalar", "per_row": True, "py": "int"},
-        "q": {"kind": "scalar", "per_row": True, "py": "float"},
+        "height": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "width": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "q": {"kind": "scalar", "per_row": True, "py": "float", "this": False},
         "border": {
             "kind": "scalar",
             "per_row": True,
             "py": "BorderMode",
+            "this": False,
             "variants": ["replicate", "zero", "reflect"],
         },
     },
@@ -1207,14 +1290,19 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
                 {
                     "kind": "array",
                     "len": 2,
-                    "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+                    "inner": {
+                        "kind": "scalar",
+                        "per_row": True,
+                        "py": "int",
+                        "this": True,
+                    },
                 },
                 {"kind": "node"},
             ],
         },
-        "fill_value": {"kind": "scalar", "per_row": True, "py": "int"},
-        "background": {"kind": "scalar", "per_row": True, "py": "int"},
-        "supersample": {"kind": "scalar", "per_row": True, "py": "int"},
+        "fill_value": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "background": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "supersample": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
     },
     "reciprocal": {},
     "reduce": {
@@ -1222,70 +1310,79 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "str",
+            "this": False,
             "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
         },
         "axis": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
         },
     },
-    "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
-    "reduce_argmin": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
+    "reduce_argmax": {
+        "axis": {"kind": "scalar", "per_row": False, "py": "int", "this": False}
+    },
+    "reduce_argmin": {
+        "axis": {"kind": "scalar", "per_row": False, "py": "int", "this": False}
+    },
     "reduce_masked": {
         "mask": {"kind": "node"},
         "reduction": {
             "kind": "scalar",
             "per_row": True,
             "py": "str",
+            "this": False,
             "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
         },
         "axis": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
         },
     },
     "reduce_max": {
         "axis": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
         }
     },
     "reduce_mean": {
         "axis": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
         }
     },
     "reduce_min": {
         "axis": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
         }
     },
-    "reduce_percentile": {"q": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "reduce_percentile": {
+        "q": {"kind": "scalar", "per_row": True, "py": "float", "this": False}
+    },
     "reduce_popcount": {},
     "reduce_std": {
         "axis": {
             "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
         },
-        "ddof": {"kind": "scalar", "per_row": True, "py": "int"},
+        "ddof": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
     },
     "reduce_sum": {},
     "relu": {},
     "reshape": {
         "shape": {
             "kind": "list",
-            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         }
     },
     "resize": {
-        "height": {"kind": "scalar", "per_row": True, "py": "int"},
-        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "height": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
+        "width": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "filter": {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
+            "this": False,
             "variants": [
                 "nearest",
                 "bilinear",
@@ -1302,6 +1399,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
+            "this": False,
             "variants": [
                 "nearest",
                 "bilinear",
@@ -1313,11 +1411,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "resize_max": {
-        "max_size": {"kind": "scalar", "per_row": True, "py": "int"},
+        "max_size": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "filter": {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
+            "this": False,
             "variants": [
                 "nearest",
                 "bilinear",
@@ -1329,11 +1428,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "resize_min": {
-        "min_size": {"kind": "scalar", "per_row": True, "py": "int"},
+        "min_size": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "filter": {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
+            "this": False,
             "variants": [
                 "nearest",
                 "bilinear",
@@ -1345,12 +1445,13 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "resize_scale": {
-        "scale_x": {"kind": "scalar", "per_row": True, "py": "float"},
-        "scale_y": {"kind": "scalar", "per_row": True, "py": "float"},
+        "scale_x": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
+        "scale_y": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         "filter": {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
+            "this": False,
             "variants": [
                 "nearest",
                 "bilinear",
@@ -1362,11 +1463,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "resize_to_height": {
-        "height": {"kind": "scalar", "per_row": True, "py": "int"},
+        "height": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "filter": {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
+            "this": False,
             "variants": [
                 "nearest",
                 "bilinear",
@@ -1378,11 +1480,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "resize_to_width": {
-        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "width": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         "filter": {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
+            "this": False,
             "variants": [
                 "nearest",
                 "bilinear",
@@ -1394,44 +1497,58 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "rotate": {
-        "angle": {"kind": "scalar", "per_row": True, "py": "float"},
-        "expand": {"kind": "scalar", "per_row": False, "py": "bool"},
+        "angle": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
+        "expand": {"kind": "scalar", "per_row": False, "py": "bool", "this": False},
         "interpolation": {
             "kind": "scalar",
             "per_row": True,
             "py": "InterpolationType",
+            "this": False,
             "variants": ["nearest", "bilinear"],
         },
-        "border_value": {"kind": "scalar", "per_row": True, "py": "float"},
+        "border_value": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "float",
+            "this": True,
+        },
     },
     "rotate_and_scale": {
-        "angle": {"kind": "scalar", "per_row": True, "py": "float"},
+        "angle": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         "center": {
             "kind": "array",
             "len": 2,
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         },
         "output_size": {
             "kind": "array",
             "len": 2,
-            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         },
-        "scale": {"kind": "scalar", "per_row": True, "py": "float"},
+        "scale": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
     },
     "round": {},
-    "scale": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "scale": {
+        "factor": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
+    },
     "sign": {},
     "sqrt": {},
     "square": {},
-    "squeeze": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
+    "squeeze": {
+        "axis": {"kind": "scalar", "per_row": False, "py": "int", "this": False}
+    },
     "subtract": {"other": {"kind": "node"}},
-    "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "subtract_constant": {
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
+    },
     "symmetric_difference": {"other": {"kind": "node"}},
-    "threshold": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "threshold": {
+        "value": {"kind": "scalar", "per_row": True, "py": "float", "this": True}
+    },
     "transpose": {
         "axes": {
             "kind": "list",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
         }
     },
     "trunc": {},
@@ -1440,20 +1557,26 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "matrix": {
             "kind": "array",
             "len": 6,
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "float", "this": True},
         },
         "output_size": {
             "kind": "array",
             "len": 2,
-            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+            "inner": {"kind": "scalar", "per_row": True, "py": "int", "this": True},
         },
         "interpolation": {
             "kind": "scalar",
             "per_row": True,
             "py": "InterpolationType",
+            "this": False,
             "variants": ["nearest", "bilinear"],
         },
-        "border_value": {"kind": "scalar", "per_row": True, "py": "float"},
+        "border_value": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "float",
+            "this": True,
+        },
     },
 }
 
@@ -1712,14 +1835,15 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
 SOURCE_FIELDS: dict[str, dict[str, Any]] = {
     "allowed_roots": {
         "kind": "list",
-        "inner": {"kind": "scalar", "per_row": False, "py": "str"},
+        "inner": {"kind": "scalar", "per_row": False, "py": "str", "this": False},
     },
     "cloud_options": {"kind": "map"},
-    "decode_max_size": {"kind": "scalar", "per_row": False, "py": "int"},
+    "decode_max_size": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
     "dtype": {
         "kind": "scalar",
         "per_row": False,
         "py": "DType",
+        "this": False,
         "variants": [
             "u8",
             "i8",
@@ -1737,9 +1861,15 @@ SOURCE_FIELDS: dict[str, dict[str, Any]] = {
         "kind": "scalar",
         "per_row": False,
         "py": "FetchErrorPolicy",
+        "this": False,
         "variants": ["raise", "null"],
     },
-    "require_contiguous": {"kind": "scalar", "per_row": False, "py": "bool"},
+    "require_contiguous": {
+        "kind": "scalar",
+        "per_row": False,
+        "py": "bool",
+        "this": False,
+    },
 }
 
 
@@ -2840,11 +2970,7 @@ class _OpsMixin:
         )
 
     def normalize_percentile(
-        self,
-        *,
-        low: FloatOrThisOrExpr,
-        high: FloatOrThisOrExpr,
-        out_dtype: str | None = None,
+        self, *, low: FloatOrExpr, high: FloatOrExpr, out_dtype: str | None = None
     ) -> Pipeline:
         """Map the window between the image's own ``low``-th and ``high``-th
         percentiles (every channel together, NumPy's linear interpolation) to
@@ -3013,7 +3139,7 @@ class _OpsMixin:
         *,
         height: IntOrThisOrExpr,
         width: IntOrThisOrExpr,
-        q: FloatOrThisOrExpr = 50.0,
+        q: FloatOrExpr = 50.0,
         border: str | pl.Expr = "replicate",
     ) -> Pipeline:
         """Rank filter: each pixel the ``q``-th percentile of its ``height`` x
@@ -3173,7 +3299,7 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_min", {"axis": axis})
 
-    def reduce_percentile(self, q: FloatOrThisOrExpr) -> Pipeline:
+    def reduce_percentile(self, q: FloatOrExpr) -> Pipeline:
         """Compute the q-th percentile of all values (linear interpolation, as
         numpy's default). Along an axis, ``reduce("pNN", axis=)``.
 
@@ -3908,8 +4034,8 @@ class _LazyOpsMixin:
         self,
         mask: LazyPipelineExpr,
         *,
-        low: FloatOrThisOrExpr,
-        high: FloatOrThisOrExpr,
+        low: FloatOrExpr,
+        high: FloatOrExpr,
         out_dtype: str | None = None,
     ) -> LazyPipelineExpr:
         """``normalize_percentile`` with its window from the pixels a mask

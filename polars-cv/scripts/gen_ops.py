@@ -136,9 +136,10 @@ _SCALAR = {
     "str": ("str", "str"),
 }
 
-#: A pipeline op's per-row numeric parameter also takes ``this`` arithmetic
-#: (``polars_cv.ThisExpr``): it reads the buffer the op reads, which
-#: a source or a geometry function has none of.
+#: A pipeline op's per-row numeric parameter whose type takes ``this``
+#: (the catalogue's ``this``, Rust's ``WireScalar::TAKES_THIS``) is annotated
+#: to take ``this`` arithmetic (``polars_cv.ThisExpr``) too, when the op reads
+#: a buffer, which a source or a geometry function has none of.
 _OP_SCALAR = {"IntOrExpr": "IntOrThisOrExpr", "FloatOrExpr": "FloatOrThisOrExpr"}
 
 #: Docstring width, less the method body's eight-space indent.
@@ -157,8 +158,8 @@ def annotation(ty: dict[str, Any], *, op: bool = False) -> str:
         if ty.get("variants"):
             return "str | pl.Expr" if ty["per_row"] else "str"
         per_row, literal = _SCALAR[ty["py"]]
-        if op:
-            per_row = _OP_SCALAR.get(per_row, per_row)
+        if op and ty["this"]:
+            per_row = _OP_SCALAR[per_row]
         return per_row if ty["per_row"] else literal
     if kind == "optional":
         return f"{annotation(ty['inner'], op=op)} | None"
