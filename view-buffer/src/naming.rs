@@ -171,6 +171,7 @@ registry!(
     crate::geometry::ops::LineCap,
     crate::ops::reduction::Statistic,
     crate::mode::ThisAttr,
+    crate::mode::ThisOp,
     crate::geometry::label::LabelRegionMode,
     crate::ops::NormalizeMethod,
 );

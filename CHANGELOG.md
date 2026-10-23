@@ -47,9 +47,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   reads contours), and functions with no buffer (the `.contour` methods)
   refuse them, as the pipeline is built wherever the plan can tell. A new
   attribute is one Rust `ThisAttr` variant: the Python `This` class is
-  generated from it. Pipeline op parameters are annotated
-  `IntOrThisOrExpr`/`FloatOrThisOrExpr`; `IntOrExpr`/`FloatOrExpr` keep their
-  meaning elsewhere.
+  generated from it, and its operators (`THIS_OPERATORS`) from Rust's
+  `ThisOp`; both renderers of an expression read one golden file. The
+  numeric per-row parameters of an op that reads a buffer are annotated
+  `IntOrThisOrExpr`/`FloatOrThisOrExpr`; an op that reads contours or vectors
+  (`rasterize`, the contour ops), and every other place, keeps
+  `IntOrExpr`/`FloatOrExpr`.
 - **`sink("long", names=[...], where=)`**: an `[H, W]` or `[H, W, C]`
   buffer as `List[Struct{row: u32, col: u32, <names>...}]`, one struct per
   pixel, row-major, each channel a named field of the buffer's dtype.

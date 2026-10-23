@@ -28,6 +28,7 @@ from polars_cv._types import (
     BoolOrExpr,
     DType,
     FloatOrThisOrExpr,
+    IntOrExpr,
     IntOrThisOrExpr,
     NullParamPolicy,
     RowErrorPolicy,
@@ -1112,12 +1113,12 @@ class Pipeline(_OpsMixin):
     def rasterize(
         self,
         *,
-        width: IntOrThisOrExpr | None = None,
-        height: IntOrThisOrExpr | None = None,
+        width: IntOrExpr | None = None,
+        height: IntOrExpr | None = None,
         shape: "LazyPipelineExpr | None" = None,
-        fill_value: IntOrThisOrExpr = OP_DEFAULTS["rasterize"]["fill_value"],
-        background: IntOrThisOrExpr = OP_DEFAULTS["rasterize"]["background"],
-        supersample: IntOrThisOrExpr = OP_DEFAULTS["rasterize"]["supersample"],
+        fill_value: IntOrExpr = OP_DEFAULTS["rasterize"]["fill_value"],
+        background: IntOrExpr = OP_DEFAULTS["rasterize"]["background"],
+        supersample: IntOrExpr = OP_DEFAULTS["rasterize"]["supersample"],
     ) -> "Pipeline":
         """
         Rasterize contours to a mask: each region filled.
@@ -1174,7 +1175,7 @@ class Pipeline(_OpsMixin):
             # H/W come from `GeometryOp::Rasterize`'s `shape` and the
             # single-channel output from the op's `fixed:1` channel rule; none
             # of it is re-derived here.
-            size: "list[IntOrThisOrExpr] | LazyPipelineExpr" = [height, width]
+            size: "list[IntOrExpr] | LazyPipelineExpr" = [height, width]
         else:
             from polars_cv.lazy import LazyPipelineExpr
 
