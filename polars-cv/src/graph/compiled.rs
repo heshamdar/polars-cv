@@ -702,8 +702,15 @@ impl CompiledGraph {
                         let Some(operands) = node_outputs.operands(&compiled.operands) else {
                             continue 'nodes;
                         };
-                        current_output =
-                            run_step(step, compiled.name, current_output, &operands, ctx, row_idx)?;
+                        current_output = run_step(
+                            step,
+                            compiled.name,
+                            current_output,
+                            &operands,
+                            ctx,
+                            row_idx,
+                            node_outputs.regions(),
+                        )?;
                     }
                 }
             }

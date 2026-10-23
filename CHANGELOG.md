@@ -166,6 +166,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   dtypes keep.
 - **The ambient GCS federation probe reads the ADC file once per version of
   it** (path, mtime, size) rather than on every remote read with no options.
+- **`region_stats` finds each contour region once per row,** not once per
+  map: every `label_reduce` in a row over the same contours, region mode and
+  plane size shares one scan (most of a label reduction's cost). 1.9× faster
+  for eight maps; results are bit-identical.
 
 - **Header-only metadata on a remote path reads a prefix, not the object.**
   `.cv.image_info()`, `width()`, `height()`, `channels()` and `image_dtype()`

@@ -46,7 +46,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
 | CR-129 | Params | Feature | Masked percentile `normalize`: a window from another node's pixels (C3 remainder) |
-| CR-131 | Performance | Low | `rank_filter` gathers every window afresh (no running histogram); `statistics(mask=)` and `region_stats` repeat work per statistic/map; the ADC file is re-read per remote object |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -372,15 +371,6 @@ four phases are closed below (CR-119 to CR-128); this is what remains.
 An independent review of the downstream-proposal branch. Its bugs are fixed
 (see Closed findings); these are the design and performance points left.
 
-### CR-131 — Repeated work in the new reductions
-
-- `rank_filter` on u8 keeps a sliding 256-bin histogram (Huang), O(h) per
-  pixel (6× faster at 256², 15×15 in a debug build); other dtypes still
-  select each window afresh (`percentile_of`, O(h·w) per window). A u16
-  histogram would need a two-level (coarse/fine) count to stay cheap.
-- `region_stats` runs one `label_reduce` per entry, rasterising the same
-  regions once per map.
-
 ## Extension types
 
 Shipped in 0.29.0: `ExtType`, the four registered types, `sink("ndarray")`,
@@ -613,6 +603,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-131 | Repeated work in the new reductions: `rank_filter` gathered every window, `statistics(mask=)` and `region_stats` repeated their scan per statistic/map, the ADC file was read per remote object | Fixed (unreleased): u8 `rank_filter` slides a 256-bin histogram (other dtypes keep the selection; a u16 histogram would need a coarse/fine count); `masked_select` gathers once for every masked statistic; a row's contour regions are found once for every `label_reduce` over them (`RegionCache`); the ADC probe is cached per file version |
 | CR-130 | Row errors composed by inspecting other errors' text; `(row n)` was a streaming batch's index presented as the frame's | Fixed (unreleased): `row_ref.rs` names a row once, `(row i of n in this batch)`, from the pipeline's and the geometry functions' row loops; `ResolveError` replaces the text tests (`test_row_ref_guard.py`, `test_error_messages.py`) |
 | CR-132 | A ranged header read of an empty remote object was refused (HTTP 416, S3 `InvalidRange`) | Fixed (unreleased): read whole on a range refusal (`test_remote_header_reads.py`, `test_cloud_access_probe.py`) |
 | CR-133 | `normalize`'s `mean`/`std`/`low`/`high` were optional fields read under one method each | Fixed (unreleased): `normalize_preset`, `normalize_percentile`, `normalize_range`, each with required fields; `normalize` keeps `minmax`/`zscore` |
