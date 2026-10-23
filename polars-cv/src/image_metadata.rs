@@ -184,7 +184,7 @@ fn metas(
                 .as_deref()
                 .map(crate::fetch::PathPolicy::new)
                 .unwrap_or_default();
-            let fetcher = crate::fetch::Fetcher::headers(ca, options.as_ref(), &policy);
+            let fetcher = crate::fetch::HeaderFetcher::new(ca, options.as_ref(), &policy);
             (0..ca.len())
                 .map(|row| match fetcher.header(row, extract_metadata) {
                     Ok(meta) => Ok(meta),
