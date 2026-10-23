@@ -32,6 +32,12 @@ pub trait Format: WireOps + 'static {
     /// Every format's description, built once.
     fn formats() -> &'static [OpDesc];
 
+    /// Refuse a combination of fields no row can use (the `long` sink's
+    /// `where` that is not one of its `names`), as the format is parsed:
+    /// every reader then takes the format as valid. Required, so each
+    /// family decides.
+    fn check(&self) -> Result<(), String>;
+
     /// The format's wire name.
     fn name(&self) -> &'static str {
         self.wire_name().expect("every format has a wire name")
@@ -93,9 +99,11 @@ fn from_wire<F: Format>(
             )
         });
     }
-    F::from_wire(&name, serde_json::Value::Object(fields))
+    let format = F::from_wire(&name, serde_json::Value::Object(fields))
         .expect("a catalogued format parses")
-        .map_err(|e| format!("{kind} '{name}': {e}"))
+        .map_err(|e| format!("{kind} '{name}': {e}"))?;
+    format.check()?;
+    Ok(format)
 }
 
 /// `Serialize`/`Deserialize` for a [`Format`] family, through [`to_wire`] and

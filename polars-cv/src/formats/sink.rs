@@ -102,6 +102,22 @@ pub enum Sink {
 
 impl super::Format for Sink {
     const KIND: &'static str = "sink";
+    fn check(&self) -> Result<(), String> {
+        match self {
+            Sink::Long { names, r#where } => LongLayout::check(names, r#where.as_deref()),
+            Sink::Array { .. }
+            | Sink::Blob
+            | Sink::Jpeg { .. }
+            | Sink::List
+            | Sink::Native
+            | Sink::NdArray { .. }
+            | Sink::Numpy { .. }
+            | Sink::Png
+            | Sink::Tiff
+            | Sink::Torch { .. }
+            | Sink::WebP => Ok(()),
+        }
+    }
     fn formats() -> &'static [view_buffer::mode::OpDesc] {
         static CATALOG: std::sync::LazyLock<Vec<view_buffer::mode::OpDesc>> =
             std::sync::LazyLock::new(Sink::catalog);
@@ -170,10 +186,20 @@ impl Sink {
 }
 
 impl Sink {
-    /// The `long` sink's layout, its names checked.
-    pub fn long_layout(&self) -> Option<Result<LongLayout, String>> {
+    /// The `long` sink's layout over its own fields (checked when the sink
+    /// was parsed, [`Format::check`](super::Format::check)); `None` for every
+    /// other sink. A borrowed view: reading it allocates nothing.
+    pub fn long_layout(&self) -> Option<LongLayout<'_>> {
         match self {
-            Sink::Long { names, r#where } => Some(LongLayout::of(names, r#where.as_deref())),
+            Sink::Long { names, r#where } => Some(LongLayout {
+                names,
+                select: r#where.as_deref().map(|w| {
+                    names
+                        .iter()
+                        .position(|n| n == w)
+                        .expect("checked when parsed")
+                }),
+            }),
             Sink::Array { .. }
             | Sink::Blob
             | Sink::Jpeg { .. }
@@ -207,22 +233,20 @@ impl Sink {
     }
 }
 
-/// The `long` sink over a buffer's channels: the channel each struct field
-/// reads, in order, and the channel that selects the pixels.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LongLayout {
-    /// `(channel, name)` for each value field, in channel order.
-    pub fields: Vec<(usize, String)>,
+/// The `long` sink over a buffer's channels: one struct field per name, in
+/// channel order, except the `where` channel that selects the pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LongLayout<'a> {
+    /// One per channel.
+    names: &'a [String],
     /// The `where` channel: a pixel is kept where it is > 0.
     pub select: Option<usize>,
-    /// The channel count the names describe.
-    pub channels: usize,
 }
 
-impl LongLayout {
-    /// The layout `names` and `where` describe, refusing names that cannot
-    /// be struct fields beside `row` and `col`.
-    pub fn of(names: &[String], r#where: Option<&str>) -> Result<Self, String> {
+impl<'a> LongLayout<'a> {
+    /// Refuse names that cannot be struct fields beside `row` and `col`, and
+    /// a `where` that is not one of them: the check the sink is parsed under.
+    fn check(names: &[String], r#where: Option<&str>) -> Result<(), String> {
         if names.is_empty() {
             return Err("the 'long' sink needs `names`: one per channel".into());
         }
@@ -239,35 +263,40 @@ impl LongLayout {
                 ));
             }
         }
-        let select = match r#where {
-            None => None,
-            Some(w) => Some(names.iter().position(|n| n == w).ok_or_else(|| {
-                format!("the 'long' sink's 'where' = '{w}' is not one of its names {names:?}")
-            })?),
-        };
-        let fields = names
+        match r#where {
+            Some(w) if !names.iter().any(|n| n == w) => Err(format!(
+                "the 'long' sink's 'where' = '{w}' is not one of its names {names:?}"
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// `(channel, name)` for each value field, in channel order.
+    pub fn fields(&self) -> impl Iterator<Item = (usize, &'a str)> + 'a {
+        let select = self.select;
+        self.names
             .iter()
             .enumerate()
-            .filter(|(c, _)| Some(*c) != select)
-            .map(|(c, n)| (c, n.clone()))
-            .collect();
-        Ok(LongLayout {
-            fields,
-            select,
-            channels: names.len(),
-        })
+            .filter(move |(c, _)| Some(*c) != select)
+            .map(|(c, n)| (c, n.as_str()))
+    }
+
+    /// The channel count the names describe.
+    pub fn channels(&self) -> usize {
+        self.names.len()
     }
 
     /// Refuse a buffer whose channel count is not the names'.
     pub fn check_channels(&self, channels: usize) -> Result<(), String> {
-        if channels == self.channels {
+        let named = self.channels();
+        if channels == named {
             return Ok(());
         }
         let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
         Err(format!(
             "the 'long' sink's buffer has {} but {} given: give one name per channel",
             plural(channels, "channel"),
-            plural(self.channels, "name") + if self.channels == 1 { " was" } else { " were" },
+            plural(named, "name") + if named == 1 { " was" } else { " were" },
         ))
     }
 }
@@ -341,26 +370,32 @@ mod tests {
 
     #[test]
     fn the_long_layout_reads_each_named_channel_and_drops_where() {
-        let names: Vec<String> = ["heat", "mask", "score"].map(String::from).into();
-        let layout = LongLayout::of(&names, Some("mask")).unwrap();
+        let long = |wire: serde_json::Value| -> Result<Sink, String> {
+            super::super::from_wire::<Sink>(wire.as_object().unwrap().clone())
+        };
+        let sink = long(serde_json::json!({"format": "long",
+            "names": ["heat", "mask", "score"], "where": "mask"}))
+        .unwrap();
+        let layout = sink.long_layout().unwrap();
         assert_eq!(
-            layout.fields,
-            vec![(0, "heat".to_string()), (2, "score".to_string())]
+            layout.fields().collect::<Vec<_>>(),
+            vec![(0, "heat"), (2, "score")]
         );
         assert_eq!(layout.select, Some(1));
         assert!(layout.check_channels(3).is_ok());
         let err = layout.check_channels(1).unwrap_err();
         assert!(err.contains("1 channel but 3 names were given"), "{err}");
-        for (bad, says) in [
-            (vec!["a", "a"], "'a' appears twice"),
-            (vec!["col"], "cannot include 'col'"),
-            (vec![], "needs `names`"),
+        // Refused as the sink is parsed, not when a row is encoded.
+        for (wire, says) in [
+            (serde_json::json!(["a", "a"]), "'a' appears twice"),
+            (serde_json::json!(["col"]), "cannot include 'col'"),
+            (serde_json::json!([]), "needs `names`"),
         ] {
-            let bad: Vec<String> = bad.into_iter().map(String::from).collect();
-            let err = LongLayout::of(&bad, None).unwrap_err();
+            let err = long(serde_json::json!({"format": "long", "names": wire})).unwrap_err();
             assert!(err.contains(says), "{err}");
         }
-        let err = LongLayout::of(&names, Some("x")).unwrap_err();
+        let err =
+            long(serde_json::json!({"format": "long", "names": ["a"], "where": "x"})).unwrap_err();
         assert!(err.contains("'where' = 'x' is not one of"), "{err}");
     }
 

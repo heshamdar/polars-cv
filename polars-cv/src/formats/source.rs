@@ -178,6 +178,10 @@ impl Source {
 
 impl super::Format for Source {
     const KIND: &'static str = "source";
+    /// A source's fields are independent: each is checked by its type.
+    fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn formats() -> &'static [view_buffer::mode::OpDesc] {
         static CATALOG: std::sync::LazyLock<Vec<view_buffer::mode::OpDesc>> =
             std::sync::LazyLock::new(Source::catalog);
