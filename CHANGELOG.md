@@ -135,7 +135,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   credential a read of `path` would use and exercises it once (a `HEAD`, or a
   one-level listing of a prefix), before any row is read. It returns
   `{"backend", "credential_source", "status"}` and raises
-  `polars_cv.CloudCredentialError` naming the credential when it fails.
+  `polars_cv.CloudCredentialError` naming the credential when it fails. It
+  opens the store exactly as a read does (one `open_object`), and a prefix
+  with nothing under it is `"not_found"`, as a missing object is.
 
 ### Changed
 
@@ -143,8 +145,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `.cv.image_info()`, `width()`, `height()`, `channels()` and `image_dtype()`
   over `s3://`/`gs://`/`az://`/`http(s)://` paths ask for the first 64 KiB
   (a ranged read), and read the whole object only when the header is not in
-  it, as a local file already was. An empty remote object, which has no
-  first byte to range over, is now a row error rather than a null.
+  it, as a local file already was. An empty remote object, whose range
+  servers refuse (HTTP 416, S3's `InvalidRange`), is read whole and has no
+  header: a null, as before.
 - **`show_images(df, "col.field")`** shows one field of a struct column, such
   as an aliased intermediate sunk beside the result with a dict sink.
 - **A row an op refuses ends `(row n)`,** as a `.contour` accessor's refusal
