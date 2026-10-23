@@ -374,10 +374,10 @@ An independent review of the downstream-proposal branch. Its bugs are fixed
 
 ### CR-131 — Repeated work in the new reductions
 
-- `rank_filter` selects each window's percentile (`percentile_of` by
-  `select_nth_unstable`, O(h·w) per window rather than a sort) but still
-  gathers every window afresh: a running histogram for u8/u16 (Huang's
-  sliding median) would make it O(h) per pixel.
+- `rank_filter` on u8 keeps a sliding 256-bin histogram (Huang), O(h) per
+  pixel (6× faster at 256², 15×15 in a debug build); other dtypes still
+  select each window afresh (`percentile_of`, O(h·w) per window). A u16
+  histogram would need a two-level (coarse/fine) count to stay cheap.
 - `statistics(mask=)` builds one `reduce_masked` node per statistic, each
   casting the image and mask to f64 and scanning them again; one node
   gathering the masked values once would serve every statistic.
