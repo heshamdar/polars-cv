@@ -97,7 +97,7 @@ pub enum ImageOpKind<M: Mode = Exec> {
         /// The percentile of each window, in [0, 100] (default 50: a median).
         /// Accepts a Polars expression.
         #[param(default = 50.0)]
-        q: M::V<f64>,
+        q: M::V<crate::ops::reduction::Percent>,
         /// Border handling (``"replicate"``, ``"zero"``, ``"reflect"``), as
         /// ``convolve2d``'s.
         #[param(default = "replicate")]
@@ -359,20 +359,14 @@ impl<M: Mode> ImageOpKind<M> {
     /// Refuse a parameter combination no row can execute. Every image op's
     /// parameters are independent, so there is none.
     pub fn check(&self) -> Result<(), String> {
-        // A rank filter's window has a centre pixel, and its q a percentile.
-        if let ImageOpKind::RankFilter {
-            height, width, q, ..
-        } = self
-        {
+        // A rank filter's window has a centre pixel (its q is a `Percent`).
+        if let ImageOpKind::RankFilter { height, width, .. } = self {
             for (name, side) in [("height", height), ("width", width)] {
                 if let Some(n) = M::sym(side).known().filter(|n| n % 2 == 0) {
                     return Err(format!(
                         "rank_filter: {name} = {n}, but a window's side is odd (1, 3, 5, ...)"
                     ));
                 }
-            }
-            if let Some(q) = M::sym(q).known().filter(|q| !(0.0..=100.0).contains(q)) {
-                return Err(format!("rank_filter: q = {q} is outside [0, 100]"));
             }
         }
         // A Gaussian's sigma is finite and non-negative; 0 is no blur. A

@@ -13,8 +13,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   reduction every region, mask and block reducer shares (`label_reduce`,
   `.contour.label_reduce`, `reduce_masked`, `block_reduce`, `reduce`, the
   contour matcher's `score_reduction`). A reduction parameter is a
-  statistic's name or a percentile spelled `"pNN"` (`"p90"`, `"p62.5"`, at
-  most two decimals). The spellings `"max"`, `"mean"`, `"sum"` are
+  statistic's name or a percentile spelled `"pNN"` (`"p90"`, `"p62.5"`: its
+  digits only, no sign or exponent). Every percentile (`"pNN"`,
+  `reduce_percentile(q)`, `rank_filter(q)`, `normalize_percentile`'s edges) is
+  the one `Percent`, refused outside [0, 100] in the same words as it is read,
+  literal or per row. The spellings `"max"`, `"mean"`, `"sum"` are
   unchanged; only code importing the enum class needs the new name.
 - **`.cv.width()`, `.cv.height()`, `.cv.channels()` and `.cv.image_info()`'s
   size fields are `Int64`, not `UInt32`.** Sizes are for arithmetic, and

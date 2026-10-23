@@ -1089,7 +1089,7 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             width,
             q,
             border,
-        } => apply_rank_filter(&work_buf, height as usize, width as usize, q, border),
+        } => apply_rank_filter(&work_buf, height as usize, width as usize, q.q(), border),
         ImageOpKind::Erode {
             ksize,
             iterations,

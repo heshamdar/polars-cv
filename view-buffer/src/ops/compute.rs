@@ -37,7 +37,10 @@ pub enum Normalization {
     },
     /// The window between the image's own `low`-th and `high`-th
     /// percentiles (every channel together) mapped to [0, 1], clipped.
-    Percentile { low: f32, high: f32 },
+    Percentile {
+        low: crate::ops::reduction::Percent,
+        high: crate::ops::reduction::Percent,
+    },
     /// The window `[low, high]` mapped to [0, 1], clipped.
     Range { low: f32, high: f32 },
 }
@@ -141,10 +144,10 @@ pub enum ComputeOp<M: Mode = Exec> {
     NormalizePercentile {
         /// The window's lower percentile, in [0, 100]. Accepts a Polars
         /// expression.
-        low: M::V<f32>,
+        low: M::V<crate::ops::reduction::Percent>,
         /// The window's upper percentile, in [0, 100] and above ``low``.
         /// Accepts a Polars expression.
-        high: M::V<f32>,
+        high: M::V<crate::ops::reduction::Percent>,
         /// Output dtype (default f32), as ``normalize``'s.
         out_dtype: Option<M::L<DType>>,
     },
@@ -524,31 +527,22 @@ impl<M: Mode> ComputeOp<M> {
             }
             return Ok(());
         }
-        // A window's edges, read wherever they are known.
-        let window = |name: &str, low: &M::V<f32>, high: &M::V<f32>, percentile: bool| {
-            let (low, high) = (M::sym(low).known(), M::sym(high).known());
-            if percentile {
-                if let Some(q) = [low, high]
-                    .into_iter()
-                    .flatten()
-                    .find(|q| !(0.0..=100.0).contains(q))
-                {
-                    return Err(format!("{name}: percentile {q} is outside [0, 100]"));
-                }
+        // A window's edges, wherever both are known (a percentile's range is
+        // its type's, `Percent`).
+        let window = |name: &str, low: Option<f64>, high: Option<f64>| match (low, high) {
+            (Some(low), Some(high)) if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) => {
+                Err(format!("{name}: low ({low}) must be below high ({high})"))
             }
-            if let (Some(low), Some(high)) = (low, high) {
-                if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
-                    return Err(format!("{name}: low ({low}) must be below high ({high})"));
-                }
-            }
-            Ok(())
+            _ => Ok(()),
         };
         match self {
             ComputeOp::NormalizePercentile { low, high, .. } => {
-                return window("normalize_percentile", low, high, true)
+                let q = |p| M::sym(p).known().map(crate::ops::reduction::Percent::q);
+                return window("normalize_percentile", q(low), q(high));
             }
             ComputeOp::NormalizeRange { low, high, .. } => {
-                return window("normalize_range", low, high, false)
+                let v = |p| M::sym(p).known().map(f64::from);
+                return window("normalize_range", v(low), v(high));
             }
             _ => {}
         }
