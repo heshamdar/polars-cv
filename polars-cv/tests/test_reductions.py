@@ -35,6 +35,14 @@ NUMPY = {
 }
 
 
+def test_numpy_covers_every_statistic() -> None:
+    """Every sweep below parametrizes over ``NUMPY``: a statistic added to
+    the engine's ``Statistic`` and not here would go untested everywhere."""
+    from polars_cv._types import Statistic
+
+    assert set(NUMPY) == {s.value for s in Statistic}
+
+
 def _square(x0: float, y0: float, x1: float, y1: float) -> dict:
     pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
     return {
@@ -125,6 +133,60 @@ def _reduce(pipe: Pipeline) -> np.ndarray:
     from polars_cv import numpy_from_struct
 
     return numpy_from_struct(out)
+
+
+#: A statistic's dedicated op, as ``reduce`` must compute it.
+DEDICATED = {
+    "sum": lambda p, axis: p.reduce_sum(axis=axis),
+    "mean": lambda p, axis: p.reduce_mean(axis=axis),
+    "min": lambda p, axis: p.reduce_min(axis=axis),
+    "max": lambda p, axis: p.reduce_max(axis=axis),
+    "std": lambda p, axis: p.reduce_std(axis=axis),
+    "median": lambda p, axis: p.reduce_median(axis=axis),
+    "p90": lambda p, axis: p.reduce_percentile(90.0, axis=axis),
+}
+
+
+def _reduced(arr: np.ndarray, pipe: Pipeline) -> np.ndarray:
+    dtype = {np.uint8: pl.UInt8, np.float32: pl.Float32}[arr.dtype.type]
+    frame = pl.DataFrame(
+        {"a": pl.Series("a", arr[np.newaxis], dtype=pl.Array(dtype, arr.shape))}
+    )
+    sink = "native" if pipe.current_domain() == "scalar" else "list"
+    out = frame.select(pl.col("a").cv.pipe(pipe).sink(sink)).item()
+    return np.asarray(out.to_list() if isinstance(out, pl.Series) else out, np.float64)
+
+
+class TestReduce:
+    """``reduce(reduction, axis=)``: any reduction, globally or along an
+    axis, computed by the same kernel as the statistic's dedicated op."""
+
+    @pytest.mark.parametrize("axis", [None, 0, 1])
+    @pytest.mark.parametrize("reduction", [*sorted(NUMPY), "p90"])
+    def test_matches_numpy(self, reduction: str, axis: int | None) -> None:
+        pipe = Pipeline().source("array").reduce(reduction, axis=axis)
+        got = _reduced(IMG.astype(np.float32), pipe)
+        x = IMG.astype(np.float32).astype(np.float64)
+        if reduction == "count":
+            want = x.size if axis is None else np.full(x.shape[1 - axis], x.shape[axis])
+        elif reduction == "p90":
+            want = np.percentile(x, 90, axis=axis)
+        else:
+            want = NUMPY[reduction](x, axis=axis)
+        np.testing.assert_allclose(got, want, rtol=1e-12)
+
+    @pytest.mark.parametrize("axis", [None, 0, 1])
+    @pytest.mark.parametrize("dtype", [np.uint8, np.float32])
+    @pytest.mark.parametrize("reduction", sorted(DEDICATED))
+    def test_is_the_dedicated_ops_result(self, reduction: str, dtype, axis) -> None:
+        """Bit for bit, NaN included: one implementation per statistic."""
+        arr = IMG.astype(dtype)
+        if dtype is np.float32:
+            arr[2, 3] = np.nan
+        base = Pipeline().source("array")
+        got = _reduced(arr, base.reduce(reduction, axis=axis))
+        want = _reduced(arr, DEDICATED[reduction](base, axis))
+        np.testing.assert_array_equal(got, want)
 
 
 class TestAxes:

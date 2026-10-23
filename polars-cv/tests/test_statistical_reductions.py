@@ -450,8 +450,13 @@ def test_each_statistic_computes_its_own_reduction(encode_png: "Callable") -> No
         "sum": float(ramp.sum()),
         "std": float(ramp.std()),
         "median": float(np.median(ramp)),
+        "count": float(ramp.size),
     }
     expected["p90"] = float(np.percentile(ramp, 90))
+    # Every statistic the engine names, so a new one needs its value here.
+    from polars_cv._types import Statistic
+
+    assert {s.value for s in Statistic} <= set(expected), sorted(expected)
     assert len(set(expected.values())) == len(expected), (
         "two statistics coincide on this image, so it cannot tell them apart"
     )

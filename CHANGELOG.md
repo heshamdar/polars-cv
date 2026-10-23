@@ -89,10 +89,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `reduce_masked`), the pixel count. `region_stats` reduces several maps over
   each contour region (one `label_reduce` per entry) into a struct of
   equal-length lists, one value per region: regionprops for any per-pixel map.
-- **`reduce(reduction)`** reduces every value to one by any reduction
-  (`"p90"`, `"median"`, `"count"`, ...), per row if `reduction` is an
-  expression; `statistics()` computes each statistic through it, so it reads
-  no list of names of its own.
+- **`reduce(reduction, axis=None)`** reduces every value to one, or along
+  an axis, by any reduction (`"p90"`, `"median"`, `"count"`, ...), per row if
+  `reduction` is an expression; `statistics()` computes each statistic
+  through it, so it reads no list of names of its own. Each statistic is its
+  dedicated op's kernel (`reduce("mean")` is `reduce_mean()`'s value, bit for
+  bit), always in f64; a Rust sweep over every statistic pins those kernels
+  to the reduction masks, regions and blocks use.
 - **`img.reduce_masked(mask, reduction=, axis=)`** reduces an image over
   the pixels a mask selects (u8 or float, set where > 0): one value, or one
   per column (`axis=0`) or row (`axis=1`), with every reduction `label_reduce`

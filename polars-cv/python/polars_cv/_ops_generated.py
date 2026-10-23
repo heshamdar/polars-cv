@@ -1175,7 +1175,11 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "per_row": True,
             "py": "str",
             "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
-        }
+        },
+        "axis": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        },
     },
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "reduce_argmin": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
@@ -1586,8 +1590,8 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "rasterize": [{"input": "contour", "output": "buffer"}],
     "reciprocal": [{"input": "buffer", "output": "buffer"}],
     "reduce": [
-        {"input": "buffer", "output": "scalar"},
-        {"input": "vector", "output": "scalar"},
+        {"input": "buffer", "output": "buffer"},
+        {"input": "vector", "output": "buffer"},
     ],
     "reduce_argmax": [
         {"input": "buffer", "output": "buffer"},
@@ -3038,22 +3042,26 @@ class _OpsMixin:
         """
         return self._append_typed("reciprocal", {})
 
-    def reduce(self, reduction: str | pl.Expr) -> Pipeline:
-        """Reduce every value (every channel) to one, by any reduction: the
-        statistic named, or a percentile "pNN". Over no values: NaN, or 0 for
+    def reduce(self, reduction: str | pl.Expr, *, axis: int | None = None) -> Pipeline:
+        """Reduce every value (every channel) to one, or along one axis, by any
+        reduction: the statistic named, or a percentile "pNN". Each is
+        computed by its dedicated op's kernel (``reduce("mean")`` is
+        ``reduce_mean()``'s value, in f64). Over no values: NaN, or 0 for
         "sum" and "count".
 
-        Domain: buffer → scalar, vector → scalar
+        Domain: buffer → buffer, vector → buffer
 
         Args:
             reduction: "sum", "mean", "min", "max", "std" (population), "median",
                 "count", or a percentile "pNN" ("p90", "p62.5"). Accepts a Polars
                 expression for a per-row choice.
+            axis: Axis to reduce along. None for global reduction. It fixes the output
+                rank, so it is literal-only.
 
         Example:
             >>> Pipeline().source("image_bytes").reduce("p90")
         """
-        return self._append_typed("reduce", {"reduction": reduction})
+        return self._append_typed("reduce", {"reduction": reduction, "axis": axis})
 
     def reduce_argmax(self, axis: int) -> Pipeline:
         """Index of the maximum value along an axis.
