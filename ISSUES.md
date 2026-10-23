@@ -383,9 +383,6 @@ An independent review of the downstream-proposal branch. Its bugs are fixed
   gathering the masked values once would serve every statistic.
 - `region_stats` runs one `label_reduce` per entry, rasterising the same
   regions once per map.
-- `cloud_auth::choose()` reads and parses the ADC file on every remote read
-  that has no options (`polars_options` runs per object); cache it by path
-  and mtime.
 
 ## Extension types
 

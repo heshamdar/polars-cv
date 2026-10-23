@@ -41,6 +41,7 @@ use object_store::gcp::GcpCredential;
 use polars::io::cloud::credential_provider::{ObjectStoreCredential, PlCredentialProvider};
 use polars::io::cloud::CloudType;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -86,10 +87,64 @@ fn federated_adc_path(options: Option<&CloudOptions>, env: Env<'_>) -> Option<(P
     }
 
     let path = locate_adc_path(options, env)?;
+    probed_adc_type(&path, |p| std::fs::read(p)).map(|typ| (path, typ))
+}
+
+/// The federated `type` of the ADC file at `path` ([`federated_adc_type`]),
+/// read through `read` once per version of the file.
+///
+/// This runs on every remote read that has no options, so the result is kept
+/// per path against the file's [`AdcStamp`]: the file is read again only when
+/// its mtime or size changes. An unreadable file is not cached, so fixing its
+/// permissions takes effect on the next read.
+fn probed_adc_type(
+    path: &Path,
+    read: impl FnOnce(&Path) -> std::io::Result<Vec<u8>>,
+) -> Option<String> {
+    type Probes = HashMap<PathBuf, (AdcStamp, Option<String>)>;
+    static PROBES: OnceLock<Mutex<Probes>> = OnceLock::new();
+    let stamp = AdcStamp::of(path)?;
+    let probes = PROBES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some((seen, typ)) = probes.lock().unwrap().get(path) {
+        if *seen == stamp {
+            return typ.clone();
+        }
+    }
     // Unreadable ADC: leave it to object_store to report in context.
-    let bytes = std::fs::read(&path).ok()?;
+    let bytes = read(path).ok()?;
     // service_account / authorized_user / unknown -> object_store's job.
-    federated_adc_type(&bytes).map(|typ| (path, typ))
+    let typ = federated_adc_type(&bytes);
+    probes
+        .lock()
+        .unwrap()
+        .insert(path.to_path_buf(), (stamp, typ.clone()));
+    typ
+}
+
+/// An ADC file's version: its path, mtime and size. Rotating the file changes
+/// it, which is what re-probes the file and keys a fresh provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdcStamp {
+    path: PathBuf,
+    mtime_ns: u128,
+    len: u64,
+}
+
+impl AdcStamp {
+    /// `None` when the file cannot be stat'ed (and so cannot be read either).
+    fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        let mtime_ns = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos());
+        Some(Self {
+            path: path.to_path_buf(),
+            mtime_ns,
+            len: meta.len(),
+        })
+    }
 }
 
 /// Locate the ADC file, mirroring `object_store`/gcloud resolution order:
@@ -144,16 +199,13 @@ fn federated_adc_type(bytes: &[u8]) -> Option<String> {
 // Credential providers
 // ---------------------------------------------------------------------------
 
-/// Cache key suffix for an ADC file: path plus mtime, so rotating the file
+/// Cache key suffix for an ADC file: its [`AdcStamp`], so rotating the file
 /// forces a refresh.
 fn cache_key(path: &Path) -> String {
-    let mtime = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{}|{mtime}", path.display())
+    match AdcStamp::of(path) {
+        Some(AdcStamp { mtime_ns, len, .. }) => format!("{}|{mtime_ns}|{len}", path.display()),
+        None => format!("{}|missing", path.display()),
+    }
 }
 
 /// Seconds since the UNIX epoch, which is the unit polars states expiries in.
@@ -488,6 +540,31 @@ mod tests {
         assert_eq!(typ(br#"{"type": "service_account"}"#), None);
         assert_eq!(typ(br#"{"type": "authorized_user"}"#), None);
         assert_eq!(typ(b"not json"), None);
+    }
+
+    /// The ADC probe runs on every remote read with no options (CR-131), so
+    /// it reads the file once per version of it: again only when its mtime
+    /// or size changes.
+    #[test]
+    fn the_adc_probe_reads_the_file_once_per_version() {
+        let (dir, path) = write_adc("probe_once", r#"{"type": "external_account"}"#);
+        let reads = std::cell::Cell::new(0);
+        let probe = || {
+            probed_adc_type(&path, |p| {
+                reads.set(reads.get() + 1);
+                std::fs::read(p)
+            })
+        };
+        assert_eq!(probe().as_deref(), Some("external_account"));
+        assert_eq!(probe().as_deref(), Some("external_account"));
+        assert_eq!(reads.get(), 1, "an unchanged ADC file is not read again");
+        // Rotated (a new size): read again, and the new type is what applies.
+        std::fs::write(&path, r#"{"type": "service_account", "x": 1}"#).unwrap();
+        assert_eq!(probe(), None);
+        assert_eq!(reads.get(), 2);
+        assert_eq!(probe(), None);
+        assert_eq!(reads.get(), 2);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// An environment holding only `vars`, so ambient detection is tested
