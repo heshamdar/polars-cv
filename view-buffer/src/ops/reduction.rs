@@ -332,7 +332,11 @@ pub fn masked_select(buffer: &ViewBuffer, mask: &ViewBuffer) -> ViewBuffer {
     crate::core::dtype::with_dtype!(buffer.dtype(), T => match mask.dtype() {
         DType::U8 => gather::<T, u8>(buffer, mask, c),
         DType::F32 => gather::<T, f32>(buffer, mask, c),
-        _ => gather::<T, f64>(buffer, &mask.cast_to(DType::F64), c),
+        DType::F64 => gather::<T, f64>(buffer, mask, c),
+        other => unreachable!(
+            "validate_masked_reduce admits u8, f32 and f64 masks, got {}",
+            other.short_name()
+        ),
     })
 }
 
