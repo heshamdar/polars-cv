@@ -183,14 +183,15 @@ pub fn derive_resolve(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 Fields::Unit => quote! { #name },
             };
             let out = match &data.fields {
+                // A struct is a wrapper (`ImageOp { kind }`), never a wire op:
+                // an op is an enum variant, whose fields are its parameters.
+                // So its field names no parameter and stays out of messages.
                 Fields::Named(named) => {
                     let values = named.named.iter().map(|f| {
                         let id = f.ident.as_ref().unwrap();
                         if names_mode(&f.ty, &mode) {
                             quote! {
-                                #id: ::view_buffer::mode::Resolve::resolve(#id, values)
-                                    .map_err(|e| ::view_buffer::mode::Values::in_field(
-                                        values, ::core::stringify!(#id), e))?
+                                #id: ::view_buffer::mode::Resolve::resolve(#id, values)?
                             }
                         } else {
                             quote! { #id: ::core::clone::Clone::clone(#id) }

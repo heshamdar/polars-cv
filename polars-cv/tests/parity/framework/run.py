@@ -132,7 +132,7 @@ def _sequence_depth(annotation: str) -> int:
 # Axes
 # ---------------------------------------------------------------------------
 
-#: ``eager`` is ``DataFrame.select`` pinned to the in-memory engine (see
+#: ``eager`` is ``DataFrame.select`` under the lane's engine affinity (see
 #: :func:`_collect`); the others are ``LazyFrame.collect(engine=...)``.
 ENGINES = ("eager", "in-memory", "streaming")
 
@@ -456,16 +456,14 @@ def _collect(
 ) -> pl.DataFrame:
     """Run *expr* on *engine*.
 
-    ``eager`` is the DataFrame API — whose engine is otherwise whatever
-    ``POLARS_ENGINE_AFFINITY`` says (the suite's conftest defaults it to
-    streaming), which would make "eager" silently mean streaming. It is
-    pinned to in-memory so the three axis values are three engines.
+    ``eager`` is the DataFrame API under the lane's engine affinity: the
+    streaming lane runs it streaming and the in-memory lane in memory, so
+    between the two lanes it covers both. It is not pinned to in-memory: a
+    pin would run it in memory in both lanes (``tests/test_engine_pin_guard.py``).
     """
     if engine != "eager":
         return query.collect(engine=engine)
-    with pl.Config():
-        pl.Config.set_engine_affinity("in-memory")
-        return frame.select(out=expr)
+    return frame.select(out=expr)
 
 
 def _alias(k: int) -> str:

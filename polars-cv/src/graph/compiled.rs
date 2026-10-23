@@ -164,6 +164,8 @@ pub struct CompiledGraph {
 /// Per-call execution state: everything derived from the actual input series.
 struct ExecState<'a> {
     inputs: &'a [Series],
+    /// How many rows this call (one batch under streaming) holds.
+    rows: usize,
     /// Output specs with `"auto"` dtype/ndim resolved from the input column
     /// type, sorted by alias.
     resolved_outputs: Vec<(String, OutputSpec)>,
@@ -341,6 +343,7 @@ impl CompiledGraph {
             .collect();
         let state = ExecState {
             inputs,
+            rows: len,
             resolved_outputs,
             fetchers: self.fetchers(inputs),
             routed_sources: self.route_auto_sources(inputs),
@@ -488,12 +491,8 @@ impl CompiledGraph {
                 Err(msg) => match policy {
                     RowErrorPolicy::Raise => {
                         first_failure.fetch_min(range_idx, Ordering::Relaxed);
-                        // The row, as a `.contour` accessor names it. A bad
-                        // per-row parameter already says `at row n`.
-                        if msg.contains(&format!(" at row {row_idx}:")) {
-                            return Err(msg);
-                        }
-                        return Err(format!("{msg} (row {row_idx})"));
+                        // The row, named here only (`row_ref`).
+                        return Err(crate::row_ref::at_row(msg, row_idx, state.rows));
                     }
                     RowErrorPolicy::Null | RowErrorPolicy::NullWithMessage => {
                         // All-or-nothing per row: drop anything this row may
@@ -655,17 +654,9 @@ impl CompiledGraph {
                             // not a failure — this node just has no output for
                             // this row.
                             Err(_) if ctx.took_null() => continue 'nodes,
-                            // Named once: an op's `check()` already names it;
-                            // a field's per-row value (`left: Parameter column
-                            // ...`) does not.
+                            // The op named once (`ResolveError::named`).
                             Err(e) => {
-                                let e = e.to_string();
-                                let name = step.name;
-                                return Err(if e.starts_with(&format!("{name}:")) {
-                                    format!("Op resolution error: {e}")
-                                } else {
-                                    format!("Op resolution error: {name}: {e}")
-                                });
+                                return Err(format!("Op resolution error: {}", e.named(step.name)))
                             }
                         }
                     }

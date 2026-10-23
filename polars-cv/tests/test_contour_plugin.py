@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 
 from polars_cv.geometry import CONTOUR_SCHEMA, POINT_SCHEMA
+from tests._rows import assert_names_row
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -723,13 +724,10 @@ class TestNonFiniteCoordinates:
             schema={"c": CONTOUR_SCHEMA, "o": CONTOUR_SCHEMA},
         ).with_columns(p=pl.struct(x=pl.lit(1.0), y=pl.lit(1.0)))
         expr = make(pl.col("c").contour, pl.col("o"), pl.col("p"))
-        # Refused on every engine. The row is named relative to the slice
-        # polars hands the plugin: the frame's row in memory, while streaming
-        # may pass a morsel per row (polars 1.43 does), so it is checked there.
-        with pytest.raises(pl.exceptions.ComputeError, match=r"non-finite x"):
+        # Refused on every engine, naming the row within its batch.
+        with pytest.raises(pl.exceptions.ComputeError, match=r"non-finite x") as err:
             df.select(expr)
-        with pytest.raises(pl.exceptions.ComputeError, match=r"non-finite x.*row 1"):
-            df.lazy().select(expr).collect(engine="in-memory")
+        assert_names_row(str(err.value), 1, 2)
 
     def test_a_point_with_a_nan_coordinate_is_refused(
         self, square_contour: dict

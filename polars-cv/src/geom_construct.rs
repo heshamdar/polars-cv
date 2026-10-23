@@ -49,30 +49,35 @@ fn lists(ca: &ListChunked) -> impl Iterator<Item = Option<Series>> + '_ {
 }
 
 /// One `[a, b]` pair as a point, or the error naming `row`.
-fn pair(values: &Series, order: CoordOrder, row: usize) -> PolarsResult<Point> {
+fn pair(values: &Series, order: CoordOrder) -> PolarsResult<Point> {
     let ca = values.f64()?;
     if ca.len() != 2 {
         polars_bail!(ComputeError:
-            "a coordinate pair must hold exactly 2 numbers, got {} (row {})", ca.len(), row);
+            "a coordinate pair must hold exactly 2 numbers, got {}", ca.len());
     }
     match (ca.get(0), ca.get(1)) {
         // Every geometry reader refuses a non-finite coordinate (it has no
         // position); building one would only defer that error.
         (Some(a), Some(b)) if a.is_finite() && b.is_finite() => Ok(order.point([a, b])),
         (Some(a), Some(b)) => polars_bail!(ComputeError:
-            "a coordinate pair holds a non-finite number, [{}, {}] (row {})", a, b, row),
-        _ => polars_bail!(ComputeError: "a coordinate pair holds a null (row {})", row),
+            "a coordinate pair holds a non-finite number, [{}, {}]", a, b),
+        _ => polars_bail!(ComputeError: "a coordinate pair holds a null"),
     }
 }
 
+/// A row's error, naming the row (`row_ref`).
+fn in_row(e: PolarsError, row: usize, len: usize) -> PolarsError {
+    e.wrap_msg(|m| crate::row_ref::at_row(m, row, len))
+}
+
 /// A ring of pairs as points.
-fn ring(pairs: &Series, order: CoordOrder, row: usize) -> PolarsResult<Vec<Point>> {
+fn ring(pairs: &Series, order: CoordOrder) -> PolarsResult<Vec<Point>> {
     pairs
         .list()
         .map(lists)?
         .map(|p| match p {
-            Some(p) => pair(&p, order, row),
-            None => polars_bail!(ComputeError: "a coordinate pair is null (row {})", row),
+            Some(p) => pair(&p, order),
+            None => polars_bail!(ComputeError: "a coordinate pair is null"),
         })
         .collect()
 }
@@ -110,13 +115,15 @@ fn contour_set_dtype(_: &[Field]) -> PolarsResult<Field> {
 #[polars_expr(output_type_func=point_dtype)]
 fn geom_point_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> PolarsResult<Series> {
     let order = kwargs.order()?;
+    let len = inputs[0].len();
     let rows = inputs[0]
         .list()
         .map(lists)?
         .enumerate()
         .map(|(i, p)| {
-            p.map(|p| pair(&p, order, i).map(|p| vec![Some(p)]))
+            p.map(|p| pair(&p, order).map(|p| vec![Some(p)]))
                 .transpose()
+                .map_err(|e| in_row(e, i, len))
         })
         .collect::<PolarsResult<Vec<_>>>()?;
     crate::point::assemble(inputs[0].name().clone(), rows, Arity::Single)
@@ -126,13 +133,15 @@ fn geom_point_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> PolarsResul
 #[polars_expr(output_type_func=contour_dtype)]
 fn geom_contour_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> PolarsResult<Series> {
     let (order, closed) = (kwargs.order()?, kwargs.closed("contour_from_coords")?);
+    let len = inputs[0].len();
     let rows = inputs[0]
         .list()
         .map(lists)?
         .enumerate()
         .map(|(i, r)| {
-            r.map(|r| ring(&r, order, i).map(|pts| vec![outline(pts, closed)]))
+            r.map(|r| ring(&r, order).map(|pts| vec![outline(pts, closed)]))
                 .transpose()
+                .map_err(|e| in_row(e, i, len))
         })
         .collect::<PolarsResult<Vec<_>>>()?;
     Outline::column(
@@ -147,6 +156,7 @@ fn geom_contour_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> PolarsRes
 #[polars_expr(output_type_func=contour_set_dtype)]
 fn geom_contour_set_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> PolarsResult<Series> {
     let (order, closed) = (kwargs.order()?, kwargs.closed("contour_set_from_coords")?);
+    let len = inputs[0].len();
     let rows = inputs[0]
         .list()
         .map(lists)?
@@ -156,12 +166,13 @@ fn geom_contour_set_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> Polar
                 set.list()
                     .map(lists)?
                     .map(|r| match r {
-                        Some(r) => ring(&r, order, i).map(|pts| outline(pts, closed)),
-                        None => polars_bail!(ComputeError: "a ring is null (row {})", i),
+                        Some(r) => ring(&r, order).map(|pts| outline(pts, closed)),
+                        None => polars_bail!(ComputeError: "a ring is null"),
                     })
                     .collect::<PolarsResult<Vec<_>>>()
             })
             .transpose()
+            .map_err(|e| in_row(e, i, len))
         })
         .collect::<PolarsResult<Vec<_>>>()?;
     Outline::column(

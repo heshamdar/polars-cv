@@ -35,7 +35,7 @@ impl Values for RowValues<'_> {
         };
         T::from_wire(value).map_err(|e| {
             polars_err!(ComputeError:
-                "Parameter column '{}' at row {}: {}", col.name(), row, e)
+                "Parameter column '{}': {}", col.name(), e)
         })
     }
 

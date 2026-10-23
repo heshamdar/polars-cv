@@ -331,7 +331,7 @@ fn point_normalize(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
             let (w, h) = (params.value(width, i)?, params.value(height, i)?);
             // Per-row dimensions cannot be validated once per batch.
             if w == 0.0 || h == 0.0 {
-                polars_bail!(ComputeError: "ref_width and ref_height must be non-zero (row {})", i);
+                polars_bail!(ComputeError: "ref_width and ref_height must be non-zero");
             }
             Ok(Some((w, h)))
         },

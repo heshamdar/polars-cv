@@ -30,6 +30,7 @@ import pytest
 
 from polars_cv import BBOX_SCHEMA, CORRESPONDENCE_SCHEMA
 from polars_cv.geometry import CONTOUR_SET_SCHEMA
+from tests._rows import assert_names_row
 from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
@@ -475,12 +476,14 @@ class TestOrderIsValidated:
         df.with_columns(_c=ns.correspond(pl.col("right"), order=pl.col("order")))
 
     def test_a_short_order_is_refused(self, kind: str) -> None:
-        with pytest.raises(Exception, match=r"order length .* row 0"):
+        with pytest.raises(Exception, match=r"order length") as err:
             self._run_with(kind, [0])
+        assert_names_row(str(err.value), 0, 1)
 
     def test_an_out_of_range_entry_is_refused(self, kind: str) -> None:
-        with pytest.raises(Exception, match=r"out of range .* row 0"):
+        with pytest.raises(Exception, match=r"out of range") as err:
             self._run_with(kind, [0, 7])
+        assert_names_row(str(err.value), 0, 1)
 
     def test_a_repeated_entry_is_refused(self, kind: str) -> None:
         with pytest.raises(Exception, match=r"repeats entry .* permutation"):

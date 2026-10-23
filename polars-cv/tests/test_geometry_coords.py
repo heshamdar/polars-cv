@@ -17,6 +17,7 @@ from polars_cv.geometry import (
     point_from_coords,
 )
 
+from ._rows import assert_names_row
 from .conftest import plugin_required
 
 _L_YX = [[0, 0], [0, 10], [10, 10]]  # (row, col): x 0 -> 10, then y 0 -> 10
@@ -48,14 +49,10 @@ class TestPointFromCoords:
 
     @pytest.mark.parametrize("bad", [[1.0], [1.0, 2.0, 3.0]])
     def test_a_pair_of_the_wrong_length_is_refused(self, bad: list[float]) -> None:
-        # The row the plugin names is its index within the batch polars hands
-        # it, which the engine may split differently by version: pin the
-        # message, not a row number.
         df = pl.DataFrame({"p": [[1.0, 2.0], bad]})
-        with pytest.raises(
-            pl.exceptions.ComputeError, match=r"exactly 2 numbers.*\(row \d+\)"
-        ):
+        with pytest.raises(pl.exceptions.ComputeError, match=r"exactly 2 numbers") as e:
             df.select(point_from_coords(pl.col("p")))
+        assert_names_row(str(e.value), 1, 2)
 
     def test_a_null_coordinate_is_refused(self) -> None:
         df = pl.DataFrame({"p": [[1.0, None]]})

@@ -180,12 +180,37 @@ impl<'de> serde::Deserialize<'de> for TypedOp {
     }
 }
 
+/// Why an op could not be resolved for a row, kept apart so the caller names
+/// the op once: a field's value (`left: Parameter column 'l': ...`) names its
+/// field but not its op, and the op's `check()` names its op itself
+/// (`crop: top = -1 is negative`).
+#[derive(Debug)]
+pub enum ResolveError {
+    /// A field's value for this row could not be read.
+    Field(PolarsError),
+    /// The resolved op's `check()` refused the combination.
+    Check(String),
+}
+
+impl ResolveError {
+    /// The message, naming the op `name` once.
+    pub fn named(&self, name: &str) -> String {
+        match self {
+            ResolveError::Field(e) => format!("{name}: {e}"),
+            ResolveError::Check(e) => e.clone(),
+        }
+    }
+}
+
 impl TypedOp {
     /// The step for `row`: each per-row parameter read from its column, then
     /// checked with every value known. An op with no per-row parameter is
     /// resolved once at graph compile time.
     pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
-        self.resolve_on(row, ctx, None)
+        self.resolve_on(row, ctx, None).map_err(|e| match e {
+            ResolveError::Field(e) => e,
+            ResolveError::Check(e) => polars_err!(ComputeError: "{}", e),
+        })
     }
 
     /// [`resolve`](Self::resolve) for an op whose input has `shape` (`None`
@@ -196,11 +221,11 @@ impl TypedOp {
         row: usize,
         ctx: &ParamCtx,
         shape: Option<&[usize]>,
-    ) -> PolarsResult<GraphStep> {
+    ) -> Result<GraphStep, ResolveError> {
         let values = param::RowValues { row, ctx, shape };
-        let step: GraphStep = view_buffer::mode::Resolve::resolve(self, &values)?;
-        step.check()
-            .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+        let step: GraphStep =
+            view_buffer::mode::Resolve::resolve(self, &values).map_err(ResolveError::Field)?;
+        step.check().map_err(ResolveError::Check)?;
         Ok(step)
     }
 

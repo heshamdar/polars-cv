@@ -698,10 +698,15 @@ mod split_tests {
 
         let err = params
             .map_rows(256, |_, i| match i {
-                100 | 220 => Err(polars_err!(ComputeError: "row {} failed", i)),
+                100 | 220 => Err(polars_err!(ComputeError: "failed")),
                 _ => Ok(Some(i)),
             })
             .unwrap_err();
-        assert!(err.to_string().contains("row 100"), "{err}");
+        // The earliest failing row, named once by the row loop.
+        assert!(
+            err.to_string()
+                .ends_with("failed (row 100 of 256 in this batch)"),
+            "{err}"
+        );
     }
 }

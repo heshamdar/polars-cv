@@ -191,7 +191,7 @@ fn step_rows<R: Send>(
         };
         let members = outlines.len();
         let output = execute_geometry_op(NodeOutput::from_contours(outlines), step)
-            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))?;
+            .map_err(|e| polars_err!(ComputeError: "{}", e))?;
         present(output, members).map(Some)
     })
 }

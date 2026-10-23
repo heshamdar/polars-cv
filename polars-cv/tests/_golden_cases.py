@@ -142,7 +142,8 @@ def _execute(df: pl.DataFrame, column: str, pipe: Pipeline, sink: str) -> Outcom
     view = planned(pipe)
     expr = pl.col(column).cv.pipe(pipe).sink(sink)
     try:
-        out = df.lazy().select(o=expr).collect(engine="in-memory")
+        # The lane's engine: each lane records against the same goldens.
+        out = df.lazy().select(o=expr).collect()
     except Exception as exc:  # noqa: BLE001 - the class is the recorded fact
         return {"error": type(exc).__name__}
     return {

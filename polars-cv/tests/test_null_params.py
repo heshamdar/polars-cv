@@ -26,6 +26,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
+from tests._rows import assert_names_row
 from tests.conftest import plugin_required
 
 
@@ -89,12 +90,10 @@ class TestDefaultRaises:
             .resize(height=pl.col("h"), width=pl.col("h"))
         )
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
-        with pytest.raises(pl.exceptions.ComputeError, match="has a null value at row"):
+        with pytest.raises(pl.exceptions.ComputeError, match="has a null value"):
             df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
-    def test_error_names_the_column_and_row(self, in_memory_engine: None) -> None:
-        # The absolute row index in the message is an in-memory-engine guarantee;
-        # under streaming the plugin sees a morsel and reports a local index.
+    def test_error_names_the_column_and_row(self) -> None:
         pipe = (
             Pipeline()
             .source("image_bytes")
@@ -105,7 +104,7 @@ class TestDefaultRaises:
             df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         message = str(excinfo.value)
         assert "target_h" in message
-        assert "row 2" in message
+        assert_names_row(message, 2, 3)
 
 
 @plugin_required
@@ -675,7 +674,7 @@ class TestSourceAndSinkParamSites:
         )
         with pytest.raises(
             pl.exceptions.ComputeError,
-            match=r"'fill' at row 0: 300 is out of range for u8",
+            match=r"'fill': 300 is out of range for u8",
         ):
             df.with_columns(out=mask.sink("numpy"))
 
