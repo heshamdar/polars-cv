@@ -393,7 +393,12 @@ def _filter_zero_score_detections(lf: pl.LazyFrame) -> pl.LazyFrame:
     unevidenced rather than malformed — the filter is kept for the matching reason
     above, not the tracing one.
 
-    Computes the indices of positive scores, then gathers from both the
+    A NaN score (a region with no pixels: every reduction but ``sum`` and
+    ``count`` is NaN over nothing) carries no evidence either, and polars
+    orders NaN above every number, so it would otherwise be visited first.
+    Only finite positive scores are kept.
+
+    Computes the indices of those scores, then gathers from both the
     score and contour lists to keep them aligned.
 
     Args:
@@ -405,7 +410,9 @@ def _filter_zero_score_detections(lf: pl.LazyFrame) -> pl.LazyFrame:
     return (
         lf.with_columns(
             _keep_idx=pl.col("_pred_scores_raw").list.eval(
-                pl.arg_where(pl.element() > 0.0).cast(pl.UInt32)
+                pl.arg_where(pl.element().is_finite() & (pl.element() > 0.0)).cast(
+                    pl.UInt32
+                )
             ),
         )
         .with_columns(
@@ -542,8 +549,10 @@ class ContourMatcher:
             ``"ignore"`` drops it (the LUNA16/CAMELYON convention).
         score_reduction: How a detection is scored from the heatmap pixels
             in its region (``label_reduce``'s ``reduction``): ``"max"``
-            (default), ``"mean"`` or ``"sum"``. A heatmap that saturates
-            scores most detections at its peak, so they tie under ``"max"``.
+            (default), ``"mean"``, ``"median"``, a percentile ``"pNN"``
+            (``"p90"``), or any other reduction ``label_reduce`` takes. A
+            heatmap that saturates scores most detections at its peak, so
+            they tie under ``"max"``.
         score_region_mode: Which pixels are a detection's region
             (``label_reduce``'s ``region_mode``): ``"interior"`` (default),
             ``"boundary"`` or ``"bbox"``.
@@ -594,8 +603,6 @@ class ContourMatcher:
         # Refused by the op that will score with them, as it is built: the
         # engine parses a reduction ("max", "p90", ...) and a region mode, so
         # there is no list of their spellings here.
-        from polars_cv.pipeline import Pipeline
-
         try:
             Pipeline().source("array").label_reduce(
                 pl.col("_"), reduction=score_reduction, region_mode=score_region_mode
