@@ -275,7 +275,7 @@ fn process_env(key: &str) -> Option<OsString> {
 /// Which credential a remote read uses: the one decision, read by both
 /// [`credential_provider`] (to install it) and [`credential_source`] (to name
 /// it in an error), so the credential an error names is the one in effect.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Choice {
     /// Unsigned requests (`anonymous=True`).
     Anonymous,
@@ -287,6 +287,28 @@ enum Choice {
     Command(Bearer, String),
     /// A federated ambient ADC, delegated to `gcloud`: its path and `type`.
     FederatedAdc(PathBuf, String),
+}
+
+/// Every field but the bearer token, which is a secret: a test failure or a
+/// log names the kind of credential, never its value.
+impl std::fmt::Debug for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Choice::Anonymous => f.write_str("Anonymous"),
+            Choice::Chain => f.write_str("Chain"),
+            Choice::Static(_) => f.write_str("Static(<redacted>)"),
+            Choice::Command(bearer, command) => f
+                .debug_tuple("Command")
+                .field(bearer)
+                .field(command)
+                .finish(),
+            Choice::FederatedAdc(path, typ) => f
+                .debug_tuple("FederatedAdc")
+                .field(path)
+                .field(typ)
+                .finish(),
+        }
+    }
 }
 
 impl Choice {
@@ -501,6 +523,15 @@ mod tests {
         let empty = env_of(vec![]);
         assert_eq!(choose(&CloudType::Gcp, None, &empty), Choice::Chain);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A bearer token is a secret: `Choice`'s `Debug` (in a test failure, a
+    /// log) names the kind of credential, never the token.
+    #[test]
+    fn a_choice_does_not_print_its_token() {
+        let shown = format!("{:?}", Choice::Static("ya29.secret-token".into()));
+        assert!(!shown.contains("secret-token"), "{shown}");
+        assert!(shown.contains("Static"), "{shown}");
     }
 
     #[test]

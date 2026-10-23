@@ -717,10 +717,13 @@ pub(crate) fn encode_node_output(
             )),
         },
         SinkKind::Long => {
-            let layout = sink
-                .long_layout()
-                .ok_or("internal: a long sink kind without a long layout")??;
-            long_row(require_buffer(output, domain, format)?, &layout).map(OutputValue::Long)
+            let layout = spec
+                .long_layout
+                .as_ref()
+                .ok_or("internal: a long sink kind without a long layout")?
+                .as_ref()
+                .map_err(Clone::clone)?;
+            long_row(require_buffer(output, domain, format)?, layout).map(OutputValue::Long)
         }
         SinkKind::Contours => match output {
             NodeOutput::Contours(contours) => Ok(OutputValue::Contours(contours.clone())),
@@ -1306,6 +1309,7 @@ mod contour_sink_tests {
             expected_ndim: None,
             expected_channels: None,
             histogram_buckets: false,
+            long_layout: None,
         }
     }
 

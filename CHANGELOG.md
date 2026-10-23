@@ -175,7 +175,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `np.percentile` give.
 - **`label_reduce` and `region_stats` over a region with no pixels** (outside
   the image, or no points) gave 0.0 for every reduction; they now give what
-  every other reduction gives over nothing: NaN, or 0 for `sum` and `count`.
+  every other reduction gives over nothing: NaN, or 0 for `sum` and `count`
+  (+0, as NumPy's: a sum of nothing was -0, Rust's `Sum` identity, on every
+  sum path).
 - **Two optimizations changed results on this release's new parameters.**
   `spatial_window_pushdown` moved a crop ahead of an op reading `this`, so
   `scale(this.height).crop(height=2, width=2)` scaled by 2, not the input's

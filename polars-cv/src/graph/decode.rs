@@ -948,8 +948,10 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
 
 /// The `long` sink's layout, for a spec that resolved to [`SinkKind::Long`].
 pub(crate) fn long_layout(spec: &OutputSpec) -> PolarsResult<crate::formats::sink::LongLayout> {
-    match spec.sink.long_layout() {
-        Some(layout) => layout.map_err(|msg| polars_err!(ComputeError: "{}", msg)),
+    match &spec.long_layout {
+        Some(layout) => layout
+            .clone()
+            .map_err(|msg| polars_err!(ComputeError: "{}", msg)),
         None => polars_bail!(ComputeError:
             "internal: a '{}' sink has no long layout", spec.sink.name()),
     }
