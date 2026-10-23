@@ -1663,6 +1663,33 @@
     "None"
    ]
   ],
+  "normalize_percentile_masked": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "mask",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "low",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "high",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "out_dtype",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
   "normalize_preset": [
    [
     "self",

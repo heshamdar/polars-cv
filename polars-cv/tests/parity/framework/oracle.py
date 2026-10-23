@@ -2823,6 +2823,11 @@ BINARY_EXEMPT: dict[str, str] = {
         "two images; tests/test_reductions.py holds every reduction, global and "
         "per axis, to NumPy over the masked pixels"
     ),
+    "normalize_percentile_masked": (
+        "takes only a window from the mask's pixels; tests/test_reductions.py "
+        "holds it to NumPy's percentiles of image[mask > 0], and to "
+        "normalize_percentile under a mask of every pixel"
+    ),
     "masked_select": (
         "selects by a mask rather than combining two images; "
         "tests/test_reductions.py holds it to NumPy's image[mask > 0]"

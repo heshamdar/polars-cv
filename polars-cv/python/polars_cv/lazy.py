@@ -394,6 +394,51 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             input=self,
         )
 
+    def normalize_percentile_masked(
+        self,
+        mask: "LazyPipelineExpr",
+        *,
+        low: float | pl.Expr,
+        high: float | pl.Expr,
+        out_dtype: str | None = None,
+    ) -> "LazyPipelineExpr":
+        """
+        ``normalize_percentile`` with its window from the pixels a mask
+        selects.
+
+        The ``low`` and ``high`` percentiles of the masked values (a lesion's
+        1st-99th, every channel together) are mapped to [0, 1] across the
+        whole image, clipped outside. A pixel counts where the mask (u8 or
+        float, ``[H, W]`` or ``[H, W, 1]`` of the image's size) is > 0, as
+        ``masked_select`` selects it. A constant selection gives zeros, and
+        no selected pixel an unknown (NaN) window.
+
+        Args:
+            mask: LazyPipelineExpr producing the mask.
+            low: The window's lower percentile, in [0, 100]. Accepts a Polars
+                expression.
+            high: The window's upper percentile, in [0, 100] and above
+                ``low``. Accepts a Polars expression.
+            out_dtype: Output dtype (default f32), as ``normalize``'s.
+
+        Returns:
+            New LazyPipelineExpr: the image, normalized.
+
+        Example:
+            ```python
+            >>> ct.normalize_percentile_masked(lesion, low=1.0, high=99.0)
+            ```
+        """
+        new_pipeline = self._receiving()
+        args = {"mask": mask, "low": low, "high": high, "out_dtype": out_dtype}
+        new_pipeline._add_node_op("normalize_percentile_masked", args)
+        return LazyPipelineExpr(
+            column=None,
+            pipeline=new_pipeline,
+            node_id=_generate_node_id(),
+            input=self,
+        )
+
     def resize_like(
         self,
         like: "LazyPipelineExpr",

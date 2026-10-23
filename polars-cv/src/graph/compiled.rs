@@ -1380,6 +1380,7 @@ mod tests {
                 Role::ApplyMask { .. } => "ApplyMask",
                 Role::ReduceMasked { .. } => "ReduceMasked",
                 Role::MaskedSelect { .. } => "MaskedSelect",
+                Role::NormalizePercentileMasked { .. } => "NormalizePercentileMasked",
                 Role::ResizeLike { .. } => "ResizeLike",
                 Role::ChannelMerge { .. } => "ChannelMerge",
                 Role::ExtractShape => "ExtractShape",
@@ -1580,6 +1581,25 @@ mod tests {
         let selected = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
         assert_eq!(selected.shape(), &[4]);
         assert_eq!(selected.to_contiguous().as_slice::<u8>(), &[255; 4]);
+
+        // NormalizePercentileMasked: a buffer's window from its own set
+        // pixels (all 255): a constant selection, the empty window's zeros.
+        let out = exec(
+            r#"{
+                "version": 2,
+                "nodes": {
+                    "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                    "n1": {"input": {"node": "n0"},
+                           "ops": [{"op": "normalize_percentile_masked", "mask": "n0",
+                                    "low": 2.0, "high": 98.0}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}}
+            }"#,
+            &[Series::new("b".into(), &[mask_blob()])],
+        );
+        let normalized = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(normalized.shape(), &[4, 4, 1]);
+        assert_eq!(normalized.to_contiguous().as_slice::<f32>(), &[0.0; 16]);
 
         // ResizeLike: a buffer onto its own grid is itself.
         let out = exec(
