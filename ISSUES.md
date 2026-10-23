@@ -30,11 +30,12 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-68 | Performance | Medium | Streaming `sobel_x` 11.5% slower at 4 threads since the row-split budget (PR #124) |
 | CR-69 | Performance | Medium | Eager calls scale poorly across threads (1.7× on 4 threads for small images) |
 | CR-70 | Performance | Low | Transpose is ~8× a vertical flip at 1024² |
-| CR-71 | Performance | Low | u8 preset `normalize` in the AVX2 (`x86-64-v3`) build: recheck the CR-64 specialisation |
+| CR-71 | Performance | Low | u8 `normalize_preset` in the AVX2 (`x86-64-v3`) build: recheck the CR-64 specialisation |
 | CR-72 | Performance | Low | The debug-build parity check spawns a thread per dispatched kernel call |
 | CR-73 | Performance | Low | Code size: every element map is instantiated per dtype pair, twice |
 | CR-74 | Fetch | Low | A fetched body outlives a row that never reads it (until the call ends) |
 | CR-75 | Fetch | Low | `s3a://`, `gcs://`, `azure://`, `adl://` are not recognised as remote |
+| CR-135 | Fetch | Low | A header read that fails for any reason but not-found/permission retries as a whole-object read |
 | CR-76 | Metrics | Medium | Negative-size boxes are accepted and silently score as false positives |
 | CR-77 | Metrics | Low | Sweep thresholds compared by exact float equality (`map_75` disappears) |
 | CR-78 | Metrics | Low | An image missing from `images=` silently gets weight 1.0 |
@@ -111,7 +112,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Next:** the untried idea is a small-unit kernel (8×8 byte blocks with
   SIMD shuffles), with an interleaved A/B against `bf64725`.
 
-### CR-71 — Recheck u8 preset `normalize` in the AVX2 build
+### CR-71 — Recheck u8 `normalize_preset` in the AVX2 build
 
 - The table map's inner loop over a run-time channel count compiled badly in
   the `x86-64-v3` build. CR-64 specialised it for 3 and 4 channels (1.5–1.9×
@@ -281,6 +282,19 @@ against `main` at `e788d72` that day, and their full text is in git history).
   so they never worked.) Extend `is_remote_path`, the one list, with a test
   per scheme, or refuse them with a message naming the supported spellings.
 
+### CR-135 — A failed header read falls back to the whole object
+
+- **Found:** pre-release review of 0.41.0 (2026-10-23).
+- `cloud::read_object`'s `Reach::Prefix` arm retries *any* ranged-read error
+  that `fails_whole_too` does not classify (not-found, permission,
+  authentication) as a whole-object `get`. The retry exists for an empty
+  object's refused range (HTTP 416, S3 `InvalidRange`, reported as
+  `object_store`'s `Generic`), but a transient network error is `Generic` too,
+  so a header read of a multi-GB object can download all of it. Results are
+  unaffected (the header parser reads the larger body); only time and memory.
+- **Next:** retry whole only for a refused range (a 416 / `InvalidRange`
+  status), and let other errors through to the store's own retry.
+
 ## Metrics
 
 ### CR-76 — Negative-size boxes are accepted and silently score as false positives
@@ -348,7 +362,8 @@ against `main` at `e788d72` that day, and their full text is in git history).
 ## Downstream proposal (2026-10-22)
 
 A downstream image-analytics user's proposal, reviewed against 0.40.0. Its
-four phases are closed below (CR-119 to CR-128); this is what remains.
+four phases shipped in 0.41.0 (CR-119 to CR-128, in Closed findings); this is
+what remains.
 
 ### CR-129 — A parameter from another node's values
 
@@ -367,11 +382,6 @@ four phases are closed below (CR-119 to CR-128); this is what remains.
   has run, so it splits fusion where a shape attribute does not. Build it
   when a second op needs a window from another node; until then each such
   op is a graph op like this one.
-
-## Review follow-ups (2026-10-23)
-
-An independent review of the downstream-proposal branch. Its bugs are fixed
-(see Closed findings); these are the design and performance points left.
 
 ## Extension types
 
@@ -605,21 +615,21 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
-| CR-131 | Repeated work in the new reductions: `rank_filter` gathered every window, `statistics(mask=)` and `region_stats` repeated their scan per statistic/map, the ADC file was read per remote object | Fixed (unreleased): u8 `rank_filter` slides a 256-bin histogram (other dtypes keep the selection; a u16 histogram would need a coarse/fine count); `masked_select` gathers once for every masked statistic; a row's contour regions are found once for every `label_reduce` over them (`RegionCache`); the ADC probe is cached per file version |
-| CR-130 | Row errors composed by inspecting other errors' text; `(row n)` was a streaming batch's index presented as the frame's | Fixed (unreleased): `row_ref.rs` names a row once, `(row i of n in this batch)`, from the pipeline's and the geometry functions' row loops; `ResolveError` replaces the text tests (`test_row_ref_guard.py`, `test_error_messages.py`) |
-| CR-132 | A ranged header read of an empty remote object was refused (HTTP 416, S3 `InvalidRange`) | Fixed (unreleased): read whole on a range refusal (`test_remote_header_reads.py`, `test_cloud_access_probe.py`) |
-| CR-133 | `normalize`'s `mean`/`std`/`low`/`high` were optional fields read under one method each | Fixed (unreleased): `normalize_preset`, `normalize_percentile`, `normalize_range`, each with required fields; `normalize` keeps `minmax`/`zscore` |
-| CR-134 | Review of the downstream-proposal branch: optimizations changed results on `this` and padded crops; `background_divide` on integers; NaN percentile windows; empty regions; a per-row reduction could not mix percentiles; `reduce_percentile` clamped `q`; `this` after `rasterize`; `this` accepted where it could never work; a whole body fetched twice | Fixed (unreleased): see the CHANGELOG's Fixed section and the commits after `5a37467` |
-| CR-123 | No way to size a parameter by the image (B4) | Fixed (unreleased): `polars_cv.this` (`.height`, `.width`, `.channels`, `.ndim`) with `+ - * / //`, `{"$this": tree}` on the wire, resolved per row from the shape of the buffer each op reads, carried through a node's steps by their shape rules; integers round to nearest (`test_this.py`). An attribute of another node (CR-129) would be the same entity on a `LazyPipelineExpr` |
-| CR-122 | No rank/median filter, no flat-fielding, no per-row flip, no per-pixel table of stacked maps (C2/B7/B6) | Fixed (unreleased): `rank_filter`/`median_filter`, `background_divide`, `flip_h`/`flip_v(when=)`, `sink("long", names=, where=)`; no `stack()`, since `channel_merge` is that op (`test_rank_filters.py`, `test_conditional_flip.py`, `test_long_sink.py`) |
-| CR-121 | No resize onto another node's grid, no area filter, no block reduction (B5) | Fixed (unreleased): `resize_like(other)` as a graph op (not a shared `SizeSpec`: rasterize's size is a literal, resize_like's another node's per-row shape), `resize(filter="area")` with OpenCV `INTER_AREA`'s exact overlap weights, `block_reduce` (`test_resampling.py`) |
-| CR-120 | `normalize` had no percentile window and no explicit bounds (C3) | Fixed (unreleased): `normalize_percentile`/`normalize_range` with `low`/`high` (`TestNormalizeWindows`) |
-| CR-119 | Reductions counted the zeros outside a mask; no median, no axis on sum/percentile; `label_reduce` had max/mean/sum only (B2/C1) | Fixed (unreleased): one `Reduction` authority; `reduce_masked`, `reduce(reduction, axis=)` (a median, sum or percentile along an axis), `statistics(mask=, "pNN", "count")`, `region_stats` (`test_reductions.py`) |
-| CR-128 | Remote header-only metadata fetched the whole object; `show_images` could not show a dict sink's field (C4/C6) | Fixed (unreleased): a header fetcher reads a 64 KiB prefix first (`test_remote_header_reads.py`); `show_images(df, "col.field")` |
-| CR-127 | Grayscale kept `[H, W, 1]`, so axis reductions gave one-element lists (B3) | Fixed (unreleased): `grayscale(keepdims=False)` (`test_channel_control.py`); a decode-time `source(channels=)` was added and removed as redundant with `grayscale()` |
-| CR-126 | A crop window past the image's edge could only be refused (B1) | Fixed (unreleased): `crop_clip`, `crop_pad(..., value=)`, signed offsets on both (`test_crop_bounds.py`) |
-| CR-125 | `UInt32` image sizes wrapped below zero in polars, so a computed crop offset failed as a ~2^32 window; row errors named no row (A2/C5) | Fixed (unreleased): `Int64` sizes; `(row n)` and the parameter's name in errors (`TestSignedMetadata`, `test_error_messages.py`) |
-| CR-124 | A federated gcloud ADC was used only when some `CloudOptions` was passed (A1) | Fixed (unreleased): ambient detection with no options; `check_cloud_access()`; failures name the credential (`test_cloud_credentials.py`) |
+| CR-131 | Repeated work in the new reductions: `rank_filter` gathered every window, `statistics(mask=)` and `region_stats` repeated their scan per statistic/map, the ADC file was read per remote object | Fixed (0.41.0): u8 `rank_filter` slides a 256-bin histogram (other dtypes keep the selection; a u16 histogram would need a coarse/fine count); `masked_select` gathers once for every masked statistic; a row's contour regions are found once for every `label_reduce` over them (`RegionCache`); the ADC probe is cached per file version |
+| CR-130 | Row errors composed by inspecting other errors' text; `(row n)` was a streaming batch's index presented as the frame's | Fixed (0.41.0): `row_ref.rs` names a row once, `(row i of n in this batch)`, from the pipeline's and the geometry functions' row loops; `ResolveError` replaces the text tests (`test_row_ref_guard.py`, `test_error_messages.py`) |
+| CR-132 | A ranged header read of an empty remote object was refused (HTTP 416, S3 `InvalidRange`) | Fixed (0.41.0): read whole on a range refusal (`test_remote_header_reads.py`, `test_cloud_access_probe.py`) |
+| CR-133 | `normalize`'s `mean`/`std`/`low`/`high` were optional fields read under one method each | Fixed (0.41.0): `normalize_preset`, `normalize_percentile`, `normalize_range`, each with required fields; `normalize` keeps `minmax`/`zscore` |
+| CR-134 | Review of the downstream-proposal branch: optimizations changed results on `this` and padded crops; `background_divide` on integers; NaN percentile windows; empty regions; a per-row reduction could not mix percentiles; `reduce_percentile` clamped `q`; `this` after `rasterize`; `this` accepted where it could never work; a whole body fetched twice | Fixed (0.41.0): see the CHANGELOG's Fixed section and the commits after `5a37467` |
+| CR-123 | No way to size a parameter by the image (B4) | Fixed (0.41.0): `polars_cv.this` (`.height`, `.width`, `.channels`, `.ndim`) with `+ - * / //`, `{"$this": tree}` on the wire, resolved per row from the shape of the buffer each op reads, carried through a node's steps by their shape rules; integers round to nearest (`test_this.py`). An attribute of another node (CR-129) would be the same entity on a `LazyPipelineExpr` |
+| CR-122 | No rank/median filter, no flat-fielding, no per-row flip, no per-pixel table of stacked maps (C2/B7/B6) | Fixed (0.41.0): `rank_filter`/`median_filter`, `background_divide`, `flip_h`/`flip_v(when=)`, `sink("long", names=, where=)`; no `stack()`, since `channel_merge` is that op (`test_rank_filters.py`, `test_conditional_flip.py`, `test_long_sink.py`) |
+| CR-121 | No resize onto another node's grid, no area filter, no block reduction (B5) | Fixed (0.41.0): `resize_like(other)` as a graph op (not a shared `SizeSpec`: rasterize's size is a literal, resize_like's another node's per-row shape), `resize(filter="area")` with OpenCV `INTER_AREA`'s exact overlap weights, `block_reduce` (`test_resampling.py`) |
+| CR-120 | `normalize` had no percentile window and no explicit bounds (C3) | Fixed (0.41.0): `normalize_percentile`/`normalize_range` with `low`/`high` (`TestNormalizeWindows`) |
+| CR-119 | Reductions counted the zeros outside a mask; no median, no axis on sum/percentile; `label_reduce` had max/mean/sum only (B2/C1) | Fixed (0.41.0): one `Reduction` authority; `reduce_masked`, `reduce(reduction, axis=)` (a median, sum or percentile along an axis), `statistics(mask=, "pNN", "count")`, `region_stats` (`test_reductions.py`) |
+| CR-128 | Remote header-only metadata fetched the whole object; `show_images` could not show a dict sink's field (C4/C6) | Fixed (0.41.0): a header fetcher reads a 64 KiB prefix first (`test_remote_header_reads.py`); `show_images(df, "col.field")` |
+| CR-127 | Grayscale kept `[H, W, 1]`, so axis reductions gave one-element lists (B3) | Fixed (0.41.0): `grayscale(keepdims=False)` (`test_channel_control.py`); a decode-time `source(channels=)` was added and removed as redundant with `grayscale()` |
+| CR-126 | A crop window past the image's edge could only be refused (B1) | Fixed (0.41.0): `crop_clip`, `crop_pad(..., value=)`, signed offsets on both (`test_crop_bounds.py`) |
+| CR-125 | `UInt32` image sizes wrapped below zero in polars, so a computed crop offset failed as a ~2^32 window; row errors named no row (A2/C5) | Fixed (0.41.0): `Int64` sizes; `(row n)` and the parameter's name in errors (`TestSignedMetadata`, `test_error_messages.py`) |
+| CR-124 | A federated gcloud ADC was used only when some `CloudOptions` was passed (A1) | Fixed (0.41.0): ambient detection with no options; `check_cloud_access()`; failures name the credential (`test_cloud_credentials.py`) |
 | CR-115 | `average`/`difference`/`blockhash` hashes packed bits LSB-first while `perceptual` packed MSB-first, so one hash column type held two bit orders | Fixed (0.40.0): `HasherConfig::bit_order(BitOrder::MsbFirst)`; every algorithm is MSB-first, row-major (`every_algorithm_packs_bits_msb_first`, Rust and `test_perceptual_hash_ref.py`) |
 | CR-114 | CSE ran once, before the node passes, so pipelines made equal by identity elimination or the crop pushdown stayed apart | Fixed (0.39.0): `PipelineGraph.optimize` repeats the logical passes until a round changes nothing (refusing a graph that has not settled in 16); `tests/test_cse_interactions.py` pins CSE with the node passes, per-row parameters and nulls, the error policy, several columns, DAG shapes, determinism and streaming, plus a random-graph property (found a stale operand id in a second round and a root-order slip, both fixed) |
 | CR-113 | `channel_select` dropped the channel axis (`[H, W]`) while `grayscale` and `rasterize` keep it (`[H, W, 1]`), so a selected channel needed reshaping before it met either; `apply_mask` refused a `[H, W, 1]` mask over a `[H, W]` image (`examples/05` failed in the slow lane) | Changed (0.39.0): `channel_select(keepdims=True)` by default (`OpShape::SingleChannel`), `keepdims=False` for `[H, W]`; `validate_mask` reads such a mask as `[H, W]`, with an unknown channel count left to the row (`tests/test_channel_select.py`, migration guide 0.39) |

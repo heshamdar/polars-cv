@@ -7,6 +7,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.41.0] — 2026-10-23
+
+Reductions, filters and windows for image analytics. One `reduce` takes any
+statistic or percentile, globally or along an axis, and `reduce_masked`,
+`masked_select`, `region_stats` and `block_reduce` reduce over the pixels a
+mask, a contour or a block selects. New ops: `rank_filter`/`median_filter`,
+`background_divide`, `resize_like`, `resize(filter="area")`,
+`crop_clip`/`crop_pad`, `normalize_percentile`/`normalize_range`/
+`normalize_percentile_masked`, `flip(when=)` and `sink("long")`; op
+parameters may be computed from the image's own size with `polars_cv.this`.
+`normalize(method="preset")` becomes `normalize_preset`, `LabelReduction`
+becomes `Statistic`, and image sizes are `Int64`. Upgrading from 0.40: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.41/).
+
 ### Breaking changes
 
 - **`normalize(method="preset", mean=, std=)` is now
@@ -209,29 +223,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
-- Every `lazy_only` op's `LazyPipelineExpr` method is generated from the
-  catalogue: `apply_mask`, `channel_merge`, `reduce_masked`,
-  `normalize_percentile_masked` and `resize_like` were written by hand, and
-  their annotations had drifted from the Rust definitions (`low`/`high`
-  typed narrower than `normalize_percentile`'s). Their signatures, defaults
-  and docstrings now come from Rust, and each operand is sent under the
-  field name the catalogue gives (a generated method used to send it as
-  `other`, whatever the op named it).
+- **Every `lazy_only` op's `LazyPipelineExpr` method is generated from the
+  catalogue.** `apply_mask` and `channel_merge` were written by hand; their
+  signatures, defaults and docstrings now come from Rust, and each operand is
+  sent under the field name the catalogue gives (a generated method used to
+  send it as `other`, whatever the op named it).
 
-- **A server that ignores `Range`** sent the whole object to a header read;
-  with no header in it, the object was then fetched a second time. A body
-  longer than the prefix asked for is now taken as the whole object.
 - **`reduce_percentile(q)` with `q` outside [0, 100]** returned the minimum
   or maximum (the `q` was clamped); it is now refused, as every other
   percentile is.
-- **`background_divide` on an integer image** blurred in the image's own
-  dtype, so a u8 background rounded to whole numbers: a faint one (below 0.5)
-  was 0 and the image was divided by epsilon alone (a 1e6 spike). The
-  background is now computed in the image's float (f32, or f64 for a
-  32/64-bit image).
-- **`normalize_percentile` over an image with a NaN pixel** gave
-  all zeros, as if the window were empty; it is now NaN, as `minmax` and
-  `np.percentile` give.
 - **`label_reduce` and `region_stats` over a region with no pixels** (outside
   the image, or no points) gave 0.0 for every reduction; they now give what
   every other reduction gives over nothing: NaN, or 0 for `sum` and `count`
@@ -240,16 +240,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **The contour matcher drops a detection scored NaN** (a region with no
   pixels), as it drops a zero: in polars NaN is above every number, so it
   would have been matched as the most confident detection.
-- **Two optimizations changed results on this release's new parameters.**
-  `spatial_window_pushdown` moved a crop ahead of an op reading `this`, so
-  `scale(this.height).crop(height=2, width=2)` scaled by 2, not the input's
-  height; a crop no longer crosses an op that reads its input's shape, and a
-  crop that reads `this` is not moved. `identity_elimination` deleted a padded
-  crop whose window kept the input's size but moved it (`crop_pad(top=-1,
-  height=H, width=W)`); a padded crop is never an identity. The
-  optimizer-equivalence table and the parity sweep now draw padded and
-  clipped crops, `flip(when=)` and `this`, which is what let both through.
-
 - **A federated gcloud ADC now works with no `cloud_options`.** Ambient
   detection of an `external_account` / `external_account_authorized_user`
   ADC (delegated to `gcloud auth application-default print-access-token`)
@@ -5912,7 +5902,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.40.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.41.0
 [0.40.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.40.0
 [0.39.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.39.0
 [0.38.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.38.0
