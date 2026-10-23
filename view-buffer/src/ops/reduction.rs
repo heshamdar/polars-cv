@@ -333,6 +333,31 @@ pub fn masked_select(buffer: &ViewBuffer, mask: &ViewBuffer) -> ViewBuffer {
     })
 }
 
+/// `normalize_percentile` of `buffer` with its window from the pixels `mask`
+/// selects ([`masked_select`]): the `low` and `high` percentiles of those
+/// values mapped to [0, 1] across the whole buffer, clipped outside, as
+/// `out_dtype`. A constant selection is the empty window's zeros, and no
+/// selected pixel an unknown (NaN) window, as `normalize_percentile`'s over
+/// the same values.
+pub fn normalize_percentile_masked(
+    buffer: &ViewBuffer,
+    mask: &ViewBuffer,
+    low: Percent,
+    high: Percent,
+    out_dtype: DType,
+) -> ViewBuffer {
+    let selected = masked_select(buffer, mask);
+    let (low, high) = crate::ops::elementwise::percentile_window(&selected, low, high);
+    // The window applied as `normalize_range` applies a known one: the same
+    // kernels `normalize_percentile` lowers to.
+    let apply = crate::ops::compute::ComputeOp::NormalizeRange {
+        low,
+        high,
+        out_dtype: Some(out_dtype),
+    };
+    crate::ops::elementwise::apply(buffer.clone(), &apply)
+}
+
 /// [`masked_select`] over a `T` image and an `M` mask, both read where they
 /// lie (a view is not packed first): the mask once to size the output, then
 /// both in step, a block of pixels at a time.

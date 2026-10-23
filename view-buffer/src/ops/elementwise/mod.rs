@@ -236,16 +236,29 @@ fn lower_normalize(normalization: &Normalization, out_dtype: DType, buf: &ViewBu
             Lowered::Kernels(mean.iter().zip(std).map(|(&m, &s)| affine(m, s)).collect())
         }
         Normalization::Percentile { low, high } => {
-            // The image's own percentiles, every channel together, by the
-            // one interpolation (`reduction::percentile_of`), over the one
-            // owned copy a selection needs, read from the view where it lies.
-            let mut values = stats::values_f64(buf);
-            let lo = crate::ops::reduction::percentile_of(&mut values, low.q()) as f32;
-            let hi = crate::ops::reduction::percentile_of(&mut values, high.q()) as f32;
+            // The image's own percentiles, every channel together, over the
+            // one owned copy a selection needs, read from the view where it
+            // lies.
+            let (lo, hi) = percentile_window(buf, *low, *high);
             window(lo, hi, out_dtype)
         }
         Normalization::Range { low, high } => window(*low, *high, out_dtype),
     }
+}
+
+/// The window `normalize_percentile` maps to [0, 1]: the `low` and `high`
+/// percentiles of `buf`'s values, every channel together, by the one
+/// interpolation (`reduction::percentile_of`); NaN over no value.
+pub(crate) fn percentile_window(
+    buf: &ViewBuffer,
+    low: crate::ops::reduction::Percent,
+    high: crate::ops::reduction::Percent,
+) -> (f32, f32) {
+    let mut values = stats::values_f64(buf);
+    let mut at = |p: crate::ops::reduction::Percent| {
+        crate::ops::reduction::percentile_of(&mut values, p.q()) as f32
+    };
+    (at(low), at(high))
 }
 
 /// `[lo, hi]` mapped to [0, 1], clipped outside it; an empty window has no

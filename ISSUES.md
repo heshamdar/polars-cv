@@ -45,7 +45,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
-| CR-129 | Params | Feature | Masked percentile `normalize`: a window from another node's pixels (C3 remainder) |
+| CR-129 | Params | Feature | A parameter from another node's values per row (`mask_node.p1` feeding any op) |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -350,21 +350,23 @@ against `main` at `e788d72` that day, and their full text is in git history).
 A downstream image-analytics user's proposal, reviewed against 0.40.0. Its
 four phases are closed below (CR-119 to CR-128); this is what remains.
 
-### CR-129 — Masked percentile `normalize`
+### CR-129 — A parameter from another node's values
 
-- `normalize_percentile(low=, high=)` takes its window from the
-  whole image. The proposal also wanted it from a mask's pixels (a lesion's
-  1st–99th percentile), which needs a parameter computed from *another
-  node's* values per row. `this` (CR-123) reads only the op's own input
-  shape, so they do not provide it.
-- Today: `reduce_masked(mask, reduction="p1")` computes the
-  bounds as a scalar, but a scalar cannot yet feed another op's parameter.
-  A general "parameter from a node" mechanism (a `Param` variant naming a
-  scalar node) would cover it; decide whether that is worth its planner
-  cost before building it. It would be the same entity as `this` on another
-  node (`mask_node.p1`), with one difference that must stay visible in the
-  API: a value from a node's *pixels* is known only once that node has run,
-  so it splits fusion where a shape attribute does not.
+- The case that raised it, a percentile window from a mask's pixels (a
+  lesion's 1st–99th), shipped as its own lazy-only op,
+  `normalize_percentile_masked(mask, low=, high=)`: `masked_select`'s
+  values, `normalize_percentile`'s window rule and checks, the
+  `normalize_range` kernels.
+- Left open: the general form, any op's parameter computed from *another
+  node's* values per row (`reduce_masked(mask, reduction="p1")` computes the
+  scalar, but a scalar cannot feed another op's parameter). A `Param` variant
+  naming a scalar node would cover it; decide whether that is worth its
+  planner cost before building it. It would be the same entity as `this` on
+  another node (`mask_node.p1`), with one difference that must stay visible
+  in the API: a value from a node's *pixels* is known only once that node
+  has run, so it splits fusion where a shape attribute does not. Build it
+  when a second op needs a window from another node; until then each such
+  op is a graph op like this one.
 
 ## Review follow-ups (2026-10-23)
 

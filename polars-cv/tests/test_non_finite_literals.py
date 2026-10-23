@@ -7,10 +7,12 @@ op's own check, exactly as the same value passed per row through an
 expression does. (CR-103 first refused such a literal in Python, which made
 ``apply_lut([[nan]], out_dtype="f32")`` an error while ``pl.lit(nan)`` worked.)
 
-The sweep below is registry-driven: every float field of every pipeline op
+The sweep below is registry-driven: every float field of every op
 (``OP_FIELDS``), at each non-finite value, must either be refused while the
 pipeline is built, naming the op, or plan and run to a value or a row error —
-never a panic, and never the JSON decoder's "expected value".
+never a panic, and never the JSON decoder's "expected value". A pipeline op
+takes its case from ``OP_CASES``; a lazy-only op (a ``LazyPipelineExpr``
+method) from ``LAZY_CASES``.
 """
 
 from __future__ import annotations
@@ -58,6 +60,23 @@ CATALOGUE = _catalogue()
 INTERNAL_FIELDS: dict[str, dict[str, Any]] = {"clamp": {"min": 0.0, "max": 1.0}}
 
 
+#: A lazy-only op's other fields, by op: it is called on a decoded image, each
+#: of its node fields given that image's ``grayscale()`` (a mask, a second
+#: operand of the image's size).
+LAZY_CASES: dict[str, dict[str, Any]] = {
+    "normalize_percentile_masked": {"low": 2.0, "high": 98.0},
+}
+
+
+def _lazy_only(op: str) -> bool:
+    return CATALOGUE[op]["visibility"] == "lazy_only"
+
+
+def _case(op: str) -> object:
+    """*op*'s sweep case, from the table for its kind; ``None`` for none."""
+    return LAZY_CASES.get(op) if _lazy_only(op) else OP_CASES.get(op)
+
+
 def _float_fields() -> list[tuple[str, str, tuple[int, ...]]]:
     return sorted(
         (python, field["name"], path)
@@ -73,7 +92,7 @@ FLOAT_FIELDS = _float_fields()
 def test_the_sweep_covers_every_float_field() -> None:
     """Guard the guard: each op with a float field has a case to sweep it in."""
     assert len(FLOAT_FIELDS) > 25, f"only {len(FLOAT_FIELDS)} float fields found"
-    uncovered = sorted({op for op, _, _ in FLOAT_FIELDS if OP_CASES.get(op) is None})
+    uncovered = sorted({op for op, _, _ in FLOAT_FIELDS if _case(op) is None})
     assert not uncovered, f"ops with a float field and no case: {uncovered}"
 
 
@@ -96,6 +115,8 @@ def _with(value: Any, path: tuple[int, ...], new: float) -> Any:
 def test_every_float_literal_is_checked_by_its_op(
     op: str, field: str, path: tuple[int, ...], value: float
 ) -> None:
+    if _lazy_only(op):
+        return _sweep_lazy_only(op, field, path, value)
     domain, kwargs = OP_CASES[op]
     method = op
     if CATALOGUE[op]["visibility"] == "internal":
@@ -117,6 +138,28 @@ def test_every_float_literal_is_checked_by_its_op(
     sink = "numpy" if pipe.current_domain() == "buffer" else "native"
     try:
         df.select(pl.col("img").cv.pipe(pipe).sink(sink))
+    except pl.exceptions.ComputeError as e:
+        assert "panicked" not in str(e), e
+
+
+def _sweep_lazy_only(op: str, field: str, path: tuple[int, ...], value: float) -> None:
+    """The sweep's rule for a lazy-only op, called on a decoded image."""
+    kwargs = dict(LAZY_CASES[op])
+    kwargs[field] = _with(kwargs.get(field), path, value)
+    decoded = Pipeline().source("image_bytes")
+    image = pl.col("img").cv.pipe(decoded)
+    for f in CATALOGUE[op]["fields"]:
+        if f["type"]["kind"] == "node":
+            kwargs[f["name"]] = pl.col("img").cv.pipe(decoded.grayscale())
+    try:
+        expr = getattr(image, op)(**kwargs)
+    except ValueError as e:
+        assert "expected value" not in str(e), e
+        assert op in str(e) or field in str(e), f"refused without naming it: {e}"
+        return
+    df = pl.DataFrame({"img": [make_rect_png(100, 200, 3)]})
+    try:
+        df.select(expr.sink("numpy"))
     except pl.exceptions.ComputeError as e:
         assert "panicked" not in str(e), e
 

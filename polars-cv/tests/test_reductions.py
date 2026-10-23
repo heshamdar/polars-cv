@@ -576,6 +576,75 @@ class TestNormalizeWindows:
             getattr(Pipeline().source("array"), op)(low=low, high=high)
 
 
+class TestNormalizePercentileMasked:
+    """``normalize_percentile_masked``: ``normalize_percentile``'s window
+    taken from the pixels a mask selects (a lesion's 1st-99th percentile),
+    applied to the whole image (CR-129)."""
+
+    def _run(self, low, high, mask=MASK, img=IMG, **kw) -> np.ndarray:
+        from polars_cv import numpy_from_struct
+
+        frame = _masked_frame(mask=mask, img=img).with_columns(lo=2.0, hi=90.0)
+        image = pl.col("a").cv.pipe(Pipeline().source("array"))
+        selector = pl.col("m").cv.pipe(Pipeline().source("array"))
+        expr = image.normalize_percentile_masked(selector, low=low, high=high, **kw)
+        return numpy_from_struct(frame.select(expr.sink("numpy")).item())
+
+    @pytest.mark.parametrize(("low", "high"), [(2.0, 98.0), (0.0, 100.0), (25.0, 30.0)])
+    def test_the_window_is_the_masked_pixels_percentiles(
+        self, low: float, high: float
+    ) -> None:
+        lo, hi = np.percentile(IMG[MASK > 0], [low, high])
+        got = self._run(low, high)
+        np.testing.assert_allclose(
+            got, np.clip((IMG - lo) / (hi - lo), 0, 1), atol=1e-6
+        )
+        assert got.dtype == np.float32
+
+    def test_a_mask_of_every_pixel_is_normalize_percentile(self) -> None:
+        from polars_cv import numpy_from_struct
+
+        every = np.full_like(MASK, 255)
+        frame = _masked_frame(mask=every)
+        whole = Pipeline().source("array").normalize_percentile(low=5.0, high=95.0)
+        want = numpy_from_struct(
+            frame.select(pl.col("a").cv.pipe(whole).sink("numpy")).item()
+        )
+        np.testing.assert_array_equal(self._run(5.0, 95.0, mask=every), want)
+
+    def test_per_row_percentiles(self) -> None:
+        lo, hi = np.percentile(IMG[MASK > 0], [2.0, 90.0])
+        got = self._run(pl.col("lo"), pl.col("hi"))
+        np.testing.assert_allclose(
+            got, np.clip((IMG - lo) / (hi - lo), 0, 1), atol=1e-6
+        )
+
+    def test_out_dtype(self) -> None:
+        assert self._run(2.0, 98.0, out_dtype="f64").dtype == np.float64
+
+    def test_a_constant_region_is_the_empty_windows_zeros(self) -> None:
+        img = IMG.copy()
+        img[MASK > 0] = 42.0
+        assert not self._run(2.0, 98.0, img=img).any()
+
+    def test_no_masked_pixel_is_an_unknown_nan_window(self) -> None:
+        assert np.isnan(self._run(2.0, 98.0, mask=np.zeros_like(MASK))).all()
+
+    @pytest.mark.parametrize(
+        ("low", "high", "match"),
+        [(-1.0, 50.0, r"\[0, 100\]"), (60.0, 40.0, "below")],
+    )
+    def test_refusals(self, low: float, high: float, match: str) -> None:
+        image = pl.col("a").cv.pipe(Pipeline().source("array"))
+        selector = pl.col("m").cv.pipe(Pipeline().source("array"))
+        with pytest.raises(ValueError, match=match):
+            image.normalize_percentile_masked(selector, low=low, high=high)
+
+    def test_another_mask_dtype_is_refused(self) -> None:
+        with pytest.raises(pl.exceptions.ComputeError, match="mask"):
+            self._run(2.0, 98.0, mask=MASK.astype(np.int32))
+
+
 class TestOnePercentileRule:
     """Every percentile is the one ``Percent``: ``reduce("pNN")``,
     ``reduce_percentile(q)``, ``rank_filter(q)`` and ``normalize_percentile``'s

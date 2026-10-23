@@ -2140,6 +2140,69 @@
     ]
   },
   {
+    "name": "normalize_percentile_masked",
+    "python": "normalize_percentile_masked",
+    "visibility": "lazy_only",
+    "doc": "``normalize_percentile`` with its window from the pixels a mask\nselects: the ``low`` and ``high`` percentiles of the masked values\n(a lesion's 1st-99th) mapped to [0, 1] across the whole image,\nclipped outside it.\n\nA pixel counts where the mask (u8 or float, ``[H, W]`` or\n``[H, W, 1]`` of the image's size) is > 0, every channel together,\nas ``masked_select`` selects it. A constant selection gives the empty\nwindow's zeros, and no selected pixel an unknown (NaN) window, as\n``normalize_percentile`` over the same values.\n\nExample:\n    >>> ct.normalize_percentile_masked(lesion, low=1.0, high=99.0)",
+    "fields": [
+      {
+        "name": "mask",
+        "doc": "The mask's node.",
+        "type": {
+          "kind": "node"
+        }
+      },
+      {
+        "name": "low",
+        "doc": "The window's lower percentile, in [0, 100]. Accepts a Polars\nexpression.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "high",
+        "doc": "The window's upper percentile, in [0, 100] and above ``low``.\nAccepts a Polars expression.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "out_dtype",
+        "doc": "Output dtype (default f32), as ``normalize``'s.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "DType",
+            "variants": [
+              "u8",
+              "i8",
+              "u16",
+              "i16",
+              "u32",
+              "i32",
+              "u64",
+              "i64",
+              "f32",
+              "f64"
+            ]
+          }
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "normalize_preset",
     "python": "normalize_preset",
     "visibility": "public",

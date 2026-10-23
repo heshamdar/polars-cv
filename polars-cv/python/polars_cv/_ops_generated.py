@@ -568,6 +568,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "neg",
         "normalize",
         "normalize_percentile",
+        "normalize_percentile_masked",
         "normalize_preset",
         "normalize_range",
         "pad",
@@ -1053,6 +1054,31 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "normalize_percentile": {
+        "low": {"kind": "scalar", "per_row": True, "py": "float"},
+        "high": {"kind": "scalar", "per_row": True, "py": "float"},
+        "out_dtype": {
+            "kind": "optional",
+            "inner": {
+                "kind": "scalar",
+                "per_row": False,
+                "py": "DType",
+                "variants": [
+                    "u8",
+                    "i8",
+                    "u16",
+                    "i16",
+                    "u32",
+                    "i32",
+                    "u64",
+                    "i64",
+                    "f32",
+                    "f64",
+                ],
+            },
+        },
+    },
+    "normalize_percentile_masked": {
+        "mask": {"kind": "node"},
         "low": {"kind": "scalar", "per_row": True, "py": "float"},
         "high": {"kind": "scalar", "per_row": True, "py": "float"},
         "out_dtype": {
@@ -1605,6 +1631,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "neg": [{"input": "buffer", "output": "buffer"}],
     "normalize": [{"input": "buffer", "output": "buffer"}],
     "normalize_percentile": [{"input": "buffer", "output": "buffer"}],
+    "normalize_percentile_masked": [{"input": "buffer", "output": "buffer"}],
     "normalize_preset": [{"input": "buffer", "output": "buffer"}],
     "normalize_range": [{"input": "buffer", "output": "buffer"}],
     "pad": [{"input": "buffer", "output": "buffer"}],

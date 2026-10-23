@@ -7,7 +7,7 @@ use view_buffer::core::dtype::OutputDTypeRule;
 use view_buffer::geometry::label::LabelRegionMode;
 use view_buffer::geometry::transforms::RegionOp;
 use view_buffer::mode::{ColumnRef, Exec, Mode, NodeRef};
-use view_buffer::ops::Reduction;
+use view_buffer::ops::{ComputeOp, Percent, Reduction};
 use view_buffer::ops::{Domain, OpShape, SpatialDependency, Sym};
 use view_buffer::{BinaryOp, DType, IdentityRule, Op};
 
@@ -311,6 +311,33 @@ pub enum GraphOp<M: Mode = Exec> {
         /// The mask's node.
         mask: NodeRef,
     },
+    /// ``normalize_percentile`` with its window from the pixels a mask
+    /// selects: the ``low`` and ``high`` percentiles of the masked values
+    /// (a lesion's 1st-99th) mapped to [0, 1] across the whole image,
+    /// clipped outside it.
+    ///
+    /// A pixel counts where the mask (u8 or float, ``[H, W]`` or
+    /// ``[H, W, 1]`` of the image's size) is > 0, every channel together,
+    /// as ``masked_select`` selects it. A constant selection gives the empty
+    /// window's zeros, and no selected pixel an unknown (NaN) window, as
+    /// ``normalize_percentile`` over the same values.
+    ///
+    /// Example:
+    ///     >>> ct.normalize_percentile_masked(lesion, low=1.0, high=99.0)
+    #[op(name = "normalize_percentile_masked", visibility = LazyOnly,
+         sample = {"mask": "n0", "low": 2.0, "high": 98.0})]
+    NormalizePercentileMasked {
+        /// The mask's node.
+        mask: NodeRef,
+        /// The window's lower percentile, in [0, 100]. Accepts a Polars
+        /// expression.
+        low: M::V<Percent>,
+        /// The window's upper percentile, in [0, 100] and above ``low``.
+        /// Accepts a Polars expression.
+        high: M::V<Percent>,
+        /// Output dtype (default f32), as ``normalize``'s.
+        out_dtype: Option<M::L<DType>>,
+    },
     /// Resize this image onto another node's grid: to that buffer's height
     /// and width, row by row, keeping this image's channels and dtype (a
     /// heatmap and the image it came from, compared cell by cell).
@@ -433,6 +460,17 @@ impl<M: Mode> GraphOp<M> {
                 axis: axis.as_ref().map(|a| M::lit(a) as usize),
             },
             GraphOp::MaskedSelect { mask } => Role::MaskedSelect { mask },
+            GraphOp::NormalizePercentileMasked {
+                mask,
+                low,
+                high,
+                out_dtype,
+            } => Role::NormalizePercentileMasked {
+                mask,
+                low,
+                high,
+                out_dtype,
+            },
             GraphOp::ResizeLike { like, filter } => Role::ResizeLike { like, filter },
             GraphOp::ChannelMerge { others } => Role::ChannelMerge { others },
             GraphOp::AssertShape { dims, exact } => Role::AssertShape { dims, exact },
@@ -467,6 +505,7 @@ impl<M: Mode> GraphOp<M> {
             Role::ApplyMask { .. }
             | Role::ReduceMasked { .. }
             | Role::MaskedSelect { .. }
+            | Role::NormalizePercentileMasked { .. }
             | Role::ResizeLike { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
@@ -484,6 +523,7 @@ impl<M: Mode> GraphOp<M> {
             Role::Binary(..) | Role::AssertShape { .. } => input,
             Role::ApplyMask { .. }
             | Role::MaskedSelect { .. }
+            | Role::NormalizePercentileMasked { .. }
             | Role::ChannelMerge { .. }
             | Role::ResizeLike { .. } => Domain::Buffer,
             // One value, as a global reduction; a buffer along an axis.
@@ -503,6 +543,13 @@ impl<M: Mode> GraphOp<M> {
             | Role::ChannelMerge { .. }
             | Role::AssertShape { .. }
             | Role::ResizeLike { .. } => OutputDTypeRule::PreserveInput,
+            // `normalize_percentile`'s, whose window this is.
+            Role::NormalizePercentileMasked {
+                low,
+                high,
+                out_dtype,
+                ..
+            } => whole_window::<M>(low, high, out_dtype).output_dtype_rule(),
             // Dimension reads, region scores and masked reductions are f64.
             Role::ExtractShape | Role::LabelReduce { .. } | Role::ReduceMasked { .. } => {
                 OutputDTypeRule::ForceF64
@@ -530,6 +577,7 @@ impl<M: Mode> GraphOp<M> {
             | Role::LabelReduce { .. }
             | Role::ReduceMasked { .. }
             | Role::MaskedSelect { .. }
+            | Role::NormalizePercentileMasked { .. }
             | Role::ResizeLike { .. }
             | Role::AssertShape { .. }
             | Role::Regions(..) => SpatialDependency::Global,
@@ -546,6 +594,7 @@ impl<M: Mode> GraphOp<M> {
             Role::ApplyMask { .. }
             | Role::ReduceMasked { .. }
             | Role::MaskedSelect { .. }
+            | Role::NormalizePercentileMasked { .. }
             | Role::ResizeLike { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
@@ -577,7 +626,9 @@ impl<M: Mode> GraphOp<M> {
                 ),
                 _ => Ok(()),
             },
-            Role::ReduceMasked { .. } | Role::MaskedSelect { .. } => match inputs {
+            Role::ReduceMasked { .. }
+            | Role::MaskedSelect { .. }
+            | Role::NormalizePercentileMasked { .. } => match inputs {
                 [buffer, mask, ..] => view_buffer::ops::validate_masked_reduce(
                     buffer,
                     mask,
@@ -613,7 +664,8 @@ impl<M: Mode> GraphOp<M> {
             Role::Binary(_, other) | Role::Regions(_, other) => vec![other],
             Role::ApplyMask { mask, .. }
             | Role::ReduceMasked { mask, .. }
-            | Role::MaskedSelect { mask } => vec![mask],
+            | Role::MaskedSelect { mask }
+            | Role::NormalizePercentileMasked { mask, .. } => vec![mask],
             Role::ResizeLike { like, .. } => vec![like],
             Role::ChannelMerge { others } => others.iter().collect(),
             Role::AssertShape { .. } | Role::ExtractShape | Role::LabelReduce { .. } => Vec::new(),
@@ -642,7 +694,8 @@ impl<M: Mode> GraphOp<M> {
             | GraphOp::SymmetricDifference { other } => vec![other],
             GraphOp::ApplyMask { mask, .. }
             | GraphOp::ReduceMasked { mask, .. }
-            | GraphOp::MaskedSelect { mask } => vec![mask],
+            | GraphOp::MaskedSelect { mask }
+            | GraphOp::NormalizePercentileMasked { mask, .. } => vec![mask],
             GraphOp::ResizeLike { like, .. } => vec![like],
             GraphOp::ChannelMerge { others } => others.iter_mut().collect(),
             GraphOp::AssertShape { .. } | GraphOp::ExtractShape | GraphOp::LabelReduce { .. } => {
@@ -661,6 +714,8 @@ impl<M: Mode> GraphOp<M> {
             Role::ReduceMasked { axis, .. } => OpShape::Reduce { axis },
             // One axis, as long as the row's selection.
             Role::MaskedSelect { .. } => OpShape::Fixed(vec![Sym::PerRow]),
+            // Every pixel, normalized in place.
+            Role::NormalizePercentileMasked { .. } => OpShape::Preserve,
             // The other node's height and width; this image's channels.
             Role::ResizeLike { .. } => OpShape::HwOf { of: 1 },
             // This `[H, W]` buffer and one per merged operand.
@@ -699,6 +754,13 @@ impl<M: Mode> GraphOp<M> {
                 }
                 Ok(())
             }
+            // `normalize_percentile`'s window rules, read from it.
+            GraphOp::NormalizePercentileMasked {
+                low,
+                high,
+                out_dtype,
+                ..
+            } => whole_window::<M>(low, high, out_dtype).check(),
             GraphOp::ReduceMasked { axis, .. } => {
                 if let Some(axis) = axis.as_ref().map(M::lit).filter(|&a| a > 1) {
                     return Err(format!(
@@ -732,6 +794,12 @@ pub enum Role<'a, M: Mode> {
     MaskedSelect {
         mask: &'a NodeRef,
     },
+    NormalizePercentileMasked {
+        mask: &'a NodeRef,
+        low: &'a M::V<Percent>,
+        high: &'a M::V<Percent>,
+        out_dtype: &'a Option<M::L<DType>>,
+    },
     ChannelMerge {
         others: &'a [NodeRef],
     },
@@ -749,4 +817,18 @@ pub enum Role<'a, M: Mode> {
         reduction: &'a M::V<Reduction>,
         region_mode: &'a M::V<LabelRegionMode>,
     },
+}
+
+/// The `normalize_percentile` a masked one is over its mask's pixels: the one
+/// authority for the window's checks and the output dtype.
+fn whole_window<M: Mode>(
+    low: &M::V<Percent>,
+    high: &M::V<Percent>,
+    out_dtype: &Option<M::L<DType>>,
+) -> ComputeOp<M> {
+    ComputeOp::NormalizePercentile {
+        low: low.clone(),
+        high: high.clone(),
+        out_dtype: out_dtype.clone(),
+    }
 }

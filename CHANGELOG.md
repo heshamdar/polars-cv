@@ -39,6 +39,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`normalize_percentile_masked(mask, low=, high=)`** (lazy-only):
+  `normalize_percentile` with its window from the pixels a mask selects —
+  a lesion's 1st–99th percentile mapped to [0, 1] across the whole image.
+  The window's checks and output dtype are `normalize_percentile`'s, and
+  under a mask of every pixel the result is `normalize_percentile`'s
+  exactly. `low`/`high` may be per row (CR-129).
+
 - **`masked_select(mask)`** (lazy-only): the values of an image where a mask
   (u8 or float, `> 0`) is set, as a 1-D buffer of the image's dtype —
   NumPy's `image[mask > 0].ravel()`. Reduce, histogram or sink it as any

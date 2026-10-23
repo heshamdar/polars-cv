@@ -228,6 +228,23 @@ pub(crate) fn run_step(
                     &image, &mask,
                 )))
             }
+            Role::NormalizePercentileMasked {
+                low,
+                high,
+                out_dtype,
+                ..
+            } => {
+                let [image, mask] = exactly(name, buffers()?)?;
+                Ok(NodeOutput::from_buffer(
+                    view_buffer::ops::normalize_percentile_masked(
+                        &image,
+                        &mask,
+                        *low,
+                        *high,
+                        out_dtype.unwrap_or(view_buffer::DType::F32),
+                    ),
+                ))
+            }
             Role::ResizeLike { filter, .. } => {
                 let [image, like] = exactly(name, buffers()?)?;
                 let (height, width) = (like.shape()[0] as u32, like.shape()[1] as u32);
@@ -393,6 +410,7 @@ fn vector_reads_as_buffer(step: &GraphStep) -> bool {
             | Role::ApplyMask { .. }
             | Role::ReduceMasked { .. }
             | Role::MaskedSelect { .. }
+            | Role::NormalizePercentileMasked { .. }
             | Role::ResizeLike { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape

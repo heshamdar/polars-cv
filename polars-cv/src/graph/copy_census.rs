@@ -366,6 +366,10 @@ const UNDECLARED: &[(&str, &str)] = &[
         "a graph op run by the executor, which resizes through the engine",
     ),
     (
+        "normalize_percentile_masked",
+        "a graph op run by the executor itself: a masked_select, then the window kernel",
+    ),
+    (
         "masked_select",
         "a graph op run by the executor itself, gathering the masked values once",
     ),
