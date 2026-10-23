@@ -266,13 +266,7 @@ CASES: list[ExprCase] = [
         "block_reduce",
         "reduction",
         lambda v: rgb().block_reduce(height=4, width=4, reduction=v),
-        ("min", "mean", "max"),
-    ),
-    ExprCase(
-        "block_reduce",
-        "q",
-        lambda v: rgb().block_reduce(height=4, width=4, reduction="percentile", q=v),
-        (10.0, 50.0, 90.0),
+        ("min", "p62.5", "max"),
     ),
     ExprCase(
         "rank_filter",
@@ -991,6 +985,12 @@ CASES: list[ExprCase] = [
         (0.1, 0.5, 0.9),
     ),
     ExprCase(
+        "reduce",
+        "reduction",
+        lambda v: gray().reduce(v),
+        ("mean", "p90", "max"),
+    ),
+    ExprCase(
         "reduce_std",
         "ddof",
         lambda v: gray().reduce_std(ddof=v),
@@ -1037,14 +1037,6 @@ CASES: list[ExprCase] = [
             contours=pl.col(DIAMOND), reduction="mean", region_mode=v
         ),
         ("interior", "boundary", "bbox"),
-    ),
-    ExprCase(
-        "label_reduce",
-        "q",
-        lambda v: gray().label_reduce(
-            contours=pl.col(CONTOURS), reduction="percentile", q=v
-        ),
-        (5.0, 50.0, 95.0),
     ),
 ]
 

@@ -357,12 +357,12 @@
       },
       {
         "name": "reduction",
-        "doc": "The reduction: \"sum\", \"mean\" (default), \"min\", \"max\", \"std\",\n\"median\", \"percentile\" (with ``q``) or \"count\".",
+        "doc": "The reduction: \"sum\", \"mean\" (default), \"min\", \"max\", \"std\",\n\"median\", \"count\", or a percentile \"pNN\" (\"p90\", \"p62.5\").",
         "default": "mean",
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "Reduction",
+          "py": "str",
           "variants": [
             "sum",
             "mean",
@@ -370,21 +370,8 @@
             "max",
             "std",
             "median",
-            "percentile",
             "count"
           ]
-        }
-      },
-      {
-        "name": "q",
-        "doc": "The percentile, in [0, 100], for ``reduction=\"percentile\"`` only.",
-        "type": {
-          "kind": "optional",
-          "inner": {
-            "kind": "scalar",
-            "per_row": true,
-            "py": "float"
-          }
         }
       }
     ],
@@ -1748,12 +1735,12 @@
       },
       {
         "name": "reduction",
-        "doc": "Reduction over each region's pixel values: \"sum\", \"mean\", \"min\",\n\"max\" (default), \"std\", \"median\", \"percentile\" (with ``q``) or\n\"count\".",
+        "doc": "Reduction over each region's pixel values: \"sum\", \"mean\", \"min\",\n\"max\" (default), \"std\", \"median\", \"count\", or a percentile \"pNN\"\n(\"p90\", \"p62.5\").",
         "default": "max",
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "Reduction",
+          "py": "str",
           "variants": [
             "sum",
             "mean",
@@ -1761,21 +1748,8 @@
             "max",
             "std",
             "median",
-            "percentile",
             "count"
           ]
-        }
-      },
-      {
-        "name": "q",
-        "doc": "The percentile, in [0, 100], for ``reduction=\"percentile\"`` only.",
-        "type": {
-          "kind": "optional",
-          "inner": {
-            "kind": "scalar",
-            "per_row": true,
-            "py": "float"
-          }
         }
       },
       {
@@ -2409,6 +2383,42 @@
     ]
   },
   {
+    "name": "reduce",
+    "python": "reduce",
+    "visibility": "public",
+    "doc": "Reduce every value (every channel) to one, by any reduction: the\nstatistic named, or a percentile \"pNN\". Over no values: NaN, or 0 for\n\"sum\" and \"count\".\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").reduce(\"p90\")",
+    "fields": [
+      {
+        "name": "reduction",
+        "doc": "\"sum\", \"mean\", \"min\", \"max\", \"std\" (population), \"median\",\n\"count\", or a percentile \"pNN\" (\"p90\", \"p62.5\"). Accepts a Polars\nexpression for a per-row choice.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "str",
+          "variants": [
+            "sum",
+            "mean",
+            "min",
+            "max",
+            "std",
+            "median",
+            "count"
+          ]
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "scalar"
+      },
+      {
+        "input": "vector",
+        "output": "scalar"
+      }
+    ]
+  },
+  {
     "name": "reduce_argmax",
     "python": "reduce_argmax",
     "visibility": "public",
@@ -2477,12 +2487,12 @@
       },
       {
         "name": "reduction",
-        "doc": "The reduction: \"sum\", \"mean\" (default), \"min\", \"max\", \"std\",\n\"median\", \"percentile\" (with ``q``) or \"count\".",
+        "doc": "The reduction: \"sum\", \"mean\" (default), \"min\", \"max\", \"std\",\n\"median\", \"count\", or a percentile \"pNN\" (\"p90\", \"p62.5\").",
         "default": "mean",
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "Reduction",
+          "py": "str",
           "variants": [
             "sum",
             "mean",
@@ -2490,21 +2500,8 @@
             "max",
             "std",
             "median",
-            "percentile",
             "count"
           ]
-        }
-      },
-      {
-        "name": "q",
-        "doc": "The percentile, in [0, 100], for ``reduction=\"percentile\"`` only.",
-        "type": {
-          "kind": "optional",
-          "inner": {
-            "kind": "scalar",
-            "per_row": true,
-            "py": "float"
-          }
         }
       },
       {

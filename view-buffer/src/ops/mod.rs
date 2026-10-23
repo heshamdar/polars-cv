@@ -57,7 +57,9 @@ pub use lut::LutOp;
 pub use mask::{apply_mask, validate_mask};
 pub use pad::{PadMode, PadPosition};
 pub use phash::{HashAlgorithm, PerceptualHashOp};
-pub use reduction::{reduce_masked, validate_masked_reduce, Masked, Reduction, ReductionOp};
+pub use reduction::{
+    reduce_masked, validate_masked_reduce, Masked, Percent, Reduction, ReductionOp, Statistic,
+};
 pub use scalar::{FusedKernel, ScalarOp};
 pub use shape_rule::{Dim, OpShape, PlannedInput, Sym};
 pub use spatial_rule::{GeometricEffect, NeighborhoodSupport, SpatialDependency};

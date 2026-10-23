@@ -108,7 +108,6 @@ class _LazyForwardersMixin:
         height: IntOrThisOrExpr,
         width: IntOrThisOrExpr,
         reduction: str | pl.Expr = "mean",
-        q: FloatOrThisOrExpr | None = None,
     ) -> LazyPipelineExpr:
         """Pool fixed blocks: each ``height`` x ``width`` block reduced to one
 
@@ -116,7 +115,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(
             self._continuation().block_reduce(
-                height=height, width=width, reduction=reduction, q=q
+                height=height, width=width, reduction=reduction
             )
         )
 
@@ -459,7 +458,6 @@ class _LazyForwardersMixin:
         contours: pl.Expr,
         *,
         reduction: str | pl.Expr = "max",
-        q: FloatOrThisOrExpr | None = None,
         region_mode: str | pl.Expr = "interior",
     ) -> LazyPipelineExpr:
         """Score contour regions against the current buffer values.
@@ -468,7 +466,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(
             self._continuation().label_reduce(
-                contours=contours, reduction=reduction, q=q, region_mode=region_mode
+                contours=contours, reduction=reduction, region_mode=region_mode
             )
         )
 
@@ -708,6 +706,13 @@ class _LazyForwardersMixin:
         Lazy form of :meth:`Pipeline.reciprocal` on this expression's output.
         """
         return self.pipe(self._continuation().reciprocal())
+
+    def reduce(self, reduction: str | pl.Expr) -> LazyPipelineExpr:
+        """Reduce every value (every channel) to one, by any reduction: the
+
+        Lazy form of :meth:`Pipeline.reduce` on this expression's output.
+        """
+        return self.pipe(self._continuation().reduce(reduction=reduction))
 
     def reduce_argmax(self, axis: int) -> LazyPipelineExpr:
         """Index of the maximum value along an axis.

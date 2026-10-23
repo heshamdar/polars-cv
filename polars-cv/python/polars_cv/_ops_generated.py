@@ -53,11 +53,11 @@ __all__ = [
     "NullParamPolicy",
     "PadMode",
     "PadPosition",
-    "Reduction",
     "RowErrorPolicy",
     "ScaleOrigin",
     "SinkFormat",
     "SourceFormat",
+    "Statistic",
     "Winding",
 ]
 
@@ -368,28 +368,6 @@ class PadPosition(str, Enum):
     BOTTOM_RIGHT = "bottom-right"
 
 
-class Reduction(str, Enum):
-    """A reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``).
-
-    - SUM, MEAN, MIN, MAX
-    - STD: population standard deviation
-    - MEDIAN
-    - PERCENTILE: the ``q``-th, NumPy's linear interpolation
-    - COUNT: how many pixels
-
-    Over no pixels each is NaN, except SUM and COUNT (0).
-    """
-
-    SUM = "sum"
-    MEAN = "mean"
-    MIN = "min"
-    MAX = "max"
-    STD = "std"
-    MEDIAN = "median"
-    PERCENTILE = "percentile"
-    COUNT = "count"
-
-
 class RowErrorPolicy(str, Enum):
     """What a failing row does to a graph query.
 
@@ -411,6 +389,26 @@ class ScaleOrigin(str, Enum):
     CENTROID = "centroid"
     BBOX_CENTER = "bbox_center"
     ORIGIN = "origin"
+
+
+class Statistic(str, Enum):
+    """A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``"pNN"``: ``"p90"``, ``"p62.5"`` (NumPy's linear interpolation, at most two decimals).
+
+    - SUM, MEAN, MIN, MAX
+    - STD: population standard deviation
+    - MEDIAN
+    - COUNT: how many pixels
+
+    Over no pixels each is NaN, except SUM and COUNT (0).
+    """
+
+    SUM = "sum"
+    MEAN = "mean"
+    MIN = "min"
+    MAX = "max"
+    STD = "std"
+    MEDIAN = "median"
+    COUNT = "count"
 
 
 class Winding(str, Enum):
@@ -531,6 +529,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "rank_filter",
         "rasterize",
         "reciprocal",
+        "reduce",
         "reduce_argmax",
         "reduce_argmin",
         "reduce_masked",
@@ -685,21 +684,8 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "reduction": {
             "kind": "scalar",
             "per_row": True,
-            "py": "Reduction",
-            "variants": [
-                "sum",
-                "mean",
-                "min",
-                "max",
-                "std",
-                "median",
-                "percentile",
-                "count",
-            ],
-        },
-        "q": {
-            "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "py": "str",
+            "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
         },
     },
     "blur": {"sigma": {"kind": "scalar", "per_row": True, "py": "float"}},
@@ -946,21 +932,8 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "reduction": {
             "kind": "scalar",
             "per_row": True,
-            "py": "Reduction",
-            "variants": [
-                "sum",
-                "mean",
-                "min",
-                "max",
-                "std",
-                "median",
-                "percentile",
-                "count",
-            ],
-        },
-        "q": {
-            "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "py": "str",
+            "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
         },
         "region_mode": {
             "kind": "scalar",
@@ -1111,6 +1084,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "supersample": {"kind": "scalar", "per_row": True, "py": "int"},
     },
     "reciprocal": {},
+    "reduce": {
+        "reduction": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "str",
+            "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
+        }
+    },
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "reduce_argmin": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "reduce_masked": {
@@ -1118,21 +1099,8 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "reduction": {
             "kind": "scalar",
             "per_row": True,
-            "py": "Reduction",
-            "variants": [
-                "sum",
-                "mean",
-                "min",
-                "max",
-                "std",
-                "median",
-                "percentile",
-                "count",
-            ],
-        },
-        "q": {
-            "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            "py": "str",
+            "variants": ["sum", "mean", "min", "max", "std", "median", "count"],
         },
         "axis": {
             "kind": "optional",
@@ -1528,6 +1496,10 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "rank_filter": [{"input": "buffer", "output": "buffer"}],
     "rasterize": [{"input": "contour", "output": "buffer"}],
     "reciprocal": [{"input": "buffer", "output": "buffer"}],
+    "reduce": [
+        {"input": "buffer", "output": "scalar"},
+        {"input": "vector", "output": "scalar"},
+    ],
     "reduce_argmax": [
         {"input": "buffer", "output": "buffer"},
         {"input": "vector", "output": "buffer"},
@@ -1857,7 +1829,6 @@ class _OpsMixin:
         height: IntOrThisOrExpr,
         width: IntOrThisOrExpr,
         reduction: str | pl.Expr = "mean",
-        q: FloatOrThisOrExpr | None = None,
     ) -> Pipeline:
         """Pool fixed blocks: each ``height`` x ``width`` block reduced to one
         value per channel, so ``[H, W, C]`` becomes
@@ -1871,15 +1842,13 @@ class _OpsMixin:
             height: Block height in pixels. Accepts a Polars expression.
             width: Block width in pixels. Accepts a Polars expression.
             reduction: The reduction: "sum", "mean" (default), "min", "max", "std",
-                "median", "percentile" (with ``q``) or "count".
-            q: The percentile, in [0, 100], for ``reduction="percentile"`` only.
+                "median", "count", or a percentile "pNN" ("p90", "p62.5").
 
         Example:
             >>> Pipeline().source("array").block_reduce(height=20, width=20, reduction="mean")
         """
         return self._append_typed(
-            "block_reduce",
-            {"height": height, "width": width, "reduction": reduction, "q": q},
+            "block_reduce", {"height": height, "width": width, "reduction": reduction}
         )
 
     def blur(self, sigma: FloatOrThisOrExpr) -> Pipeline:
@@ -2598,7 +2567,6 @@ class _OpsMixin:
         contours: pl.Expr,
         *,
         reduction: str | pl.Expr = "max",
-        q: FloatOrThisOrExpr | None = None,
         region_mode: str | pl.Expr = "interior",
     ) -> Pipeline:
         """Score contour regions against the current buffer values.
@@ -2616,8 +2584,8 @@ class _OpsMixin:
         Args:
             contours: Contour-set expression (`List[Contour]`) to score.
             reduction: Reduction over each region's pixel values: "sum", "mean", "min",
-                "max" (default), "std", "median", "percentile" (with ``q``) or "count".
-            q: The percentile, in [0, 100], for ``reduction="percentile"`` only.
+                "max" (default), "std", "median", "count", or a percentile "pNN" ("p90",
+                "p62.5").
             region_mode: Region selection mode. ``"interior"`` — only pixels strictly
                 inside the contour polygon. ``"boundary"`` — interior pixels *plus*
                 pixels whose centre lies on the contour boundary. ``"bbox"`` — all
@@ -2625,12 +2593,7 @@ class _OpsMixin:
         """
         return self._append_typed(
             "label_reduce",
-            {
-                "contours": contours,
-                "reduction": reduction,
-                "q": q,
-                "region_mode": region_mode,
-            },
+            {"contours": contours, "reduction": reduction, "region_mode": region_mode},
         )
 
     def letterbox(
@@ -2914,6 +2877,23 @@ class _OpsMixin:
         Domain: buffer → buffer
         """
         return self._append_typed("reciprocal", {})
+
+    def reduce(self, reduction: str | pl.Expr) -> Pipeline:
+        """Reduce every value (every channel) to one, by any reduction: the
+        statistic named, or a percentile "pNN". Over no values: NaN, or 0 for
+        "sum" and "count".
+
+        Domain: buffer → scalar, vector → scalar
+
+        Args:
+            reduction: "sum", "mean", "min", "max", "std" (population), "median",
+                "count", or a percentile "pNN" ("p90", "p62.5"). Accepts a Polars
+                expression for a per-row choice.
+
+        Example:
+            >>> Pipeline().source("image_bytes").reduce("p90")
+        """
+        return self._append_typed("reduce", {"reduction": reduction})
 
     def reduce_argmax(self, axis: int) -> Pipeline:
         """Index of the maximum value along an axis.
@@ -4131,7 +4111,6 @@ class _ContourOpsMixin:
         image: pl.Expr,
         *,
         reduction: str | pl.Expr = "max",
-        q: FloatOrExpr | None = None,
         region_mode: str | pl.Expr = "interior",
     ) -> pl.Expr:
         """Score each contour from an image/array expression with configurable reduction.
@@ -4149,9 +4128,9 @@ class _ContourOpsMixin:
         Args:
             image: Image/array expression aligned by row with contour sets.
             reduction: Aggregation over the pixels of each contour region: "sum",
-                "mean", "min", "max" (default), "std", "median", "percentile" (with
-                ``q``) or "count". Accepts a Polars expression for a per-row choice.
-            q: The percentile, in [0, 100], for ``reduction="percentile"`` only.
+                "mean", "min", "max" (default), "std", "median", "count", or a
+                percentile "pNN" ("p90", "p62.5"). Accepts a Polars expression for a
+                per-row choice.
             region_mode: Region selector - ``"interior"`` (pixels strictly inside),
                 ``"boundary"`` (interior plus the contour boundary) or ``"bbox"``
                 (everything in the bounding box). Accepts a Polars expression.
@@ -4161,12 +4140,7 @@ class _ContourOpsMixin:
         """
         return self._call(
             "contour_label_reduce",
-            {
-                "image": image,
-                "reduction": reduction,
-                "q": q,
-                "region_mode": region_mode,
-            },
+            {"image": image, "reduction": reduction, "region_mode": region_mode},
         )
 
     def largest(self, *, k: IntOrExpr = 1) -> pl.Expr:

@@ -14,7 +14,6 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
-from tests._plan_view import planned
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -317,7 +316,7 @@ class TestStatisticsMethod:
         pipe = Pipeline().source("image_bytes")
         img_expr = pl.col("image").cv.pipe(pipe)
 
-        with pytest.raises(ValueError, match="Unknown statistic"):
+        with pytest.raises(ValueError, match="unknown reduction 'invalid_stat'"):
             img_expr.statistics(include=["invalid_stat"])
 
 
@@ -420,63 +419,23 @@ class TestMultipleRows:
 
 
 # ---------------------------------------------------------------------------
-# _STAT_REDUCERS: the single authority behind both statistics() methods
+# Each statistic is the engine's Reduction of that name (`reduce`)
 # ---------------------------------------------------------------------------
-
-
-def test_stat_reducers_are_all_pipeline_methods() -> None:
-    """Every name in ``_STAT_REDUCERS`` must resolve to a real reduction.
-
-    The mapping replaced four hand-maintained copies of one list: a
-    ``valid_stats`` set and a five-arm ``if/elif`` dispatch inside each of
-    ``statistics()`` and ``statistics_lazy()``. Both dispatches ended in
-    ``else: continue``, so the failure mode was silent — a statistic the
-    validator accepted and the chain did not know was dropped from the output
-    with no error.
-
-    Collapsing them means the dispatch can no longer disagree with the
-    validation, but it introduces a new way to be wrong: a value naming a
-    method that does not exist, or one that is not a reduction at all. That
-    would now fail at call time, for whoever asked for that statistic. This
-    checks both properties up front instead.
-    """
-    from polars_cv.lazy import _DEFAULT_STATS, _STAT_REDUCERS
-    from polars_cv.pipeline import Pipeline
-
-    assert _STAT_REDUCERS, "the reducer table is empty; nothing below checks anything"
-
-    for stat, method in _STAT_REDUCERS.items():
-        assert callable(getattr(Pipeline, method, None)), (
-            f"_STAT_REDUCERS['{stat}'] names '{method}', which is not a "
-            f"Pipeline method."
-        )
-        produced = getattr(Pipeline().source("image_bytes").grayscale(), method)()
-        assert planned(produced).domain == "scalar", (
-            f"'{method}' leaves the pipeline in domain "
-            f"'{planned(produced).domain}', so '{stat}' is not a statistic."
-        )
-
-    unknown = set(_DEFAULT_STATS) - set(_STAT_REDUCERS)
-    assert not unknown, f"_DEFAULT_STATS names statistics with no reducer: {unknown}"
 
 
 @plugin_required
 def test_each_statistic_computes_its_own_reduction(encode_png: "Callable") -> None:
-    """Each name in ``_STAT_REDUCERS`` must compute *that* statistic.
+    """Each statistic name must compute *that* statistic.
 
-    ``test_stat_reducers_are_all_pipeline_methods`` checks the table's shape —
-    every value resolves to a real reduction that lands in the scalar domain.
-    It cannot tell one reduction from another, so the plausible copy/paste
-    error in the refactor that replaced the explicit five-arm dispatch,
-    ``"mean": "reduce_max"``, passes it and the whole suite besides.
+    A name maps to the engine's ``Reduction`` of that spelling (through the
+    ``reduce`` op), so a mix-up there — ``"mean"`` computing a max — would
+    pass any test that only checks a name is accepted.
 
     The reason it passes the suite is that most fixtures paint a constant
     image, where mean, min and max are all the same number. This uses a
     gradient chosen so every statistic has a different value, which is the only
     thing that can distinguish them.
     """
-    from polars_cv.lazy import _STAT_REDUCERS
-
     # A squared ramp over a 16x16 grey image (0..255, skewed low): mean ~84.7,
     # median 63.5, min 0, max 255 and a standard deviation near 75 — values no
     # two of which coincide. A linear ramp's median *is* its mean.
@@ -492,10 +451,7 @@ def test_each_statistic_computes_its_own_reduction(encode_png: "Callable") -> No
         "std": float(ramp.std()),
         "median": float(np.median(ramp)),
     }
-    assert set(expected) == set(_STAT_REDUCERS), (
-        f"this test knows {sorted(expected)} but _STAT_REDUCERS declares "
-        f"{sorted(_STAT_REDUCERS)}; a new statistic needs its expected value here"
-    )
+    expected["p90"] = float(np.percentile(ramp, 90))
     assert len(set(expected.values())) == len(expected), (
         "two statistics coincide on this image, so it cannot tell them apart"
     )
@@ -513,5 +469,5 @@ def test_each_statistic_computes_its_own_reduction(encode_png: "Callable") -> No
         # room to be generous without weakening the test.
         assert produced[stat] == pytest.approx(want, rel=1e-2), (
             f"'{stat}' produced {produced[stat]}, expected {want} — "
-            f"_STAT_REDUCERS['{stat}'] is computing a different reduction"
+            f"the '{stat}' reduction is computing a different statistic"
         )

@@ -245,20 +245,6 @@
     ]
   },
   {
-    "name": "Reduction",
-    "doc": "A reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- PERCENTILE: the ``q``-th, NumPy's linear interpolation\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0).",
-    "variants": [
-      "sum",
-      "mean",
-      "min",
-      "max",
-      "std",
-      "median",
-      "percentile",
-      "count"
-    ]
-  },
-  {
     "name": "RowErrorPolicy",
     "doc": "What a failing row does to a graph query.\n\nApplies to errors raised while producing a row — source decode, op\nexecution, output encode:\n- RAISE: propagate the first error, failing the whole expression.\n- NULL: a failing row yields null; other rows proceed.\n- NULL_WITH_MESSAGE: as NULL, plus an `_error` field.",
     "variants": [
@@ -282,6 +268,19 @@
     "variants": [
       "f16",
       "float16"
+    ]
+  },
+  {
+    "name": "Statistic",
+    "doc": "A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``\"pNN\"``: ``\"p90\"``, ``\"p62.5\"`` (NumPy's linear interpolation, at most two decimals).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0).",
+    "variants": [
+      "sum",
+      "mean",
+      "min",
+      "max",
+      "std",
+      "median",
+      "count"
     ]
   },
   {

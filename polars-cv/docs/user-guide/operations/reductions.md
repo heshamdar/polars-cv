@@ -12,7 +12,17 @@ Pipeline().source("image_bytes").grayscale().reduce_mean()
 Pipeline().source("image_bytes").grayscale().reduce_max()
 Pipeline().source("image_bytes").grayscale().reduce_min()
 Pipeline().source("image_bytes").grayscale().reduce_std()
+
+# Any reduction by name: a statistic, or a percentile spelled "pNN"
+Pipeline().source("image_bytes").grayscale().reduce("p90")
+Pipeline().source("image_bytes").grayscale().reduce(pl.col("which"))  # per row
 ```
+
+Every reduction parameter (`reduce`, `reduce_masked`, `block_reduce`,
+`label_reduce`) takes the same spellings: `"sum"`, `"mean"`, `"min"`, `"max"`,
+`"std"` (population), `"median"`, `"count"`, or a percentile `"pNN"` (`"p90"`,
+`"p62.5"`, at most two decimals, NumPy's linear interpolation). Over no values
+each is NaN, except `"sum"` and `"count"` (0).
 
 ## Axis Reductions
 
@@ -65,7 +75,7 @@ heat = pl.col("heat").cv.pipe(Pipeline().source("array"))
 breast = pl.col("breast").cv.pipe(Pipeline().source("array"))
 
 heat.reduce_masked(breast, reduction="median", axis=1).sink("numpy")    # per row
-heat.reduce_masked(breast, reduction="percentile", q=75, axis=0).sink("numpy")
+heat.reduce_masked(breast, reduction="p75", axis=0).sink("numpy")
 heat.statistics(include=["mean", "median", "p10", "p90", "count"], mask=breast)
 ```
 
@@ -97,7 +107,7 @@ result = df.with_columns(
 ```
 
 **Reductions:** `"sum"`, `"mean"`, `"min"`, `"max"` (default), `"std"`
-(population), `"median"`, `"percentile"` (with `q`) and `"count"` — the same
+(population), `"median"`, a percentile `"pNN"` and `"count"` — the same
 set `reduce_masked` takes.
 **Region modes:** `"interior"` (filled area), `"boundary"` (contour edge), `"bbox"` (bounding rectangle).
 

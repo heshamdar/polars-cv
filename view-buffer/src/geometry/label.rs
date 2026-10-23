@@ -42,10 +42,8 @@ pub fn score_contours_on_buffer(
     buffer: &ViewBuffer,
     contours: &[Contour],
     reduction: Reduction,
-    q: Option<f64>,
     region_mode: LabelRegionMode,
 ) -> Result<Vec<f64>, String> {
-    Reduction::check_q("label_reduce", Some(reduction), q.is_some(), q)?;
     let shape = buffer.shape();
     if shape.len() < 2 {
         return Err(format!(
@@ -70,7 +68,7 @@ pub fn score_contours_on_buffer(
             let at = |y: usize, x: usize| -> f64 { data[y * width + x] as f64 };
             contours
                 .iter()
-                .map(|c| score_one(c, &at, width, height, reduction, q, region_mode))
+                .map(|c| score_one(c, &at, width, height, reduction, region_mode))
                 .collect()
         }};
     }
@@ -95,12 +93,11 @@ fn score_one(
     width: usize,
     height: usize,
     reduction: Reduction,
-    q: Option<f64>,
     region_mode: LabelRegionMode,
 ) -> f64 {
     // No pixels: what the reduction gives over none (NaN, or 0 for a sum or
     // a count), from the one authority.
-    let none = || reduction.of(&mut [], q);
+    let none = || reduction.of(&mut []);
     if width == 0 || height == 0 {
         return none();
     }
@@ -147,7 +144,7 @@ fn score_one(
             return none();
         }
     }
-    reduction.of(&mut values, q)
+    reduction.of(&mut values)
 }
 
 /// Visit, in raster order, every pixel `(x, y)` of `xs` x `ys` whose centre
@@ -309,6 +306,7 @@ fn path_pixels(ring: &[Point], width: usize, height: usize) -> Vec<(usize, usize
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::reduction::Statistic;
 
     fn square(x0: f64, y0: f64, size: f64) -> Contour {
         Contour::from_tuples(&[
@@ -331,7 +329,11 @@ mod tests {
             .collect();
 
         let contour = square(1.0, 1.0, 5.0);
-        for reduction in [Reduction::Max, Reduction::Mean, Reduction::Sum] {
+        for reduction in [
+            Reduction::Named(Statistic::Max),
+            Reduction::Named(Statistic::Mean),
+            Reduction::Named(Statistic::Sum),
+        ] {
             for mode in [
                 LabelRegionMode::Interior,
                 LabelRegionMode::Boundary,
@@ -341,7 +343,6 @@ mod tests {
                     &buffer,
                     std::slice::from_ref(&contour),
                     reduction,
-                    None,
                     mode,
                 )
                 .unwrap();
@@ -371,9 +372,9 @@ mod tests {
                     }
                 }
                 let expected = match reduction {
-                    Reduction::Max => max_val,
-                    Reduction::Mean => acc / count as f64,
-                    Reduction::Sum => acc,
+                    Reduction::Named(Statistic::Max) => max_val,
+                    Reduction::Named(Statistic::Mean) => acc / count as f64,
+                    Reduction::Named(Statistic::Sum) => acc,
                     other => unreachable!("{other:?} is not swept here"),
                 };
                 assert_eq!(scores[0], expected, "{reduction:?}/{mode:?}");
@@ -391,12 +392,15 @@ mod tests {
             let mut data: Vec<f32> = (0..16).map(|i| i as f32).collect();
             data[at] = f32::NAN;
             let buffer = ViewBuffer::from_vec_with_shape(data, vec![4, 4, 1]);
-            for reduction in [Reduction::Max, Reduction::Mean, Reduction::Sum] {
+            for reduction in [
+                Reduction::Named(Statistic::Max),
+                Reduction::Named(Statistic::Mean),
+                Reduction::Named(Statistic::Sum),
+            ] {
                 let scores = score_contours_on_buffer(
                     &buffer,
                     &[square(0.0, 0.0, 4.0)],
                     reduction,
-                    None,
                     LabelRegionMode::Bbox,
                 )
                 .unwrap();
@@ -420,8 +424,7 @@ mod tests {
         let scores = score_contours_on_buffer(
             &buffer,
             &[tiny],
-            Reduction::Max,
-            None,
+            Reduction::Named(Statistic::Max),
             LabelRegionMode::Interior,
         )
         .unwrap();
@@ -473,17 +476,16 @@ mod tests {
             ] {
                 for (reduction, expected) in [
                     (
-                        Reduction::Max,
+                        Reduction::Named(Statistic::Max),
                         values.iter().copied().fold(f64::MIN, f64::max),
                     ),
-                    (Reduction::Mean, sum / values.len() as f64),
-                    (Reduction::Sum, sum),
+                    (Reduction::Named(Statistic::Mean), sum / values.len() as f64),
+                    (Reduction::Named(Statistic::Sum), sum),
                 ] {
                     let scores = score_contours_on_buffer(
                         &buffer,
                         std::slice::from_ref(contour),
                         reduction,
-                        None,
                         mode,
                     )
                     .unwrap();
@@ -614,8 +616,7 @@ mod tests {
         let scores = score_contours_on_buffer(
             &buffer,
             &[line, outside],
-            Reduction::Sum,
-            None,
+            Reduction::Named(Statistic::Sum),
             LabelRegionMode::Interior,
         )
         .unwrap();
@@ -628,8 +629,7 @@ mod tests {
         let err = score_contours_on_buffer(
             &buffer,
             &[square(0.0, 0.0, 1.0)],
-            Reduction::Max,
-            None,
+            Reduction::Named(Statistic::Max),
             LabelRegionMode::Interior,
         )
         .unwrap_err();

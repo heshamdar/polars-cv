@@ -9,11 +9,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
-- **`LabelReduction` is now `Reduction`,** the one reduction every region
-  and mask reducer shares (`label_reduce`, `.contour.label_reduce`, the
-  contour matcher's `score_reduction`). The spellings `"max"`, `"mean"`,
-  `"sum"` are unchanged; only code importing the enum class needs the new
-  name.
+- **`LabelReduction` is now `Statistic`,** the named half of the one
+  reduction every region, mask and block reducer shares (`label_reduce`,
+  `.contour.label_reduce`, `reduce_masked`, `block_reduce`, `reduce`, the
+  contour matcher's `score_reduction`). A reduction parameter is a
+  statistic's name or a percentile spelled `"pNN"` (`"p90"`, `"p62.5"`, at
+  most two decimals). The spellings `"max"`, `"mean"`, `"sum"` are
+  unchanged; only code importing the enum class needs the new name.
 - **`.cv.width()`, `.cv.height()`, `.cv.channels()` and `.cv.image_info()`'s
   size fields are `Int64`, not `UInt32`.** Sizes are for arithmetic, and
   unsigned arithmetic in polars wraps: `pl.col("img").cv.width() - 32` on a
@@ -64,7 +66,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   pixel the mean of its footprint, every input pixel weighted by its overlap
   (OpenCV's `INTER_AREA`; bilinear when enlarging), where a narrow kernel
   aliases. `block_reduce` pools fixed blocks with any reduction
-  (`"mean"`, `"max"`, `"median"`, `"percentile"` with `q`, ...); the last row
+  (`"mean"`, `"max"`, `"median"`, `"p90"`, ...); the last row
   and column of blocks are partial when the size does not divide.
 - **`flip(axes, when=)`, `flip_h(when=)`, `flip_v(when=)`**: a per-row
   condition, e.g. `flip_h(when=pl.col("view").str.starts_with("R"))` to
@@ -81,7 +83,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `reduce_masked`), the pixel count. `region_stats` reduces several maps over
   each contour region (one `label_reduce` per entry) into a struct of
   equal-length lists, one value per region: regionprops for any per-pixel map.
-- **`img.reduce_masked(mask, reduction=, q=, axis=)`** reduces an image over
+- **`reduce(reduction)`** reduces every value to one by any reduction
+  (`"p90"`, `"median"`, `"count"`, ...), per row if `reduction` is an
+  expression; `statistics()` computes each statistic through it, so it reads
+  no list of names of its own.
+- **`img.reduce_masked(mask, reduction=, axis=)`** reduces an image over
   the pixels a mask selects (u8 or float, set where > 0): one value, or one
   per column (`axis=0`) or row (`axis=1`), with every reduction `label_reduce`
   takes. `apply_mask` zeroes outside the mask, which every reduction still
@@ -93,7 +99,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   **`reduce_median(axis=None)`** is `reduce_percentile(50)`. A per-row
   median of a map no longer needs nested lists filtered in polars.
 - **`label_reduce(reduction=...)` takes every reduction:** `"min"`, `"std"`
-  (population), `"median"`, `"percentile"` (with `q`, NumPy's linear
+  (population), `"median"`, a percentile `"pNN"` (NumPy's linear
   interpolation) and `"count"` beside `"max"`, `"mean"` and `"sum"`, on the
   pipeline op and the `.contour` accessor alike. A minimum no longer needs
   `neg()` then `max`.
@@ -134,6 +140,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`reduce_percentile(q)` with `q` outside [0, 100]** returned the minimum
+  or maximum (the `q` was clamped); it is now refused, as every other
+  percentile is.
 - **`background_divide` on an integer image** blurred in the image's own
   dtype, so a u8 background rounded to whole numbers: a faint one (below 0.5)
   was 0 and the image was divided by epsilon alone (a 1e6 spike). The

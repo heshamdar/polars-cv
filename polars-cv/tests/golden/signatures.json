@@ -337,11 +337,6 @@
     "'max'"
    ],
    [
-    "q",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
     "region_mode",
     "KEYWORD_ONLY",
     "'interior'"
@@ -883,11 +878,6 @@
     "reduction",
     "KEYWORD_ONLY",
     "'mean'"
-   ],
-   [
-    "q",
-    "KEYWORD_ONLY",
-    "None"
    ]
   ],
   "blur": [
@@ -1421,11 +1411,6 @@
     "'max'"
    ],
    [
-    "q",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
     "region_mode",
     "KEYWORD_ONLY",
     "'interior'"
@@ -1849,6 +1834,18 @@
     ""
    ]
   ],
+  "reduce": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "reduction",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "reduce_argmax": [
    [
     "self",
@@ -1888,11 +1885,6 @@
     "reduction",
     "KEYWORD_ONLY",
     "'mean'"
-   ],
-   [
-    "q",
-    "KEYWORD_ONLY",
-    "None"
    ],
    [
     "axis",
@@ -2741,11 +2733,6 @@
     "reduction",
     "KEYWORD_ONLY",
     "'mean'"
-   ],
-   [
-    "q",
-    "KEYWORD_ONLY",
-    "None"
    ]
   ],
   "blur": [
@@ -3262,11 +3249,6 @@
     "'max'"
    ],
    [
-    "q",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
     "region_mode",
     "KEYWORD_ONLY",
     "'interior'"
@@ -3633,6 +3615,18 @@
   "reciprocal": [
    [
     "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "reduce": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "reduction",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]

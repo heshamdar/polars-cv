@@ -9,7 +9,6 @@ lazy pipeline operations that are fused into a single plugin call when
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -28,51 +27,6 @@ if TYPE_CHECKING:
 def _generate_node_id() -> str:
     """Generate a unique node ID for the pipeline graph."""
     return f"node_{uuid.uuid4().hex[:8]}"
-
-
-#: Statistic name -> the ``Pipeline`` reduction that computes it.
-#:
-#: One authority for both halves of the job: the accepted names are this
-#: mapping's keys, and the dispatch reads its values. ``statistics()`` and
-#: ``statistics_lazy()`` used to carry a ``valid_stats`` set *and* a five-arm
-#: ``if/elif`` chain each — four copies of one list — and both chains ended in
-#: ``else: continue``, so a name the validator accepted but the chain did not
-#: know would have been silently dropped from the output rather than raising.
-#:
-#: ``test_stat_reducers_are_all_pipeline_methods`` rejects a value that is not
-#: a real reduction, which is what stops this becoming a list of names nothing
-#: resolves.
-
-_STAT_REDUCERS: "dict[str, str]" = {
-    "mean": "reduce_mean",
-    "std": "reduce_std",
-    "min": "reduce_min",
-    "max": "reduce_max",
-    "sum": "reduce_sum",
-    "median": "reduce_median",
-}
-
-
-def _parse_statistic(stat: str) -> "tuple[str, float | None]":
-    """A statistic's name as the ``Reduction`` it is, and its ``q``.
-
-    The fixed names (:data:`_STAT_REDUCERS`'s keys, and ``"count"``) are the
-    reductions of the same spelling; ``"pNN"`` is the NN-th percentile
-    (``"p90"``, ``"p2.5"``). Read by ``statistics()`` and ``region_stats()``.
-
-    Raises:
-        ValueError: If the name is none of these.
-    """
-    if stat in _STAT_REDUCERS or stat == "count":
-        return stat, None
-    match = re.fullmatch(r"p(\d+(?:\.\d+)?)", stat)
-    if match and 0.0 <= float(match.group(1)) <= 100.0:
-        return "percentile", float(match.group(1))
-    msg = (
-        f"Unknown statistic '{stat}'. Valid options: "
-        f"{sorted([*_STAT_REDUCERS, 'count'])}, or 'pNN' for a percentile (0-100)"
-    )
-    raise ValueError(msg)
 
 
 #: What ``include=None`` means. ``sum`` is deliberately outside it: it scales
@@ -399,7 +353,6 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         mask: "LazyPipelineExpr",
         *,
         reduction: str | pl.Expr = "mean",
-        q: float | pl.Expr | None = None,
         axis: int | None = None,
     ) -> "LazyPipelineExpr":
         """
@@ -416,8 +369,9 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         Args:
             mask: LazyPipelineExpr producing the mask.
             reduction: "sum", "mean" (default), "min", "max", "std"
-                (population), "median", "percentile" (with ``q``) or "count".
-            q: The percentile, in [0, 100], for ``reduction="percentile"``.
+                (population), "median", "count", or a percentile "pNN"
+                ("p90", "p62.5"). Accepts a Polars expression for a per-row
+                choice.
             axis: None, 0 (per column) or 1 (per row). Literal only: it
                 fixes the output rank.
 
@@ -431,7 +385,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             ```
         """
         new_pipeline = self._receiving()
-        args = {"mask": mask, "reduction": reduction, "q": q, "axis": axis}
+        args = {"mask": mask, "reduction": reduction, "axis": axis}
         new_pipeline._add_node_op("reduce_masked", args)
         return LazyPipelineExpr(
             column=None,
@@ -680,7 +634,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                 - "sum": Sum of all values
                 - "median": The median
                 - "pNN": The NN-th percentile, e.g. "p10", "p97.5"
-                - "count": How many pixels the mask selects (needs ``mask``)
+                - "count": How many values (every channel; under ``mask``, the masked ones)
                 If None, defaults to ["mean", "std", "min", "max"].
             mask: Reduce only the pixels this mask selects (u8 or float, set
                 where > 0), as ``reduce_masked`` does. Over no pixel a
@@ -776,7 +730,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         to carry a copy each of the accepted-name set and of the five-arm
         dispatch, both ending ``else: continue`` — so a name that passed
         validation but missed the chain vanished from the output silently.
-        Reading :data:`_STAT_REDUCERS` for both halves makes that unrepresentable.
+        Each statistic is now a ``Reduction`` the op parses (``reduce``, or
+        ``reduce_masked`` under a mask), so there is no name list here.
 
         Args:
             include: Statistic names, or ``None`` for :data:`_DEFAULT_STATS`.
@@ -799,22 +754,16 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         # `_merge_stat_nodes` rather than the "at least one statistic" message.
         include = list(_DEFAULT_STATS) if include is None else list(include)
 
-        parsed = [_parse_statistic(stat) for stat in include]
         if not include:
             raise ValueError("At least one statistic must be included")
-        if mask is None and any(reduction == "count" for reduction, _ in parsed):
-            msg = "statistic 'count' counts the pixels a mask selects: pass mask="
-            raise ValueError(msg)
 
         names = [f"{prefix}{stat}" for stat in include]
         nodes = []
-        for stat, (reduction, q), name in zip(include, parsed, names):
+        for stat, name in zip(include, names):
             if mask is not None:
-                node = self.reduce_masked(mask, reduction=reduction, q=q)
-            elif q is not None:
-                node = self.pipe(Pipeline().reduce_percentile(q))
+                node = self.reduce_masked(mask, reduction=stat)
             else:
-                node = self.pipe(getattr(Pipeline(), _STAT_REDUCERS[stat])())
+                node = self.pipe(Pipeline().reduce(stat))
             nodes.append(node.alias(name))
         return names, nodes
 
@@ -1028,10 +977,7 @@ def region_stats(
         raise ValueError("region_stats needs at least one (map, statistic) entry")
     nodes = []
     for name, (image, stat) in maps.items():
-        reduction, q = _parse_statistic(stat)
-        step = Pipeline().label_reduce(
-            regions, reduction=reduction, q=q, region_mode=region_mode
-        )
+        step = Pipeline().label_reduce(regions, reduction=stat, region_mode=region_mode)
         nodes.append(image.pipe(step).alias(name))
     merged = nodes[0] if len(nodes) == 1 else nodes[0].merge_pipe(*nodes[1:])
     return merged.sink({name: "native" for name in maps})

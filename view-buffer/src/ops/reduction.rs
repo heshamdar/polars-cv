@@ -14,13 +14,11 @@ use crate::ops::Domain;
 use crate::mode::{known, size, Exec, Mode};
 use polars_cv_macros::{Ops, Resolve};
 
-/// A reduction of a set of values to one: the one definition every reducer
-/// over a selection of pixels reads (`label_reduce`'s contour regions,
-/// `reduce_masked`'s mask, `statistics()`), so a "median" means the same
-/// wherever it is asked for.
+/// A reduction that is not a percentile, by name. A [`Reduction`] is one of
+/// these or a percentile, spelled `"pNN"` beside them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Reduction {
+pub enum Statistic {
     Sum,
     Mean,
     Min,
@@ -28,72 +26,130 @@ pub enum Reduction {
     /// Population standard deviation (NumPy's default, `ddof=0`).
     Std,
     Median,
-    /// The `q`-th percentile, linearly interpolated as NumPy's default.
-    Percentile,
     /// How many values there are.
     Count,
 }
 
-crate::naming::named_variants!(Reduction: "A reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- PERCENTILE: the ``q``-th, NumPy's linear interpolation\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0)." {
+crate::naming::named_variants!(Statistic: "A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``\"pNN\"``: ``\"p90\"``, ``\"p62.5\"`` (NumPy's linear interpolation, at most two decimals).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0)." {
     "sum" => Sum,
     "mean" => Mean,
     "min" => Min,
     "max" => Max,
     "std" => Std,
     "median" => Median,
-    "percentile" => Percentile,
     "count" => Count,
 });
 
+/// A percentile, held in hundredths (`"p62.5"` is 6250), so a reduction is a
+/// plain value that compares and hashes exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Percent(u16);
+
+impl Percent {
+    /// `q` in `[0, 100]`, with at most two decimals.
+    pub fn new(q: f64) -> Result<Self, String> {
+        if !(0.0..=100.0).contains(&q) {
+            return Err(format!("q = {q} is outside [0, 100]"));
+        }
+        let hundredths = (q * 100.0).round();
+        if (hundredths - q * 100.0).abs() > 1e-6 {
+            return Err(format!(
+                "q = {q}: a percentile has at most two decimal places"
+            ));
+        }
+        Ok(Percent(hundredths as u16))
+    }
+
+    /// The percentile, in `[0, 100]`.
+    pub fn q(self) -> f64 {
+        f64::from(self.0) / 100.0
+    }
+}
+
+/// A reduction of a set of values to one: the one definition every reducer
+/// over a selection of pixels reads (`label_reduce`'s contour regions,
+/// `reduce_masked`'s mask, `block_reduce`'s blocks, `statistics()`), so a
+/// "median" means the same wherever it is asked for.
+///
+/// A percentile carries its `q`, so a reduction is one value: a per-row
+/// column may mix `"p90"` and `"mean"`, and no `q` sits beside a reduction
+/// that does not read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reduction {
+    Named(Statistic),
+    /// The `q`-th percentile, linearly interpolated as NumPy's default.
+    Percentile(Percent),
+}
+
 impl Reduction {
-    /// `values` reduced (reordered in place); `q` is read by `Percentile`
-    /// alone. Over no values: NaN, except `Sum` and `Count` (0).
-    pub fn of(self, values: &mut [f64], q: Option<f64>) -> f64 {
+    /// `values` reduced (reordered in place). Over no values: NaN, except a
+    /// sum and a count (0).
+    pub fn of(self, values: &mut [f64]) -> f64 {
         let n = values.len();
-        match self {
-            Reduction::Count => return n as f64,
-            Reduction::Sum => return values.iter().sum(),
+        let stat = match self {
+            Reduction::Percentile(p) => return percentile_of(values, p.q()),
+            Reduction::Named(stat) => stat,
+        };
+        match stat {
+            Statistic::Count => return n as f64,
+            Statistic::Sum => return values.iter().sum(),
             _ if n == 0 => return f64::NAN,
             _ => {}
         }
-        match self {
-            Reduction::Mean => values.iter().sum::<f64>() / n as f64,
-            Reduction::Min => values.iter().copied().fold(values[0], minimum),
-            Reduction::Max => values.iter().copied().fold(values[0], maximum),
-            Reduction::Std => {
+        match stat {
+            Statistic::Mean => values.iter().sum::<f64>() / n as f64,
+            Statistic::Min => values.iter().copied().fold(values[0], minimum),
+            Statistic::Max => values.iter().copied().fold(values[0], maximum),
+            Statistic::Std => {
                 let mean = values.iter().sum::<f64>() / n as f64;
                 (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64).sqrt()
             }
-            Reduction::Median => percentile_of(values, 50.0),
-            Reduction::Percentile => percentile_of(values, q.unwrap_or(f64::NAN)),
-            Reduction::Count | Reduction::Sum => unreachable!("answered above"),
+            Statistic::Median => percentile_of(values, 50.0),
+            Statistic::Count | Statistic::Sum => unreachable!("answered above"),
         }
     }
 
-    /// Refuse a `q` the reduction does not read, or a percentile without
-    /// one, or a `q` outside `[0, 100]`; `reduction` and `q` are `None` when
-    /// not known (a per-row value at plan time). `op` names the message.
-    pub fn check_q(
-        op: &str,
-        reduction: Option<Reduction>,
-        q_given: bool,
-        q: Option<f64>,
-    ) -> Result<(), String> {
-        match reduction {
-            Some(Reduction::Percentile) if !q_given => {
-                return Err(format!("{op}: reduction=\"percentile\" needs q (0-100)"))
-            }
-            Some(r) if r != Reduction::Percentile && q_given => {
-                return Err(format!("{op}: q applies only to reduction=\"percentile\""))
-            }
-            _ => {}
+    /// The reduction `s` spells: a [`Statistic`]'s name, or `"pNN"`.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        if let Some(stat) = crate::naming::lookup(Statistic::NAMED, s) {
+            return Ok(Reduction::Named(stat));
         }
-        match q {
-            Some(q) if !(0.0..=100.0).contains(&q) => {
-                Err(format!("{op}: q = {q} is outside [0, 100]"))
-            }
-            _ => Ok(()),
+        if let Some(q) = s.strip_prefix('p').and_then(|q| q.parse::<f64>().ok()) {
+            return Percent::new(q)
+                .map(Reduction::Percentile)
+                .map_err(|e| format!("reduction '{s}': {e}"));
         }
+        Err(format!(
+            "unknown reduction '{s}', expected one of {:?} or a percentile \
+             spelled \"pNN\" (\"p90\", \"p62.5\")",
+            crate::naming::names(Statistic::NAMED)
+        ))
+    }
+
+    /// Its spelling: the statistic's name, or `"p62.5"`.
+    pub fn spelling(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Reduction::Named(stat) => stat.spelling().into(),
+            Reduction::Percentile(p) => format!("p{}", p.q()).into(),
+        }
+    }
+}
+
+impl crate::naming::WireScalar for Reduction {
+    const KIND: crate::naming::WireKind = crate::naming::WireKind::Name;
+    const PY_TYPE: &'static str = "str";
+    fn from_wire(value: crate::naming::WireValue<'_>) -> Result<Self, String> {
+        match value.as_str() {
+            Some(s) => Reduction::parse(s),
+            None => Err(format!("a reduction is a name or \"pNN\", got {value:?}")),
+        }
+    }
+    fn to_wire(self) -> crate::naming::WireValue<'static> {
+        crate::naming::WireValue::Str(self.spelling())
+    }
+    /// The named ones; a percentile is spelled `"pNN"` beside them.
+    fn spellings() -> Vec<&'static str> {
+        crate::naming::names(Statistic::NAMED)
     }
 }
 
@@ -106,7 +162,11 @@ pub fn percentile_of(values: &mut [f64], q: f64) -> f64 {
     }
     values.sort_by(f64::total_cmp);
     let n = values.len();
-    let pos = q.clamp(0.0, 100.0) / 100.0 * (n - 1) as f64;
+    debug_assert!(
+        (0.0..=100.0).contains(&q),
+        "a percentile's q is checked where it is given, got {q}"
+    );
+    let pos = q / 100.0 * (n - 1) as f64;
     let lo = pos.floor() as usize;
     let frac = pos - lo as f64;
     match values.get(lo + 1) {
@@ -181,7 +241,6 @@ pub fn reduce_masked(
     buffer: &ViewBuffer,
     mask: &ViewBuffer,
     reduction: Reduction,
-    q: Option<f64>,
     axis: Option<usize>,
 ) -> Masked {
     let shape = buffer.shape();
@@ -203,7 +262,7 @@ pub fn reduce_masked(
                     }
                 }
             }
-            Masked::Scalar(reduction.of(&mut selected, q))
+            Masked::Scalar(reduction.of(&mut selected))
         }
         Some(axis) => {
             // Axis 0 runs down each column, axis 1 along each row.
@@ -218,7 +277,7 @@ pub fn reduce_masked(
                             selected.push(at(y, x, ch));
                         }
                     }
-                    out.push(reduction.of(&mut selected, q));
+                    out.push(reduction.of(&mut selected));
                 }
             }
             let out_shape = if shape.len() == 3 {
@@ -313,11 +372,22 @@ pub enum ReductionOp<M: Mode = Exec> {
         /// Block width in pixels. Accepts a Polars expression.
         width: M::V<u32>,
         /// The reduction: "sum", "mean" (default), "min", "max", "std",
-        /// "median", "percentile" (with ``q``) or "count".
+        /// "median", "count", or a percentile "pNN" ("p90", "p62.5").
         #[param(default = "mean")]
         reduction: M::V<Reduction>,
-        /// The percentile, in [0, 100], for ``reduction="percentile"`` only.
-        q: Option<M::V<f64>>,
+    },
+    /// Reduce every value (every channel) to one, by any reduction: the
+    /// statistic named, or a percentile "pNN". Over no values: NaN, or 0 for
+    /// "sum" and "count".
+    ///
+    /// Example:
+    ///     >>> Pipeline().source("image_bytes").reduce("p90")
+    #[op(name = "reduce", sample = {"reduction": "p90"})]
+    By {
+        /// "sum", "mean", "min", "max", "std" (population), "median",
+        /// "count", or a percentile "pNN" ("p90", "p62.5"). Accepts a Polars
+        /// expression for a per-row choice.
+        reduction: M::V<Reduction>,
     },
     /// Compute the q-th percentile of all values, or along one axis (linear
     /// interpolation, as numpy's default).
@@ -333,28 +403,34 @@ pub enum ReductionOp<M: Mode = Exec> {
 }
 
 impl<M: Mode> ReductionOp<M> {
-    /// A block of no pixels, and a `q` outside a percentile, are refused.
+    /// A block of no pixels, and a percentile outside `[0, 100]`, are
+    /// refused (a reduction's own `"pNN"` is checked as it is parsed).
     pub fn check(&self) -> Result<(), String> {
-        let ReductionOp::Blocks {
-            height,
-            width,
-            reduction,
-            q,
-        } = self
-        else {
-            return Ok(());
-        };
-        for (name, side) in [("height", height), ("width", width)] {
-            if known::<M, u32>(side) == Some(0) {
-                return Err(format!("block_reduce: a block {name} of 0 pixels"));
+        match self {
+            ReductionOp::Blocks { height, width, .. } => {
+                for (name, side) in [("height", height), ("width", width)] {
+                    if known::<M, u32>(side) == Some(0) {
+                        return Err(format!("block_reduce: a block {name} of 0 pixels"));
+                    }
+                }
+                Ok(())
             }
+            ReductionOp::Percentile { q, .. } => match known::<M, f64>(q) {
+                Some(q) if !(0.0..=100.0).contains(&q) => {
+                    Err(format!("reduce_percentile: q = {q} is outside [0, 100]"))
+                }
+                _ => Ok(()),
+            },
+            ReductionOp::Max { .. }
+            | ReductionOp::Min { .. }
+            | ReductionOp::Mean { .. }
+            | ReductionOp::Sum { .. }
+            | ReductionOp::Std { .. }
+            | ReductionOp::ArgMax { .. }
+            | ReductionOp::ArgMin { .. }
+            | ReductionOp::PopCount
+            | ReductionOp::By { .. } => Ok(()),
         }
-        Reduction::check_q(
-            "block_reduce",
-            known::<M, Reduction>(reduction),
-            q.is_some(),
-            q.as_ref().and_then(known::<M, f64>),
-        )
     }
 
     /// The axis reduced, `None` for a global reduction.
@@ -369,7 +445,7 @@ impl<M: Mode> ReductionOp<M> {
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => {
                 Some(M::lit(axis) as usize)
             }
-            ReductionOp::PopCount | ReductionOp::Blocks { .. } => None,
+            ReductionOp::PopCount | ReductionOp::Blocks { .. } | ReductionOp::By { .. } => None,
         }
     }
 
@@ -405,10 +481,15 @@ impl ReductionOp {
             height,
             width,
             reduction,
-            q,
         } = self
         {
-            return pool_blocks(&contig, *height as usize, *width as usize, *reduction, *q);
+            return pool_blocks(&contig, *height as usize, *width as usize, *reduction);
+        }
+
+        if let ReductionOp::By { reduction } = self {
+            let values = contig.cast_to(DType::F64).to_contiguous();
+            let mut values = values.as_slice::<f64>().to_vec();
+            return ViewBuffer::from_scalar(reduction.of(&mut values));
         }
 
         // PopCount has special handling for each type
@@ -650,6 +731,7 @@ impl ReductionOp {
             // PopCount and Percentile are handled specially in execute() before calling execute_typed()
             ReductionOp::PopCount => unreachable!("PopCount is handled in execute()"),
             ReductionOp::Blocks { .. } => unreachable!("Blocks is handled in execute()"),
+            ReductionOp::By { .. } => unreachable!("By is handled in execute()"),
             ReductionOp::Percentile { axis: None, .. } => {
                 unreachable!("a global Percentile is handled in execute()")
             }
@@ -831,6 +913,7 @@ impl<M: Mode> Op for ReductionOp<M> {
             ReductionOp::PopCount => "PopCount",
             ReductionOp::Blocks { .. } => "BlockReduce",
             ReductionOp::Percentile { .. } => "Percentile",
+            ReductionOp::By { .. } => "Reduce",
         }
     }
 
@@ -866,7 +949,8 @@ impl<M: Mode> Op for ReductionOp<M> {
             | ReductionOp::ArgMin { .. }
             | ReductionOp::PopCount
             | ReductionOp::Blocks { .. }
-            | ReductionOp::Percentile { .. } => SpatialDependency::Global,
+            | ReductionOp::Percentile { .. }
+            | ReductionOp::By { .. } => SpatialDependency::Global,
         }
     }
 
@@ -934,7 +1018,8 @@ impl<M: Mode> Op for ReductionOp<M> {
             | ReductionOp::Sum { .. }
             | ReductionOp::PopCount
             | ReductionOp::Blocks { .. }
-            | ReductionOp::Percentile { .. } => OutputDTypeRule::ForceF64,
+            | ReductionOp::Percentile { .. }
+            | ReductionOp::By { .. } => OutputDTypeRule::ForceF64,
             ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => OutputDTypeRule::ForceI64,
             _ => OutputDTypeRule::PreserveInput,
         }
@@ -943,13 +1028,7 @@ impl<M: Mode> Op for ReductionOp<M> {
 
 /// `[H, W(, C)]` pooled in `bh` x `bw` blocks (partial at the far edges),
 /// each block and channel reduced by `reduction`: `[ceil(H/bh), ceil(W/bw)(, C)]`.
-fn pool_blocks(
-    buf: &ViewBuffer,
-    bh: usize,
-    bw: usize,
-    reduction: Reduction,
-    q: Option<f64>,
-) -> ViewBuffer {
+fn pool_blocks(buf: &ViewBuffer, bh: usize, bw: usize, reduction: Reduction) -> ViewBuffer {
     let shape = buf.shape();
     let (h, w) = (shape[0], shape[1]);
     let c = shape.get(2).copied().unwrap_or(1);
@@ -967,7 +1046,7 @@ fn pool_blocks(
                         block.push(values[(y * w + x) * c + ch]);
                     }
                 }
-                out.push(reduction.of(&mut block, q));
+                out.push(reduction.of(&mut block));
             }
         }
     }
@@ -1171,5 +1250,48 @@ mod tests {
         let op = ReductionOp::PopCount;
         let result = op.execute(&buffer);
         assert!((result.as_slice::<f64>()[0] - 0.0).abs() < 1e-10);
+    }
+}
+
+#[cfg(test)]
+mod reduction_value_tests {
+    use super::*;
+    use crate::naming::WireScalar;
+
+    #[test]
+    fn a_reduction_is_a_name_or_a_percentile_and_spells_itself_back() {
+        for spelling in ["mean", "count", "p90", "p62.5", "p0", "p100", "p33.33"] {
+            let r = Reduction::parse(spelling).unwrap();
+            assert_eq!(r.spelling(), spelling);
+            assert_eq!(Reduction::from_wire(r.to_wire()).unwrap(), r);
+        }
+        assert_eq!(
+            Reduction::parse("p62.5").unwrap(),
+            Reduction::Percentile(Percent::new(62.5).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_malformed_percentile_is_refused_saying_why() {
+        for (spelling, says) in [
+            ("percentile", "unknown reduction 'percentile'"),
+            ("p150", "outside [0, 100]"),
+            ("p-1", "outside [0, 100]"),
+            ("p9.999", "two decimal places"),
+            ("pnan", "outside [0, 100]"),
+            ("p", "unknown reduction 'p'"),
+        ] {
+            let err = Reduction::parse(spelling).unwrap_err();
+            assert!(err.contains(says), "{spelling}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_percentile_reduces_as_numpy_does() {
+        let mut values = vec![4.0, 1.0, 3.0, 2.0];
+        let p = Reduction::parse("p62.5").unwrap();
+        // NumPy: np.percentile([1, 2, 3, 4], 62.5) == 2.875
+        assert_eq!(p.of(&mut values), 2.875);
+        assert!(p.of(&mut []).is_nan());
     }
 }

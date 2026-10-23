@@ -31,7 +31,7 @@ impl Values for RowValues<'_> {
             WireKind::Int => WireValue::Int(col.get_i64(row, ctx)?),
             WireKind::Float => WireValue::Float(col.get_f64(row, ctx)?),
             WireKind::Bool => WireValue::Bool(col.get_bool(row, ctx)?),
-            WireKind::Name => WireValue::Str(col.get_str(row, ctx)?),
+            WireKind::Name => WireValue::str(col.get_str(row, ctx)?),
         };
         T::from_wire(value).map_err(|e| {
             polars_err!(ComputeError:

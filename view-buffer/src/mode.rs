@@ -540,7 +540,7 @@ fn scalar_from_json<T: WireScalar>(value: &serde_json::Value) -> Result<T, Strin
             (None, None) => return Err(format!("{n} is not a representable number")),
         },
         Value::Bool(b) => WireValue::Bool(*b),
-        Value::String(s) => WireValue::Str(s),
+        Value::String(s) => WireValue::str(s),
         other => return Err(format!("expected {}, got {other}", T::PY_TYPE)),
     };
     T::from_wire(wire)
@@ -551,7 +551,7 @@ fn serialize_scalar<T: WireScalar, S: Serializer>(v: T, s: S) -> Result<S::Ok, S
         WireValue::Int(i) => s.serialize_i64(i),
         WireValue::Float(f) => s.serialize_f64(f),
         WireValue::Bool(b) => s.serialize_bool(b),
-        WireValue::Str(n) => s.serialize_str(n),
+        WireValue::Str(n) => s.serialize_str(&n),
     }
 }
 

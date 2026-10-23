@@ -363,12 +363,11 @@ pub enum ContourFn<M: Mode = Exec> {
         /// Image/array expression aligned by row with contour sets.
         image: ColumnRef,
         /// Aggregation over the pixels of each contour region: "sum", "mean",
-        /// "min", "max" (default), "std", "median", "percentile" (with ``q``)
-        /// or "count". Accepts a Polars expression for a per-row choice.
+        /// "min", "max" (default), "std", "median", "count", or a percentile
+        /// "pNN" ("p90", "p62.5"). Accepts a Polars expression for a per-row
+        /// choice.
         #[param(default = "max")]
         reduction: M::V<Reduction>,
-        /// The percentile, in [0, 100], for ``reduction="percentile"`` only.
-        q: Option<M::V<f64>>,
         /// Region selector - ``"interior"`` (pixels strictly inside),
         /// ``"boundary"`` (interior plus the contour boundary) or ``"bbox"``
         /// (everything in the bounding box). Accepts a Polars expression.
@@ -679,16 +678,7 @@ pub fn check_call(name: &str, args: serde_json::Value) -> Result<(), String> {
         }
     }
     if let Some(fun) = <ContourFn<Wire> as WireOps>::from_wire(name, args.clone()) {
-        // `label_reduce`'s q is read under one reduction alone: the rule the
-        // pipeline op's check states, from the same authority.
-        if let ContourFn::LabelReduce { reduction, q, .. } = fun.map_err(named)? {
-            Reduction::check_q(
-                "label_reduce",
-                view_buffer::mode::known::<Wire, Reduction>(&reduction),
-                q.is_some(),
-                q.as_ref().and_then(view_buffer::mode::known::<Wire, f64>),
-            )?;
-        }
+        fun.map_err(named)?;
         return Ok(());
     }
     parsed(<PointFn<Wire> as WireOps>::from_wire(name, args.clone()))

@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 import polars as pl
 
-from ..._types import FloatOrExpr, LabelRegionMode, Reduction, dtype_name_for
+from ..._types import FloatOrExpr, dtype_name_for
 from ...geometry.schemas import CONTOUR_SET_SCHEMA, CORRESPONDENCE_SCHEMA
 from ...lazy import LazyPipelineExpr
 from ...pipeline import Pipeline
@@ -591,15 +591,18 @@ class ContourMatcher:
         if duplicates not in ("false_positive", "ignore"):
             msg = f"duplicates must be 'false_positive' or 'ignore', got {duplicates!r}"
             raise ValueError(msg)
-        # The accepted spellings are the engine's own enums, not a copy here.
-        for name, value, enum in (
-            ("score_reduction", score_reduction, Reduction),
-            ("score_region_mode", score_region_mode, LabelRegionMode),
-        ):
-            allowed = tuple(v.value for v in enum)
-            if value not in allowed:
-                msg = f"{name} must be one of {allowed}, got {value!r}"
-                raise ValueError(msg)
+        # Refused by the op that will score with them, as it is built: the
+        # engine parses a reduction ("max", "p90", ...) and a region mode, so
+        # there is no list of their spellings here.
+        from polars_cv.pipeline import Pipeline
+
+        try:
+            Pipeline().source("array").label_reduce(
+                pl.col("_"), reduction=score_reduction, region_mode=score_region_mode
+            )
+        except ValueError as err:
+            msg = f"score_reduction / score_region_mode: {err}"
+            raise ValueError(msg) from err
         self._match_by = match_by
         self._coverage_tolerance = coverage_tolerance
         self._duplicates = duplicates
