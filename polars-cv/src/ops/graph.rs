@@ -259,9 +259,14 @@ pub enum GraphOp<M: Mode = Exec> {
         /// column, through ``.contour``).
         other: NodeRef,
     },
-    /// Weigh this image by a mask: a u8 mask by ``m / 255``, a float one by
-    /// ``m`` in ``[0, 1]``, keeping the image's dtype; other mask dtypes are
-    /// refused.
+    /// Weigh this image by a mask.
+    ///
+    /// The mask's own dtype says its scale, whatever the image's: a u8 mask
+    /// weighs each pixel by ``m / 255`` (a ``rasterize`` or ``threshold``
+    /// mask: 255 keeps, 0 hides), a float mask by ``m`` in ``[0, 1]``. The
+    /// result keeps the image's dtype. A mask of any other dtype is refused;
+    /// cast or scale it first. A single-channel mask spreads over the
+    /// image's channels.
     #[op(name = "apply_mask", visibility = LazyOnly, sample = {"mask": "n0", "invert": true})]
     ApplyMask {
         /// The mask's node.
@@ -357,9 +362,20 @@ pub enum GraphOp<M: Mode = Exec> {
     },
     /// Join this buffer's channels with the operands', in order.
     ///
-    /// Each ``[H, W]`` input brings one channel and each ``[H, W, C]`` input
-    /// its ``C``: an RGB image and an ``[H, W]`` mask give RGBA. Every input
-    /// has the same height, width and dtype.
+    /// Each ``[H, W]`` operand brings one channel and each ``[H, W, C]``
+    /// operand its ``C``: an RGB image and an ``[H, W]`` mask give RGBA, and
+    /// single channels stack into a multi-channel image (the inverse of
+    /// ``Pipeline.channel_select``). Every operand has this buffer's
+    /// height, width and dtype.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> photo = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+    ///     >>> alpha = photo.pipe(Pipeline().grayscale())
+    ///     >>> rgba = photo.channel_merge(alpha)
+    ///     >>> sel = lambda i: photo.channel_select(i)
+    ///     >>> bgr = sel(2).channel_merge(sel(1), sel(0))
+    ///     ```
     #[op(name = "channel_merge", visibility = LazyOnly, sample = {"others": ["n0", "n1"]})]
     ChannelMerge {
         /// The other operands' nodes (``[H, W]`` or ``[H, W, C]``), in channel

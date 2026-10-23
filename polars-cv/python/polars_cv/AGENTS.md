@@ -300,8 +300,8 @@ planned schema execution could not produce.) Never build or edit a
 2. **`lazy.py`**: Nothing to add. `scripts/gen_ops.py` writes a forwarder for
    every chainable `Pipeline` method into `_lazy_forwarders.py` (real methods
    with the real signatures, so `inspect`, IDEs and type checkers read them),
-   and a binary `lazy_only` op's method into `_LazyOpsMixin`. Only the
-   multi-operand `lazy_only` ops (`apply_mask`, `channel_merge`) are
+   and every `lazy_only` op's method into `_LazyOpsMixin` (node fields as
+   `LazyPipelineExpr` operands, `*others` for a list of them). None is
    hand-written here. After changing `Pipeline`, rerun `gen_ops.py`.
 
 3. **Schema inference**: nothing to add in `_types.py` or the planner. The

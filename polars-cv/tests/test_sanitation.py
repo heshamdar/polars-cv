@@ -471,8 +471,8 @@ def test_lib_module_registration_matches_required_hooks():
 def _emitted_op_names_from_source():
     """Op names actually emitted by the Python builders, scanned from source.
 
-    The node helpers emit ``_add_node_op("<name>")`` (lazy.py), the generated
-    methods ``_append_typed("<name>")`` / ``_binary_op("<name>")``. Scanning the source keeps the comparison drift-proof without a
+    The generated methods emit ``_append_typed("<name>")`` (``Pipeline``) and
+    ``_node_op("<name>")`` (``LazyPipelineExpr``'s ``lazy_only`` ops). Scanning the source keeps the comparison drift-proof without a
     second hand-maintained list.
     """
     import re
@@ -480,11 +480,9 @@ def _emitted_op_names_from_source():
 
     pkg = Path(polars_cv.__file__).parent
     names: set[str] = set()
-    lazy = (pkg / "lazy.py").read_text()
-    names |= set(re.findall(r'_(?:binary_op|add_node_op)\("([a-z_]+)"', lazy))
     generated = (pkg / "_ops_generated.py").read_text()
     names |= set(re.findall(r'_append_typed\(\s*"([a-z_0-9]+)"', generated))
-    names |= _binary_op_calls_from_source()
+    names |= _node_op_calls_from_source()
     return names
 
 
@@ -624,11 +622,11 @@ def test_plugin_is_present_when_required() -> None:
     )
 
 
-def _binary_op_calls_from_source() -> set[str]:
-    """Every op name the lazy API emits via ``self._binary_op("<name>")``.
+def _node_op_calls_from_source() -> set[str]:
+    """Every op name the lazy API emits via ``self._node_op("<name>")``.
 
     The methods are generated into ``_LazyOpsMixin``; ``lazy.py`` is scanned
-    too, so a hand-written binary method would be counted rather than missed.
+    too, so a hand-written node-op method would be counted rather than missed.
     """
     import re
     from pathlib import Path
@@ -638,17 +636,17 @@ def _binary_op_calls_from_source() -> set[str]:
         name
         for module in ("lazy.py", "_ops_generated.py")
         for name in re.findall(
-            r'self\._binary_op\("([a-z_]+)"', (pkg / module).read_text()
+            r'self\._node_op\(\s*"([a-z_]+)"', (pkg / module).read_text()
         )
     }
 
 
 def _binary_op_names_from_source() -> set[str]:
-    """The element-wise binary ops among :func:`_binary_op_calls_from_source`.
+    """The element-wise binary ops among :func:`_node_op_calls_from_source`.
 
-    ``_binary_op`` builds any node-plus-one-operand op, so the contour set ops
-    (``union``, ``intersection``, …, CR-99) and ``masked_select`` go through it
-    too; the element-wise ones are those that read any numeric container, a
+    ``_node_op`` builds every ``lazy_only`` op, so the contour set ops
+    (``union``, ``intersection``, …, CR-99), the mask ops and ``channel_merge``
+    go through it too; the element-wise ones are those that read any numeric container, a
     ``buffer`` and a ``vector`` alike, as their catalogued domains say.
     """
     from polars_cv._ops_generated import OP_DOMAINS
@@ -656,7 +654,7 @@ def _binary_op_names_from_source() -> set[str]:
     numeric = {"buffer", "vector"}
     return {
         n
-        for n in _binary_op_calls_from_source()
+        for n in _node_op_calls_from_source()
         if {d["input"] for d in OP_DOMAINS[n]} == numeric
     }
 
@@ -2546,21 +2544,19 @@ def test_the_committed_catalog_is_the_built_one() -> None:
     )
 
 
-def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
-    """A ``lazy_only`` op's builder is a ``LazyPipelineExpr`` method.
+def test_every_lazy_only_op_is_a_generated_lazy_method() -> None:
+    """A ``lazy_only`` op's builder is the ``LazyPipelineExpr`` method
+    ``gen_ops.py`` writes into ``_LazyOpsMixin``.
 
     Such an op combines this expression with other graph nodes (a binary op,
-    ``apply_mask``, ``channel_merge``), so ``gen_ops.py`` emits no ``Pipeline``
-    method for it. The catalogue still owns its fields: the lazy method must
-    exist — generated into ``_LazyOpsMixin`` for the binary ops, hand-written
-    for the rest — never be a forwarder from a ``Pipeline`` method, and take
-    exactly the catalogue's fields, in order — the wire follows the signature,
-    as for every generated method.
+    ``apply_mask``, ``channel_merge``), so it has no ``Pipeline`` method. Its
+    lazy method is generated from the catalogue like every other builder, so
+    its signature, defaults and docstring cannot drift: one defined in
+    ``LazyPipelineExpr`` itself would shadow it, and is refused.
     """
-    import inspect
     from pathlib import Path
 
-    from polars_cv._lazy_forwarders import _LazyForwardersMixin
+    from polars_cv._ops_generated import TYPED_OPS, _LazyOpsMixin
     from polars_cv.lazy import LazyPipelineExpr
 
     root = Path(__file__).resolve().parent.parent
@@ -2569,35 +2565,16 @@ def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
     assert lazy_only, "no lazy_only op in the catalogue — the scan matched nothing"
     for op in lazy_only:
         name = op["python"]
-        method = getattr(LazyPipelineExpr, name, None)
-        assert callable(method), f"lazy_only op {op['name']!r} has no lazy method"
-        assert name not in vars(_LazyForwardersMixin), (
-            f"lazy_only op {op['name']!r} is a forwarder, not a lazy method"
+        assert name in vars(_LazyOpsMixin), (
+            f"lazy_only op {op['name']!r} has no generated lazy method"
+        )
+        assert name not in vars(LazyPipelineExpr), (
+            f"lazy_only op {op['name']!r} is hand-written on LazyPipelineExpr, "
+            "shadowing the generated method"
         )
         assert not hasattr(Pipeline, name), (
             f"lazy_only op {op['name']!r} must not be a Pipeline method"
         )
-        params = list(inspect.signature(method).parameters)[1:]
-        assert params == [f["name"] for f in op["fields"]], (
-            f"{name}: signature {params} is not the catalogue's fields"
-        )
-        # A hand-written method restates no default: each is the
-        # catalogue's (`OP_DEFAULTS`), an optional field's is None, and a
-        # required one has none.
-        signature = inspect.signature(method).parameters
-        for f in op["fields"]:
-            got = signature[f["name"]].default
-            if "default" in f:
-                want = f["default"]
-            elif f["type"]["kind"] == "optional":
-                want = None
-            else:
-                want = inspect.Parameter.empty
-            assert got == want, (
-                f"{name}({f['name']}): default {got!r}, catalogue {want!r}"
-            )
-        from polars_cv._ops_generated import TYPED_OPS
-
         assert op["name"] in TYPED_OPS
 
 

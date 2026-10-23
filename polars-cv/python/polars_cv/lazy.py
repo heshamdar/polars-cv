@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 import polars as pl
 
 from polars_cv._lazy_forwarders import _LazyForwardersMixin
-from polars_cv._ops_generated import OP_DEFAULTS, _LazyOpsMixin
+from polars_cv._ops_generated import _LazyOpsMixin
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
@@ -314,168 +314,6 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
     # --- Composition Methods ---
 
-    def apply_mask(
-        self,
-        mask: "LazyPipelineExpr",
-        *,
-        invert: bool | pl.Expr = OP_DEFAULTS["apply_mask"]["invert"],
-    ) -> "LazyPipelineExpr":
-        """
-        Weigh this image by a mask.
-
-        The mask's own dtype says its scale, whatever the image's: a u8 mask
-        weighs each pixel by ``m / 255`` (a ``rasterize`` or ``threshold``
-        mask: 255 keeps, 0 hides), a float mask by ``m`` in ``[0, 1]``. The
-        result keeps the image's dtype. A mask of any other dtype is refused;
-        cast or scale it first. A single-channel mask spreads over the
-        image's channels.
-
-        Args:
-            mask: LazyPipelineExpr producing the mask.
-            invert: If True, invert the mask (keep exterior, zero interior).
-
-        Returns:
-            New LazyPipelineExpr with the mask operation composed.
-        """
-
-        new_pipeline = self._receiving()
-        new_pipeline._add_node_op("apply_mask", {"mask": mask, "invert": invert})
-
-        return LazyPipelineExpr(
-            column=None,
-            pipeline=new_pipeline,
-            node_id=_generate_node_id(),
-            input=self,
-        )
-
-    def reduce_masked(
-        self,
-        mask: "LazyPipelineExpr",
-        *,
-        reduction: str | pl.Expr = OP_DEFAULTS["reduce_masked"]["reduction"],
-        axis: int | None = None,
-    ) -> "LazyPipelineExpr":
-        """
-        Reduce this image over the pixels a mask selects.
-
-        A pixel counts where the mask (u8 or float, ``[H, W]`` or
-        ``[H, W, 1]`` of the image's size) is > 0, so the zeros
-        ``apply_mask`` leaves are not counted. With ``axis=None`` every
-        masked pixel (every channel) reduces to one value; ``axis=0`` gives
-        one value per column, ``axis=1`` one per row (per channel for an
-        ``[H, W, C]`` image). A line with no masked pixel is NaN (0 for
-        ``"sum"`` and ``"count"``).
-
-        Args:
-            mask: LazyPipelineExpr producing the mask.
-            reduction: "sum", "mean" (default), "min", "max", "std"
-                (population), "median", "count", or a percentile "pNN"
-                ("p90", "p62.5"). Accepts a Polars expression for a per-row
-                choice.
-            axis: None, 0 (per column) or 1 (per row). Literal only: it
-                fixes the output rank.
-
-        Returns:
-            New LazyPipelineExpr: a scalar, or a ``[W]``/``[H]`` (``[.., C]``)
-            buffer along an axis.
-
-        Example:
-            ```python
-            >>> heat.reduce_masked(breast, reduction="median", axis=1)  # per row
-            ```
-        """
-        new_pipeline = self._receiving()
-        args = {"mask": mask, "reduction": reduction, "axis": axis}
-        new_pipeline._add_node_op("reduce_masked", args)
-        return LazyPipelineExpr(
-            column=None,
-            pipeline=new_pipeline,
-            node_id=_generate_node_id(),
-            input=self,
-        )
-
-    def normalize_percentile_masked(
-        self,
-        mask: "LazyPipelineExpr",
-        *,
-        low: float | pl.Expr,
-        high: float | pl.Expr,
-        out_dtype: str | None = None,
-    ) -> "LazyPipelineExpr":
-        """
-        ``normalize_percentile`` with its window from the pixels a mask
-        selects.
-
-        The ``low`` and ``high`` percentiles of the masked values (a lesion's
-        1st-99th, every channel together) are mapped to [0, 1] across the
-        whole image, clipped outside. A pixel counts where the mask (u8 or
-        float, ``[H, W]`` or ``[H, W, 1]`` of the image's size) is > 0, as
-        ``masked_select`` selects it. A constant selection gives zeros, and
-        no selected pixel an unknown (NaN) window.
-
-        Args:
-            mask: LazyPipelineExpr producing the mask.
-            low: The window's lower percentile, in [0, 100]. Accepts a Polars
-                expression.
-            high: The window's upper percentile, in [0, 100] and above
-                ``low``. Accepts a Polars expression.
-            out_dtype: Output dtype (default f32), as ``normalize``'s.
-
-        Returns:
-            New LazyPipelineExpr: the image, normalized.
-
-        Example:
-            ```python
-            >>> ct.normalize_percentile_masked(lesion, low=1.0, high=99.0)
-            ```
-        """
-        new_pipeline = self._receiving()
-        args = {"mask": mask, "low": low, "high": high, "out_dtype": out_dtype}
-        new_pipeline._add_node_op("normalize_percentile_masked", args)
-        return LazyPipelineExpr(
-            column=None,
-            pipeline=new_pipeline,
-            node_id=_generate_node_id(),
-            input=self,
-        )
-
-    def resize_like(
-        self,
-        like: "LazyPipelineExpr",
-        *,
-        filter: str | pl.Expr = OP_DEFAULTS["resize_like"]["filter"],
-    ) -> "LazyPipelineExpr":
-        """
-        Resize this image onto another node's grid, row by row.
-
-        Each row takes the height and width ``like`` has on that row, keeping
-        this image's channels and dtype: a heatmap and the image it came from
-        then compare cell by cell. When ``like``'s size is known at planning
-        time (a fixed-size ``Array`` column, a fixed ``resize``), so is this
-        output's.
-
-        Args:
-            like: LazyPipelineExpr whose height and width to take.
-            filter: As ``resize``'s; ``"area"`` when shrinking by a large
-                factor.
-
-        Returns:
-            New LazyPipelineExpr with the resize composed.
-
-        Example:
-            ```python
-            >>> img.resize_like(heat, filter="area")
-            ```
-        """
-        new_pipeline = self._receiving()
-        new_pipeline._add_node_op("resize_like", {"like": like, "filter": filter})
-        return LazyPipelineExpr(
-            column=None,
-            pipeline=new_pipeline,
-            node_id=_generate_node_id(),
-            input=self,
-        )
-
     def background_divide(
         self, sigma: "FloatOrThisOrExpr", *, epsilon: float = 1e-6
     ) -> "LazyPipelineExpr":
@@ -504,49 +342,6 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         # Gaussian's weights sum to one, so blur(x + e) is blur(x) + e.
         background = self.pipe(Pipeline().add_constant(epsilon).blur(sigma))
         return self.divide(background)
-
-    def channel_merge(self, *others: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Join this buffer's channels with the operands', in order.
-
-        Each ``[H, W]`` operand brings one channel and each ``[H, W, C]``
-        operand its ``C``: an RGB image and an ``[H, W]`` mask give RGBA, and
-        single channels stack into a multi-channel image (the inverse of
-        :meth:`Pipeline.channel_select`). Every operand has this buffer's
-        height, width and dtype.
-
-        Args:
-            others: One or more operands, in channel order after this one.
-
-        Returns:
-            New LazyPipelineExpr producing the ``[H, W, total]`` image.
-
-        Example:
-            ```python
-            >>> photo = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
-            >>> alpha = photo.pipe(Pipeline().grayscale())
-            >>> rgba = photo.channel_merge(alpha)
-            >>> sel = lambda i: photo.channel_select(i)
-            >>> bgr = sel(2).channel_merge(sel(1), sel(0))
-            ```
-        """
-        # The op's Rust definition rejects an empty `others`.
-        new_pipeline = self._receiving()
-        new_pipeline._add_node_op("channel_merge", {"others": list(others)})
-
-        return LazyPipelineExpr(
-            column=None,
-            pipeline=new_pipeline,
-            node_id=_generate_node_id(),
-            input=self,
-        )
-
-    # NOTE: `label_reduce` is intentionally NOT hand-defined here. Its
-    # `Pipeline` counterpart takes a plain `pl.Expr` (not a `LazyPipelineExpr`
-    # operand), so it does not qualify for the bespoke-lazy exception and is
-    # a generated forwarder (`_lazy_forwarders.py`) like every other ordinary op.
-    # A hand-written copy drifted its docstring in the past — the generation
-    # scheme exists precisely to prevent that.
 
     def apply_contour_mask(
         self,
@@ -849,15 +644,14 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         new_pipeline._plan = Plan.continuing(self._pipeline._state)
         return new_pipeline
 
-    def _binary_op(
-        self, op: str, field: str, other: "LazyPipelineExpr"
-    ) -> "LazyPipelineExpr":
-        """Create an op reading this and another LazyPipelineExpr, passed as
-        the op's one node field *field* (``other``, ``mask``)."""
-        # The op's rules read both operands (true division of two u8 is f32,
-        # the shapes broadcast), so the other operand's state goes with it.
+    def _node_op(self, op: str, values: "dict[str, Any]") -> "LazyPipelineExpr":
+        """Append the ``lazy_only`` op *op*, reading this and the other nodes
+        among *values* (its arguments, by catalogue field name): every
+        generated ``_LazyOpsMixin`` method."""
+        # The op's rules read every operand (true division of two u8 is f32,
+        # the shapes broadcast), so the operands' states go with it.
         new_pipeline = self._receiving()
-        new_pipeline._add_node_op(op, {field: other})
+        new_pipeline._add_node_op(op, values)
 
         return LazyPipelineExpr(
             column=None,
