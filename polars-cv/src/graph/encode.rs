@@ -717,13 +717,8 @@ pub(crate) fn encode_node_output(
             )),
         },
         SinkKind::Long => {
-            let layout = spec
-                .long_layout
-                .as_ref()
-                .ok_or("internal: a long sink kind without a long layout")?
-                .as_ref()
-                .map_err(Clone::clone)?;
-            long_row(require_buffer(output, domain, format)?, layout).map(OutputValue::Long)
+            let layout = super::decode::long_layout(spec);
+            long_row(require_buffer(output, domain, format)?, &layout).map(OutputValue::Long)
         }
         SinkKind::Contours => match output {
             NodeOutput::Contours(contours) => Ok(OutputValue::Contours(contours.clone())),
@@ -763,9 +758,8 @@ fn long_row(buf: &ViewBuffer, layout: &LongLayout) -> Result<LongRow, String> {
                 None => (0..height * width).collect(),
             };
             let fields = layout
-                .fields
-                .iter()
-                .map(|&(c, _)| {
+                .fields()
+                .map(|(c, _)| {
                     ViewBuffer::from_vec(
                         picked
                             .iter()
@@ -806,9 +800,8 @@ pub(super) fn long_dtype(layout: &LongLayout, value: DataType) -> DataType {
     ];
     fields.extend(
         layout
-            .fields
-            .iter()
-            .map(|(_, name)| Field::new(name.as_str().into(), value.clone())),
+            .fields()
+            .map(|(_, name)| Field::new(name.into(), value.clone())),
     );
     DataType::List(Box::new(DataType::Struct(fields)))
 }
@@ -831,7 +824,7 @@ pub(super) fn long_series(
         PrimitiveArray::<u32>::from_vec(flat).boxed()
     };
     let mut values = vec![positions(|r| &r.rows), positions(|r| &r.cols)];
-    for k in 0..layout.fields.len() {
+    for k in 0..layout.fields().count() {
         let field: Vec<TypedListRow> = rows
             .iter()
             .map(|r| r.as_ref().map(|r| r.fields[k].clone()))
@@ -841,7 +834,7 @@ pub(super) fn long_series(
     }
     let names = ["row", "col"]
         .into_iter()
-        .chain(layout.fields.iter().map(|(_, n)| n.as_str()));
+        .chain(layout.fields().map(|(_, n)| n));
     let arrow_fields = names
         .zip(&values)
         .map(|(n, v)| ArrowField::new(n.into(), v.dtype().clone(), true))
@@ -1309,7 +1302,6 @@ mod contour_sink_tests {
             expected_ndim: None,
             expected_channels: None,
             histogram_buckets: false,
-            long_layout: None,
         }
     }
 

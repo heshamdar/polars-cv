@@ -142,7 +142,6 @@ mod tests {
         let sink: crate::formats::sink::Sink = serde_json::from_value(wire).unwrap();
         OutputSpec {
             node: "n".to_string(),
-            long_layout: sink.long_layout(),
             sink,
             expected_domain: view_buffer::naming::lookup(Domain::NAMED, domain).unwrap(),
             expected_dtype: view_buffer::PlannedDType::Known(view_buffer::DType::U8),

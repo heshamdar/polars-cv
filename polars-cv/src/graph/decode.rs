@@ -19,7 +19,6 @@ use super::encode::{
 };
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, RowResult};
-use crate::formats::Format as _;
 
 /// What a path-based source (`file_path`) reads a row's bytes through: this
 /// call's [`Fetcher`](crate::fetch::Fetcher) for the node's column (its cloud
@@ -866,7 +865,7 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
             }
         }
         SinkKind::Long => {
-            let layout = long_layout(spec)?;
+            let layout = long_layout(spec);
             if let Some(ndim) = spec.expected_ndim.filter(|n| !matches!(n, 2 | 3)) {
                 polars_bail!(ComputeError:
                     "the 'long' sink takes an [H, W] or [H, W, C] buffer, and this \
@@ -946,15 +945,12 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
     })
 }
 
-/// The `long` sink's layout, for a spec that resolved to [`SinkKind::Long`].
-pub(crate) fn long_layout(spec: &OutputSpec) -> PolarsResult<crate::formats::sink::LongLayout> {
-    match &spec.long_layout {
-        Some(layout) => layout
-            .clone()
-            .map_err(|msg| polars_err!(ComputeError: "{}", msg)),
-        None => polars_bail!(ComputeError:
-            "internal: a '{}' sink has no long layout", spec.sink.name()),
-    }
+/// The `long` sink's layout, for a spec that resolved to [`SinkKind::Long`]
+/// (which only a `long` sink resolves to).
+pub(crate) fn long_layout(spec: &OutputSpec) -> crate::formats::sink::LongLayout<'_> {
+    spec.sink
+        .long_layout()
+        .expect("SinkKind::Long is resolved from a long sink")
 }
 /// A row whose variant the sink kind does not accept.
 ///
@@ -1134,7 +1130,7 @@ pub(crate) fn build_series_from_spec(
                 RowResult::Long(l) => Ok(l),
                 other => Err(other.variant_name()),
             })?;
-            super::encode::long_series(name, &rows, &long_layout(spec)?, dtype, split)
+            super::encode::long_series(name, &rows, &long_layout(spec), dtype, split)
         }
     }
 }
