@@ -356,6 +356,20 @@ def _numpy_reduction(name: str) -> Callable[..., Any]:
     }[name]
 
 
+def _interpolates_infinity(x: np.ndarray, p: Params) -> bool:
+    """Whether NumPy would interpolate an infinity into NaN here (a
+    percentile or median over an infinite value): no rule worth matching, as
+    for ``reduce_percentile``."""
+    name = p["reduction"]
+    return (name.startswith("p") or name == "median") and bool(np.isinf(x).any())
+
+
+def _reduce_tol(x: np.ndarray, p: Params) -> Tol:
+    """A sum's summation-order bound grows with ``n``; every other reduction
+    is a statistic."""
+    return _sum_tol(x, p) if p["reduction"] == "sum" else _stat_tol(x, p)
+
+
 def _block_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {
         "height": draw(st.integers(1, max(1, x.shape[0])), label="height"),
@@ -2416,9 +2430,8 @@ OPS: dict[str, OpSpec] = {
             ref=_scalar_result(
                 lambda x, p: _numpy_reduction(p["reduction"])(x.astype(np.float64))
             ),
-            # As reduce_percentile: numpy interpolates an infinity into NaN.
-            ref_accepts=lambda x, p: not np.isinf(x).any(),
-            tol=_stat_tol,
+            ref_accepts=lambda x, p: not _interpolates_infinity(x, p),
+            tol=_reduce_tol,
             kind="global",
             defines_non_finite=True,
             domain_out="scalar",
@@ -2470,6 +2483,7 @@ OPS: dict[str, OpSpec] = {
             "block_reduce",
             _block_params,
             ref=_block_ref,
+            ref_accepts=lambda x, p: not _interpolates_infinity(x, p),
             accepts=is_rank3,
             tol=_stat_tol,
             kind="global",
