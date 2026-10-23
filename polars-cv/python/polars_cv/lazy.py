@@ -730,13 +730,15 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         to carry a copy each of the accepted-name set and of the five-arm
         dispatch, both ending ``else: continue`` — so a name that passed
         validation but missed the chain vanished from the output silently.
-        Each statistic is now a ``Reduction`` the op parses (``reduce``, or
-        ``reduce_masked`` under a mask), so there is no name list here.
+        Each statistic is now a ``Reduction`` the op parses (``reduce``), so
+        there is no name list here. Under a mask every statistic reduces one
+        ``masked_select`` node: the masked values are gathered once, not once
+        per statistic.
 
         Args:
             include: Statistic names, or ``None`` for :data:`_DEFAULT_STATS`.
             prefix: Prepended to each output alias.
-            mask: Reduce only the pixels this mask selects (``reduce_masked``).
+            mask: Reduce only the pixels this mask selects (``masked_select``).
 
         Returns:
             The output aliases and their nodes, in ``include`` order.
@@ -758,13 +760,11 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             raise ValueError("At least one statistic must be included")
 
         names = [f"{prefix}{stat}" for stat in include]
-        nodes = []
-        for stat, name in zip(include, names):
-            if mask is not None:
-                node = self.reduce_masked(mask, reduction=stat)
-            else:
-                node = self.pipe(Pipeline().reduce(stat))
-            nodes.append(node.alias(name))
+        values = self if mask is None else self.masked_select(mask)
+        nodes = [
+            values.pipe(Pipeline().reduce(stat)).alias(name)
+            for stat, name in zip(include, names)
+        ]
         return names, nodes
 
     @staticmethod
@@ -804,12 +804,15 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         new_pipeline._plan = Plan.continuing(self._pipeline._state)
         return new_pipeline
 
-    def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """Create a binary operation between this and another LazyPipelineExpr."""
+    def _binary_op(
+        self, op: str, field: str, other: "LazyPipelineExpr"
+    ) -> "LazyPipelineExpr":
+        """Create an op reading this and another LazyPipelineExpr, passed as
+        the op's one node field *field* (``other``, ``mask``)."""
         # The op's rules read both operands (true division of two u8 is f32,
         # the shapes broadcast), so the other operand's state goes with it.
         new_pipeline = self._receiving()
-        new_pipeline._add_node_op(op, {"other": other})
+        new_pipeline._add_node_op(op, {field: other})
 
         return LazyPipelineExpr(
             column=None,

@@ -1372,6 +1372,7 @@ mod tests {
                 Role::Regions(..) => "Regions",
                 Role::ApplyMask { .. } => "ApplyMask",
                 Role::ReduceMasked { .. } => "ReduceMasked",
+                Role::MaskedSelect { .. } => "MaskedSelect",
                 Role::ResizeLike { .. } => "ResizeLike",
                 Role::ChannelMerge { .. } => "ChannelMerge",
                 Role::ExtractShape => "ExtractShape",
@@ -1555,6 +1556,23 @@ mod tests {
             &[Series::new("b".into(), &[mask_blob()])],
         );
         assert_eq!(out.f64().unwrap().get(0), Some(255.0));
+
+        // MaskedSelect: a buffer's values where it is set itself.
+        let out = exec(
+            r#"{
+                "version": 2,
+                "nodes": {
+                    "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                    "n1": {"input": {"node": "n0"},
+                           "ops": [{"op": "masked_select", "mask": "n0"}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}}
+            }"#,
+            &[Series::new("b".into(), &[mask_blob()])],
+        );
+        let selected = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(selected.shape(), &[4]);
+        assert_eq!(selected.to_contiguous().as_slice::<u8>(), &[255; 4]);
 
         // ResizeLike: a buffer onto its own grid is itself.
         let out = exec(

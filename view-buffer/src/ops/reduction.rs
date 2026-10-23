@@ -208,9 +208,11 @@ pub fn percentile_of(values: &mut [f64], q: f64) -> f64 {
     }
 }
 
-/// Refuse what `reduce_masked` cannot read, over what is known: a mask that
-/// is not u8 or float, an image that is not `[H, W]`/`[H, W, C]`, a mask
-/// that is not `[H, W]`/`[H, W, 1]` of the image's height and width.
+/// Refuse what an op selecting pixels by a mask (`reduce_masked`,
+/// `masked_select`) cannot read, over what is known: a mask that is not u8
+/// or float, an image that is not `[H, W]`/`[H, W, C]`, a mask that is not
+/// `[H, W]`/`[H, W, 1]` of the image's height and width. The planner names
+/// the op an error comes from.
 pub fn validate_masked_reduce(
     buffer: &[crate::ops::Dim],
     mask: &[crate::ops::Dim],
@@ -220,8 +222,7 @@ pub fn validate_masked_reduce(
         if !matches!(dtype, DType::U8 | DType::F32 | DType::F64) {
             return Err(ValidationError::Generic {
                 message: format!(
-                    "reduce_masked: a mask is u8 or float (a pixel counts where it is > 0), \
-                     got {}",
+                    "a mask is u8 or float (a pixel counts where it is > 0), got {}",
                     dtype.short_name()
                 ),
             });
@@ -229,7 +230,7 @@ pub fn validate_masked_reduce(
     }
     if !matches!(buffer.len(), 2 | 3) {
         return Err(ValidationError::ShapeRequirement {
-            requirement: "an [H, W] or [H, W, C] image to reduce under a mask",
+            requirement: "an [H, W] or [H, W, C] image to select from under a mask",
             got: buffer.to_vec(),
         });
     }
@@ -248,8 +249,8 @@ pub fn validate_masked_reduce(
             if m != b {
                 return Err(ValidationError::Generic {
                     message: format!(
-                        "reduce_masked: the mask's axis {axis} is {m}, the image's {b}: a mask \
-                         covers the image it selects from"
+                        "the mask's axis {axis} is {m}, the image's {b}: a mask covers \
+                         the image it selects from"
                     ),
                 });
             }
@@ -276,6 +277,16 @@ pub fn reduce_masked(
     reduction: Reduction,
     axis: Option<usize>,
 ) -> Masked {
+    // The selection's own reduction: `By` is `Reduction::of` over any dtype
+    // (`a_whole_buffer_reduces_as_its_values_do`).
+    let Some(axis) = axis else {
+        let value = ReductionOp::By {
+            reduction,
+            axis: None,
+        }
+        .execute(&masked_select(buffer, mask));
+        return Masked::Scalar(value.to_contiguous().as_slice::<f64>()[0]);
+    };
     let shape = buffer.shape();
     let (h, w) = (shape[0], shape[1]);
     let c = shape.get(2).copied().unwrap_or(1);
@@ -286,41 +297,85 @@ pub fn reduce_masked(
     let at = |y: usize, x: usize, ch: usize| values[(y * w + x) * c + ch];
     let set = |y: usize, x: usize| keep[y * w + x] > 0.0;
     let mut selected = Vec::new();
-    match axis {
-        None => {
-            for y in 0..h {
-                for x in 0..w {
-                    if set(y, x) {
-                        selected.extend((0..c).map(|ch| at(y, x, ch)));
-                    }
+    // Axis 0 runs down each column, axis 1 along each row.
+    let (lines, len) = if axis == 0 { (w, h) } else { (h, w) };
+    let mut out = Vec::with_capacity(lines * c);
+    for line in 0..lines {
+        for ch in 0..c {
+            selected.clear();
+            for i in 0..len {
+                let (y, x) = if axis == 0 { (i, line) } else { (line, i) };
+                if set(y, x) {
+                    selected.push(at(y, x, ch));
                 }
             }
-            Masked::Scalar(reduction.of(&mut selected))
-        }
-        Some(axis) => {
-            // Axis 0 runs down each column, axis 1 along each row.
-            let (lines, len) = if axis == 0 { (w, h) } else { (h, w) };
-            let mut out = Vec::with_capacity(lines * c);
-            for line in 0..lines {
-                for ch in 0..c {
-                    selected.clear();
-                    for i in 0..len {
-                        let (y, x) = if axis == 0 { (i, line) } else { (line, i) };
-                        if set(y, x) {
-                            selected.push(at(y, x, ch));
-                        }
-                    }
-                    out.push(reduction.of(&mut selected));
-                }
-            }
-            let out_shape = if shape.len() == 3 {
-                vec![lines, c]
-            } else {
-                vec![lines]
-            };
-            Masked::Along(ViewBuffer::from_vec_with_shape(out, out_shape))
+            out.push(reduction.of(&mut selected));
         }
     }
+    let out_shape = if shape.len() == 3 {
+        vec![lines, c]
+    } else {
+        vec![lines]
+    };
+    Masked::Along(ViewBuffer::from_vec_with_shape(out, out_shape))
+}
+
+/// `buffer`'s values where `mask` is set (`> 0`), as a 1-D buffer of its
+/// dtype: row-major, every channel of a selected pixel together (NumPy's
+/// `image[mask > 0].ravel()`). Shapes and the mask's dtype are checked by
+/// [`validate_masked_reduce`] first.
+pub fn masked_select(buffer: &ViewBuffer, mask: &ViewBuffer) -> ViewBuffer {
+    let c = buffer.shape().get(2).copied().unwrap_or(1);
+    crate::core::dtype::with_dtype!(buffer.dtype(), T => match mask.dtype() {
+        DType::U8 => gather::<T, u8>(buffer, mask, c),
+        DType::F32 => gather::<T, f32>(buffer, mask, c),
+        _ => gather::<T, f64>(buffer, &mask.cast_to(DType::F64), c),
+    })
+}
+
+/// [`masked_select`] over a `T` image and an `M` mask, both read where they
+/// lie (a view is not packed first): the mask once to size the output, then
+/// both in step, a block of pixels at a time.
+fn gather<T: ViewType, M: ViewType + PartialOrd + Default>(
+    buffer: &ViewBuffer,
+    mask: &ViewBuffer,
+    c: usize,
+) -> ViewBuffer {
+    use crate::core::strided::Walk;
+    use std::mem::MaybeUninit;
+    const SCRATCH: usize = 4096;
+    let pixels: usize = mask.shape().iter().product();
+    let block = (SCRATCH / c.max(1)).max(1);
+    let (image, mask) = (Walk::of(buffer), Walk::of(mask));
+    let mut mask_scratch = [MaybeUninit::<u64>::uninit(); SCRATCH];
+    let mut kept = 0;
+    let mut cursor = mask.cursor();
+    for start in (0..pixels).step_by(block) {
+        let n = block.min(pixels - start);
+        let set = cursor.next::<M>(n, &mut mask_scratch);
+        kept += set.iter().filter(|&&m| m > M::default()).count();
+    }
+    let mut out: Vec<T> = Vec::with_capacity(kept * c);
+    // A pixel wider than the scratch (thousands of channels) reads one at a
+    // time from the heap.
+    let (mut stack, mut heap) = ([MaybeUninit::<u64>::uninit(); SCRATCH], Vec::new());
+    let image_scratch: &mut [MaybeUninit<u64>] = if c <= SCRATCH {
+        &mut stack
+    } else {
+        heap.resize(c, MaybeUninit::uninit());
+        &mut heap
+    };
+    let (mut values_at, mut set_at) = (image.cursor(), mask.cursor());
+    for start in (0..pixels).step_by(block) {
+        let n = block.min(pixels - start);
+        let set = set_at.next::<M>(n, &mut mask_scratch);
+        let values = values_at.next::<T>(n * c, image_scratch);
+        for (pixel, _) in set.iter().enumerate().filter(|(_, &m)| m > M::default()) {
+            out.extend_from_slice(&values[pixel * c..(pixel + 1) * c]);
+        }
+    }
+    let len = out.len();
+    ViewBuffer::from_vec_with_shape(out, vec![len])
 }
 
 /// The reductions: one variant per wire op (see `crate::mode`).
@@ -1524,6 +1579,71 @@ mod small_fix_tests {
                     assert_eq!(got.to_bits(), want.to_bits(), "n={n} q={q}");
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod masked_select_tests {
+    use super::*;
+
+    /// NumPy's `image[mask > 0].ravel()`: row-major, a pixel's channels
+    /// together, in the image's dtype, whatever the mask's dtype or layout.
+    #[test]
+    fn masked_select_is_a_boolean_index() {
+        let rgb: Vec<u16> = (0..2 * 3 * 2).map(|v| v * 10).collect();
+        let image = ViewBuffer::from_vec_with_shape(rgb, vec![2, 3, 2]);
+        let keep = [true, false, true, false, false, true];
+        let want: Vec<u16> = vec![0, 10, 40, 50, 100, 110];
+        let u8_mask: Vec<u8> = keep.iter().map(|&k| if k { 255 } else { 0 }).collect();
+        let f32_mask: Vec<f32> = keep.iter().map(|&k| if k { 0.5 } else { 0.0 }).collect();
+        let masks = [
+            ViewBuffer::from_vec_with_shape(u8_mask.clone(), vec![2, 3]),
+            ViewBuffer::from_vec_with_shape(u8_mask.clone(), vec![2, 3, 1]),
+            ViewBuffer::from_vec_with_shape(f32_mask, vec![2, 3]),
+            // A strided view: the transpose of a [3, 2] mask.
+            ViewBuffer::from_vec_with_shape(
+                vec![
+                    u8_mask[0], u8_mask[3], u8_mask[1], u8_mask[4], u8_mask[2], u8_mask[5],
+                ],
+                vec![3, 2],
+            )
+            .permute(&[1, 0]),
+        ];
+        for mask in &masks {
+            let got = masked_select(&image, mask);
+            assert_eq!(got.dtype(), DType::U16);
+            assert_eq!(got.shape(), &[want.len()]);
+            assert_eq!(got.to_contiguous().as_slice::<u16>(), want.as_slice());
+        }
+        let none = ViewBuffer::from_vec_with_shape(vec![0u8; 6], vec![2, 3]);
+        assert_eq!(masked_select(&image, &none).shape(), &[0]);
+    }
+
+    /// Past one block of pixels, and through views of both operands, the
+    /// gather is the boolean index of their packed copies.
+    #[test]
+    fn masked_select_reads_views_block_by_block() {
+        let (h, w, c) = (70, 90, 3);
+        let image: Vec<u8> = (0..h * w * c).map(|v| (v * 7 % 251) as u8).collect();
+        let image = ViewBuffer::from_vec_with_shape(image, vec![h, w, c]);
+        let mask: Vec<f32> = (0..h * w).map(|v| ((v * 13) % 5) as f32 - 2.0).collect();
+        let mask = ViewBuffer::from_vec_with_shape(mask, vec![h, w]);
+        let flipped = |b: &ViewBuffer| b.flip(&[0]).flip(&[1]);
+        for (image, mask) in [
+            (image.clone(), mask.clone()),
+            (flipped(&image), flipped(&mask)),
+        ] {
+            let (packed, keep) = (image.to_contiguous(), mask.to_contiguous());
+            let want: Vec<u8> = packed
+                .as_slice::<u8>()
+                .chunks(c)
+                .zip(keep.as_slice::<f32>())
+                .filter(|(_, &m)| m > 0.0)
+                .flat_map(|(px, _)| px.to_vec())
+                .collect();
+            let got = masked_select(&image, &mask);
+            assert_eq!(got.to_contiguous().as_slice::<u8>(), want.as_slice());
         }
     }
 }

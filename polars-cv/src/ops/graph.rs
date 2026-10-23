@@ -8,7 +8,7 @@ use view_buffer::geometry::label::LabelRegionMode;
 use view_buffer::geometry::transforms::RegionOp;
 use view_buffer::mode::{ColumnRef, Exec, Mode, NodeRef};
 use view_buffer::ops::Reduction;
-use view_buffer::ops::{Domain, OpShape, SpatialDependency};
+use view_buffer::ops::{Domain, OpShape, SpatialDependency, Sym};
 use view_buffer::{BinaryOp, DType, IdentityRule, Op};
 
 use polars_cv_macros::{Ops, Resolve};
@@ -294,6 +294,23 @@ pub enum GraphOp<M: Mode = Exec> {
         /// 1 for one per row. It fixes the output rank, so it is literal-only.
         axis: Option<M::L<u32>>,
     },
+    /// The values of this image where a mask is set, as a 1-D buffer of the
+    /// image's dtype: row-major, every channel of a selected pixel together
+    /// (NumPy's ``image[mask > 0].ravel()``).
+    ///
+    /// A pixel is selected where the mask (u8 or float, ``[H, W]`` or
+    /// ``[H, W, 1]`` of the image's size) is > 0. Its length is the number of
+    /// selected values, so it is known only per row. Reduce it as any buffer
+    /// (``.pipe(Pipeline().reduce("p90"))``); ``statistics(mask=)`` gathers
+    /// through it once for every statistic.
+    ///
+    /// Example:
+    ///     >>> heat.masked_select(breast).pipe(Pipeline().histogram(bins=32))
+    #[op(name = "masked_select", visibility = LazyOnly, sample = {"mask": "n0"})]
+    MaskedSelect {
+        /// The mask's node.
+        mask: NodeRef,
+    },
     /// Resize this image onto another node's grid: to that buffer's height
     /// and width, row by row, keeping this image's channels and dtype (a
     /// heatmap and the image it came from, compared cell by cell).
@@ -415,6 +432,7 @@ impl<M: Mode> GraphOp<M> {
                 reduction,
                 axis: axis.as_ref().map(|a| M::lit(a) as usize),
             },
+            GraphOp::MaskedSelect { mask } => Role::MaskedSelect { mask },
             GraphOp::ResizeLike { like, filter } => Role::ResizeLike { like, filter },
             GraphOp::ChannelMerge { others } => Role::ChannelMerge { others },
             GraphOp::AssertShape { dims, exact } => Role::AssertShape { dims, exact },
@@ -448,6 +466,7 @@ impl<M: Mode> GraphOp<M> {
             Role::Regions(..) => vec![Domain::Contour],
             Role::ApplyMask { .. }
             | Role::ReduceMasked { .. }
+            | Role::MaskedSelect { .. }
             | Role::ResizeLike { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
@@ -463,9 +482,10 @@ impl<M: Mode> GraphOp<M> {
             // Same container as its operands (`hash_a ^ hash_b` stays a
             // vector); a declaration describes the data, not its kind.
             Role::Binary(..) | Role::AssertShape { .. } => input,
-            Role::ApplyMask { .. } | Role::ChannelMerge { .. } | Role::ResizeLike { .. } => {
-                Domain::Buffer
-            }
+            Role::ApplyMask { .. }
+            | Role::MaskedSelect { .. }
+            | Role::ChannelMerge { .. }
+            | Role::ResizeLike { .. } => Domain::Buffer,
             // One value, as a global reduction; a buffer along an axis.
             Role::ReduceMasked { axis: None, .. } => Domain::Scalar,
             Role::ReduceMasked { axis: Some(_), .. } => Domain::Buffer,
@@ -479,6 +499,7 @@ impl<M: Mode> GraphOp<M> {
         match self.role() {
             Role::Binary(op, _) => op.output_dtype_rule(),
             Role::ApplyMask { .. }
+            | Role::MaskedSelect { .. }
             | Role::ChannelMerge { .. }
             | Role::AssertShape { .. }
             | Role::ResizeLike { .. } => OutputDTypeRule::PreserveInput,
@@ -503,9 +524,12 @@ impl<M: Mode> GraphOp<M> {
             // point: a window moved across any of them changes what it reads.
             // Combining regions reads every coordinate of both sets.
             // A resample reads a neighbourhood that scales with the size.
+            // Which values a selection keeps, and where each lands, depends
+            // on every pixel before it.
             Role::ExtractShape
             | Role::LabelReduce { .. }
             | Role::ReduceMasked { .. }
+            | Role::MaskedSelect { .. }
             | Role::ResizeLike { .. }
             | Role::AssertShape { .. }
             | Role::Regions(..) => SpatialDependency::Global,
@@ -521,6 +545,7 @@ impl<M: Mode> GraphOp<M> {
             // remove its check.
             Role::ApplyMask { .. }
             | Role::ReduceMasked { .. }
+            | Role::MaskedSelect { .. }
             | Role::ResizeLike { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
@@ -552,7 +577,7 @@ impl<M: Mode> GraphOp<M> {
                 ),
                 _ => Ok(()),
             },
-            Role::ReduceMasked { .. } => match inputs {
+            Role::ReduceMasked { .. } | Role::MaskedSelect { .. } => match inputs {
                 [buffer, mask, ..] => view_buffer::ops::validate_masked_reduce(
                     buffer,
                     mask,
@@ -586,7 +611,9 @@ impl<M: Mode> GraphOp<M> {
     pub fn operands(&self) -> Vec<&NodeRef> {
         match self.role() {
             Role::Binary(_, other) | Role::Regions(_, other) => vec![other],
-            Role::ApplyMask { mask, .. } | Role::ReduceMasked { mask, .. } => vec![mask],
+            Role::ApplyMask { mask, .. }
+            | Role::ReduceMasked { mask, .. }
+            | Role::MaskedSelect { mask } => vec![mask],
             Role::ResizeLike { like, .. } => vec![like],
             Role::ChannelMerge { others } => others.iter().collect(),
             Role::AssertShape { .. } | Role::ExtractShape | Role::LabelReduce { .. } => Vec::new(),
@@ -613,7 +640,9 @@ impl<M: Mode> GraphOp<M> {
             | GraphOp::Intersection { other }
             | GraphOp::Difference { other }
             | GraphOp::SymmetricDifference { other } => vec![other],
-            GraphOp::ApplyMask { mask, .. } | GraphOp::ReduceMasked { mask, .. } => vec![mask],
+            GraphOp::ApplyMask { mask, .. }
+            | GraphOp::ReduceMasked { mask, .. }
+            | GraphOp::MaskedSelect { mask } => vec![mask],
             GraphOp::ResizeLike { like, .. } => vec![like],
             GraphOp::ChannelMerge { others } => others.iter_mut().collect(),
             GraphOp::AssertShape { .. } | GraphOp::ExtractShape | GraphOp::LabelReduce { .. } => {
@@ -630,6 +659,8 @@ impl<M: Mode> GraphOp<M> {
             Role::ApplyMask { .. } => OpShape::Preserve,
             // An axis reduction's shape: the axis removed, or one value.
             Role::ReduceMasked { axis, .. } => OpShape::Reduce { axis },
+            // One axis, as long as the row's selection.
+            Role::MaskedSelect { .. } => OpShape::Fixed(vec![Sym::PerRow]),
             // The other node's height and width; this image's channels.
             Role::ResizeLike { .. } => OpShape::HwOf { of: 1 },
             // This `[H, W]` buffer and one per merged operand.
@@ -697,6 +728,9 @@ pub enum Role<'a, M: Mode> {
         mask: &'a NodeRef,
         reduction: &'a M::V<Reduction>,
         axis: Option<usize>,
+    },
+    MaskedSelect {
+        mask: &'a NodeRef,
     },
     ChannelMerge {
         others: &'a [NodeRef],

@@ -1489,6 +1489,18 @@
     "'lanczos3'"
    ]
   ],
+  "masked_select": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "mask",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "maximum": [
    [
     "self",

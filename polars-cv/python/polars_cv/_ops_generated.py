@@ -560,6 +560,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "invert",
         "label_reduce",
         "letterbox",
+        "masked_select",
         "maximum",
         "minimum",
         "morphology_gradient",
@@ -1009,6 +1010,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             ],
         },
     },
+    "masked_select": {"mask": {"kind": "node"}},
     "maximum": {"other": {"kind": "node"}},
     "minimum": {"other": {"kind": "node"}},
     "morphology_gradient": {
@@ -1586,6 +1588,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "invert": [{"input": "buffer", "output": "buffer"}],
     "label_reduce": [{"input": "buffer", "output": "vector"}],
     "letterbox": [{"input": "buffer", "output": "buffer"}],
+    "masked_select": [{"input": "buffer", "output": "buffer"}],
     "maximum": [
         {"input": "buffer", "output": "buffer"},
         {"input": "vector", "output": "vector"},
@@ -3601,7 +3604,9 @@ class _LazyOpsMixin:
 
     if TYPE_CHECKING:
 
-        def _binary_op(self, op: str, other: LazyPipelineExpr) -> LazyPipelineExpr: ...
+        def _binary_op(
+            self, op: str, field: str, other: LazyPipelineExpr
+        ) -> LazyPipelineExpr: ...
 
     def add(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise addition with another array.
@@ -3621,7 +3626,7 @@ class _LazyOpsMixin:
             >>> result = a.add(b).sink("numpy")
             ```
         """
-        return self._binary_op("add", other)
+        return self._binary_op("add", "other", other)
 
     def bitwise_and(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise AND: for binary masks (0/255), the intersection.
@@ -3638,7 +3643,7 @@ class _LazyOpsMixin:
             >>> result = a.bitwise_and(b).sink("numpy")
             ```
         """
-        return self._binary_op("bitwise_and", other)
+        return self._binary_op("bitwise_and", "other", other)
 
     def bitwise_or(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise OR: for binary masks (0/255), the union.
@@ -3655,7 +3660,7 @@ class _LazyOpsMixin:
             >>> result = a.bitwise_or(b).sink("numpy")
             ```
         """
-        return self._binary_op("bitwise_or", other)
+        return self._binary_op("bitwise_or", "other", other)
 
     def bitwise_xor(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise XOR: for binary masks (0/255), the symmetric
@@ -3673,7 +3678,7 @@ class _LazyOpsMixin:
             >>> result = a.bitwise_xor(b).sink("numpy")
             ```
         """
-        return self._binary_op("bitwise_xor", other)
+        return self._binary_op("bitwise_xor", "other", other)
 
     def blend(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Normalized blend (element-wise), for image blending/compositing.
@@ -3693,7 +3698,7 @@ class _LazyOpsMixin:
             >>> result = a.blend(b).sink("numpy")
             ```
         """
-        return self._binary_op("blend", other)
+        return self._binary_op("blend", "other", other)
 
     def difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside this set and not *other*: this contour set's regions with *other*'s cut away.
@@ -3720,7 +3725,7 @@ class _LazyOpsMixin:
             >>> same = pl.col("pred").contour.difference(pl.col("truth"))
             ```
         """
-        return self._binary_op("difference", other)
+        return self._binary_op("difference", "other", other)
 
     def divide(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise true division, into a float.
@@ -3743,7 +3748,7 @@ class _LazyOpsMixin:
             >>> result = a.divide(b).sink("numpy")
             ```
         """
-        return self._binary_op("divide", other)
+        return self._binary_op("divide", "other", other)
 
     def intersection(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside both: where this contour set's regions overlap *other*'s.
@@ -3770,7 +3775,28 @@ class _LazyOpsMixin:
             >>> same = pl.col("pred").contour.intersection(pl.col("truth"))
             ```
         """
-        return self._binary_op("intersection", other)
+        return self._binary_op("intersection", "other", other)
+
+    def masked_select(self, mask: LazyPipelineExpr) -> LazyPipelineExpr:
+        """The values of this image where a mask is set, as a 1-D buffer of the
+        image's dtype: row-major, every channel of a selected pixel together
+        (NumPy's ``image[mask > 0].ravel()``).
+
+        A pixel is selected where the mask (u8 or float, ``[H, W]`` or
+        ``[H, W, 1]`` of the image's size) is > 0. Its length is the number of
+        selected values, so it is known only per row. Reduce it as any buffer
+        (``.pipe(Pipeline().reduce("p90"))``); ``statistics(mask=)`` gathers
+        through it once for every statistic.
+
+        Domain: buffer → buffer
+
+        Args:
+            mask: The mask's node.
+
+        Example:
+            >>> heat.masked_select(breast).pipe(Pipeline().histogram(bins=32))
+        """
+        return self._binary_op("masked_select", "mask", mask)
 
     def maximum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise maximum of two arrays, for compositing, clamping and
@@ -3788,7 +3814,7 @@ class _LazyOpsMixin:
             >>> result = a.maximum(b).sink("numpy")
             ```
         """
-        return self._binary_op("maximum", other)
+        return self._binary_op("maximum", "other", other)
 
     def minimum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise minimum of two arrays, for compositing, clamping and
@@ -3806,7 +3832,7 @@ class _LazyOpsMixin:
             >>> result = a.minimum(b).sink("numpy")
             ```
         """
-        return self._binary_op("minimum", other)
+        return self._binary_op("minimum", "other", other)
 
     def multiply(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise multiplication.
@@ -3827,7 +3853,7 @@ class _LazyOpsMixin:
             >>> result = a.multiply(b).sink("numpy")
             ```
         """
-        return self._binary_op("multiply", other)
+        return self._binary_op("multiply", "other", other)
 
     def subtract(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise subtraction.
@@ -3847,7 +3873,7 @@ class _LazyOpsMixin:
             >>> result = a.subtract(b).sink("numpy")
             ```
         """
-        return self._binary_op("subtract", other)
+        return self._binary_op("subtract", "other", other)
 
     def symmetric_difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside exactly one: where this contour set's regions and *other*'s do not overlap.
@@ -3874,7 +3900,7 @@ class _LazyOpsMixin:
             >>> same = pl.col("pred").contour.symmetric_difference(pl.col("truth"))
             ```
         """
-        return self._binary_op("symmetric_difference", other)
+        return self._binary_op("symmetric_difference", "other", other)
 
     def union(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside either: the union of this contour set's regions and *other*'s.
@@ -3901,7 +3927,7 @@ class _LazyOpsMixin:
             >>> same = pl.col("pred").contour.union(pl.col("truth"))
             ```
         """
-        return self._binary_op("union", other)
+        return self._binary_op("union", "other", other)
 
 
 class _ContourOpsMixin:

@@ -58,7 +58,8 @@ pub use mask::{apply_mask, validate_mask};
 pub use pad::{PadMode, PadPosition};
 pub use phash::{HashAlgorithm, PerceptualHashOp};
 pub use reduction::{
-    reduce_masked, validate_masked_reduce, Masked, Percent, Reduction, ReductionOp, Statistic,
+    masked_select, reduce_masked, validate_masked_reduce, Masked, Percent, Reduction, ReductionOp,
+    Statistic,
 };
 pub use scalar::{FusedKernel, ScalarOp};
 pub use shape_rule::{Dim, OpShape, PlannedInput, Sym};

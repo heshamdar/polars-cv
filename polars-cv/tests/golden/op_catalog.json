@@ -1885,6 +1885,27 @@
     ]
   },
   {
+    "name": "masked_select",
+    "python": "masked_select",
+    "visibility": "lazy_only",
+    "doc": "The values of this image where a mask is set, as a 1-D buffer of the\nimage's dtype: row-major, every channel of a selected pixel together\n(NumPy's ``image[mask > 0].ravel()``).\n\nA pixel is selected where the mask (u8 or float, ``[H, W]`` or\n``[H, W, 1]`` of the image's size) is > 0. Its length is the number of\nselected values, so it is known only per row. Reduce it as any buffer\n(``.pipe(Pipeline().reduce(\"p90\"))``); ``statistics(mask=)`` gathers\nthrough it once for every statistic.\n\nExample:\n    >>> heat.masked_select(breast).pipe(Pipeline().histogram(bins=32))",
+    "fields": [
+      {
+        "name": "mask",
+        "doc": "The mask's node.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "maximum",
     "python": "maximum",
     "visibility": "lazy_only",

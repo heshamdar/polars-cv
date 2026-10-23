@@ -39,6 +39,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`masked_select(mask)`** (lazy-only): the values of an image where a mask
+  (u8 or float, `> 0`) is set, as a 1-D buffer of the image's dtype —
+  NumPy's `image[mask > 0].ravel()`. Reduce, histogram or sink it as any
+  buffer. `statistics(mask=)` now gathers through one `masked_select` node
+  for every statistic, rather than casting and scanning the image and mask
+  again per statistic (3.2× faster for the default four statistics in a
+  debug build), and `reduce_masked(axis=None)` reduces the same selection.
+  The gather reads views where they lie, with no packed copy of either
+  operand.
+
 - **`polars_cv.this`**: op parameters from the buffer the op reads, per row.
   `this.height`, `this.width`, `this.channels` (1 for an `[H, W]` buffer) and
   `this.ndim`, combined with numbers by `+ - * / //`, go wherever a parameter
@@ -150,6 +160,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`rank_filter` on u8 slides a 256-bin histogram** (Huang) rather than
+  selecting each window afresh: O(window height) per pixel, 6× faster for a
+  15×15 median at 256². Bit-identical to the selection path, which other
+  dtypes keep.
+- **The ambient GCS federation probe reads the ADC file once per version of
+  it** (path, mtime, size) rather than on every remote read with no options.
+
 - **Header-only metadata on a remote path reads a prefix, not the object.**
   `.cv.image_info()`, `width()`, `height()`, `channels()` and `image_dtype()`
   over `s3://`/`gs://`/`az://`/`http(s)://` paths ask for the first 64 KiB
@@ -173,6 +190,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   subtraction that wrapped in polars.
 
 ### Fixed
+
+- A generated lazy method for a one-operand graph op sent its operand as
+  `other` whatever the op named it; `_binary_op` now takes the field name the
+  catalogue gives (`masked_select`'s is `mask`).
 
 - **A server that ignores `Range`** sent the whole object to a header read;
   with no header in it, the object was then fetched a second time. A body

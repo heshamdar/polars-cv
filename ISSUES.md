@@ -378,9 +378,6 @@ An independent review of the downstream-proposal branch. Its bugs are fixed
   pixel (6× faster at 256², 15×15 in a debug build); other dtypes still
   select each window afresh (`percentile_of`, O(h·w) per window). A u16
   histogram would need a two-level (coarse/fine) count to stay cheap.
-- `statistics(mask=)` builds one `reduce_masked` node per statistic, each
-  casting the image and mask to f64 and scanning them again; one node
-  gathering the masked values once would serve every statistic.
 - `region_stats` runs one `label_reduce` per entry, rasterising the same
   regions once per map.
 
