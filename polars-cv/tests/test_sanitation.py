@@ -2581,6 +2581,21 @@ def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
         assert params == [f["name"] for f in op["fields"]], (
             f"{name}: signature {params} is not the catalogue's fields"
         )
+        # A hand-written method restates no default: each is the
+        # catalogue's (`OP_DEFAULTS`), an optional field's is None, and a
+        # required one has none.
+        signature = inspect.signature(method).parameters
+        for f in op["fields"]:
+            got = signature[f["name"]].default
+            if "default" in f:
+                want = f["default"]
+            elif f["type"]["kind"] == "optional":
+                want = None
+            else:
+                want = inspect.Parameter.empty
+            assert got == want, (
+                f"{name}({f['name']}): default {got!r}, catalogue {want!r}"
+            )
         from polars_cv._ops_generated import TYPED_OPS
 
         assert op["name"] in TYPED_OPS

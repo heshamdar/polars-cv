@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 import polars as pl
 
 from polars_cv._lazy_forwarders import _LazyForwardersMixin
-from polars_cv._ops_generated import _LazyOpsMixin
+from polars_cv._ops_generated import OP_DEFAULTS, _LazyOpsMixin
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
@@ -318,7 +318,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         self,
         mask: "LazyPipelineExpr",
         *,
-        invert: bool | pl.Expr = False,
+        invert: bool | pl.Expr = OP_DEFAULTS["apply_mask"]["invert"],
     ) -> "LazyPipelineExpr":
         """
         Weigh this image by a mask.
@@ -352,7 +352,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         self,
         mask: "LazyPipelineExpr",
         *,
-        reduction: str | pl.Expr = "mean",
+        reduction: str | pl.Expr = OP_DEFAULTS["reduce_masked"]["reduction"],
         axis: int | None = None,
     ) -> "LazyPipelineExpr":
         """
@@ -398,7 +398,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         self,
         like: "LazyPipelineExpr",
         *,
-        filter: str | pl.Expr = "lanczos3",
+        filter: str | pl.Expr = OP_DEFAULTS["resize_like"]["filter"],
     ) -> "LazyPipelineExpr":
         """
         Resize this image onto another node's grid, row by row.
