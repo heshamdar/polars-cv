@@ -48,7 +48,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-129 | Params | Feature | Masked percentile `normalize`: a window from another node's pixels (C3 remainder) |
 | CR-130 | Errors | Design | Row errors are composed by inspecting other error strings; the row number is morsel-local under streaming |
 | CR-131 | Performance | Low | `rank_filter` sorts every window; `statistics(mask=)` and `region_stats` repeat work per statistic/map; the ADC file is re-read per remote object |
-| CR-132 | Fetch | Low | A ranged header read of a zero-byte remote object may get HTTP 416 / `InvalidRange` (unverified) |
 | CR-133 | Params | Decision | `normalize(method="preset")`'s `mean`/`std` are optional fields read under one method |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
@@ -400,12 +399,6 @@ An independent review of the downstream-proposal branch. Its bugs are fixed
 - `cloud_auth::choose()` reads and parses the ADC file on every remote read
   that has no options (`polars_options` runs per object); cache it by path
   and mtime.
-
-### CR-132 — Ranged read of an empty object
-
-- A header read asks for `bytes=0-65535`. Against an empty object S3 answers
-  `InvalidRange` and an HTTP server may answer 416 where a whole read would
-  succeed. Not verified; fall back to a whole read on that error if it holds.
 
 ### CR-133 — `normalize(method="preset")`'s `mean`/`std` **decision**
 

@@ -369,45 +369,60 @@ async fn read_object(
         .scheme()
         .ok_or_else(|| CloudError::UrlParse(format!("no scheme in remote path '{path}'")))?;
     let pl_options = polars_options(scheme, options)?;
-
-    {
-        let (location, store) = build_object_store(url, Some(&pl_options), false)
-            .await
-            .map_err(|e| CloudError::StoreError(e.to_string()))?;
-        // `location.prefix` is the raw key after the authority. Parsed rather
-        // than `Path::from`: `from` percent-encodes, and this string has already
-        // been through the URL, so encoding it again turned `a b.png` into
-        // `a%2520b.png` on the old S3 path.
-        let key = ObjectPath::parse(&location.prefix).map_err(|e| {
-            CloudError::UrlParse(format!("bad object key '{}': {e}", location.prefix))
-        })?;
-
-        store
-            .exec_with_rebuild_retry_on_err(|store| {
-                let key = &key;
-                async move {
-                    match reach {
-                        Reach::Whole => store.get(key).await?.bytes().await,
-                        // A range past the end returns the rest of the object
-                        // (`GetRange::Bounded`). The raw store's `get_range`,
-                        // inside the one budget permit this read holds:
-                        // `PolarsObjectStore::get_range` would take a second.
-                        Reach::Prefix(n) => match store.get_range(key, 0..n).await {
-                            // An empty object has no byte 0 to start a range
-                            // at (S3's `InvalidRange`, HTTP 416), which
-                            // `object_store` reports as `Generic`. Any refusal
-                            // a whole read would not meet the same way is
-                            // retried as one, inside this read's permit.
-                            Err(e) if !fails_whole_too(&e) => store.get(key).await?.bytes().await,
-                            other => other,
-                        },
-                    }
+    let OpenObject { store, key, .. } = open_object(url, &pl_options)
+        .await
+        .map_err(CloudError::StoreError)?;
+    store
+        .exec_with_rebuild_retry_on_err(|store| {
+            let key = &key;
+            async move {
+                match reach {
+                    Reach::Whole => store.get(key).await?.bytes().await,
+                    // A range past the end returns the rest of the object
+                    // (`GetRange::Bounded`). The raw store's `get_range`,
+                    // inside the one budget permit this read holds:
+                    // `PolarsObjectStore::get_range` would take a second.
+                    Reach::Prefix(n) => match store.get_range(key, 0..n).await {
+                        // An empty object has no byte 0 to start a range at
+                        // (S3's `InvalidRange`, HTTP 416), which
+                        // `object_store` reports as `Generic`. Any refusal a
+                        // whole read would not meet the same way is retried
+                        // as one, inside this read's permit.
+                        Err(e) if !fails_whole_too(&e) => store.get(key).await?.bytes().await,
+                        other => other,
+                    },
                 }
-            })
-            .await
-            .map(|bytes| bytes.to_vec())
-            .map_err(|e| CloudError::ReadError(e.to_string()))
-    }
+            }
+        })
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| CloudError::ReadError(e.to_string()))
+}
+
+/// A remote object, or prefix, opened in the store a read of it uses.
+struct OpenObject {
+    store: polars::io::cloud::PolarsObjectStore,
+    key: ObjectPath,
+    /// The path names a prefix (it ends in `/`, or is the bucket itself).
+    prefix: bool,
+}
+
+/// Open `url` under `pl_options` (the scheme's options, its credential
+/// installed by [`polars_options`]): polars-io's cached store and the parsed
+/// key. The one setup [`read_object`] and [`check_access`] share, so what a
+/// check reaches is what a read reaches.
+async fn open_object(url: PlRefPath, pl_options: &PlCloudOptions) -> Result<OpenObject, String> {
+    let (location, store) = build_object_store(url, Some(pl_options), false)
+        .await
+        .map_err(|e| e.to_string())?;
+    // `location.prefix` is the raw key after the authority. Parsed rather
+    // than `Path::from`: `from` percent-encodes, and this string has already
+    // been through the URL, so encoding it again turned `a b.png` into
+    // `a%2520b.png` on the old S3 path.
+    let key = ObjectPath::parse(&location.prefix)
+        .map_err(|e| format!("bad object key '{}': {e}", location.prefix))?;
+    let prefix = location.prefix.is_empty() || location.prefix.ends_with('/');
+    Ok(OpenObject { store, key, prefix })
 }
 
 /// Whether a ranged read's error is about the object or its credentials
@@ -480,17 +495,18 @@ pub fn check_access(
     let backend = format!("{cloud_type:?}").to_lowercase();
 
     let probe = async {
-        let (location, store) = build_object_store(url, Some(&pl_options), false)
-            .await
-            .map_err(|e| e.to_string())?;
-        let key = ObjectPath::parse(&location.prefix).map_err(|e| e.to_string())?;
-        let prefix = location.prefix.is_empty() || location.prefix.ends_with('/');
+        let OpenObject { store, key, prefix } = open_object(url, &pl_options).await?;
         store
             .exec_with_rebuild_retry_on_err(|store| {
                 let key = &key;
                 async move {
                     let found = if prefix {
-                        store.list_with_delimiter(Some(key)).await.map(|_| true)
+                        // A store has no directories: a prefix exists by the
+                        // objects (or deeper prefixes) under it.
+                        store
+                            .list_with_delimiter(Some(key))
+                            .await
+                            .map(|l| !(l.objects.is_empty() && l.common_prefixes.is_empty()))
                     } else {
                         store.head(key).await.map(|_| true)
                     };
