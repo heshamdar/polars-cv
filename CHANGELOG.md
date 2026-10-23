@@ -145,6 +145,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **A server that ignores `Range`** sent the whole object to a header read;
+  with no header in it, the object was then fetched a second time. A body
+  longer than the prefix asked for is now taken as the whole object.
 - **`reduce_percentile(q)` with `q` outside [0, 100]** returned the minimum
   or maximum (the `q` was clamped); it is now refused, as every other
   percentile is.

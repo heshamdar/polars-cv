@@ -46,6 +46,10 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
 | CR-129 | Params | Feature | Masked percentile `normalize`: a window from another node's pixels (C3 remainder) |
+| CR-130 | Errors | Design | Row errors are composed by inspecting other error strings; the row number is morsel-local under streaming |
+| CR-131 | Performance | Low | `rank_filter` sorts every window; `statistics(mask=)` and `region_stats` repeat work per statistic/map; the ADC file is re-read per remote object |
+| CR-132 | Fetch | Low | A ranged header read of a zero-byte remote object may get HTTP 416 / `InvalidRange` (unverified) |
+| CR-133 | Params | Design | `normalize`'s `mean`/`std`/`low`/`high` are optional fields read under one method each |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -361,7 +365,56 @@ four phases are closed below (CR-119 to CR-128); this is what remains.
   bounds as a scalar, but a scalar cannot yet feed another op's parameter.
   A general "parameter from a node" mechanism (a `Param` variant naming a
   scalar node) would cover it; decide whether that is worth its planner
-  cost before building it.
+  cost before building it. It would be the same entity as `this` on another
+  node (`mask_node.p1`), with one difference that must stay visible in the
+  API: a value from a node's *pixels* is known only once that node has run,
+  so it splits fusion where a shape attribute does not.
+
+## Review follow-ups (2026-10-23)
+
+An independent review of the downstream-proposal branch. Its bugs are fixed
+(see Closed findings); these are the design and performance points left.
+
+### CR-130 — Structured error context
+
+- `compiled.rs` builds a row error's prefix by testing the message it wraps
+  (`e.starts_with("{name}:")`, `msg.contains(" at row {row}:")`): two sites
+  that depend on the exact wording of messages written elsewhere.
+- The `(row n)` suffix is the row within the plugin call. Under the
+  streaming engine that is a morsel, so `n` is not the frame's row; the error
+  tests pin `in_memory_engine` for exactly this reason.
+- **Fix:** carry row, op and field as structured context on the error and
+  render it once; say "row n of this batch" (or omit the number) when the
+  call is a morsel.
+
+### CR-131 — Repeated work in the new reductions
+
+- `rank_filter` sorts every window in full (`H·W·C` windows of `h·w`
+  values): a 25x25 median of a 2k image is ~2.5e9 sorted elements.
+  `select_nth_unstable`, or a running histogram for u8/u16, is the fix.
+- `statistics(mask=)` builds one `reduce_masked` node per statistic, each
+  casting the image and mask to f64 and scanning them again; one node
+  gathering the masked values once would serve every statistic.
+- `region_stats` runs one `label_reduce` per entry, rasterising the same
+  regions once per map.
+- `cloud_auth::choose()` reads and parses the ADC file on every remote read
+  that has no options (`polars_options` runs per object); cache it by path
+  and mtime.
+
+### CR-132 — Ranged read of an empty object
+
+- A header read asks for `bytes=0-65535`. Against an empty object S3 answers
+  `InvalidRange` and an HTTP server may answer 416 where a whole read would
+  succeed. Not verified; fall back to a whole read on that error if it holds.
+
+### CR-133 — `normalize`'s per-method fields
+
+- `normalize(method=, mean=, std=, low=, high=)` carries four optional
+  fields, each read under one method (`check` refuses a missing one, and
+  `ComputeOp::normalization` now `expect`s it). CLAUDE.md's rule is that such
+  a parameter becomes an enum variant: the method as a value carrying its own
+  fields, as `Reduction` now carries its percentile. That changes the wire
+  form and the Python signature, so it is its own change.
 
 ## Extension types
 
@@ -595,6 +648,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-134 | Review of the downstream-proposal branch: optimizations changed results on `this` and padded crops; `background_divide` on integers; NaN percentile windows; empty regions; a per-row reduction could not mix percentiles; `reduce_percentile` clamped `q`; `this` after `rasterize`; `this` accepted where it could never work; a whole body fetched twice | Fixed (unreleased): see the CHANGELOG's Fixed section and the commits after `5a37467` |
 | CR-123 | No way to size a parameter by the image (B4) | Fixed (unreleased): `polars_cv.this` (`.height`, `.width`, `.channels`, `.ndim`) with `+ - * / //`, `{"$this": tree}` on the wire, resolved per row from the shape of the buffer each op reads, carried through a node's steps by their shape rules; integers round to nearest (`test_this.py`). An attribute of another node (CR-129) would be the same entity on a `LazyPipelineExpr` |
 | CR-122 | No rank/median filter, no flat-fielding, no per-row flip, no per-pixel table of stacked maps (C2/B7/B6) | Fixed (unreleased): `rank_filter`/`median_filter`, `background_divide`, `flip_h`/`flip_v(when=)`, `sink("long", names=, where=)`; no `stack()`, since `channel_merge` is that op (`test_rank_filters.py`, `test_conditional_flip.py`, `test_long_sink.py`) |
 | CR-121 | No resize onto another node's grid, no area filter, no block reduction (B5) | Fixed (unreleased): `resize_like(other)` as a graph op (not a shared `SizeSpec`: rasterize's size is a literal, resize_like's another node's per-row shape), `resize(filter="area")` with OpenCV `INTER_AREA`'s exact overlap weights, `block_reduce` (`test_resampling.py`) |

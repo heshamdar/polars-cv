@@ -41,11 +41,14 @@ pub enum ImageOpKind<M: Mode = Exec> {
         /// Standard deviation for Gaussian kernel.
         sigma: M::V<f32>,
     },
-    /// Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): ``[H, W, 1]``,
-    /// or ``[H, W]`` with ``keepdims=False``.
+    /// Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): an
+    /// ``[H, W, C]`` image becomes ``[H, W, 1]``, or ``[H, W]`` with
+    /// ``keepdims=False``. An ``[H, W]`` input is already gray and stays
+    /// ``[H, W]`` either way.
     #[op(name = "grayscale", sample = {"keepdims": false})]
     Grayscale {
-        /// Keep the channel axis, as size 1 (default), or drop it.
+        /// Keep an ``[H, W, C]`` image's channel axis, as size 1 (default),
+        /// or drop it.
         #[param(default = true)]
         keepdims: M::L<bool>,
     },

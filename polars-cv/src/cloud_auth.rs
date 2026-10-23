@@ -282,9 +282,9 @@ enum Choice {
     /// Nothing bespoke: `object_store`'s own chain.
     Chain,
     /// A pre-obtained GCS bearer token.
-    Static,
-    /// A user-configured `token_command`.
-    Command(String),
+    Static(String),
+    /// A user-configured `token_command`, minting tokens for this backend.
+    Command(Bearer, String),
     /// A federated ambient ADC, delegated to `gcloud`: its path and `type`.
     FederatedAdc(PathBuf, String),
 }
@@ -305,8 +305,8 @@ impl Choice {
                 };
                 format!("object_store default credential chain ({chain})")
             }
-            Choice::Static => "gcs_bearer_token".to_string(),
-            Choice::Command(command) => format!("token_command `{command}`"),
+            Choice::Static(_) => "gcs_bearer_token".to_string(),
+            Choice::Command(_, command) => format!("token_command `{command}`"),
             Choice::FederatedAdc(path, typ) => format!(
                 "gcloud ADC ({typ}, {}) via `{GCLOUD_ADC_COMMAND}`",
                 path.display()
@@ -326,18 +326,21 @@ fn choose(cloud_type: &CloudType, options: Option<&CloudOptions>, env: Env<'_>) 
         return Choice::Anonymous;
     }
     // S3 signs with SigV4; `cloud::polars_options` rejects a bearer input
-    // there before this is reached.
-    if !matches!(cloud_type, CloudType::Gcp | CloudType::Azure) {
-        return Choice::Chain;
-    }
-    let gcs = matches!(cloud_type, CloudType::Gcp);
+    // there before this is reached. The backends that take a bearer token,
+    // named once: what a token command mints is decided here.
+    let bearer = match cloud_type {
+        CloudType::Gcp => Bearer::Gcs,
+        CloudType::Azure => Bearer::Azure,
+        _ => return Choice::Chain,
+    };
+    let gcs = bearer == Bearer::Gcs;
     if let Some(opts) = options {
-        if gcs && opts.bearer_token.is_some() {
-            return Choice::Static;
+        if let Some(token) = opts.bearer_token.as_ref().filter(|_| gcs) {
+            return Choice::Static(token.clone());
         }
         if let Some(command) = opts.token_command.as_deref() {
             if !command.trim().is_empty() {
-                return Choice::Command(command.to_string());
+                return Choice::Command(bearer, command.to_string());
             }
         }
     }
@@ -368,35 +371,26 @@ fn provider_for(
     options: Option<&CloudOptions>,
     env: Env<'_>,
 ) -> Result<Option<PlCredentialProvider>, CloudError> {
-    let kind = match cloud_type {
-        CloudType::Gcp => Bearer::Gcs,
-        _ => Bearer::Azure,
-    };
     let choice = choose(cloud_type, options, env);
     let label = choice.label(cloud_type);
     Ok(match choice {
         Choice::Anonymous | Choice::Chain => None,
-        Choice::Static => {
-            let token = options
-                .and_then(|o| o.bearer_token.clone())
-                .unwrap_or_default();
-            Some(memoized(format!("gcp:bearer:{token}"), || {
-                static_provider(kind, token.clone())
-            }))
-        }
-        Choice::Command(command) => {
-            let prefix = match kind {
+        Choice::Static(token) => Some(memoized(format!("gcp:bearer:{token}"), || {
+            static_provider(Bearer::Gcs, token.clone())
+        })),
+        Choice::Command(bearer, command) => {
+            let prefix = match bearer {
                 Bearer::Gcs => "gcp",
                 Bearer::Azure => "azure",
             };
             Some(memoized(format!("{prefix}:cmd:{command}"), || {
-                command_provider(kind, command.clone(), label)
+                command_provider(bearer, command.clone(), label)
             }))
         }
         Choice::FederatedAdc(path, _) => {
             let key = format!("gcp:adc:{}", cache_key(&path));
             Some(memoized(key, || {
-                command_provider(kind, GCLOUD_ADC_COMMAND.to_string(), label)
+                command_provider(Bearer::Gcs, GCLOUD_ADC_COMMAND.to_string(), label)
             }))
         }
     })
