@@ -150,12 +150,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   header: a null, as before.
 - **`show_images(df, "col.field")`** shows one field of a struct column, such
   as an aliased intermediate sunk beside the result with a dict sink.
-- **A row an op refuses ends `(row n)`,** as a `.contour` accessor's refusal
-  already did, and a bad per-row parameter names its op and the parameter
-  it was bound to as well as its column (`crop: left: Parameter column 'l'
-  at row 0: ...`; the field was unnamed and the op named only when its own
-  check raised). A crop window bound of 2^31 or more adds that it is
-  usually an unsigned subtraction that wrapped in polars.
+- **A failing row is named once, within its batch: `(row 11 of 12 in this
+  batch)`,** by the pipeline and every `.contour`/`.point`/`.bbox` accessor
+  alike (`polars-cv/src/row_ref.rs`). A plugin call is one batch of the frame
+  under the streaming engine, polars 2.0's default for `collect()`, and
+  cannot know where its batch starts: a bare `(row n)` named the frame's row
+  50 as row 11. When the batch is the whole frame (in memory) the index is
+  the frame's row. Parameter messages no longer carry their own `at row n`,
+  and a bad per-row parameter names its op and the parameter it was bound
+  to as well as its column (`crop: width: Parameter column 'l': -1 cannot be
+  negative (row 0 of 1 in this batch)`), never an internal wrapper's field.
+  A crop window bound of 2^31 or more adds that it is usually an unsigned
+  subtraction that wrapped in polars.
 
 ### Fixed
 
@@ -178,6 +184,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   every other reduction gives over nothing: NaN, or 0 for `sum` and `count`
   (+0, as NumPy's: a sum of nothing was -0, Rust's `Sum` identity, on every
   sum path).
+- **The contour matcher drops a detection scored NaN** (a region with no
+  pixels), as it drops a zero: in polars NaN is above every number, so it
+  would have been matched as the most confident detection.
 - **Two optimizations changed results on this release's new parameters.**
   `spatial_window_pushdown` moved a crop ahead of an op reading `this`, so
   `scale(this.height).crop(height=2, width=2)` scaled by 2, not the input's
