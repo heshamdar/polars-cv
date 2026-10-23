@@ -434,8 +434,9 @@ impl<M: Mode> Op for ViewOp<M> {
                     };
                     let (lo, hi, _, _) = place_axis(origin, extent.map(u64::from), dim);
                     if lo == hi {
-                        let end = extent
-                            .map_or("end".to_string(), |e| (origin + i64::from(e)).to_string());
+                        let end = extent.map_or("end".to_string(), |e| {
+                            (i128::from(origin) + i128::from(e)).to_string()
+                        });
                         return Err(ValidationError::InvalidParameter {
                             param: "window".to_string(),
                             reason: format!(

@@ -223,11 +223,11 @@ decoders, so they differ from libjpeg-turbo by a level or two at chroma edges.
 
 | Area | Examples |
 |---|---|
-| Resize & geometry | `resize`, `resize_max`, `crop`, `pad`, `letterbox`, `rotate`, `flip`, `warp_affine` |
+| Resize & geometry | `resize` (incl. `filter="area"`), `resize_max`, `resize_like`, `crop`/`crop_clip`/`crop_pad`, `pad`, `letterbox`, `rotate`, `flip`, `warp_affine` |
 | Colour & intensity | `grayscale`, `to_hsv`, `to_lab`, `adjust_contrast`, `adjust_gamma`, `equalize_histogram` |
-| Filters & morphology | `blur`, `sharpen`, `sobel`, `canny`, `convolve2d`, `erode`/`dilate` (square or disk), `distance_transform` |
-| Arithmetic | `normalize`, `cast`, `clamp`, element-wise math, and `add`/`blend`/`apply_mask` between pipelines |
-| Analysis | `histogram`, `perceptual_hash`, `reduce_mean`/`max`/`percentile`/…, `statistics()` |
+| Filters & morphology | `blur`, `sharpen`, `sobel`, `canny`, `convolve2d`, `median_filter`/`rank_filter`, `background_divide`, `erode`/`dilate` (square or disk), `distance_transform` |
+| Arithmetic | `normalize`/`normalize_preset`/`normalize_percentile`, `cast`, `clamp`, element-wise math, and `add`/`blend`/`apply_mask` between pipelines |
+| Analysis | `histogram`, `perceptual_hash`, `reduce`/`reduce_mean`/`max`/`percentile`/…, `reduce_masked`, `block_reduce`, `statistics(mask=)`, `region_stats` |
 | Contours, points, boxes | `extract_contours`, `area`, `iou`, `hausdorff_distance`, `pairwise_iou` via `.contour`/`.point`/`.bbox` |
 | Drawing | `rasterize` (anti-aliased), `stroke`, `offset`, `smooth`, `union`/`intersection`/`difference`, `coordinate_grid`, `apply_lut` palettes |
 | Header metadata | `.cv.image_info()`, `.cv.width()`, `.cv.height()` without decoding |
@@ -273,7 +273,7 @@ Thread counts, morsel sizing and memory budgets are covered in
 polars-cv is 0.x: a minor release may break the API. Breaking changes are
 listed in the [changelog](https://github.com/heshamdar/polars-cv/blob/main/CHANGELOG.md),
 each with a [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration/).
-Pin a minor version (`polars-cv~=0.40.0`) if you depend on it. Outputs are
+Pin a minor version (`polars-cv~=0.41.0`) if you depend on it. Outputs are
 checked against NumPy, SciPy, OpenCV and `imagehash` in CI.
 
 ## Contributing

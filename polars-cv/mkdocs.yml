@@ -113,6 +113,7 @@ nav:
     - Functions: api/functions.md
   - Migration Guides:
     - Overview: user-guide/migration.md
+    - From 0.40 to 0.41: user-guide/migration-0.41.md
     - From 0.39 to 0.40: user-guide/migration-0.40.md
     - From 0.38 to 0.39: user-guide/migration-0.39.md
     - From 0.37 to 0.38: user-guide/migration-0.38.md

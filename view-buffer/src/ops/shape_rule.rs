@@ -226,8 +226,10 @@ pub enum OpShape {
 /// it. The one rule for a window past the edge, read by the shape authority
 /// (`OpShape::ClipWindow`) and by execution (`ViewOp::place`) alike.
 pub fn place_axis(origin: i64, extent: Option<u64>, dim: usize) -> (usize, usize, u64, u64) {
-    let dim_i = dim as i64;
-    let end = extent.map_or(dim_i, |e| origin.saturating_add(e as i64));
+    // In i128, so an origin at either end of i64 cannot overflow `-origin`
+    // or `end - origin`.
+    let (origin, dim_i) = (i128::from(origin), dim as i128);
+    let end = extent.map_or(dim_i, |e| origin + i128::from(e));
     let lo = origin.clamp(0, dim_i);
     let hi = end.clamp(lo, dim_i);
     let total = end - origin;
@@ -1151,5 +1153,32 @@ mod symbolic_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    //! `place_axis`: a window past the edge, at any `i64` origin.
+
+    use super::place_axis;
+
+    #[test]
+    fn a_window_inside_and_past_the_edge() {
+        assert_eq!(place_axis(2, Some(3), 10), (2, 5, 0, 0));
+        assert_eq!(place_axis(-2, Some(5), 10), (0, 3, 2, 0));
+        assert_eq!(place_axis(8, Some(5), 10), (8, 10, 0, 3));
+        assert_eq!(place_axis(12, Some(2), 10), (10, 10, 0, 2));
+    }
+
+    /// An origin at either end of `i64` overflowed `-origin` and
+    /// `end - origin`: a panic in a debug build, a wrapped window in release.
+    #[test]
+    fn an_extreme_origin_is_a_window_wholly_outside() {
+        assert_eq!(place_axis(i64::MIN, Some(4), 10), (0, 0, 4, 0));
+        assert_eq!(place_axis(i64::MAX, Some(4), 10), (10, 10, 0, 4));
+        let (lo, hi, before, after) = place_axis(i64::MIN, None, 10);
+        assert_eq!((lo, hi, after), (0, 10, 0));
+        assert_eq!(before, 1 << 63);
+        assert_eq!(place_axis(i64::MAX, None, 10), (10, 10, 0, 0));
     }
 }
