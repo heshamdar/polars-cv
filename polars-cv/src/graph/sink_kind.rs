@@ -148,6 +148,7 @@ mod tests {
             expected_ndim: None,
             expected_channels: None,
             histogram_buckets: false,
+            long_layout: None,
         }
     }
 

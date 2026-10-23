@@ -54,6 +54,9 @@ pub struct OutputSpec {
     /// `List(Struct[lower_edge, upper_edge, count, normalized])` rather than by
     /// its (domain, format) pair.
     pub histogram_buckets: bool,
+    /// The `long` sink's layout, parsed once for the call rather than per
+    /// row (`None` for every other sink).
+    pub long_layout: Option<Result<crate::formats::sink::LongLayout, String>>,
 }
 
 impl OutputSpec {
@@ -81,6 +84,7 @@ impl OutputSpec {
                 _ => None,
             },
             histogram_buckets,
+            long_layout: out.sink.long_layout(),
         }
     }
 }

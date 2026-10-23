@@ -109,6 +109,8 @@ impl Reduction {
         };
         match stat {
             Statistic::Count => return n as f64,
+            // Not `sum()` of nothing, which is -0 (`f64`'s `Sum` identity).
+            Statistic::Sum if n == 0 => return 0.0,
             Statistic::Sum => return values.iter().sum(),
             _ if n == 0 => return f64::NAN,
             _ => {}
@@ -188,7 +190,6 @@ pub fn percentile_of(values: &mut [f64], q: f64) -> f64 {
     if values.is_empty() || q.is_nan() || values.iter().any(|v| v.is_nan()) {
         return f64::NAN;
     }
-    values.sort_by(f64::total_cmp);
     let n = values.len();
     debug_assert!(
         (0.0..=100.0).contains(&q),
@@ -197,9 +198,13 @@ pub fn percentile_of(values: &mut [f64], q: f64) -> f64 {
     let pos = q / 100.0 * (n - 1) as f64;
     let lo = pos.floor() as usize;
     let frac = pos - lo as f64;
-    match values.get(lo + 1) {
-        Some(&hi) => values[lo] * (1.0 - frac) + hi * frac,
-        None => values[lo],
+    // Selection, not a sort: the `lo`-th value in order, then the least of
+    // those after it is the next (O(n), where a sort is O(n log n) — per
+    // window in `rank_filter`).
+    let (_, &mut low, above) = values.select_nth_unstable_by(lo, f64::total_cmp);
+    match above.iter().copied().min_by(f64::total_cmp) {
+        Some(hi) => low * (1.0 - frac) + hi * frac,
+        None => low,
     }
 }
 
@@ -672,11 +677,13 @@ impl ReductionOp {
                 ViewBuffer::from_scalar(std)
             }
             ReductionOp::Sum { axis: None } => {
-                let sum: f64 = data
-                    .iter()
-                    .copied()
-                    .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
-                    .sum();
+                // `+ 0.0`: a sum of nothing is +0, not `Sum`'s -0 identity.
+                let sum: f64 = 0.0
+                    + data
+                        .iter()
+                        .copied()
+                        .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
+                        .sum::<f64>();
                 ViewBuffer::from_scalar(sum)
             }
             // Axis-based reductions
@@ -732,11 +739,12 @@ impl ReductionOp {
             }
             ReductionOp::Sum { axis: Some(ax) } => {
                 self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, |slice: &[T]| {
-                    slice
+                    // As the global sum: nothing sums to +0.
+                    0.0 + slice
                         .iter()
                         .copied()
                         .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
-                        .sum()
+                        .sum::<f64>()
                 })
             }
             ReductionOp::Percentile { q, axis: Some(ax) } => {
@@ -1455,6 +1463,65 @@ mod one_implementation_tests {
                             buf.dtype().short_name()
                         );
                     }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod small_fix_tests {
+    use super::*;
+
+    /// A sum of nothing is +0, as NumPy's: Rust's `f64` `Sum` starts from
+    /// -0, which showed through as `-0.0` for an empty region or line.
+    #[test]
+    fn a_sum_of_nothing_is_positive_zero() {
+        let sum = Reduction::Named(Statistic::Sum);
+        assert!(sum.of(&mut []).to_bits() == 0.0f64.to_bits());
+        let empty = ViewBuffer::from_vec_with_shape(Vec::<f32>::new(), vec![0, 4]);
+        for op in [
+            ReductionOp::Sum { axis: None },
+            ReductionOp::By {
+                reduction: sum,
+                axis: None,
+            },
+        ] {
+            let out = op.execute(&empty);
+            let got = out.to_contiguous().as_slice::<f64>()[0];
+            assert_eq!(got.to_bits(), 0.0f64.to_bits(), "{op:?}: {got}");
+        }
+        let lines = ReductionOp::Sum { axis: Some(0) }.execute(&empty);
+        for got in lines.to_contiguous().as_slice::<f64>() {
+            assert_eq!(got.to_bits(), 0.0f64.to_bits(), "an empty column: {got}");
+        }
+    }
+
+    /// The percentile by selection is the sorted reference's, exactly.
+    #[test]
+    fn a_percentile_by_selection_is_the_sorted_ones() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for n in [1usize, 2, 3, 7, 64, 101] {
+            for _ in 0..20 {
+                let values: Vec<f64> = (0..n).map(|_| (next() % 50) as f64 - 20.0).collect();
+                let mut sorted = values.clone();
+                sorted.sort_by(f64::total_cmp);
+                for q in [0.0, 12.5, 33.333, 50.0, 90.0, 99.9, 100.0] {
+                    let pos = q / 100.0 * (n - 1) as f64;
+                    let lo = pos.floor() as usize;
+                    let frac = pos - lo as f64;
+                    let want = match sorted.get(lo + 1) {
+                        Some(&hi) => sorted[lo] * (1.0 - frac) + hi * frac,
+                        None => sorted[lo],
+                    };
+                    let got = percentile_of(&mut values.clone(), q);
+                    assert_eq!(got.to_bits(), want.to_bits(), "n={n} q={q}");
                 }
             }
         }

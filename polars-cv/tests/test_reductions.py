@@ -91,6 +91,8 @@ class TestLabelReduce:
         got = frame.select(pl.col("a").cv.pipe(pipe).sink("native")).item()
         want = 0.0 if reduction in ("sum", "count") else np.nan
         np.testing.assert_array_equal(got, [want, want])
+        # +0, as NumPy's sum of nothing (it was -0, Rust's `Sum` identity).
+        assert not np.signbit(np.asarray(got, np.float64)).any(), got
 
     @pytest.mark.parametrize("q", [0.0, 10.0, 62.5, 100.0])
     def test_percentile_matches_numpy(self, q: float) -> None:
