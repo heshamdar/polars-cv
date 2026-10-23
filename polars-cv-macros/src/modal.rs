@@ -326,6 +326,7 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut name_arms = Vec::new();
     let mut fields_arms = Vec::new();
     let mut visit_arms = Vec::new();
+    let mut bind_arms = Vec::new();
     let mut descs = Vec::new();
     let mut samples = Vec::new();
 
@@ -352,6 +353,7 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
             name_arms.push(quote! { #pat => ::core::option::Option::None, });
             fields_arms.push(quote! { #pat => ::core::option::Option::None, });
             visit_arms.push(quote! { #pat => {} });
+            bind_arms.push(quote! { #pat => {} });
             continue;
         };
         let doc = doc_of(v_attrs);
@@ -392,6 +394,7 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let mut takes = Vec::new();
         let mut puts = Vec::new();
         let mut visits = Vec::new();
+        let mut binds = Vec::new();
         for f in &named {
             let id = f.ident.as_ref().unwrap();
             // `r#where` is the wire's `where`.
@@ -466,6 +469,10 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
             visits.push(quote! {
                 ::view_buffer::mode::FieldType::visit_inputs(#id, &mut |input| f(#fname, input));
             });
+            binds.push(quote! {
+                ::view_buffer::mode::FieldType::bind_this(#id, planned)
+                    .map_err(|e| format!("{}: {}", #fname, e))?;
+            });
         }
 
         let (pat, ctor) = if named.is_empty() {
@@ -507,6 +514,10 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
         visit_arms.push(quote! {
             #[allow(unused_variables)]
             #pat => { #(#visits)* }
+        });
+        bind_arms.push(quote! {
+            #[allow(unused_variables)]
+            #pat => { #(#binds)* }
         });
         descs.push(quote! {
             ::view_buffer::mode::OpDesc {
@@ -569,6 +580,17 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 match self { #(#visit_arms)* }
             }
 
+            /// Bind every field's `this` parameters over what the planner
+            /// knows of the op's input (`FieldType::bind_this`).
+            #[allow(unused_variables)]
+            pub fn bind_this(
+                &mut self,
+                planned: &::view_buffer::mode::PlannedThis<'_>,
+            ) -> ::core::result::Result<(), ::std::string::String> {
+                match self { #(#bind_arms)* }
+                ::core::result::Result::Ok(())
+            }
+
             /// Every op's catalogue entry, in declaration order.
             pub fn catalog() -> ::std::vec::Vec<::view_buffer::mode::OpDesc> {
                 ::std::vec![#(#descs),*]
@@ -601,6 +623,12 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 f: &mut dyn FnMut(&'static str, ::view_buffer::mode::RowInput),
             ) {
                 Self::visit_inputs(self, f)
+            }
+            fn bind_this(
+                &mut self,
+                planned: &::view_buffer::mode::PlannedThis<'_>,
+            ) -> ::core::result::Result<(), ::std::string::String> {
+                Self::bind_this(self, planned)
             }
             fn catalog() -> ::std::vec::Vec<::view_buffer::mode::OpDesc> {
                 Self::catalog()

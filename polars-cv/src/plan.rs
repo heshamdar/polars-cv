@@ -415,6 +415,34 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
     use crate::ops::TypedOp;
     use view_buffer::ops::PlannedInput;
 
+    // A `this` parameter reads the buffer the op is given: refused where it
+    // is given none, and its value wherever the plan knows every size it
+    // reads (a literal from here on, so the rules below see it). The plan
+    // keeps the op as written, so a pipeline replanned onto another input
+    // binds again; execution evaluates whatever is still unbound per row.
+    let bound;
+    let op = if op.reads_shape() {
+        if state.domain != Domain::Buffer {
+            return Err(format!(
+                "{}(): `this` reads the buffer an op is given, and this op's input \
+                 is in the {} domain",
+                op.name(),
+                state.domain.name()
+            ));
+        }
+        let mut b = op.clone();
+        let planned = view_buffer::mode::PlannedThis {
+            rank: state.shape.rank(),
+            dims: state.shape.sizes(),
+        };
+        b.bind_this(&planned)
+            .map_err(|e| format!("{}: {e}", op.name()))?;
+        bound = b;
+        &bound
+    } else {
+        op
+    };
+
     // The op is read as it is: every rule below is the step's own, over its
     // literal values, and a per-row value is unknown — never stood in for.
     // A check's message names its op (`blur: sigma -1 is ...`), as the

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from polars_cv._this import ThisExpr
+
 if TYPE_CHECKING:
     import polars as pl
 
@@ -452,6 +454,47 @@ class SinkFormat(str, Enum):
     TIFF = "tiff"
     TORCH = "torch"
     WEBP = "webp"
+
+
+class This:
+    """The buffer an op reads, as its parameters see it (``polars_cv.this``): its attributes, each known before the op runs.
+
+    - HEIGHT: axis 0 of an ``[H, W]`` or ``[H, W, C]`` buffer
+    - WIDTH: axis 1 of an ``[H, W]`` or ``[H, W, C]`` buffer
+    - CHANNELS: axis 2 of an ``[H, W, C]`` buffer; 1 for an ``[H, W]`` one
+    - NDIM: the rank, of any buffer
+
+    Use the instance :data:`this`; each attribute is a :class:`ThisExpr`.
+    """
+
+    __slots__ = ()
+
+    @property
+    def height(self) -> ThisExpr:
+        """``this.height``, the input's height (see :class:`This`)."""
+        return ThisExpr("height")
+
+    @property
+    def width(self) -> ThisExpr:
+        """``this.width``, the input's width (see :class:`This`)."""
+        return ThisExpr("width")
+
+    @property
+    def channels(self) -> ThisExpr:
+        """``this.channels``, the input's channels (see :class:`This`)."""
+        return ThisExpr("channels")
+
+    @property
+    def ndim(self) -> ThisExpr:
+        """``this.ndim``, the input's ndim (see :class:`This`)."""
+        return ThisExpr("ndim")
+
+    def __repr__(self) -> str:
+        return "this"
+
+
+#: The buffer an op reads, as its parameters see it.
+this = This()
 
 
 #: Ops whose wire form is typed (bare values and slots).

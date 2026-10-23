@@ -36,10 +36,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   resized height. An integer parameter takes the value rounded to nearest
   (`0.29 * this.height` at a height of 100 is 29), where a float column in an
   integer parameter truncates: the expression's float error is ours, not the
-  user's. A size set this way is unknown to the lazy schema, as a column's
-  is. Structural and non-numeric parameters, an attribute the buffer does not
-  have (`this.height` of a 1-D buffer), and functions with no buffer (the
-  `.contour` methods) refuse them. Pipeline op parameters are annotated
+  user's. Where the plan knows the sizes an expression reads (after a
+  `resize` or an `assert_shape`) its value is planned too, so the lazy
+  schema states the size; otherwise it is known per row, as a column's is.
+  Structural and non-numeric parameters, an attribute the buffer does not
+  have (`this.height` of a 1-D buffer), an op given no buffer (`rasterize`
+  reads contours), and functions with no buffer (the `.contour` methods)
+  refuse them, as the pipeline is built wherever the plan can tell. A new
+  attribute is one Rust `ThisAttr` variant: the Python `This` class is
+  generated from it. Pipeline op parameters are annotated
   `IntOrThisOrExpr`/`FloatOrThisOrExpr`; `IntOrExpr`/`FloatOrExpr` keep their
   meaning elsewhere.
 - **`sink("long", names=[...], where=)`**: an `[H, W]` or `[H, W, C]`

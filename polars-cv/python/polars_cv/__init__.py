@@ -26,8 +26,9 @@ if TYPE_CHECKING:
 
 from ._cloud import CloudCredentialError, check_cloud_access
 from ._dtype_names import SINK_NUMPY_NAMES
+from ._ops_generated import This, this
 from ._optimize import OptFlags
-from ._this import This, ThisExpr, this
+from ._this import ThisExpr
 from ._types import (
     IMAGENET_MEAN,
     IMAGENET_STD,

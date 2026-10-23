@@ -284,6 +284,16 @@
     ]
   },
   {
+    "name": "ThisAttr",
+    "doc": "The buffer an op reads, as its parameters see it (``polars_cv.this``): its attributes, each known before the op runs.\n\n- HEIGHT: axis 0 of an ``[H, W]`` or ``[H, W, C]`` buffer\n- WIDTH: axis 1 of an ``[H, W]`` or ``[H, W, C]`` buffer\n- CHANNELS: axis 2 of an ``[H, W, C]`` buffer; 1 for an ``[H, W]`` one\n- NDIM: the rank, of any buffer",
+    "variants": [
+      "height",
+      "width",
+      "channels",
+      "ndim"
+    ]
+  },
+  {
     "name": "Winding",
     "doc": "Winding direction of a contour ring (``.contour.ensure_winding``).\n\nLong spellings included: the plugin has always accepted\n``\"clockwise\"``/``\"counterclockwise\"`` alongside the short forms.",
     "variants": [
