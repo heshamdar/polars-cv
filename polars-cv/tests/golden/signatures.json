@@ -1624,16 +1624,6 @@
     "'minmax'"
    ],
    [
-    "mean",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
-    "std",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
     "out_dtype",
     "KEYWORD_ONLY",
     "None"
@@ -1652,6 +1642,28 @@
    ],
    [
     "high",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "out_dtype",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
+  "normalize_preset": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "mean",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "std",
     "KEYWORD_ONLY",
     ""
    ],
@@ -3480,16 +3492,6 @@
     "'minmax'"
    ],
    [
-    "mean",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
-    "std",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
     "out_dtype",
     "KEYWORD_ONLY",
     "None"
@@ -3508,6 +3510,28 @@
    ],
    [
     "high",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "out_dtype",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
+  "normalize_preset": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "mean",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "std",
     "KEYWORD_ONLY",
     ""
    ],

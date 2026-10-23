@@ -571,21 +571,14 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().neg())
 
     def normalize(
-        self,
-        *,
-        method: str = "minmax",
-        mean: Sequence[FloatOrThisOrExpr] | None = None,
-        std: Sequence[FloatOrThisOrExpr] | None = None,
-        out_dtype: str | None = None,
+        self, *, method: str = "minmax", out_dtype: str | None = None
     ) -> LazyPipelineExpr:
-        """Normalize values to a standard range.
+        """Normalize values by the image's own statistics.
 
         Lazy form of :meth:`Pipeline.normalize` on this expression's output.
         """
         return self.pipe(
-            self._continuation().normalize(
-                method=method, mean=mean, std=std, out_dtype=out_dtype
-            )
+            self._continuation().normalize(method=method, out_dtype=out_dtype)
         )
 
     def normalize_percentile(
@@ -602,6 +595,23 @@ class _LazyForwardersMixin:
         return self.pipe(
             self._continuation().normalize_percentile(
                 low=low, high=high, out_dtype=out_dtype
+            )
+        )
+
+    def normalize_preset(
+        self,
+        *,
+        mean: Sequence[FloatOrThisOrExpr],
+        std: Sequence[FloatOrThisOrExpr],
+        out_dtype: str | None = None,
+    ) -> LazyPipelineExpr:
+        """Normalize each channel by given statistics, ``(x - mean[c]) / std[c]``
+
+        Lazy form of :meth:`Pipeline.normalize_preset` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().normalize_preset(
+                mean=mean, std=std, out_dtype=out_dtype
             )
         )
 

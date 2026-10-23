@@ -471,8 +471,7 @@ class TestNormalizeOutDtypeContract:
         pipe = (
             Pipeline()
             .source("list", dtype="f32")
-            .normalize(
-                method="preset",
+            .normalize_preset(
                 mean=[0.0, 0.0, 0.0],
                 std=[1.0, 1.0, 1.0],
                 out_dtype="f64",

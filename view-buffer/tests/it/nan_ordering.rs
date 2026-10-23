@@ -100,8 +100,6 @@ fn minmax_normalize_of_input_with_nan_is_nan() {
     let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32, f32::NAN, 3.0, 5.0], vec![2, 2, 1]);
     let op = ViewDto::Compute(ComputeOp::Normalize {
         method: NormalizeMethod::MinMax,
-        mean: None,
-        std: None,
         out_dtype: None,
     });
     let out = f32s(&run(buf, op));

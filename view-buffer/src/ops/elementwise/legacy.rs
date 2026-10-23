@@ -45,7 +45,7 @@ pub(super) fn apply(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
                 apply_fused_kernel(&buf, kernel)
             }
         }
-        ComputeOp::Normalize { .. } => {
+        ComputeOp::Normalize { .. } | ComputeOp::NormalizePreset { .. } => {
             let (normalization, out_dtype) = op.normalization().expect("a normalization");
             apply_normalize(&buf, &normalization, out_dtype)
         }

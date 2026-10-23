@@ -80,7 +80,7 @@ def preprocess_for_numpy(df: pl.DataFrame) -> pl.DataFrame:
         Pipeline()
         .source("image_bytes")
         .resize(height=96, width=96)
-        .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
+        .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD)
         .assert_shape(channels=3, height=96, width=96)
         .transpose([2, 0, 1])
     )
@@ -133,7 +133,7 @@ def maybe_torch_demo(processed: pl.DataFrame) -> None:
             Pipeline()
             .source("image_bytes")
             .resize(height=64, width=64)
-            .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD),
+            .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         )
         .sink("torch"),
     )

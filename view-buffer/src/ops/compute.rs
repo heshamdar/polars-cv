@@ -45,34 +45,31 @@ pub enum Normalization {
     Range { low: f32, high: f32 },
 }
 
-/// Which normalization: the user-facing method name, without its payload.
-///
-/// `Normalization::Preset` carries statistics, so it cannot hold a
-/// `named_variants!` table; this fieldless twin does, and
-/// [`Normalization::method`] ties the two together exhaustively.
+/// `normalize`'s methods: the normalizations that read nothing but the
+/// image. One that carries values is an op of its own
+/// (`normalize_preset`, `normalize_percentile`, `normalize_range`), so no
+/// field is read under one method only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormalizeMethod {
     MinMax,
     ZScore,
-    Preset,
 }
 
-crate::naming::named_variants!(NormalizeMethod: "Normalization methods (``PRESET``: channel-wise with preset mean/std values). A ``low``..``high`` window is its own op: ``normalize_percentile``, ``normalize_range``." {
+crate::naming::named_variants!(NormalizeMethod: "``normalize``'s methods. Channel-wise statistics are ``normalize_preset``; a ``low``..``high`` window is ``normalize_percentile`` or ``normalize_range``." {
     "minmax" => MinMax,
     "zscore" => ZScore,
-    "preset" => Preset,
 });
 
 impl Normalization {
-    /// The method this normalization is.
-    /// `normalize`'s method for this normalization; `None` for a window,
-    /// which is an op of its own.
+    /// `normalize`'s method for this normalization; `None` for one that
+    /// carries values, which is an op of its own.
     pub fn method(&self) -> Option<NormalizeMethod> {
         match self {
             Normalization::MinMax => Some(NormalizeMethod::MinMax),
             Normalization::ZScore => Some(NormalizeMethod::ZScore),
-            Normalization::Preset { .. } => Some(NormalizeMethod::Preset),
-            Normalization::Percentile { .. } | Normalization::Range { .. } => None,
+            Normalization::Preset { .. }
+            | Normalization::Percentile { .. }
+            | Normalization::Range { .. } => None,
         }
     }
 }
@@ -100,37 +97,42 @@ pub enum ComputeOp<M: Mode = Exec> {
     /// Apply ReLU activation (max(0, x)): negative values become zero.
     #[op(name = "relu", sample = {})]
     Relu,
-    /// Normalize values to a standard range.
+    /// Normalize values by the image's own statistics.
     ///
     /// Example:
     ///     >>> Pipeline().source().normalize(method="minmax")
-    ///     >>> Pipeline().source().normalize(
-    ///     ...     method="preset",
-    ///     ...     mean=[0.485, 0.456, 0.406],
-    ///     ...     std=[0.229, 0.224, 0.225],
-    ///     ... )
-    #[op(name = "normalize", sample = {"method": "preset", "mean": [0.5], "std": [0.25],
-                                       "out_dtype": "f32"})]
+    #[op(name = "normalize", sample = {"method": "zscore", "out_dtype": "f32"})]
     Normalize {
         /// Normalization method: "minmax" scales values to [0, 1] using
         /// per-element min/max; "zscore" standardizes to mean=0, std=1 using
-        /// per-element statistics; "preset" applies ImageNet-style channel-wise
-        /// normalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.
-        /// A window is ``normalize_percentile`` or ``normalize_range``.
+        /// per-element statistics. Given statistics are ``normalize_preset``;
+        /// a window is ``normalize_percentile`` or ``normalize_range``.
         #[param(default = "minmax")]
         method: M::L<NormalizeMethod>,
-        /// Per-channel mean values; required for, and only valid with,
-        /// method="preset" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element may
-        /// be a literal float or a Polars expression; the list length is the channel
-        /// count.
-        mean: Option<Vec<M::V<f32>>>,
-        /// Per-channel standard deviation values; required for, and only valid
-        /// with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
-        /// element accepts an expression, as with `mean`.
-        std: Option<Vec<M::V<f32>>>,
         /// Output dtype (default f32). Normalization computes in f32 and the result
         /// is cast to this dtype at execution. For half precision use the sink
         /// dtype instead (`.sink("numpy", dtype="f16")`).
+        out_dtype: Option<M::L<DType>>,
+    },
+    /// Normalize each channel by given statistics, ``(x - mean[c]) / std[c]``
+    /// (ImageNet-style preprocessing).
+    ///
+    /// Example:
+    ///     >>> Pipeline().source().normalize_preset(
+    ///     ...     mean=[0.485, 0.456, 0.406],
+    ///     ...     std=[0.229, 0.224, 0.225],
+    ///     ... )
+    #[op(name = "normalize_preset", sample = {"mean": [0.5], "std": [0.25]})]
+    NormalizePreset {
+        /// Per-channel means (e.g. ImageNet ``[0.485, 0.456, 0.406]``), one
+        /// per channel. Each element may be a literal float or a Polars
+        /// expression; the list length is the channel count.
+        mean: Vec<M::V<f32>>,
+        /// Per-channel standard deviations (e.g. ImageNet
+        /// ``[0.229, 0.224, 0.225]``), as many as ``mean``. Each element
+        /// accepts an expression, as with ``mean``.
+        std: Vec<M::V<f32>>,
+        /// Output dtype (default f32), as ``normalize``'s.
         out_dtype: Option<M::L<DType>>,
     },
     /// Map the window between the image's own ``low``-th and ``high``-th
@@ -546,33 +548,15 @@ impl<M: Mode> ComputeOp<M> {
             }
             _ => {}
         }
-        let ComputeOp::Normalize {
-            method, mean, std, ..
-        } = self
-        else {
+        let ComputeOp::NormalizePreset { mean, std, .. } = self else {
             return Ok(());
         };
-        let method = M::lit(method);
-        if method != NormalizeMethod::Preset && (mean.is_some() || std.is_some()) {
-            return Err("normalize: mean/std parameters are only valid for method='preset'".into());
-        }
-        match method {
-            NormalizeMethod::MinMax | NormalizeMethod::ZScore => {}
-            NormalizeMethod::Preset => {
-                let (Some(mean), Some(std)) = (mean, std) else {
-                    return Err(
-                        "normalize: method='preset' requires both 'mean' and 'std' parameters"
-                            .into(),
-                    );
-                };
-                if mean.len() != std.len() {
-                    return Err(format!(
-                        "normalize: mean length ({}) must match std length ({})",
-                        mean.len(),
-                        std.len()
-                    ));
-                }
-            }
+        if mean.len() != std.len() {
+            return Err(format!(
+                "normalize_preset: mean length ({}) must match std length ({})",
+                mean.len(),
+                std.len()
+            ));
         }
         Ok(())
     }
@@ -710,43 +694,37 @@ impl ComputeOp {
                 high,
                 out_dtype,
             },
-            Normalization::Preset { mean, std } => ComputeOp::Normalize {
-                method: NormalizeMethod::Preset,
-                mean: Some(mean),
-                std: Some(std),
+            Normalization::Preset { mean, std } => ComputeOp::NormalizePreset {
+                mean,
+                std,
                 out_dtype,
             },
             Normalization::MinMax | Normalization::ZScore => ComputeOp::Normalize {
                 method: normalization.method().expect("a method of normalize"),
-                mean: None,
-                std: None,
                 out_dtype,
             },
         }
     }
 
     /// The normalization this op performs and the dtype it emits; `None`
-    /// for an op that is not a normalization. Its parameters have passed
-    /// [`check`](Self::check).
+    /// for an op that is not a normalization.
     pub fn normalization(&self) -> Option<(Normalization, DType)> {
-        // `check` refuses `preset` without its mean and std before any op
-        // executes; a missing one here is that contract broken, not a value
-        // to stand in for.
-        const CHECKED: &str = "normalize's check requires preset's mean and std";
         let (normalization, out_dtype) = match self {
-            ComputeOp::Normalize {
-                method,
+            ComputeOp::Normalize { method, out_dtype } => (
+                match method {
+                    NormalizeMethod::MinMax => Normalization::MinMax,
+                    NormalizeMethod::ZScore => Normalization::ZScore,
+                },
+                out_dtype,
+            ),
+            ComputeOp::NormalizePreset {
                 mean,
                 std,
                 out_dtype,
             } => (
-                match method {
-                    NormalizeMethod::MinMax => Normalization::MinMax,
-                    NormalizeMethod::ZScore => Normalization::ZScore,
-                    NormalizeMethod::Preset => Normalization::Preset {
-                        mean: mean.clone().expect(CHECKED),
-                        std: std.clone().expect(CHECKED),
-                    },
+                Normalization::Preset {
+                    mean: mean.clone(),
+                    std: std.clone(),
                 },
                 out_dtype,
             ),
@@ -802,6 +780,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             ComputeOp::Relu => "Relu",
             ComputeOp::Fused(_) => "Fused",
             ComputeOp::Normalize { .. } => "Normalize",
+            ComputeOp::NormalizePreset { .. } => "NormalizePreset",
             ComputeOp::NormalizePercentile { .. } => "NormalizePercentile",
             ComputeOp::NormalizeRange { .. } => "NormalizeRange",
             ComputeOp::Clamp { .. } => "Clamp",
@@ -895,15 +874,11 @@ impl<M: Mode> Op for ComputeOp<M> {
         input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
         match self {
-            ComputeOp::Normalize {
-                method, mean, std, ..
-            } => {
+            ComputeOp::Normalize { .. } | ComputeOp::NormalizePreset { .. } => {
                 self.check()
                     .map_err(|message| ValidationError::Generic { message })?;
                 let shape = input_shapes[0];
-                if let (NormalizeMethod::Preset, Some(mean), Some(std)) =
-                    (M::lit(method), mean, std)
-                {
+                if let ComputeOp::NormalizePreset { mean, std, .. } = self {
                     if shape.len() < 2 || shape.len() > 3 {
                         return Err(ValidationError::ShapeRequirement {
                             requirement: "2D (HW) or 3D (HWC)",
@@ -968,6 +943,7 @@ impl<M: Mode> Op for ComputeOp<M> {
     fn working_dtype(&self) -> Option<DType> {
         match self {
             ComputeOp::Normalize { .. }
+            | ComputeOp::NormalizePreset { .. }
             | ComputeOp::NormalizePercentile { .. }
             | ComputeOp::NormalizeRange { .. }
             | ComputeOp::Scale { .. }
@@ -986,6 +962,7 @@ impl<M: Mode> Op for ComputeOp<M> {
         match self {
             // Computation happens in f32; the result is cast to `out_dtype`.
             ComputeOp::Normalize { out_dtype, .. }
+            | ComputeOp::NormalizePreset { out_dtype, .. }
             | ComputeOp::NormalizePercentile { out_dtype, .. }
             | ComputeOp::NormalizeRange { out_dtype, .. } => {
                 OutputDTypeRule::Fixed(out_dtype.as_ref().map_or(DType::F32, M::lit))

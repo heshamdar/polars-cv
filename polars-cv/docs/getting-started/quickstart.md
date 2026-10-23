@@ -62,6 +62,12 @@ Pipeline().source("image_bytes").normalize(method="minmax")
 
 # ZScore normalization (mean=0, std=1)
 Pipeline().source("image_bytes").normalize(method="zscore")
+
+# Given per-channel statistics, (x - mean[c]) / std[c] (ImageNet)
+from polars_cv import IMAGENET_MEAN, IMAGENET_STD
+Pipeline().source("image_bytes").cast("f32").scale(1 / 255).normalize_preset(
+    mean=IMAGENET_MEAN, std=IMAGENET_STD
+)
 ```
 
 ## Dynamic Parameters

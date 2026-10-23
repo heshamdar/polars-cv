@@ -1755,7 +1755,7 @@ mod validation_soundness {
         [
             serde_json::json!({"op": "channel_select", "index": 2}),
             serde_json::json!({"op": "channel_swap", "order": [1, 0]}),
-            serde_json::json!({"op": "normalize", "method": "preset",
+            serde_json::json!({"op": "normalize_preset",
                                "mean": [0.5, 0.5, 0.5], "std": [0.2, 0.2, 0.2]}),
             serde_json::json!({"op": "crop", "top": 2, "left": 0, "height": 1}),
             serde_json::json!({"op": "reshape", "shape": [3, 5]}),

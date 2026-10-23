@@ -262,7 +262,7 @@ def benchmark_polars_cv_pipeline(
         .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)  # Center crop
         .scale(1 / 255.0)  # [0, 255] -> [0, 1]
-        .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
+        .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD)
         .sink("torch")
     )
 
@@ -412,7 +412,7 @@ def verify_output_equivalence(
         .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)
         .scale(1 / 255.0)
-        .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
+        .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD)
         .sink("torch")
     )
 
@@ -584,7 +584,7 @@ def run_inference_serving(
         .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)
         .scale(1 / 255.0)
-        .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
+        .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD)
         .sink("torch")
     )
 

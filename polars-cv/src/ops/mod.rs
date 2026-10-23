@@ -754,19 +754,21 @@ mod tests {
     }
 
     #[test]
-    fn normalize_statistics_belong_to_the_preset_only() {
+    fn normalize_statistics_belong_to_normalize_preset() {
+        // `normalize` has no statistics to be given: the field is unknown.
+        let err = parse_err(json!({"op": "normalize", "method": "minmax", "mean": [0.5]}));
+        assert!(err.contains("mean"), "{err}");
         let resolve =
             |v: serde_json::Value| parse(v).unwrap().resolve(0, &ParamCtx::empty()).map(|_| ());
-        let err = resolve(json!({"op": "normalize", "method": "minmax",
-                                 "mean": [0.5], "std": [0.5]}))
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("only valid for method='preset'"), "{err}");
-        let err = resolve(json!({"op": "normalize", "method": "preset", "mean": [0.5]}))
+        let err = resolve(json!({"op": "normalize_preset", "mean": [0.5], "std": [0.5, 0.5]}))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("requires both"), "{err}");
+        assert!(
+            err.contains("mean length (1) must match std length (2)"),
+            "{err}"
+        );
         assert!(resolve(json!({"op": "normalize", "method": "zscore"})).is_ok());
+        assert!(resolve(json!({"op": "normalize_preset", "mean": [0.5], "std": [0.5]})).is_ok());
     }
 
     #[test]
