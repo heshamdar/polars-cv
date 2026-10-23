@@ -3605,13 +3605,11 @@ class _OpsMixin:
 
 
 class _LazyOpsMixin:
-    """The generated binary-op methods ``LazyPipelineExpr`` inherits."""
+    """The generated ``lazy_only`` op methods ``LazyPipelineExpr`` inherits."""
 
     if TYPE_CHECKING:
 
-        def _binary_op(
-            self, op: str, field: str, other: LazyPipelineExpr
-        ) -> LazyPipelineExpr: ...
+        def _node_op(self, op: str, values: dict[str, Any]) -> LazyPipelineExpr: ...
 
     def add(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise addition with another array.
@@ -3631,7 +3629,27 @@ class _LazyOpsMixin:
             >>> result = a.add(b).sink("numpy")
             ```
         """
-        return self._binary_op("add", "other", other)
+        return self._node_op("add", {"other": other})
+
+    def apply_mask(
+        self, mask: LazyPipelineExpr, *, invert: BoolOrExpr = False
+    ) -> LazyPipelineExpr:
+        """Weigh this image by a mask.
+
+        The mask's own dtype says its scale, whatever the image's: a u8 mask
+        weighs each pixel by ``m / 255`` (a ``rasterize`` or ``threshold``
+        mask: 255 keeps, 0 hides), a float mask by ``m`` in ``[0, 1]``. The
+        result keeps the image's dtype. A mask of any other dtype is refused;
+        cast or scale it first. A single-channel mask spreads over the
+        image's channels.
+
+        Domain: buffer → buffer
+
+        Args:
+            mask: The mask's node.
+            invert: If True, invert the mask (keep exterior, zero interior).
+        """
+        return self._node_op("apply_mask", {"mask": mask, "invert": invert})
 
     def bitwise_and(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise AND: for binary masks (0/255), the intersection.
@@ -3648,7 +3666,7 @@ class _LazyOpsMixin:
             >>> result = a.bitwise_and(b).sink("numpy")
             ```
         """
-        return self._binary_op("bitwise_and", "other", other)
+        return self._node_op("bitwise_and", {"other": other})
 
     def bitwise_or(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise OR: for binary masks (0/255), the union.
@@ -3665,7 +3683,7 @@ class _LazyOpsMixin:
             >>> result = a.bitwise_or(b).sink("numpy")
             ```
         """
-        return self._binary_op("bitwise_or", "other", other)
+        return self._node_op("bitwise_or", {"other": other})
 
     def bitwise_xor(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise XOR: for binary masks (0/255), the symmetric
@@ -3683,7 +3701,7 @@ class _LazyOpsMixin:
             >>> result = a.bitwise_xor(b).sink("numpy")
             ```
         """
-        return self._binary_op("bitwise_xor", "other", other)
+        return self._node_op("bitwise_xor", {"other": other})
 
     def blend(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Normalized blend (element-wise), for image blending/compositing.
@@ -3703,7 +3721,33 @@ class _LazyOpsMixin:
             >>> result = a.blend(b).sink("numpy")
             ```
         """
-        return self._binary_op("blend", "other", other)
+        return self._node_op("blend", {"other": other})
+
+    def channel_merge(self, *others: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Join this buffer's channels with the operands', in order.
+
+        Each ``[H, W]`` operand brings one channel and each ``[H, W, C]``
+        operand its ``C``: an RGB image and an ``[H, W]`` mask give RGBA, and
+        single channels stack into a multi-channel image (the inverse of
+        ``Pipeline.channel_select``). Every operand has this buffer's
+        height, width and dtype.
+
+        Domain: buffer → buffer
+
+        Args:
+            others: The other operands' nodes (``[H, W]`` or ``[H, W, C]``), in channel
+                order after this one.
+
+        Example:
+            ```python
+            >>> photo = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+            >>> alpha = photo.pipe(Pipeline().grayscale())
+            >>> rgba = photo.channel_merge(alpha)
+            >>> sel = lambda i: photo.channel_select(i)
+            >>> bgr = sel(2).channel_merge(sel(1), sel(0))
+            ```
+        """
+        return self._node_op("channel_merge", {"others": list(others)})
 
     def difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside this set and not *other*: this contour set's regions with *other*'s cut away.
@@ -3730,7 +3774,7 @@ class _LazyOpsMixin:
             >>> same = pl.col("pred").contour.difference(pl.col("truth"))
             ```
         """
-        return self._binary_op("difference", "other", other)
+        return self._node_op("difference", {"other": other})
 
     def divide(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise true division, into a float.
@@ -3753,7 +3797,7 @@ class _LazyOpsMixin:
             >>> result = a.divide(b).sink("numpy")
             ```
         """
-        return self._binary_op("divide", "other", other)
+        return self._node_op("divide", {"other": other})
 
     def intersection(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside both: where this contour set's regions overlap *other*'s.
@@ -3780,7 +3824,7 @@ class _LazyOpsMixin:
             >>> same = pl.col("pred").contour.intersection(pl.col("truth"))
             ```
         """
-        return self._binary_op("intersection", "other", other)
+        return self._node_op("intersection", {"other": other})
 
     def masked_select(self, mask: LazyPipelineExpr) -> LazyPipelineExpr:
         """The values of this image where a mask is set, as a 1-D buffer of the
@@ -3801,7 +3845,7 @@ class _LazyOpsMixin:
         Example:
             >>> heat.masked_select(breast).pipe(Pipeline().histogram(bins=32))
         """
-        return self._binary_op("masked_select", "mask", mask)
+        return self._node_op("masked_select", {"mask": mask})
 
     def maximum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise maximum of two arrays, for compositing, clamping and
@@ -3819,7 +3863,7 @@ class _LazyOpsMixin:
             >>> result = a.maximum(b).sink("numpy")
             ```
         """
-        return self._binary_op("maximum", "other", other)
+        return self._node_op("maximum", {"other": other})
 
     def minimum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise minimum of two arrays, for compositing, clamping and
@@ -3837,7 +3881,7 @@ class _LazyOpsMixin:
             >>> result = a.minimum(b).sink("numpy")
             ```
         """
-        return self._binary_op("minimum", "other", other)
+        return self._node_op("minimum", {"other": other})
 
     def multiply(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise multiplication.
@@ -3858,7 +3902,96 @@ class _LazyOpsMixin:
             >>> result = a.multiply(b).sink("numpy")
             ```
         """
-        return self._binary_op("multiply", "other", other)
+        return self._node_op("multiply", {"other": other})
+
+    def normalize_percentile_masked(
+        self,
+        mask: LazyPipelineExpr,
+        *,
+        low: FloatOrThisOrExpr,
+        high: FloatOrThisOrExpr,
+        out_dtype: str | None = None,
+    ) -> LazyPipelineExpr:
+        """``normalize_percentile`` with its window from the pixels a mask
+        selects: the ``low`` and ``high`` percentiles of the masked values
+        (a lesion's 1st-99th) mapped to [0, 1] across the whole image,
+        clipped outside it.
+
+        A pixel counts where the mask (u8 or float, ``[H, W]`` or
+        ``[H, W, 1]`` of the image's size) is > 0, every channel together,
+        as ``masked_select`` selects it. A constant selection gives the empty
+        window's zeros, and no selected pixel an unknown (NaN) window, as
+        ``normalize_percentile`` over the same values.
+
+        Domain: buffer → buffer
+
+        Args:
+            mask: The mask's node.
+            low: The window's lower percentile, in [0, 100]. Accepts a Polars
+                expression.
+            high: The window's upper percentile, in [0, 100] and above ``low``. Accepts
+                a Polars expression.
+            out_dtype: Output dtype (default f32), as ``normalize``'s.
+
+        Example:
+            >>> ct.normalize_percentile_masked(lesion, low=1.0, high=99.0)
+        """
+        return self._node_op(
+            "normalize_percentile_masked",
+            {"mask": mask, "low": low, "high": high, "out_dtype": out_dtype},
+        )
+
+    def reduce_masked(
+        self,
+        mask: LazyPipelineExpr,
+        *,
+        reduction: str | pl.Expr = "mean",
+        axis: int | None = None,
+    ) -> LazyPipelineExpr:
+        """Reduce this image over the pixels a mask selects: all of them (one
+        value), or along ``axis`` 0 (one value per column) or 1 (per row).
+
+        A pixel counts where the mask (u8 or float, ``[H, W]`` or
+        ``[H, W, 1]`` of the image's size) is > 0, so ``apply_mask``'s
+        zeros are not counted. Channels are reduced together, or kept along
+        an axis. A line with no masked pixel is NaN (0 for "sum" and
+        "count"). Over every masked pixel (``axis=None``) it is
+        ``masked_select(mask)`` then ``reduce(reduction)``, which it runs.
+
+        Domain: buffer → buffer
+
+        Args:
+            mask: The mask's node.
+            reduction: The reduction: "sum", "mean" (default), "min", "max", "std",
+                "median", "count", or a percentile "pNN" ("p90", "p62.5").
+            axis: None for one value over every masked pixel, 0 for one per column, 1
+                for one per row. It fixes the output rank, so it is literal-only.
+
+        Example:
+            >>> heat.reduce_masked(breast, reduction="median", axis=1)  # per-row median
+        """
+        return self._node_op(
+            "reduce_masked", {"mask": mask, "reduction": reduction, "axis": axis}
+        )
+
+    def resize_like(
+        self, like: LazyPipelineExpr, *, filter: str | pl.Expr = "lanczos3"
+    ) -> LazyPipelineExpr:
+        """Resize this image onto another node's grid: to that buffer's height
+        and width, row by row, keeping this image's channels and dtype (a
+        heatmap and the image it came from, compared cell by cell).
+
+        Domain: buffer → buffer
+
+        Args:
+            like: The node whose height and width this image takes.
+            filter: Resampling filter, as ``resize``'s (default "lanczos3"; "area" when
+                shrinking by a large factor).
+
+        Example:
+            >>> img.resize_like(heat, filter="area")
+        """
+        return self._node_op("resize_like", {"like": like, "filter": filter})
 
     def subtract(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise subtraction.
@@ -3878,7 +4011,7 @@ class _LazyOpsMixin:
             >>> result = a.subtract(b).sink("numpy")
             ```
         """
-        return self._binary_op("subtract", "other", other)
+        return self._node_op("subtract", {"other": other})
 
     def symmetric_difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside exactly one: where this contour set's regions and *other*'s do not overlap.
@@ -3905,7 +4038,7 @@ class _LazyOpsMixin:
             >>> same = pl.col("pred").contour.symmetric_difference(pl.col("truth"))
             ```
         """
-        return self._binary_op("symmetric_difference", "other", other)
+        return self._node_op("symmetric_difference", {"other": other})
 
     def union(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside either: the union of this contour set's regions and *other*'s.
@@ -3932,7 +4065,7 @@ class _LazyOpsMixin:
             >>> same = pl.col("pred").contour.union(pl.col("truth"))
             ```
         """
-        return self._binary_op("union", "other", other)
+        return self._node_op("union", {"other": other})
 
 
 class _ContourOpsMixin:

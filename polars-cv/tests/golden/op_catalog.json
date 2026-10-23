@@ -161,7 +161,7 @@
     "name": "apply_mask",
     "python": "apply_mask",
     "visibility": "lazy_only",
-    "doc": "Weigh this image by a mask: a u8 mask by ``m / 255``, a float one by\n``m`` in ``[0, 1]``, keeping the image's dtype; other mask dtypes are\nrefused.",
+    "doc": "Weigh this image by a mask.\n\nThe mask's own dtype says its scale, whatever the image's: a u8 mask\nweighs each pixel by ``m / 255`` (a ``rasterize`` or ``threshold``\nmask: 255 keeps, 0 hides), a float mask by ``m`` in ``[0, 1]``. The\nresult keeps the image's dtype. A mask of any other dtype is refused;\ncast or scale it first. A single-channel mask spreads over the\nimage's channels.",
     "fields": [
       {
         "name": "mask",
@@ -495,7 +495,7 @@
     "name": "channel_merge",
     "python": "channel_merge",
     "visibility": "lazy_only",
-    "doc": "Join this buffer's channels with the operands', in order.\n\nEach ``[H, W]`` input brings one channel and each ``[H, W, C]`` input\nits ``C``: an RGB image and an ``[H, W]`` mask give RGBA. Every input\nhas the same height, width and dtype.",
+    "doc": "Join this buffer's channels with the operands', in order.\n\nEach ``[H, W]`` operand brings one channel and each ``[H, W, C]``\noperand its ``C``: an RGB image and an ``[H, W]`` mask give RGBA, and\nsingle channels stack into a multi-channel image (the inverse of\n``Pipeline.channel_select``). Every operand has this buffer's\nheight, width and dtype.\n\nExample:\n    ```python\n    >>> photo = pl.col(\"img\").cv.pipe(Pipeline().source(\"image_bytes\"))\n    >>> alpha = photo.pipe(Pipeline().grayscale())\n    >>> rgba = photo.channel_merge(alpha)\n    >>> sel = lambda i: photo.channel_select(i)\n    >>> bgr = sel(2).channel_merge(sel(1), sel(0))\n    ```",
     "fields": [
       {
         "name": "others",

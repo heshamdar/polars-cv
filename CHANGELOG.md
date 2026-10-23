@@ -205,9 +205,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
-- A generated lazy method for a one-operand graph op sent its operand as
-  `other` whatever the op named it; `_binary_op` now takes the field name the
-  catalogue gives (`masked_select`'s is `mask`).
+- Every `lazy_only` op's `LazyPipelineExpr` method is generated from the
+  catalogue: `apply_mask`, `channel_merge`, `reduce_masked`,
+  `normalize_percentile_masked` and `resize_like` were written by hand, and
+  their annotations had drifted from the Rust definitions (`low`/`high`
+  typed narrower than `normalize_percentile`'s). Their signatures, defaults
+  and docstrings now come from Rust, and each operand is sent under the
+  field name the catalogue gives (a generated method used to send it as
+  `other`, whatever the op named it).
 
 - **A server that ignores `Range`** sent the whole object to a header read;
   with no header in it, the object was then fetched a second time. A body

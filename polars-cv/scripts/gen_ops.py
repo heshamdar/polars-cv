@@ -26,12 +26,12 @@ compiled extension, so it runs without a build. It writes:
   and docstring the Rust definition declares. ``Pipeline`` inherits it. A
   ``lazy_only`` op (one combining this expression with other graph nodes) has
   no ``Pipeline`` method: its builder is ``LazyPipelineExpr``'s, which owns the
-  graph wiring, and ``test_every_lazy_only_op_is_a_lazy_method_with_its_fields``
-  pins that method to the op's fields;
-- ``_LazyOpsMixin``: that lazy method, for each ``lazy_only`` op whose one
-  field is the other operand's node (the element-wise binary ops), all built by
-  ``LazyPipelineExpr._binary_op``. ``LazyPipelineExpr`` inherits it; the
-  multi-operand ``lazy_only`` ops stay hand-written there;
+  graph wiring;
+- ``_LazyOpsMixin``: that lazy method, for every ``lazy_only`` op: its node
+  fields positional ``LazyPipelineExpr`` operands, every other field
+  keyword-only with the type and default a ``Pipeline`` method would have,
+  all built by ``LazyPipelineExpr._node_op``. ``LazyPipelineExpr`` inherits
+  it;
 - ``_ContourOpsMixin``, ``_PointOpsMixin``, ``_BBoxOpsMixin``: every
   ``.contour``/``.point``/``.bbox`` accessor method, from
   ``tests/golden/geom_catalog.json`` (the Rust ``geom_fns`` definitions, pinned
@@ -433,14 +433,41 @@ def is_binary(op: dict[str, Any]) -> bool:
 
 
 def lazy_method(op: dict[str, Any]) -> str:
-    """Render one binary op's ``LazyPipelineExpr`` method."""
-    (field,) = op["fields"]
-    name = field["name"]
+    """Render one ``lazy_only`` op's ``LazyPipelineExpr`` method.
+
+    The signature rule: each node field is a positional-or-keyword
+    ``LazyPipelineExpr`` (a list of nodes, ``*others``), in declaration
+    order; every other field is keyword-only, typed and defaulted as a
+    ``Pipeline`` method's (:func:`method`).
+    """
+    reads_buffer = any(d["input"] == "buffer" for d in op["domains"])
+    params, values, rest = ["self"], [], []
+    variadic = False
+    for field in op["fields"]:
+        name, ty = field["name"], field["type"]
+        if ty["kind"] == "node":
+            params.append(f"{name}: LazyPipelineExpr")
+            values.append(f'"{name}": {name}')
+        elif ty["kind"] in ("array", "list") and ty["inner"]["kind"] == "node":
+            params.append(f"*{name}: LazyPipelineExpr")
+            values.append(f'"{name}": list({name})')
+            variadic = True
+        else:
+            rest.append(field)
+    if rest and not variadic:
+        params.append("*")
+    for field in rest:
+        text = f"{field['name']}: {annotation(field['type'], op=reads_buffer)}"
+        default = _default(field)
+        if default is not None:
+            text += f" = {default}"
+        params.append(text)
+        values.append(f'"{field["name"]}": {field["name"]}')
     doc = _indent(docstring(op), "        ").lstrip()
     return (
-        f"    def {op['python']}(self, {name}: LazyPipelineExpr) -> LazyPipelineExpr:\n"
+        f"    def {op['python']}({', '.join(params)}) -> LazyPipelineExpr:\n"
         f'        """{doc}\n        """\n'
-        f'        return self._binary_op("{op["name"]}", "{name}", {name})\n'
+        f'        return self._node_op("{op["name"]}", {{{", ".join(values)}}})\n'
     )
 
 
@@ -548,7 +575,9 @@ def render(
     methods = source_method(io) + "\n".join(
         method(op) for op in catalog if op["visibility"] != "lazy_only"
     )
-    lazy_methods = "\n".join(lazy_method(op) for op in catalog if is_binary(op))
+    lazy_methods = "\n".join(
+        lazy_method(op) for op in catalog if op["visibility"] == "lazy_only"
+    )
     geom_methods = geom_mixins(geom, catalog)
     # Every enum this module defines, by name: `__all__` is read from the same
     # list that writes the classes, which is what `_types` re-exports.
@@ -609,9 +638,9 @@ def render(
         + "        def _with_source(self, format: str, values: dict[str, Any]) -> Pipeline: ...\n\n"
         + methods
         + "\n\nclass _LazyOpsMixin:\n"
-        + '    """The generated binary-op methods ``LazyPipelineExpr`` inherits."""\n\n'
+        + '    """The generated ``lazy_only`` op methods ``LazyPipelineExpr`` inherits."""\n\n'
         + "    if TYPE_CHECKING:\n\n"
-        + "        def _binary_op(\n            self, op: str, field: str, other: LazyPipelineExpr\n        ) -> LazyPipelineExpr: ...\n\n"
+        + "        def _node_op(\n            self, op: str, values: dict[str, Any]\n        ) -> LazyPipelineExpr: ...\n\n"
         + lazy_methods
         + "\n\n"
         + geom_methods

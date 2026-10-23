@@ -1257,9 +1257,8 @@ class Pipeline(_OpsMixin):
     ) -> None:
         """Append a ``lazy_only`` op — one reading other graph nodes — in place.
 
-        Used by the ``LazyPipelineExpr`` methods that combine expressions
-        (the binary ops, ``apply_mask``, ``channel_merge``) on a pipeline they
-        have already cloned. Each field is encoded by its catalogue type, as
+        Used by ``LazyPipelineExpr._node_op``, which every generated
+        ``lazy_only`` method calls, on a pipeline it has already cloned. Each field is encoded by its catalogue type, as
         :meth:`_append_typed` does: an operand expression becomes its node id,
         and any other value (e.g. ``apply_mask(invert=)``) may be per-row.
 

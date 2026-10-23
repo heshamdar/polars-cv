@@ -503,12 +503,15 @@ documented alongside it.
    test -p polars-cv catalog_matches`), regenerate the builder (`python
    scripts/gen_ops.py`) and `maturin develop`. The generated method appends
    through `Pipeline._append_typed` → `_push` → `Plan.push`, the only way in. The same run writes the matching `LazyPipelineExpr` method into
-   `_lazy_forwarders.py` from the built `Pipeline`, and a `lazy_only` binary
-   op's into `_LazyOpsMixin` — do **not** hand-mirror either. Hand-written `Pipeline` methods are for sugar over generated
+   `_lazy_forwarders.py` from the built `Pipeline`, and every `lazy_only`
+   op's (node fields as `LazyPipelineExpr` operands, the rest typed and
+   defaulted as for `Pipeline`) into `_LazyOpsMixin` — do **not** hand-mirror
+   either. Hand-written `Pipeline` methods are for sugar over generated
    ones (`flip_h`, `sobel`, …), each declaring the ops it lowers to with
    `@_sugar(...)` (its `Domain:` line is composed from them, and
-   `test_sugar_appends_exactly_the_ops_it_declares` holds it to them), and
-   the `lazy_only` ops on `LazyPipelineExpr`.
+   `test_sugar_appends_exactly_the_ops_it_declares` holds it to them); a
+   `lazy_only` op is never hand-written on `LazyPipelineExpr`
+   (`test_every_lazy_only_op_is_a_generated_lazy_method`).
 4. Write tests covering both unit (builder validation) and integration (actual execution) cases.
 
 **What makes an op "not implemented properly" here is not style, it is
