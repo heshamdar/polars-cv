@@ -1131,11 +1131,33 @@
     "width",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "crop_clip": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ],
    [
-    "bounds",
+    "top",
     "KEYWORD_ONLY",
-    "'error'"
+    "0"
+   ],
+   [
+    "left",
+    "KEYWORD_ONLY",
+    "0"
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "crop_pad": [
@@ -3069,11 +3091,33 @@
     "width",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "crop_clip": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ],
    [
-    "bounds",
+    "top",
     "KEYWORD_ONLY",
-    "'error'"
+    "0"
+   ],
+   [
+    "left",
+    "KEYWORD_ONLY",
+    "0"
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "crop_pad": [

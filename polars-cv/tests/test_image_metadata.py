@@ -322,6 +322,6 @@ class TestSignedMetadata:
         with pytest.raises(pl.exceptions.ComputeError) as err:
             df.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
         msg = str(err.value)
-        assert "crop: left = -1 is negative" in msg
+        assert "crop: left: " in msg and "-1 cannot be negative" in msg
         assert_names_row(msg, 0, 1)
         assert "4294967295.." not in msg

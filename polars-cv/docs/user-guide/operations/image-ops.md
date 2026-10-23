@@ -101,18 +101,19 @@ must lie inside the image: a negative bound, or a window that runs past the
 edge, is an error (a per-row error when it comes from a column, so `on_error`
 applies) rather than being clamped to a smaller region.
 
-Strips, tiles and sliding windows near a border say what they want instead
-(offsets may then be negative): `bounds="clip"` keeps the part inside the
-image, and `crop_pad` keeps the requested size, filling outside with `value`:
+Strips, tiles and sliding windows near a border say what they want with an
+op of their own (offsets may then be negative): `crop_clip` keeps the part
+inside the image, and `crop_pad` keeps the requested size, filling outside
+with `value`:
 
 ```python
 # The part of the window inside the image: narrower near the right edge.
-Pipeline().source("image_bytes").crop(top=0, left=8, width=24, bounds="clip")
+Pipeline().source("image_bytes").crop_clip(top=0, left=8, width=24)
 # Always 12 x 24, filled with 0 outside the image.
 Pipeline().source("image_bytes").crop_pad(top=0, left=8, height=12, width=24, value=0)
 ```
 
-`bounds="clip"` refuses a window with nothing inside the image. `crop_pad`
+`crop_clip` refuses a window with nothing inside the image. `crop_pad`
 takes any window, even one entirely outside (all fill), and its size is known
 to the lazy schema.
 

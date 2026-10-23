@@ -62,10 +62,14 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
         ),
         ViewOp::Flip { when: false, .. } => buf,
         ViewOp::Flip { .. } => buf.flip(&op.axes()),
-        // `ViewExpr::apply_op` places every crop in its input and applies it
-        // as a slice (and a padded one's `pad`), so none reaches here.
-        ViewOp::Crop { .. } | ViewOp::CropPad { .. } | ViewOp::Slice { .. } => {
-            unreachable!("crops are placed as slices by ViewExpr::apply_op")
+        // A crop and a slice are their window (above). `ViewExpr::apply_op`
+        // places a clipped or padded crop in its input as a slice (and a
+        // padded one's `pad`), so neither reaches here.
+        ViewOp::Crop { .. } | ViewOp::Slice { .. } => {
+            unreachable!("a crop or slice runs as its window above")
+        }
+        ViewOp::CropClip { .. } | ViewOp::CropPad { .. } => {
+            unreachable!("clipped and padded crops are placed as slices by ViewExpr::apply_op")
         }
         ViewOp::Rotate90 => {
             // Rotate90: transpose [1,0] then flip axis 1 (width)

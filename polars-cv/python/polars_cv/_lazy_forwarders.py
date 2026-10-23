@@ -289,15 +289,30 @@ class _LazyForwardersMixin:
         left: IntOrThisOrExpr = 0,
         height: IntOrThisOrExpr | None = None,
         width: IntOrThisOrExpr | None = None,
-        bounds: str = "error",
     ) -> LazyPipelineExpr:
-        """Extract a rectangular region.
+        """Extract a rectangular region inside the input.
 
         Lazy form of :meth:`Pipeline.crop` on this expression's output.
         """
         return self.pipe(
-            self._continuation().crop(
-                top=top, left=left, height=height, width=width, bounds=bounds
+            self._continuation().crop(top=top, left=left, height=height, width=width)
+        )
+
+    def crop_clip(
+        self,
+        *,
+        top: IntOrThisOrExpr = 0,
+        left: IntOrThisOrExpr = 0,
+        height: IntOrThisOrExpr | None = None,
+        width: IntOrThisOrExpr | None = None,
+    ) -> LazyPipelineExpr:
+        """Extract the part of a window that lies inside the input: strips, tiles
+
+        Lazy form of :meth:`Pipeline.crop_clip` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().crop_clip(
+                top=top, left=left, height=height, width=width
             )
         )
 

@@ -2,61 +2,52 @@
 
 use crate::core::dtype::OutputDTypeRule;
 use crate::mode::{known, size, Exec, Mode};
-use crate::ops::shape_rule::{resolve_axis, OpShape, Sym};
+use crate::ops::shape_rule::{place_axis, resolve_axis, OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use polars_cv_macros::{Ops, Resolve};
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
-/// What a crop keeps of a window reaching past the input's edge. Padding it
-/// to its requested size is its own op, [`ViewOp::CropPad`], whose fill and
-/// size are fields it always reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum CropBounds {
-    /// Refuse the row.
-    Error,
-    /// Keep the part of the window inside the input (it may be smaller).
-    Clip,
-}
-
-crate::naming::named_variants!(CropBounds: "What a crop keeps of a window reaching past the input's edge (``crop_pad`` pads it to its size instead).\n\n- ERROR: refuse the row (default)\n- CLIP: keep the part inside the input, which may be smaller than asked" {
-    "error" => Error,
-    "clip" => Clip,
-});
 
 /// The view ops: zero-copy layout changes. One variant per wire op (see
 /// `crate::mode`), plus the engine-internal N-D `Slice` and lattice rotations.
 #[derive(Debug, Clone, PartialEq, Ops, Resolve)]
 pub enum ViewOp<M: Mode = Exec> {
-    /// Extract a rectangular region.
+    /// Extract a rectangular region inside the input.
     ///
-    /// A window reaching past the input's edge is refused by default;
-    /// ``bounds="clip"`` keeps the part inside the input (strips, tiles and
-    /// sliding windows near a border), where offsets may be negative.
-    /// ``crop_pad`` keeps the requested size instead.
-    ///
-    /// Example:
-    ///     >>> pipe = Pipeline().source("image_bytes").crop(left=8, width=24, bounds="clip")
-    #[op(name = "crop", sample = {"top": 1, "left": 1, "height": 2, "width": 2,
-                                  "bounds": "error"})]
+    /// A window reaching past the input's edge is refused. ``crop_clip``
+    /// keeps the part of such a window inside the input, and ``crop_pad``
+    /// keeps its requested size, filled outside.
+    #[op(name = "crop", sample = {"top": 1, "left": 1, "height": 2, "width": 2})]
     Crop {
-        /// Top offset; negative only with ``bounds="clip"``.
+        /// Top offset.
         #[param(default = 0)]
-        top: M::V<i64>,
-        /// Left offset; negative only with ``bounds="clip"``.
+        top: M::V<u32>,
+        /// Left offset.
         #[param(default = 0)]
-        left: M::V<i64>,
+        left: M::V<u32>,
         /// Crop height (None = to end).
         height: Option<M::V<u32>>,
         /// Crop width (None = to end).
         width: Option<M::V<u32>>,
-        /// What a window past the input's edge keeps: "error" (default) or
-        /// "clip".
-        #[param(default = "error")]
-        bounds: M::L<CropBounds>,
+    },
+    /// Extract the part of a window that lies inside the input: strips, tiles
+    /// and sliding windows near a border. Offsets may be negative, and the
+    /// output is smaller than asked where the window reaches past the edge; a
+    /// window with nothing inside the input is refused.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").crop_clip(left=8, width=24)
+    #[op(name = "crop_clip", sample = {"top": -1, "left": 1, "height": 4, "width": 2})]
+    CropClip {
+        /// Top offset; may be negative.
+        #[param(default = 0)]
+        top: M::V<i64>,
+        /// Left offset; may be negative.
+        #[param(default = 0)]
+        left: M::V<i64>,
+        /// Window height (None = to end).
+        height: Option<M::V<u32>>,
+        /// Window width (None = to end).
+        width: Option<M::V<u32>>,
     },
     /// Extract a ``height`` x ``width`` window at its requested size, filling
     /// what lies outside the input with ``value``: the in-bounds crop
@@ -162,15 +153,9 @@ fn axes_of<M: Mode>(axes: &[M::L<u32>]) -> Vec<usize> {
     axes.iter().map(|a| M::lit(a) as usize).collect()
 }
 
-/// An unclipped crop's offset as a start index. A negative one is refused by
-/// `check` (per row, once it is resolved) before any rule reads it.
-fn offset<M: Mode>(value: &M::V<i64>) -> Sym<usize> {
-    M::sym(value).map(|n| usize::try_from(n).unwrap_or(0))
-}
-
-/// Where a crop falls in a concrete input: the in-bounds `start..end` per
-/// axis (as [`ViewOp::Slice`] takes it), and for [`ViewOp::CropPad`] the
-/// padding around it.
+/// Where a clipped or padded crop falls in a concrete input: the in-bounds
+/// `start..end` per axis (as [`ViewOp::Slice`] takes it), and for
+/// [`ViewOp::CropPad`] the padding around it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Placement {
     pub start: Vec<usize>,
@@ -179,31 +164,17 @@ pub struct Placement {
     pub pad: Option<(u32, u32, u32, u32, f32)>,
 }
 
-/// One axis of a clipped or padded window: `origin` and `extent` (to the
-/// end when `None`) against an axis of `dim`. Returns the in-bounds
-/// `lo..hi` and the padding before and after it.
-fn place_axis(origin: i64, extent: Option<u32>, dim: usize) -> (usize, usize, u32, u32) {
-    let dim_i = dim as i64;
-    let end = extent.map_or(dim_i, |e| origin + i64::from(e));
-    let lo = origin.clamp(0, dim_i);
-    let hi = end.clamp(lo, dim_i);
-    let total = end - origin;
-    let before = (-origin).clamp(0, total.max(0));
-    let after = total - before - (hi - lo);
-    (lo as usize, hi as usize, before as u32, after.max(0) as u32)
-}
-
 impl ViewOp {
-    /// Where this crop falls in an input of `shape` (validated to have an
-    /// image plane); `None` for any other op.
+    /// Where this clipped or padded crop falls in an input of `shape`
+    /// (validated to have an image plane), by [`place_axis`]; `None` for any
+    /// other op.
     pub fn place(&self, shape: &[usize]) -> Option<Placement> {
         let (top, left, height, width, fill) = match self {
-            ViewOp::Crop {
+            ViewOp::CropClip {
                 top,
                 left,
                 height,
                 width,
-                ..
             } => (*top, *left, *height, *width, None),
             ViewOp::CropPad {
                 top,
@@ -215,8 +186,13 @@ impl ViewOp {
             _ => return None,
         };
         let (h, w) = (shape.first().copied()?, shape.get(1).copied()?);
-        let (t0, t1, pt, pb) = place_axis(top, height, h);
-        let (l0, l1, pl, pr) = place_axis(left, width, w);
+        let at = |origin, extent: Option<u32>, dim| {
+            let (lo, hi, before, after) = place_axis(origin, extent.map(u64::from), dim);
+            // Within the window's own extent, a `u32`.
+            (lo, hi, before as u32, after as u32)
+        };
+        let (t0, t1, pt, pb) = at(top, height, h);
+        let (l0, l1, pl, pr) = at(left, width, w);
         let mut start = vec![0; shape.len()];
         let mut end = vec![usize::MAX; shape.len()];
         (start[0], end[0], start[1], end[1]) = (t0, t1, l0, l1);
@@ -232,22 +208,6 @@ impl<M: Mode> ViewOp<M> {
     /// parameters are independent (a permutation is checked against the
     /// input's rank by `validate`).
     pub fn check(&self) -> Result<(), String> {
-        let ViewOp::Crop {
-            top, left, bounds, ..
-        } = self
-        else {
-            return Ok(());
-        };
-        if M::lit(bounds) == CropBounds::Error {
-            for (name, offset) in [("top", top), ("left", left)] {
-                if let Some(n) = known::<M, i64>(offset).filter(|&n| n < 0) {
-                    return Err(format!(
-                        "crop: {name} = {n} is negative (must be >= 0 unless \
-                         bounds=\"clip\"; crop_pad pads a window past the edge)"
-                    ));
-                }
-            }
-        }
         Ok(())
     }
 
@@ -262,24 +222,26 @@ impl<M: Mode> ViewOp<M> {
                 left,
                 height,
                 width,
-                bounds,
-                ..
-            } => {
-                let len = [
+            } => OpShape::Crop {
+                start: vec![size::<M>(top), size::<M>(left), Sym::Known(0)],
+                len: vec![
                     height.as_ref().map(size::<M>),
                     width.as_ref().map(size::<M>),
-                ];
-                match M::lit(bounds) {
-                    CropBounds::Error => OpShape::Crop {
-                        start: vec![offset::<M>(top), offset::<M>(left), Sym::Known(0)],
-                        len: vec![len[0], len[1], None],
-                    },
-                    CropBounds::Clip => OpShape::ClipWindow {
-                        start: [M::sym(top), M::sym(left)],
-                        len,
-                    },
-                }
-            }
+                    None,
+                ],
+            },
+            ViewOp::CropClip {
+                top,
+                left,
+                height,
+                width,
+            } => OpShape::ClipWindow {
+                start: [M::sym(top), M::sym(left)],
+                len: [
+                    height.as_ref().map(size::<M>),
+                    width.as_ref().map(size::<M>),
+                ],
+            },
             ViewOp::CropPad { height, width, .. } => OpShape::SetHw {
                 h: size::<M>(height),
                 w: size::<M>(width),
@@ -332,15 +294,8 @@ impl<M: Mode> ViewOp<M> {
                 left,
                 height,
                 width,
-                bounds,
-                ..
             } => {
-                // A clipped window depends on the input's size:
-                // `ViewOp::place`.
-                if M::lit(bounds) != CropBounds::Error {
-                    return None;
-                }
-                let (top, left) = (offset::<M>(top), offset::<M>(left));
+                let (top, left) = (size::<M>(top), size::<M>(left));
                 let end_of = |origin: Sym<usize>, extent: &Option<M::V<u32>>| match extent {
                     None => Sym::Known(usize::MAX),
                     Some(extent) => match (origin, size::<M>(extent)) {
@@ -458,14 +413,12 @@ impl<M: Mode> Op for ViewOp<M> {
             ViewOp::Flip { .. } => require_axes(shape, &self.axes()),
             // Any window of the image plane, inside it or not.
             ViewOp::CropPad { .. } => crate::ops::validation::require_hw_or_hwc(shape),
-            ViewOp::Crop {
+            ViewOp::CropClip {
                 top,
                 left,
                 height,
                 width,
-                bounds,
-                ..
-            } if M::lit(bounds) != CropBounds::Error => {
+            } => {
                 // A clip must keep something of the image plane.
                 crate::ops::validation::require_hw_or_hwc(shape)?;
                 let axes = [(top, height), (left, width)];
@@ -479,7 +432,7 @@ impl<M: Mode> Op for ViewOp<M> {
                     ) else {
                         continue;
                     };
-                    let (lo, hi, _, _) = place_axis(origin, extent, dim);
+                    let (lo, hi, _, _) = place_axis(origin, extent.map(u64::from), dim);
                     if lo == hi {
                         let end = extent
                             .map_or("end".to_string(), |e| (origin + i64::from(e)).to_string());
@@ -610,6 +563,7 @@ impl<M: Mode> Op for ViewOp<M> {
             ViewOp::Reshape { .. } => "Reshape",
             ViewOp::Flip { .. } => "Flip",
             ViewOp::Crop { .. } | ViewOp::Slice { .. } => "Crop",
+            ViewOp::CropClip { .. } => "CropClip",
             ViewOp::CropPad { .. } => "CropPad",
             ViewOp::Rotate90 => "Rotate90",
             ViewOp::Rotate180 => "Rotate180",
@@ -652,9 +606,10 @@ impl<M: Mode> Op for ViewOp<M> {
             // row-major no-op), moves no data; `OpShape::preserves` decides
             // whether this one is. A clipped window keeps the shape only by
             // covering the whole input.
-            ViewOp::Crop { .. } | ViewOp::Slice { .. } | ViewOp::Reshape { .. } => {
-                IdentityRule::WhenShapePreserved
-            }
+            ViewOp::Crop { .. }
+            | ViewOp::CropClip { .. }
+            | ViewOp::Slice { .. }
+            | ViewOp::Reshape { .. } => IdentityRule::WhenShapePreserved,
             // Flip/transpose/rotate/channel-select move pixels or drop an axis
             // even when the shape is preserved (a square transpose, a 180°
             // rotate), so none is ever a no-op; a squeeze or expand_dims
@@ -672,10 +627,10 @@ impl<M: Mode> Op for ViewOp<M> {
 
     fn is_spatial_window(&self) -> bool {
         match self {
-            // A wire crop narrows only the H/W plane: a window. A padded one
-            // also fills outside the input, which a pointwise op moved ahead
-            // of it would not see: not a window.
-            ViewOp::Crop { .. } => true,
+            // A wire crop, clipped or not, narrows only the H/W plane: a
+            // window. A padded one also fills outside the input, which a
+            // pointwise op moved ahead of it would not see: not a window.
+            ViewOp::Crop { .. } | ViewOp::CropClip { .. } => true,
             ViewOp::CropPad { .. } => false,
             // A slice is a window only when it narrows the H/W plane and
             // leaves every further axis whole (`start == 0`, the `usize::MAX`
@@ -712,6 +667,7 @@ impl<M: Mode> Op for ViewOp<M> {
             | ViewOp::Reshape { .. }
             | ViewOp::Flip { .. }
             | ViewOp::Crop { .. }
+            | ViewOp::CropClip { .. }
             | ViewOp::CropPad { .. }
             | ViewOp::Slice { .. }
             | ViewOp::Rotate90
@@ -742,7 +698,9 @@ impl<M: Mode> Op for ViewOp<M> {
                 Some(new_strides)
             }
             ViewOp::CropPad { .. } => None,
-            ViewOp::Crop { .. } | ViewOp::Slice { .. } => Some(input_strides.to_vec()),
+            ViewOp::Crop { .. } | ViewOp::CropClip { .. } | ViewOp::Slice { .. } => {
+                Some(input_strides.to_vec())
+            }
             ViewOp::Rotate90 => {
                 if input_strides.len() >= 2 {
                     let mut new_strides = input_strides.to_vec();

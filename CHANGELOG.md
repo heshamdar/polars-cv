@@ -154,14 +154,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   RGBA). A decoded grayscale image is `[H, W, 1]`, so `reduce_mean(axis=0)`
   gave one-element lists without a `channel_select(0, keepdims=False)` after
   the decode.
-- **`crop(bounds="clip")` and `crop_pad(top=, left=, height=, width=,
-  value=0)`** for windows that reach past the image's edge, as strips, tiles
-  and sliding windows near a border do. `bounds="clip"` keeps the part inside
-  the image; `crop_pad` keeps the requested `height` x `width`, filling
+- **`crop_clip(top=, left=, height=, width=)` and `crop_pad(top=, left=,
+  height=, width=, value=0)`** for windows that reach past the image's edge,
+  as strips, tiles and sliding windows near a border do: one op per
+  behaviour beside `crop`, which still refuses such a window. `crop_clip`
+  keeps the part inside the image (a window with nothing inside is
+  refused); `crop_pad` keeps the requested `height` x `width`, filling
   outside with `value`, as the in-bounds crop followed by a constant `pad`.
-  `top` and `left` may be negative in either; the default,
-  `bounds="error"`, refuses a negative offset as `crop: top = -1 is negative
-  (...)` and a window past the edge as before. A window on a buffer with no
+  `top` and `left` may be negative in either. A window on a buffer with no
   image plane (1-D) is refused as the pipeline is built.
 - **`polars_cv.check_cloud_access(path, cloud_options=None)`** resolves the
   credential a read of `path` would use and exercises it once (a `HEAD`, or a

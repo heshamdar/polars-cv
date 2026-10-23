@@ -160,7 +160,6 @@ registry!(
     crate::ops::filter::BorderMode,
     crate::ops::pad::PadMode,
     crate::ops::pad::PadPosition,
-    crate::ops::view::CropBounds,
     crate::ops::phash::HashAlgorithm,
     crate::ops::histogram::HistogramOutput,
     crate::ops::histogram::HistogramClosed,
