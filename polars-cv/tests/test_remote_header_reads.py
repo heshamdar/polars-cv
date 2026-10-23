@@ -50,6 +50,8 @@ def server():
         "/late.jpg": _jpeg_behind_a_comment(33, 21),
         # No image header anywhere, and longer than the prefix.
         "/junk.bin": bytes(3 * PREFIX),
+        # Empty: no first byte for a range to start at.
+        "/empty.bin": b"",
     }
     log: list[tuple[str, str | None, int]] = []
     honour_range = {"on": True}
@@ -58,6 +60,14 @@ def server():
         def do_GET(self):  # noqa: N802
             body = files[self.path]
             rng = self.headers.get("Range")
+            if rng and honour_range["on"] and not body:
+                # RFC 9110: a range no byte of the representation satisfies.
+                log.append((self.path, rng, 416))
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */0")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if rng and honour_range["on"]:
                 start, end = (int(x) for x in rng.removeprefix("bytes=").split("-"))
                 part = body[start : end + 1]
@@ -139,3 +149,17 @@ def test_a_pipeline_still_reads_the_whole_object(server) -> None:
     )
     assert polars_cv.numpy_from_struct(out.item()).shape == (500, 600, 3)
     assert log == [("/big.png", None, len(files["/big.png"]))]
+
+
+def test_an_empty_object_reads_as_no_header(server) -> None:
+    """An empty remote object has no first byte, so a ranged read of it is
+    refused (HTTP 416, S3's ``InvalidRange``). That is not the object being
+    unreadable: it is read whole, and has no header, as an empty local file
+    has none."""
+    base, _, log, _ = server
+    log.clear()
+    assert _info(f"{base}/empty.bin") is None
+    assert log == [
+        ("/empty.bin", f"bytes=0-{PREFIX - 1}", 416),
+        ("/empty.bin", None, 0),
+    ]
