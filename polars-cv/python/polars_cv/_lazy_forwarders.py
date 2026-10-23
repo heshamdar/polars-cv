@@ -800,13 +800,6 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().reduce_mean(axis=axis))
 
-    def reduce_median(self, *, axis: int | None = None) -> LazyPipelineExpr:
-        """The median of all values, or along one axis: ``reduce_percentile(50)``.
-
-        Lazy form of :meth:`Pipeline.reduce_median` on this expression's output.
-        """
-        return self.pipe(self._continuation().reduce_median(axis=axis))
-
     def reduce_min(self, *, axis: int | None = None) -> LazyPipelineExpr:
         """Reduce buffer by computing the minimum value.
 
@@ -814,14 +807,12 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().reduce_min(axis=axis))
 
-    def reduce_percentile(
-        self, q: FloatOrThisOrExpr, *, axis: int | None = None
-    ) -> LazyPipelineExpr:
-        """Compute the q-th percentile of all values, or along one axis (linear
+    def reduce_percentile(self, q: FloatOrThisOrExpr) -> LazyPipelineExpr:
+        """Compute the q-th percentile of all values (linear interpolation, as
 
         Lazy form of :meth:`Pipeline.reduce_percentile` on this expression's output.
         """
-        return self.pipe(self._continuation().reduce_percentile(q=q, axis=axis))
+        return self.pipe(self._continuation().reduce_percentile(q=q))
 
     def reduce_popcount(self) -> LazyPipelineExpr:
         """Count set bits (1s) in the buffer.
@@ -839,12 +830,12 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().reduce_std(axis=axis, ddof=ddof))
 
-    def reduce_sum(self, *, axis: int | None = None) -> LazyPipelineExpr:
-        """Sum all elements in the buffer, or along one axis.
+    def reduce_sum(self) -> LazyPipelineExpr:
+        """Sum all elements in the buffer.
 
         Lazy form of :meth:`Pipeline.reduce_sum` on this expression's output.
         """
-        return self.pipe(self._continuation().reduce_sum(axis=axis))
+        return self.pipe(self._continuation().reduce_sum())
 
     def relu(self) -> LazyPipelineExpr:
         """Apply ReLU activation (max(0, x)): negative values become zero.

@@ -2523,18 +2523,6 @@ OPS: dict[str, OpSpec] = {
             note="the shared Reduction, every channel together",
         ),
         _spec(
-            "reduce_median",
-            ref=_scalar_result(lambda x, p: np.median(x.astype(np.float64))),
-            # As reduce_percentile, whose q=50 it is.
-            ref_accepts=lambda x, p: not np.isinf(x).any(),
-            tol=_stat_tol,
-            kind="global",
-            defines_non_finite=True,
-            domain_out="scalar",
-            terminal=True,
-            note="reduce_percentile(50)",
-        ),
-        _spec(
             "reduce_popcount",
             accepts=is_int,
             ref=_popcount_ref,

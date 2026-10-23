@@ -2033,18 +2033,6 @@
     "None"
    ]
   ],
-  "reduce_median": [
-   [
-    "self",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ],
-   [
-    "axis",
-    "KEYWORD_ONLY",
-    "None"
-   ]
-  ],
   "reduce_min": [
    [
     "self",
@@ -2067,11 +2055,6 @@
     "q",
     "POSITIONAL_OR_KEYWORD",
     ""
-   ],
-   [
-    "axis",
-    "KEYWORD_ONLY",
-    "None"
    ]
   ],
   "reduce_popcount": [
@@ -2103,11 +2086,6 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
-   ],
-   [
-    "axis",
-    "KEYWORD_ONLY",
-    "None"
    ]
   ],
   "relu": [
@@ -3874,18 +3852,6 @@
     "None"
    ]
   ],
-  "reduce_median": [
-   [
-    "self",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ],
-   [
-    "axis",
-    "KEYWORD_ONLY",
-    "None"
-   ]
-  ],
   "reduce_min": [
    [
     "self",
@@ -3908,11 +3874,6 @@
     "q",
     "POSITIONAL_OR_KEYWORD",
     ""
-   ],
-   [
-    "axis",
-    "KEYWORD_ONLY",
-    "None"
    ]
   ],
   "reduce_popcount": [
@@ -3944,11 +3905,6 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
-   ],
-   [
-    "axis",
-    "KEYWORD_ONLY",
-    "None"
    ]
   ],
   "relu": [

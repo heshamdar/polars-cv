@@ -30,7 +30,7 @@ pub enum Statistic {
     Count,
 }
 
-crate::naming::named_variants!(Statistic: "A named reduction of a set of pixel values to one (``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``\"pNN\"``: ``\"p90\"``, ``\"p62.5\"`` (its digits only; NumPy's linear interpolation).\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0)." {
+crate::naming::named_variants!(Statistic: "A named reduction of a set of pixel values to one (``reduce``, ``label_reduce``, ``reduce_masked``, ``block_reduce``). A percentile is spelled beside these as ``\"pNN\"``: ``\"p90\"``, ``\"p62.5\"`` (its digits only; NumPy's linear interpolation). An op that chooses a reduction takes one of these; an op that is a percentile (``reduce_percentile``, ``rank_filter``, ``normalize_percentile``) takes ``q`` instead.\n\n- SUM, MEAN, MIN, MAX\n- STD: population standard deviation\n- MEDIAN\n- COUNT: how many pixels\n\nOver no pixels each is NaN, except SUM and COUNT (0)." {
     "sum" => Sum,
     "mean" => Mean,
     "min" => Min,
@@ -440,13 +440,9 @@ pub enum ReductionOp<M: Mode = Exec> {
         #[param(default = 0)]
         ddof: M::V<u8>,
     },
-    /// Sum all elements in the buffer, or along one axis.
-    #[op(name = "reduce_sum", sample = {"axis": 1})]
-    Sum {
-        /// Axis to reduce along. None for global reduction. It fixes the
-        /// output rank, so it is literal-only.
-        axis: Option<M::L<u32>>,
-    },
+    /// Sum all elements in the buffer.
+    #[op(name = "reduce_sum", sample = {})]
+    Sum,
     /// Index of the maximum value along an axis.
     ///
     /// Unlike other reductions it always requires an axis: a global index
@@ -507,16 +503,13 @@ pub enum ReductionOp<M: Mode = Exec> {
         /// output rank, so it is literal-only.
         axis: Option<M::L<u32>>,
     },
-    /// Compute the q-th percentile of all values, or along one axis (linear
-    /// interpolation, as numpy's default).
-    #[op(name = "reduce_percentile", sample = {"q": 50.0, "axis": 0})]
+    /// Compute the q-th percentile of all values (linear interpolation, as
+    /// numpy's default). Along an axis, ``reduce("pNN", axis=)``.
+    #[op(name = "reduce_percentile", sample = {"q": 50.0})]
     Percentile {
         /// Percentile to compute, in [0, 100]. Accepts a Polars expression for
         /// per-row dynamic values.
         q: M::V<Percent>,
-        /// Axis to reduce along. None for global reduction. It fixes the
-        /// output rank, so it is literal-only.
-        axis: Option<M::L<u32>>,
     },
 }
 
@@ -537,7 +530,7 @@ impl<M: Mode> ReductionOp<M> {
             | ReductionOp::Percentile { .. }
             | ReductionOp::Min { .. }
             | ReductionOp::Mean { .. }
-            | ReductionOp::Sum { .. }
+            | ReductionOp::Sum
             | ReductionOp::Std { .. }
             | ReductionOp::ArgMax { .. }
             | ReductionOp::ArgMin { .. }
@@ -552,14 +545,15 @@ impl<M: Mode> ReductionOp<M> {
             ReductionOp::Max { axis }
             | ReductionOp::Min { axis }
             | ReductionOp::Mean { axis }
-            | ReductionOp::Sum { axis }
-            | ReductionOp::Percentile { axis, .. }
             | ReductionOp::By { axis, .. }
             | ReductionOp::Std { axis, .. } => axis.as_ref().map(|a| M::lit(a) as usize),
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => {
                 Some(M::lit(axis) as usize)
             }
-            ReductionOp::PopCount | ReductionOp::Blocks { .. } => None,
+            ReductionOp::Sum
+            | ReductionOp::PopCount
+            | ReductionOp::Percentile { .. }
+            | ReductionOp::Blocks { .. } => None,
         }
     }
 
@@ -609,8 +603,8 @@ impl ReductionOp {
             return self.execute_popcount(&contig);
         }
 
-        // A global percentile has special handling (needs sorting)
-        if let ReductionOp::Percentile { q, axis: None } = self {
+        // Percentile has special handling (needs selection)
+        if let ReductionOp::Percentile { q } = self {
             return self.execute_percentile(&contig, q.q());
         }
 
@@ -756,16 +750,7 @@ impl ReductionOp {
                 let std = variance.sqrt();
                 ViewBuffer::from_scalar(std)
             }
-            ReductionOp::Sum { axis: None } => {
-                // `+ 0.0`: a sum of nothing is +0, not `Sum`'s -0 identity.
-                let sum: f64 = 0.0
-                    + data
-                        .iter()
-                        .copied()
-                        .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
-                        .sum::<f64>();
-                ViewBuffer::from_scalar(sum)
-            }
+            ReductionOp::Sum => ViewBuffer::from_scalar(sum_f64(data)),
             // Axis-based reductions
             ReductionOp::Max { axis: Some(ax) } => {
                 self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
@@ -779,7 +764,7 @@ impl ReductionOp {
             }
             ReductionOp::Mean { axis: Some(ax) } => {
                 // For axis reduction, output is float
-                self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, |slice: &[T]| {
+                reduce_axis_to_f64::<T, _>(buffer, *ax as usize, |slice: &[T]| {
                     let sum: f64 = slice
                         .iter()
                         .copied()
@@ -793,7 +778,7 @@ impl ReductionOp {
                 ddof,
             } => {
                 let ddof_val = *ddof;
-                self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, move |slice: &[T]| {
+                reduce_axis_to_f64::<T, _>(buffer, *ax as usize, move |slice: &[T]| {
                     let n = slice.len() as f64;
                     let denominator = n - ddof_val as f64;
                     if denominator <= 0.0 {
@@ -817,26 +802,6 @@ impl ReductionOp {
                     variance.sqrt()
                 })
             }
-            ReductionOp::Sum { axis: Some(ax) } => {
-                self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, |slice: &[T]| {
-                    // As the global sum: nothing sums to +0.
-                    0.0 + slice
-                        .iter()
-                        .copied()
-                        .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
-                        .sum::<f64>()
-                })
-            }
-            ReductionOp::Percentile { q, axis: Some(ax) } => {
-                let q = q.q();
-                self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, move |slice: &[T]| {
-                    let mut values: Vec<f64> = slice
-                        .iter()
-                        .map(|&x| num_traits::NumCast::from(x).unwrap_or(f64::NAN))
-                        .collect();
-                    percentile_of(&mut values, q)
-                })
-            }
             ReductionOp::ArgMax { axis } => {
                 self.reduce_axis_argmax::<T>(buffer, *axis as usize, true)
             }
@@ -847,9 +812,7 @@ impl ReductionOp {
             ReductionOp::PopCount => unreachable!("PopCount is handled in execute()"),
             ReductionOp::Blocks { .. } => unreachable!("Blocks is handled in execute()"),
             ReductionOp::By { .. } => unreachable!("By is handled in execute()"),
-            ReductionOp::Percentile { axis: None, .. } => {
-                unreachable!("a global Percentile is handled in execute()")
-            }
+            ReductionOp::Percentile { .. } => unreachable!("Percentile is handled in execute()"),
         }
     }
 
@@ -895,55 +858,6 @@ impl ReductionOp {
             }
 
             // Gather values along the reduction axis
-            for a in 0..axis_size {
-                in_coords[axis] = a;
-                let in_idx = coords_to_linear(&in_coords, &strides);
-                gather_buf[a] = data[in_idx];
-            }
-
-            *out = f(&gather_buf);
-        }
-
-        ViewBuffer::from_vec_with_shape(output, out_shape)
-    }
-
-    #[allow(clippy::needless_range_loop)]
-    fn reduce_axis_to_f64<T, F>(&self, buffer: &ViewBuffer, axis: usize, f: F) -> ViewBuffer
-    where
-        T: Copy + Default + num_traits::NumCast + ViewType + 'static,
-        F: Fn(&[T]) -> f64,
-    {
-        let shape = buffer.shape();
-        let data = buffer.as_slice::<T>();
-
-        let mut out_shape: Vec<usize> = shape.to_vec();
-        let axis_size = out_shape.remove(axis);
-
-        // Coordinate mapping must run over the REAL remaining dims (possibly
-        // none, for a 1-D input); the [1] clamp below only pads the returned
-        // buffer's shape.
-        let coord_shape = out_shape.clone();
-        if out_shape.is_empty() {
-            out_shape.push(1);
-        }
-
-        let out_size: usize = out_shape.iter().product();
-        let mut output = vec![0.0f64; out_size];
-
-        let strides = compute_strides(shape);
-
-        // Allocate gather buffer once and reuse
-        let mut gather_buf = vec![T::default(); axis_size];
-        let mut in_coords = vec![0usize; shape.len()];
-
-        for (out_idx, out) in output.iter_mut().enumerate() {
-            let out_coords = linear_to_coords(out_idx, &coord_shape);
-
-            for (i, &c) in out_coords.iter().enumerate() {
-                let target = if i < axis { i } else { i + 1 };
-                in_coords[target] = c;
-            }
-
             for a in 0..axis_size {
                 in_coords[axis] = a;
                 let in_idx = coords_to_linear(&in_coords, &strides);
@@ -1022,7 +936,7 @@ impl<M: Mode> Op for ReductionOp<M> {
             ReductionOp::Min { .. } => "Min",
             ReductionOp::Mean { .. } => "Mean",
             ReductionOp::Std { .. } => "Std",
-            ReductionOp::Sum { .. } => "Sum",
+            ReductionOp::Sum => "Sum",
             ReductionOp::ArgMax { .. } => "ArgMax",
             ReductionOp::ArgMin { .. } => "ArgMin",
             ReductionOp::PopCount => "PopCount",
@@ -1059,7 +973,7 @@ impl<M: Mode> Op for ReductionOp<M> {
             | ReductionOp::Min { .. }
             | ReductionOp::Mean { .. }
             | ReductionOp::Std { .. }
-            | ReductionOp::Sum { .. }
+            | ReductionOp::Sum
             | ReductionOp::ArgMax { .. }
             | ReductionOp::ArgMin { .. }
             | ReductionOp::PopCount
@@ -1130,7 +1044,7 @@ impl<M: Mode> Op for ReductionOp<M> {
         match self {
             ReductionOp::Mean { .. }
             | ReductionOp::Std { .. }
-            | ReductionOp::Sum { .. }
+            | ReductionOp::Sum
             | ReductionOp::PopCount
             | ReductionOp::Blocks { .. }
             | ReductionOp::Percentile { .. }
@@ -1141,50 +1055,128 @@ impl<M: Mode> Op for ReductionOp<M> {
     }
 }
 
+/// `f` over each line of `buffer` along `axis`, as an f64 buffer of the
+/// remaining axes (`[1]` for a 1-D input).
+#[allow(clippy::needless_range_loop)]
+fn reduce_axis_to_f64<T, F>(buffer: &ViewBuffer, axis: usize, f: F) -> ViewBuffer
+where
+    T: Copy + Default + num_traits::NumCast + ViewType + 'static,
+    F: Fn(&[T]) -> f64,
+{
+    let shape = buffer.shape();
+    let data = buffer.as_slice::<T>();
+
+    let mut out_shape: Vec<usize> = shape.to_vec();
+    let axis_size = out_shape.remove(axis);
+
+    // Coordinate mapping must run over the REAL remaining dims (possibly
+    // none, for a 1-D input); the [1] clamp below only pads the returned
+    // buffer's shape.
+    let coord_shape = out_shape.clone();
+    if out_shape.is_empty() {
+        out_shape.push(1);
+    }
+
+    let out_size: usize = out_shape.iter().product();
+    let mut output = vec![0.0f64; out_size];
+
+    let strides = compute_strides(shape);
+
+    // Allocate gather buffer once and reuse
+    let mut gather_buf = vec![T::default(); axis_size];
+    let mut in_coords = vec![0usize; shape.len()];
+
+    for (out_idx, out) in output.iter_mut().enumerate() {
+        let out_coords = linear_to_coords(out_idx, &coord_shape);
+
+        for (i, &c) in out_coords.iter().enumerate() {
+            let target = if i < axis { i } else { i + 1 };
+            in_coords[target] = c;
+        }
+
+        for a in 0..axis_size {
+            in_coords[axis] = a;
+            let in_idx = coords_to_linear(&in_coords, &strides);
+            gather_buf[a] = data[in_idx];
+        }
+
+        *out = f(&gather_buf);
+    }
+
+    ViewBuffer::from_vec_with_shape(output, out_shape)
+}
+
 /// `reduce(reduction, axis)`: the dedicated op's kernel for the statistic
 /// (the one implementation of each over a whole buffer), its result in f64.
-/// A count is the line length, and no values reduce to what
-/// [`Reduction::of`] gives over none, which the dedicated ops refuse.
+/// Along an axis, a sum and a percentile are `reduce`'s own (their
+/// dedicated ops are global), over the same per-value kernels. A count is
+/// the line length, and no values reduce to what [`Reduction::of`] gives over
+/// none, which the dedicated ops refuse.
 fn reduce_by(buf: &ViewBuffer, reduction: Reduction, axis: Option<u32>) -> ViewBuffer {
     let shape = buf.shape();
-    let dedicated = match reduction {
-        Reduction::Named(stat) => match stat {
-            Statistic::Sum => Some(ReductionOp::Sum { axis }),
-            Statistic::Mean => Some(ReductionOp::Mean { axis }),
-            Statistic::Min => Some(ReductionOp::Min { axis }),
-            Statistic::Max => Some(ReductionOp::Max { axis }),
-            Statistic::Std => Some(ReductionOp::Std { axis, ddof: 0 }),
-            Statistic::Median => Some(ReductionOp::Percentile {
-                q: Percent::MEDIAN,
-                axis,
-            }),
-            Statistic::Count => None,
-        },
-        Reduction::Percentile(q) => Some(ReductionOp::Percentile { q, axis }),
-    };
     let line = axis.map_or(shape.iter().product(), |a| shape[a as usize]);
-    match dedicated {
-        Some(op) if line > 0 => op.execute(buf).cast_to(DType::F64),
+    let count = reduction == Reduction::Named(Statistic::Count);
+    if line == 0 || count {
         // A count, or lines of no values: one value fills the output.
-        _ => {
-            let value = match reduction {
-                Reduction::Named(Statistic::Count) => line as f64,
-                _ => reduction.of(&mut []),
-            };
-            match axis {
-                None => ViewBuffer::from_scalar(value),
-                Some(a) => {
-                    let mut out: Vec<usize> = shape.to_vec();
-                    out.remove(a as usize);
-                    if out.is_empty() {
-                        out.push(1);
-                    }
-                    let n = out.iter().product();
-                    ViewBuffer::from_vec_with_shape(vec![value; n], out)
+        let value = if count {
+            line as f64
+        } else {
+            reduction.of(&mut [])
+        };
+        return match axis {
+            None => ViewBuffer::from_scalar(value),
+            Some(a) => {
+                let mut out: Vec<usize> = shape.to_vec();
+                out.remove(a as usize);
+                if out.is_empty() {
+                    out.push(1);
                 }
+                let n = out.iter().product();
+                ViewBuffer::from_vec_with_shape(vec![value; n], out)
             }
-        }
+        };
     }
+    let q = match reduction {
+        Reduction::Percentile(q) => Some(q),
+        Reduction::Named(Statistic::Median) => Some(Percent::MEDIAN),
+        Reduction::Named(_) => None,
+    };
+    let out = match (reduction, q, axis) {
+        (_, Some(q), None) => ReductionOp::Percentile { q }.execute(buf),
+        (_, Some(q), Some(a)) => crate::core::dtype::with_dtype!(buf.dtype(), T => {
+            reduce_axis_to_f64::<T, _>(buf, a as usize, |slice: &[T]| {
+                let mut values: Vec<f64> = slice
+                    .iter()
+                    .map(|&x| num_traits::NumCast::from(x).unwrap_or(f64::NAN))
+                    .collect();
+                percentile_of(&mut values, q.q())
+            })
+        }),
+        (Reduction::Named(Statistic::Sum), _, None) => ReductionOp::Sum.execute(buf),
+        (Reduction::Named(Statistic::Sum), _, Some(a)) => {
+            crate::core::dtype::with_dtype!(buf.dtype(), T => {
+                reduce_axis_to_f64::<T, _>(buf, a as usize, sum_f64::<T>)
+            })
+        }
+        (Reduction::Named(Statistic::Mean), ..) => ReductionOp::Mean { axis }.execute(buf),
+        (Reduction::Named(Statistic::Min), ..) => ReductionOp::Min { axis }.execute(buf),
+        (Reduction::Named(Statistic::Max), ..) => ReductionOp::Max { axis }.execute(buf),
+        (Reduction::Named(Statistic::Std), ..) => ReductionOp::Std { axis, ddof: 0 }.execute(buf),
+        (Reduction::Named(Statistic::Median | Statistic::Count), ..)
+        | (Reduction::Percentile(_), ..) => {
+            unreachable!("a count is filled above, and a median or percentile has a q")
+        }
+    };
+    out.cast_to(DType::F64)
+}
+
+/// The f64 sum of `values`: the one sum `reduce_sum` and `reduce("sum")`
+/// read. A sum of nothing is +0, not `f64`'s `Sum` identity, -0.
+fn sum_f64<T: Copy + num_traits::NumCast>(values: &[T]) -> f64 {
+    0.0 + values
+        .iter()
+        .map(|&x| num_traits::NumCast::from(x).unwrap_or(0.0))
+        .sum::<f64>()
 }
 
 /// `[H, W(, C)]` pooled in `bh` x `bw` blocks (partial at the far edges),
@@ -1293,10 +1285,7 @@ mod tests {
                 },
                 ReductionOp::Max { axis: None },
                 ReductionOp::Min { axis: None },
-                ReductionOp::Percentile {
-                    q: Percent::MEDIAN,
-                    axis: None,
-                },
+                ReductionOp::Percentile { q: Percent::MEDIAN },
             ] {
                 let err = check(&op, &shape).expect_err(&format!("{op:?} on {shape:?}"));
                 assert!(err.to_string().contains("empty"), "{op:?}: {err}");
@@ -1305,7 +1294,7 @@ mod tests {
             let other = 2;
             assert!(check(&ReductionOp::ArgMax { axis: other }, &shape).is_ok());
             for op in [
-                ReductionOp::Sum { axis: None },
+                ReductionOp::Sum,
                 ReductionOp::Mean { axis: None },
                 ReductionOp::Std {
                     axis: None,
@@ -1342,7 +1331,7 @@ mod tests {
             }
             for q in [0.0, 50.0, 100.0] {
                 let q = Percent::new(q).unwrap();
-                let out = ReductionOp::Percentile { q, axis: None }.execute(&buffer);
+                let out = ReductionOp::Percentile { q }.execute(&buffer);
                 assert!(out.as_slice::<f64>()[0].is_nan(), "{q:?} of {data:?}");
             }
             for op in [
@@ -1364,7 +1353,6 @@ mod tests {
         let buffer = ViewBuffer::from_vec_with_shape(data, vec![64]);
         let out = ReductionOp::Percentile {
             q: Percent::new(25.0).unwrap(),
-            axis: None,
         }
         .execute(&buffer);
         assert!(out.as_slice::<f64>()[0].is_nan());
@@ -1561,7 +1549,7 @@ mod small_fix_tests {
         assert!(sum.of(&mut []).to_bits() == 0.0f64.to_bits());
         let empty = ViewBuffer::from_vec_with_shape(Vec::<f32>::new(), vec![0, 4]);
         for op in [
-            ReductionOp::Sum { axis: None },
+            ReductionOp::Sum,
             ReductionOp::By {
                 reduction: sum,
                 axis: None,
@@ -1571,7 +1559,11 @@ mod small_fix_tests {
             let got = out.to_contiguous().as_slice::<f64>()[0];
             assert_eq!(got.to_bits(), 0.0f64.to_bits(), "{op:?}: {got}");
         }
-        let lines = ReductionOp::Sum { axis: Some(0) }.execute(&empty);
+        let lines = ReductionOp::By {
+            reduction: sum,
+            axis: Some(0),
+        }
+        .execute(&empty);
         for got in lines.to_contiguous().as_slice::<f64>() {
             assert_eq!(got.to_bits(), 0.0f64.to_bits(), "an empty column: {got}");
         }

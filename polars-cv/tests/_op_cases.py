@@ -120,7 +120,6 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "reduce_mean": (BUFFER, {}),
     "reduce_min": (BUFFER, {}),
     "reduce_percentile": (BUFFER, {"q": 50.0}),
-    "reduce_median": (BUFFER, {}),
     "reduce": (BUFFER, {"reduction": "p90"}),
     "block_reduce": (BUFFER, {"height": 3, "width": 4, "reduction": "max"}),
     "rank_filter": (BUFFER, {"height": 3, "width": 5, "q": 25.0}),
