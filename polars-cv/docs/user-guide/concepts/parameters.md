@@ -91,7 +91,8 @@ the sizes an expression reads (after a `resize`, or an `assert_shape`), the
 value is known when the query is planned, so the schema states the size and
 a fixed-shape `array` sink can carry it; otherwise, as with a column, it is
 known per row. A parameter that must be a literal (see the list above) refuses
-`this`, as do non-numeric parameters, an attribute the buffer does not have
+`this`, as do non-numeric parameters, percentiles and histogram edges (ranks
+and points among the values, not sizes), an attribute the buffer does not have
 (`this.height` of a 1-D buffer), an op whose input is not a buffer
 (`rasterize` reads a contour set), and functions with no buffer such as the
 `.contour` methods; each is refused as the pipeline is built wherever the

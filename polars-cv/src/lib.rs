@@ -73,6 +73,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(_check_cloud_access, m)?)?;
+    m.add_function(wrap_pyfunction!(_this_repr, m)?)?;
     m.add_function(wrap_pyfunction!(check_graph, m)?)?;
     m.add_function(wrap_pyfunction!(check_geom_call, m)?)?;
     m.add_function(wrap_pyfunction!(geom_catalog, m)?)?;
@@ -266,6 +267,18 @@ fn _check_cloud_access(
     ]
     .into_iter()
     .collect())
+}
+
+/// A `this` expression's text, from its wire tree (JSON): the engine's
+/// `Display`, which errors quote, is also Python's `repr`, so there is one
+/// renderer.
+#[pyfunction]
+fn _this_repr(tree_json: &str) -> PyResult<String> {
+    let tree: serde_json::Value = serde_json::from_str(tree_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    view_buffer::mode::ThisExpr::from_json(&tree)
+        .map(|expr| expr.to_string())
+        .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 // ============================================================================

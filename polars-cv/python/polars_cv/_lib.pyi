@@ -86,6 +86,9 @@ def io_catalog() -> str:
 def enum_catalog() -> str:
     """Return the registered-enum catalogue as JSON (see ``tests/golden/enum_catalog.json``)."""
 
+def _this_repr(tree_json: str) -> str:
+    """A ``this`` expression's text from its wire tree (Rust's ``Display``)."""
+
 def _check_cloud_access(
     path: str, options: dict[str, str] | None = None
 ) -> dict[str, str | None]:

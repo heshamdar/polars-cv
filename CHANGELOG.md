@@ -72,14 +72,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   user's. Where the plan knows the sizes an expression reads (after a
   `resize` or an `assert_shape`) its value is planned too, so the lazy
   schema states the size; otherwise it is known per row, as a column's is.
-  Structural and non-numeric parameters, an attribute the buffer does not
+  Structural and non-numeric parameters, percentiles (`q`, the
+  `normalize_percentile` windows) and histogram edges, which are ranks and
+  points in the values rather than sizes, an attribute the buffer does not
   have (`this.height` of a 1-D buffer), an op given no buffer (`rasterize`
   reads contours), and functions with no buffer (the `.contour` methods)
   refuse them, as the pipeline is built wherever the plan can tell. A new
   attribute is one Rust `ThisAttr` variant: the Python `This` class is
-  generated from it, and its operators (`THIS_OPERATORS`) from Rust's
-  `ThisOp`; both renderers of an expression read one golden file. The
-  numeric per-row parameters of an op that reads a buffer are annotated
+  generated from it, an expression's `repr` is the engine's own text (the
+  one its errors quote), and its operators (`THIS_OPERATORS`) from Rust's
+  `ThisOp`. The numeric per-row parameters of an op that reads a buffer,
+  whose type takes `this` (`WireScalar::TAKES_THIS`), are annotated
   `IntOrThisOrExpr`/`FloatOrThisOrExpr`; an op that reads contours or vectors
   (`rasterize`, the contour ops), and every other place, keeps
   `IntOrExpr`/`FloatOrExpr`.

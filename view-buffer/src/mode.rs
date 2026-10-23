@@ -182,9 +182,11 @@ impl ThisAttr {
         self.spelling()
     }
 
-    /// The attribute over what the planner knows of the input: `None` when
-    /// it does not know it, an error when no input of that rank has it.
-    fn of_planned(self, planned: &PlannedThis<'_>) -> Result<Option<usize>, String> {
+    /// The attribute over what is known of the input: `None` when a size it
+    /// reads is unknown, an error when no input of that rank has it. A
+    /// concrete shape is a fully known one ([`PlannedThis::known`]), so this
+    /// is the one rule for every attribute.
+    fn of(self, planned: &PlannedThis<'_>) -> Result<Option<usize>, String> {
         let Some(rank) = planned.rank else {
             return Ok(None);
         };
@@ -195,27 +197,11 @@ impl ThisAttr {
             (ThisAttr::Width, 2 | 3) => Ok(axis(1)),
             (ThisAttr::Channels, 2) => Ok(Some(1)),
             (ThisAttr::Channels, 3) => Ok(axis(2)),
-            (attr, _) => Err(attr.rank_error(&format!("rank {rank}"))),
-        }
-    }
-
-    fn rank_error(self, has: &str) -> String {
-        format!(
-            "this.{} reads an [H, W] or [H, W, C] buffer, and this op's input \
-             has {has}",
-            self.name()
-        )
-    }
-
-    /// The attribute of a buffer of `shape`.
-    fn of(self, shape: &[usize]) -> Result<usize, String> {
-        match (self, shape) {
-            (ThisAttr::Ndim, _) => Ok(shape.len()),
-            (ThisAttr::Height, [h, _] | [h, _, _]) => Ok(*h),
-            (ThisAttr::Width, [_, w] | [_, w, _]) => Ok(*w),
-            (ThisAttr::Channels, [_, _]) => Ok(1),
-            (ThisAttr::Channels, [_, _, c]) => Ok(*c),
-            (attr, _) => Err(attr.rank_error(&format!("shape {shape:?}"))),
+            (attr, _) => Err(format!(
+                "this.{} reads an [H, W] or [H, W, C] buffer, and this op's input \
+                 has rank {rank}",
+                attr.name()
+            )),
         }
     }
 }
@@ -313,11 +299,12 @@ impl ThisExpr {
         }
     }
 
-    /// The value over what the planner knows of the input: `None` while a
-    /// size it reads is unknown; an error when it can never be computed.
+    /// The value over what is known of the input: `None` while a size it
+    /// reads is unknown; an error when it can never be computed. The one
+    /// evaluation, at planning and per row alike ([`eval`](Self::eval)).
     pub fn eval_planned(&self, planned: &PlannedThis<'_>) -> Result<Option<f64>, String> {
         Ok(match self {
-            ThisExpr::Attr(attr) => attr.of_planned(planned)?.map(|n| n as f64),
+            ThisExpr::Attr(attr) => attr.of(planned)?.map(|n| n as f64),
             ThisExpr::Num(f) => Some(*f),
             ThisExpr::Op(op, args) => {
                 let (a, b) = (args.0.eval_planned(planned)?, args.1.eval_planned(planned)?);
@@ -329,16 +316,13 @@ impl ThisExpr {
         })
     }
 
-    /// The value over a buffer of `shape`.
+    /// The value over a buffer of `shape`: [`eval_planned`](Self::eval_planned)
+    /// with every size known.
     pub fn eval(&self, shape: &[usize]) -> Result<f64, String> {
-        Ok(match self {
-            ThisExpr::Attr(attr) => attr.of(shape)? as f64,
-            ThisExpr::Num(f) => *f,
-            ThisExpr::Op(op, args) => {
-                let (a, b) = (args.0.eval(shape)?, args.1.eval(shape)?);
-                op.apply(a, b).map_err(|e| format!("{self}: {e}"))?
-            }
-        })
+        let dims: Vec<Option<usize>> = shape.iter().copied().map(Some).collect();
+        Ok(self
+            .eval_planned(&PlannedThis::known(&dims))?
+            .expect("every size of a concrete shape is known"))
     }
 
     /// Written as an operand of `parent`, parenthesised where Python would
@@ -421,9 +405,9 @@ fn this_as<T: WireScalar>(expr: &ThisExpr, value: f64, over: &str) -> Result<T, 
     T::from_wire(wire).map_err(|e| format!("{expr} = {value} for {over}: {e}"))
 }
 
-/// What the planner knows of the buffer an op reads, which a `this`
-/// parameter is bound over when every size it reads is known
-/// ([`FieldType::bind_this`]).
+/// What is known of the buffer an op reads, which a `this` parameter is
+/// evaluated over: by the planner, which binds it when every size it reads is
+/// known ([`FieldType::bind_this`]), and per row over the concrete shape.
 #[derive(Debug, Clone, Copy)]
 pub struct PlannedThis<'a> {
     /// The rank, when known.
@@ -432,10 +416,21 @@ pub struct PlannedThis<'a> {
     pub dims: &'a [Option<usize>],
 }
 
+impl<'a> PlannedThis<'a> {
+    /// A buffer whose every size is known (a concrete shape's, each `Some`).
+    pub fn known(dims: &'a [Option<usize>]) -> Self {
+        PlannedThis {
+            rank: Some(dims.len()),
+            dims,
+        }
+    }
+}
+
 /// The refusal of a `this` expression where the parameter is not a number.
 fn this_kind_error<T: WireScalar>() -> String {
     format!(
-        "`this` attributes give a number, and this parameter takes a {}",
+        "this parameter (a {}) does not take `this`: only a size, offset or \
+         other plain number can be computed from the buffer's shape",
         T::PY_TYPE
     )
 }
@@ -662,7 +657,7 @@ impl<'de, T: WireScalar> Deserialize<'de> for Param<T> {
             return slot.map(Param::Slot).map_err(D::Error::custom);
         }
         if let Some(expr) = as_this(&value) {
-            if !matches!(T::KIND, WireKind::Int | WireKind::Float) {
+            if !T::TAKES_THIS {
                 return Err(D::Error::custom(this_kind_error::<T>()));
             }
             return expr
@@ -712,6 +707,9 @@ pub enum TypeDesc {
         per_row: bool,
         /// `int`, `float`, `bool`, or a named enum's name.
         py: &'static str,
+        /// A per-row value may be `polars_cv.this` arithmetic
+        /// ([`WireScalar::TAKES_THIS`]).
+        this: bool,
         /// Every accepted spelling, for a named enum.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         variants: Vec<&'static str>,
@@ -751,6 +749,7 @@ fn scalar_desc<T: WireScalar>(per_row: bool) -> TypeDesc {
     TypeDesc::Scalar {
         per_row,
         py: T::PY_TYPE,
+        this: per_row && T::TAKES_THIS,
         variants: T::spellings(),
     }
 }
@@ -792,6 +791,7 @@ impl FieldType for String {
         TypeDesc::Scalar {
             per_row: false,
             py: "str",
+            this: false,
             variants: Vec::new(),
         }
     }
@@ -1052,21 +1052,6 @@ mod this_tests {
         }
     }
 
-    /// The same text Python's `repr` gives (`tests/test_this.py` reads the
-    /// same file), so an error quotes the expression as the user wrote it.
-    #[test]
-    fn it_displays_as_the_shared_golden_says() {
-        let golden: serde_json::Value = serde_json::from_str(include_str!(
-            "../../polars-cv/tests/golden/this_render.json"
-        ))
-        .unwrap();
-        let cases = golden["cases"].as_array().unwrap();
-        assert!(cases.len() > 5, "the golden file holds almost nothing");
-        for case in cases {
-            assert_eq!(tree(case[0].clone()).to_string(), case[1].as_str().unwrap());
-        }
-    }
-
     #[test]
     fn it_displays_as_python_reads_it() {
         for (wire, text) in [
@@ -1090,6 +1075,24 @@ mod this_tests {
                 json!(["-", ["-", "height", "width"], 1]),
                 "this.height - this.width - 1",
             ),
+            (
+                json!(["*", "height", ["*", "width", 2]]),
+                "this.height * this.width * 2",
+            ),
+            (
+                json!(["/", "height", ["*", "width", 2]]),
+                "this.height / (this.width * 2)",
+            ),
+            (
+                json!(["//", ["+", "height", 1], 2]),
+                "(this.height + 1) // 2",
+            ),
+            (
+                json!(["+", ["*", 0.25, "height"], ["//", "width", 3]]),
+                "0.25 * this.height + this.width // 3",
+            ),
+            (json!(["-", 0, "channels"]), "0 - this.channels"),
+            (json!(["*", 1.5, "ndim"]), "1.5 * this.ndim"),
         ] {
             assert_eq!(tree(wire).to_string(), text);
         }
@@ -1153,10 +1156,7 @@ mod this_tests {
             json!({"$this": ["/", "height", 2.0]})
         );
         let err = serde_json::from_value::<Param<bool>>(wire.clone()).unwrap_err();
-        assert!(
-            err.to_string().contains("`this` attributes give a number"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("does not take `this`"), "{err}");
         let err = serde_json::from_value::<Literal<u32>>(wire).unwrap_err();
         assert!(err.to_string().contains("structural"), "{err}");
     }

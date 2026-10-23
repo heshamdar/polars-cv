@@ -582,11 +582,7 @@ class _LazyForwardersMixin:
         )
 
     def normalize_percentile(
-        self,
-        *,
-        low: FloatOrThisOrExpr,
-        high: FloatOrThisOrExpr,
-        out_dtype: str | None = None,
+        self, *, low: FloatOrExpr, high: FloatOrExpr, out_dtype: str | None = None
     ) -> LazyPipelineExpr:
         """Map the window between the image's own ``low``-th and ``high``-th
 
@@ -718,7 +714,7 @@ class _LazyForwardersMixin:
         *,
         height: IntOrThisOrExpr,
         width: IntOrThisOrExpr,
-        q: FloatOrThisOrExpr = 50.0,
+        q: FloatOrExpr = 50.0,
         border: str | pl.Expr = "replicate",
     ) -> LazyPipelineExpr:
         """Rank filter: each pixel the ``q``-th percentile of its ``height`` x
@@ -807,7 +803,7 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().reduce_min(axis=axis))
 
-    def reduce_percentile(self, q: FloatOrThisOrExpr) -> LazyPipelineExpr:
+    def reduce_percentile(self, q: FloatOrExpr) -> LazyPipelineExpr:
         """Compute the q-th percentile of all values (linear interpolation, as
 
         Lazy form of :meth:`Pipeline.reduce_percentile` on this expression's output.

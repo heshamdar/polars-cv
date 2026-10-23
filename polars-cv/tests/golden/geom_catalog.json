@@ -20,7 +20,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -65,7 +66,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "bool"
+          "py": "bool",
+          "this": false
         }
       }
     ]
@@ -100,7 +102,8 @@
           "inner": {
             "kind": "scalar",
             "per_row": true,
-            "py": "float"
+            "py": "float",
+            "this": true
           }
         }
       },
@@ -153,7 +156,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -162,7 +166,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -173,6 +178,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "BorderArc",
+          "this": false,
           "variants": [
             "shortest",
             "clockwise",
@@ -187,7 +193,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -237,7 +244,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -272,7 +280,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -282,7 +291,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -303,7 +313,8 @@
           "inner": {
             "kind": "scalar",
             "per_row": true,
-            "py": "float"
+            "py": "float",
+            "this": true
           }
         }
       }
@@ -322,7 +333,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -357,6 +369,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "Winding",
+          "this": false,
           "variants": [
             "ccw",
             "counterclockwise",
@@ -437,6 +450,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "str",
+          "this": false,
           "variants": [
             "sum",
             "mean",
@@ -456,6 +470,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "LabelRegionMode",
+          "this": false,
           "variants": [
             "interior",
             "boundary",
@@ -479,7 +494,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "int"
+          "py": "int",
+          "this": true
         }
       }
     ]
@@ -497,7 +513,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -506,7 +523,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -524,7 +542,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -535,6 +554,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "LineJoin",
+          "this": false,
           "variants": [
             "round",
             "miter",
@@ -581,7 +601,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -590,7 +611,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -601,6 +623,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "ScaleOrigin",
+          "this": false,
           "variants": [
             "centroid",
             "bbox_center",
@@ -632,7 +655,8 @@
           "inner": {
             "kind": "scalar",
             "per_row": true,
-            "py": "float"
+            "py": "float",
+            "this": true
           }
         }
       },
@@ -661,7 +685,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -696,7 +721,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "int"
+          "py": "int",
+          "this": true
         }
       }
     ]
@@ -715,7 +741,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -726,6 +753,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "LineCap",
+          "this": false,
           "variants": [
             "round",
             "square",
@@ -741,6 +769,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "LineJoin",
+          "this": false,
           "variants": [
             "round",
             "miter",
@@ -763,7 +792,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -772,7 +802,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -792,6 +823,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "CoordOrder",
+          "this": false,
           "variants": [
             "xy",
             "yx"
@@ -813,7 +845,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -822,7 +855,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -912,7 +946,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -978,7 +1013,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -987,7 +1023,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -1005,7 +1042,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -1033,7 +1071,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -1042,7 +1081,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -1076,7 +1116,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -1085,7 +1126,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]
@@ -1105,6 +1147,7 @@
           "kind": "scalar",
           "per_row": true,
           "py": "CoordOrder",
+          "this": false,
           "variants": [
             "xy",
             "yx"
@@ -1126,7 +1169,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       },
       {
@@ -1135,7 +1179,8 @@
         "type": {
           "kind": "scalar",
           "per_row": true,
-          "py": "float"
+          "py": "float",
+          "this": true
         }
       }
     ]

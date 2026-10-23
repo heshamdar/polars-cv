@@ -70,6 +70,7 @@ macro_rules! named_variants {
         impl $crate::naming::WireScalar for $ty {
             const KIND: $crate::naming::WireKind = $crate::naming::WireKind::Name;
             const PY_TYPE: &'static str = stringify!($ty);
+            const TAKES_THIS: bool = false;
             fn from_wire(value: $crate::naming::WireValue<'_>) -> Result<Self, String> {
                 $crate::naming::named_from_wire(stringify!($ty), Self::NAMED, value)
             }
@@ -236,6 +237,12 @@ pub trait WireScalar: Sized + Copy + PartialEq + core::fmt::Debug {
     const KIND: WireKind;
     /// The Python type: `int`, `float`, `bool`, or the enum's name.
     const PY_TYPE: &'static str;
+    /// Whether a value may be computed from the shape of the buffer its op
+    /// reads (`polars_cv.this`): a plain size, offset or number, not a
+    /// percentile, a value-space bound, a flag or a name. Read by the wire
+    /// (a `{"$this": ..}` value of any other type is refused) and by the
+    /// catalogue, whose `this` marks the Python annotation.
+    const TAKES_THIS: bool;
     /// Parse a wire or column value; the error names what was expected.
     fn from_wire(value: WireValue<'_>) -> Result<Self, String>;
     /// The canonical wire value.
@@ -258,6 +265,7 @@ macro_rules! wire_int {
         impl WireScalar for $t {
             const KIND: WireKind = WireKind::Int;
             const PY_TYPE: &'static str = "int";
+            const TAKES_THIS: bool = true;
             fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
                 match value {
                     WireValue::Int(i) => <$t>::try_from(i).map_err(|_| {
@@ -287,6 +295,7 @@ wire_int!(u8, u32, i32, i64);
 impl WireScalar for core::num::NonZeroU32 {
     const KIND: WireKind = WireKind::Int;
     const PY_TYPE: &'static str = "int";
+    const TAKES_THIS: bool = true;
     fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
         let n = u32::from_wire(value)?;
         Self::new(n).ok_or_else(|| format!("{n} is not a positive int"))
@@ -336,6 +345,8 @@ pub struct Bound(pub f64);
 impl WireScalar for Bound {
     const KIND: WireKind = WireKind::Float;
     const PY_TYPE: &'static str = "bound";
+    // A point on the value axis, not a size.
+    const TAKES_THIS: bool = false;
     fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
         match f64::from_wire(value)? {
             f if f.is_nan() => Err("a bound cannot be NaN".to_string()),
@@ -355,6 +366,7 @@ macro_rules! wire_float {
         impl WireScalar for $t {
             const KIND: WireKind = WireKind::Float;
             const PY_TYPE: &'static str = "float";
+            const TAKES_THIS: bool = true;
             fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
                 match value {
                     // An integer is a float the caller did not write a `.0` on.
@@ -382,6 +394,7 @@ wire_float!(f32, f64);
 impl WireScalar for bool {
     const KIND: WireKind = WireKind::Bool;
     const PY_TYPE: &'static str = "bool";
+    const TAKES_THIS: bool = false;
     fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
         match value {
             WireValue::Bool(b) => Ok(b),
