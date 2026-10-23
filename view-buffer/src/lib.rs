@@ -45,8 +45,7 @@ pub use expr::{OptConfig, ViewExpr, ENGINE_PASSES};
 pub use ops::{
     apply_mask, validate_mask, BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType,
     Footprint, GeometricEffect, IdentityRule, ImageOp, ImageOpKind, NeighborhoodSupport,
-    Normalization, NormalizeMethod, Op, ScalarOp, SpatialDependency, ValidationError, ViewDto,
-    ViewOp,
+    NormalizeMethod, Op, ScalarOp, SpatialDependency, ValidationError, ViewDto, ViewOp,
 };
 
 // Re-exports - Protocol

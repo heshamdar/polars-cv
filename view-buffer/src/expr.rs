@@ -8,7 +8,7 @@ use crate::ops::affine::AffineParams;
 use crate::ops::scalar::FusedKernel;
 use crate::ops::traits::{InputLayout, MemoryEffect};
 use crate::ops::{
-    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, Normalization, Op,
+    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op,
     ViewDto, ViewOp,
 };
 
@@ -400,14 +400,31 @@ impl ViewExpr {
         self.compute_node(ComputeOp::Fused(kernel))
     }
 
-    /// Normalize data using the specified method, emitting `out_dtype`.
-    ///
-    /// Only supports 2D (HW) or single-channel (HW1) shapes. Computation is in
-    /// f32; pass `DType::F32` for the default float output, or another dtype to
-    /// have the normalized result cast to it (folded into the op's `Fixed`
-    /// output rule).
-    pub fn normalize(self: &Arc<Self>, method: Normalization, out_dtype: DType) -> Arc<Self> {
-        self.compute_node(ComputeOp::from_normalization(method, out_dtype))
+    /// Normalize by the image's own statistics (`method`), emitting
+    /// `out_dtype`: the `normalize` op. Computation is in f32; pass
+    /// `DType::F32` for the default float output, or another dtype to have
+    /// the normalized result cast to it (folded into the op's `Fixed` output
+    /// rule).
+    pub fn normalize(self: &Arc<Self>, method: NormalizeMethod, out_dtype: DType) -> Arc<Self> {
+        self.compute_node(ComputeOp::Normalize {
+            method,
+            out_dtype: Some(out_dtype),
+        })
+    }
+
+    /// Normalize each channel by given statistics, `(x - mean[c]) / std[c]`,
+    /// emitting `out_dtype`: the `normalize_preset` op.
+    pub fn normalize_preset(
+        self: &Arc<Self>,
+        mean: Vec<f32>,
+        std: Vec<f32>,
+        out_dtype: DType,
+    ) -> Arc<Self> {
+        self.compute_node(ComputeOp::NormalizePreset {
+            mean,
+            std,
+            out_dtype: Some(out_dtype),
+        })
     }
 
     /// Clamp values to [min, max] range.

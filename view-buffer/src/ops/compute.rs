@@ -12,43 +12,11 @@ use crate::mode::{size, Exec, Mode};
 use crate::ops::view::ViewOp;
 use polars_cv_macros::{Ops, Resolve};
 
-/// A normalization, with the per-channel statistics a preset carries.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Normalization {
-    /// Scale to [0.0, 1.0] range using min/max.
-    MinMax,
-    /// Standardize using (x - mean) / std (computed per-image).
-    ZScore,
-    /// Channel-wise normalization with preset mean/std values.
-    ///
-    /// Used for ImageNet-style normalization where mean and std are
-    /// precomputed across the entire dataset.
-    ///
-    /// For RGB images: `(pixel - mean[c]) / std[c]` for each channel c.
-    ///
-    /// Example ImageNet values:
-    /// - mean: [0.485, 0.456, 0.406]
-    /// - std: [0.229, 0.224, 0.225]
-    Preset {
-        /// Per-channel mean values (typically 3 for RGB).
-        mean: Vec<f32>,
-        /// Per-channel standard deviation values (typically 3 for RGB).
-        std: Vec<f32>,
-    },
-    /// The window between the image's own `low`-th and `high`-th
-    /// percentiles (every channel together) mapped to [0, 1], clipped.
-    Percentile {
-        low: crate::ops::reduction::Percent,
-        high: crate::ops::reduction::Percent,
-    },
-    /// The window `[low, high]` mapped to [0, 1], clipped.
-    Range { low: f32, high: f32 },
-}
-
 /// `normalize`'s methods: the normalizations that read nothing but the
 /// image. One that carries values is an op of its own
 /// (`normalize_preset`, `normalize_percentile`, `normalize_range`), so no
-/// field is read under one method only.
+/// field is read under one method only. The four normalize ops are the one
+/// definition of a normalization: the kernels lower each variant itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormalizeMethod {
     MinMax,
@@ -59,20 +27,6 @@ crate::naming::named_variants!(NormalizeMethod: "``normalize``'s methods. Channe
     "minmax" => MinMax,
     "zscore" => ZScore,
 });
-
-impl Normalization {
-    /// `normalize`'s method for this normalization; `None` for one that
-    /// carries values, which is an op of its own.
-    pub fn method(&self) -> Option<NormalizeMethod> {
-        match self {
-            Normalization::MinMax => Some(NormalizeMethod::MinMax),
-            Normalization::ZScore => Some(NormalizeMethod::ZScore),
-            Normalization::Preset { .. }
-            | Normalization::Percentile { .. }
-            | Normalization::Range { .. } => None,
-        }
-    }
-}
 
 /// The compute ops: one variant per wire op (see `crate::mode`), plus the
 /// engine-internal variants that lowering and fusion produce. Each wire
@@ -437,8 +391,9 @@ impl<M: Mode> ComputeOp<M> {
     }
 
     /// Refuse a parameter combination no row can execute, from the
-    /// parameters alone: `mean`/`std` belong to `method="preset"` only, and
-    /// it needs both, of one length. Checked when the op is planned.
+    /// parameters alone: a singular warp matrix, a window whose low edge is
+    /// not below its high, a preset whose `mean` and `std` differ in length.
+    /// Checked when the op is planned, and per row for per-row values.
     pub fn check(&self) -> Result<(), String> {
         // Warping is inverse mapping — for each output pixel, ask where it
         // came from — so a matrix that collapses the plane onto a line or a
@@ -679,81 +634,6 @@ impl ComputeOp {
             _ => return None,
         })
     }
-
-    /// The op performing `normalization`, emitting `out_dtype`.
-    pub fn from_normalization(normalization: Normalization, out_dtype: DType) -> Self {
-        let out_dtype = Some(out_dtype);
-        match normalization {
-            Normalization::Percentile { low, high } => ComputeOp::NormalizePercentile {
-                low,
-                high,
-                out_dtype,
-            },
-            Normalization::Range { low, high } => ComputeOp::NormalizeRange {
-                low,
-                high,
-                out_dtype,
-            },
-            Normalization::Preset { mean, std } => ComputeOp::NormalizePreset {
-                mean,
-                std,
-                out_dtype,
-            },
-            Normalization::MinMax | Normalization::ZScore => ComputeOp::Normalize {
-                method: normalization.method().expect("a method of normalize"),
-                out_dtype,
-            },
-        }
-    }
-
-    /// The normalization this op performs and the dtype it emits; `None`
-    /// for an op that is not a normalization.
-    pub fn normalization(&self) -> Option<(Normalization, DType)> {
-        let (normalization, out_dtype) = match self {
-            ComputeOp::Normalize { method, out_dtype } => (
-                match method {
-                    NormalizeMethod::MinMax => Normalization::MinMax,
-                    NormalizeMethod::ZScore => Normalization::ZScore,
-                },
-                out_dtype,
-            ),
-            ComputeOp::NormalizePreset {
-                mean,
-                std,
-                out_dtype,
-            } => (
-                Normalization::Preset {
-                    mean: mean.clone(),
-                    std: std.clone(),
-                },
-                out_dtype,
-            ),
-            ComputeOp::NormalizePercentile {
-                low,
-                high,
-                out_dtype,
-            } => (
-                Normalization::Percentile {
-                    low: *low,
-                    high: *high,
-                },
-                out_dtype,
-            ),
-            ComputeOp::NormalizeRange {
-                low,
-                high,
-                out_dtype,
-            } => (
-                Normalization::Range {
-                    low: *low,
-                    high: *high,
-                },
-                out_dtype,
-            ),
-            _ => return None,
-        };
-        Some((normalization, out_dtype.unwrap_or(DType::F32)))
-    }
 }
 
 impl<M: Mode> Op for ComputeOp<M> {
@@ -830,8 +710,8 @@ impl<M: Mode> Op for ComputeOp<M> {
 
     fn spatial_dependency(&self) -> SpatialDependency {
         match self {
-            // Read a global statistic (min/max/mean/std) over all pixels;
-            // a range window reads none, but is one value map like them.
+            // Read a statistic of the whole image (min/max/mean/std, a
+            // percentile window) before mapping any pixel.
             ComputeOp::Normalize { .. }
             | ComputeOp::NormalizePercentile { .. }
             | ComputeOp::AdjustContrast { .. } => SpatialDependency::Global,
@@ -841,8 +721,33 @@ impl<M: Mode> Op for ComputeOp<M> {
             | ComputeOp::WarpAffine { .. }
             | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. } => SpatialDependency::geometric(),
-            // Per-element: output at (y, x) depends only on input at (y, x).
-            _ => SpatialDependency::Pointwise,
+            // Per-element: output at (y, x) depends only on input at (y, x)
+            // and parameters given up front (a preset's statistics, a fixed
+            // window), never on another pixel.
+            ComputeOp::Cast { .. }
+            | ComputeOp::Scale { .. }
+            | ComputeOp::Relu
+            | ComputeOp::NormalizePreset { .. }
+            | ComputeOp::NormalizeRange { .. }
+            | ComputeOp::Clamp { .. }
+            | ComputeOp::AdjustGamma { .. }
+            | ComputeOp::Invert
+            | ComputeOp::Neg
+            | ComputeOp::Abs
+            | ComputeOp::Sqrt
+            | ComputeOp::Square
+            | ComputeOp::Reciprocal
+            | ComputeOp::Sign
+            | ComputeOp::Floor
+            | ComputeOp::Ceil
+            | ComputeOp::Round
+            | ComputeOp::Trunc
+            | ComputeOp::ClampMin { .. }
+            | ComputeOp::ClampMax { .. }
+            | ComputeOp::AddConstant { .. }
+            | ComputeOp::SubtractConstant { .. }
+            | ComputeOp::Fused(_)
+            | ComputeOp::Scalar(_) => SpatialDependency::Pointwise,
         }
     }
 

@@ -96,8 +96,7 @@ Strided multi-dimensional array backed by a Rust `Vec` or Arrow buffer.
 ```rust
 let result = ViewExpr::new_source(buffer)
     .resize(224, 224, FilterType::Lanczos3)
-    .normalize(Normalization::MinMax, None, None)
-    .cast(DType::F32)
+    .normalize(NormalizeMethod::MinMax, DType::F32)
     .plan().execute();
 ```
 

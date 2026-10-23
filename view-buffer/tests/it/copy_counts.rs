@@ -186,7 +186,7 @@ fn append_to_refuses_another_element_type() {
 use std::sync::Arc;
 use view_buffer::execution::ExecutionPlan;
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
-use view_buffer::{DType, FilterType, Normalization, ViewExpr};
+use view_buffer::{DType, FilterType, NormalizeMethod, ViewExpr};
 
 /// Run `build` on `buf` the way the plugin's executor does: plan from a
 /// clone, drop the plan's copy, and execute with the source moved in, so the
@@ -266,12 +266,10 @@ fn a_solely_owned_u8_threshold_writes_in_place() {
 /// cast to f32 first and then mapped into a second f32 buffer.
 #[test]
 fn a_u8_preset_normalize_allocates_only_its_f32_output() {
-    let preset = Normalization::Preset {
-        mean: vec![123.7, 116.3, 103.5],
-        std: vec![58.4, 57.1, 57.4],
-    };
-    let (out, count) =
-        owned_u8_allocations(pattern_u8(3), |e| e.normalize(preset.clone(), DType::F32));
+    let (mean, std) = (vec![123.7, 116.3, 103.5], vec![58.4, 57.1, 57.4]);
+    let (out, count) = owned_u8_allocations(pattern_u8(3), |e| {
+        e.normalize_preset(mean.clone(), std.clone(), DType::F32)
+    });
     assert_eq!(out.dtype(), DType::F32);
     assert_eq!(out.as_slice::<f32>()[0], (0.0 - 123.7f32) / 58.4);
     assert_eq!(
@@ -377,10 +375,7 @@ fn view_allocations(
 /// the planner (`RequiresContiguous`) or the kernel, is a second.
 #[test]
 fn per_value_ops_on_a_view_allocate_only_their_output() {
-    let preset = Normalization::Preset {
-        mean: vec![123.7, 116.3, 103.5],
-        std: vec![58.4, 57.1, 57.4],
-    };
+    let (mean, std) = (vec![123.7, 116.3, 103.5], vec![58.4, 57.1, 57.4]);
     let mut chain = FusedKernel::new();
     chain.push(ScalarOp::Mul(1.2));
     chain.push(ScalarOp::Add(-10.0));
@@ -394,15 +389,15 @@ fn per_value_ops_on_a_view_allocate_only_their_output() {
         ("scale", Box::new(|e| e.scale(0.5))),
         (
             "preset normalize",
-            Box::new(move |e| e.normalize(preset.clone(), DType::F32)),
+            Box::new(move |e| e.normalize_preset(mean.clone(), std.clone(), DType::F32)),
         ),
         (
             "z-score normalize",
-            Box::new(|e| e.normalize(Normalization::ZScore, DType::F32)),
+            Box::new(|e| e.normalize(NormalizeMethod::ZScore, DType::F32)),
         ),
         (
             "min-max normalize",
-            Box::new(|e| e.normalize(Normalization::MinMax, DType::U8)),
+            Box::new(|e| e.normalize(NormalizeMethod::MinMax, DType::U8)),
         ),
         ("adjust_contrast", Box::new(|e| e.adjust_contrast(1.4))),
         ("cast", Box::new(|e| e.cast(DType::U16))),
