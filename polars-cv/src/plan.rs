@@ -410,38 +410,46 @@ fn declare(
     })
 }
 
+/// `op` entering `state`, with each `this` parameter whose sizes the plan
+/// knows replaced by its value: the op the rules read ([`step`]) and the op
+/// the graph is given ([`Plan::wire_ops`]), so a fully bound op resolves once
+/// at execution rather than per row. `this` is refused where the op is given
+/// no buffer. The plan keeps the op as written, so a pipeline replanned onto
+/// another input binds again; execution evaluates whatever is still unbound
+/// per row.
+fn bound<'o>(
+    op: &'o crate::ops::TypedOp,
+    state: &State,
+) -> Result<std::borrow::Cow<'o, crate::ops::TypedOp>, String> {
+    if !op.reads_shape() {
+        return Ok(std::borrow::Cow::Borrowed(op));
+    }
+    if state.domain != Domain::Buffer {
+        return Err(format!(
+            "{}(): `this` reads the buffer an op is given, and this op's input \
+             is in the {} domain",
+            op.name(),
+            state.domain.name()
+        ));
+    }
+    let mut b = op.clone();
+    let planned = view_buffer::mode::PlannedThis {
+        rank: state.shape.rank(),
+        dims: state.shape.sizes(),
+    };
+    b.bind_this(&planned)
+        .map_err(|e| format!("{}: {e}", op.name()))?;
+    Ok(std::borrow::Cow::Owned(b))
+}
+
 /// The state after appending `op` to `state`. See the module docs.
 pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Result<State, String> {
     use crate::ops::TypedOp;
     use view_buffer::ops::PlannedInput;
 
-    // A `this` parameter reads the buffer the op is given: refused where it
-    // is given none, and its value wherever the plan knows every size it
-    // reads (a literal from here on, so the rules below see it). The plan
-    // keeps the op as written, so a pipeline replanned onto another input
-    // binds again; execution evaluates whatever is still unbound per row.
-    let bound;
-    let op = if op.reads_shape() {
-        if state.domain != Domain::Buffer {
-            return Err(format!(
-                "{}(): `this` reads the buffer an op is given, and this op's input \
-                 is in the {} domain",
-                op.name(),
-                state.domain.name()
-            ));
-        }
-        let mut b = op.clone();
-        let planned = view_buffer::mode::PlannedThis {
-            rank: state.shape.rank(),
-            dims: state.shape.sizes(),
-        };
-        b.bind_this(&planned)
-            .map_err(|e| format!("{}: {e}", op.name()))?;
-        bound = b;
-        &bound
-    } else {
-        op
-    };
+    // `this` bound wherever the plan knows the sizes it reads, so the rules
+    // below see a literal.
+    let op = &*bound(op, state)?;
 
     // The op is read as it is: every rule below is the step's own, over its
     // literal values, and a per-row value is unknown — never stood in for.
@@ -877,11 +885,13 @@ impl Plan {
         Ok(spec)
     }
 
-    /// Each op on the wire, with every node it reads renamed by `nodes`.
+    /// Each op on the wire, as [`bound`] over the state it enters, with every
+    /// node it reads renamed by `nodes`.
     fn wire_ops(&self, nodes: &NodeMap) -> Result<Vec<serde_json::Value>, String> {
         let mut ops = Vec::with_capacity(self.ops.len());
         for planned in &self.ops {
-            let mut op = planned.op.clone();
+            // As the rules read it: a `this` the plan decided is a literal.
+            let mut op = bound(&planned.op, &planned.entering)?.into_owned();
             for node in op.operands_mut() {
                 let named = nodes.get(&node.0).ok_or_else(|| {
                     format!(

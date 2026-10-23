@@ -358,3 +358,30 @@ def test_the_operators_are_the_engines() -> None:
         (-this.height)._tree[0],
     }
     assert built == set(THIS_OPERATORS)
+
+
+def _graph_ops(pipe: Pipeline) -> list[dict]:
+    import json
+
+    graph = pl.col("a").cv.pipe(pipe).sink("numpy", return_expr=False)
+    spec = json.loads(graph._to_json())
+    return [op for node in spec["nodes"].values() for op in node.get("ops", [])]
+
+
+@plugin_required
+def test_a_this_the_plan_decides_reaches_the_graph_as_a_literal() -> None:
+    """After a ``resize`` the plan knows ``this.height``, so the graph is given
+    the value: the op resolves once, not per row, and CSE sees it as the
+    literal it is. One the plan cannot decide stays ``this``, for each row."""
+    bound = _graph_ops(
+        Pipeline()
+        .source("image_bytes")
+        .resize(height=8, width=6)
+        .crop(height=this.height // 2, width=this.width - 1)
+    )
+    crop = next(op for op in bound if op["op"] == "crop")
+    assert (crop["height"], crop["width"]) == (4, 5)
+
+    open_ = _graph_ops(Pipeline().source("image_bytes").crop(height=this.height // 2))
+    crop = next(op for op in open_ if op["op"] == "crop")
+    assert crop["height"] == {"$this": ["//", "height", 2]}
