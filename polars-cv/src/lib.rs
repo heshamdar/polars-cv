@@ -254,8 +254,14 @@ fn _check_cloud_access(
     Ok([
         ("backend", Some(report.backend)),
         ("credential_source", Some(report.credential_source)),
-        ("status", Some(report.status.to_string())),
-        ("error", report.error),
+        ("status", Some(report.access.status().to_string())),
+        (
+            "error",
+            match report.access {
+                cloud::Access::Error(e) => Some(e),
+                cloud::Access::Ok | cloud::Access::NotFound => None,
+            },
+        ),
     ]
     .into_iter()
     .collect())

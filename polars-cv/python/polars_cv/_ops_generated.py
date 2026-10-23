@@ -2552,13 +2552,16 @@ class _OpsMixin:
         return self._append_typed("floor", {})
 
     def grayscale(self, *, keepdims: bool = True) -> Pipeline:
-        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): ``[H, W, 1]``,
-        or ``[H, W]`` with ``keepdims=False``.
+        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): an
+        ``[H, W, C]`` image becomes ``[H, W, 1]``, or ``[H, W]`` with
+        ``keepdims=False``. An ``[H, W]`` input is already gray and stays
+        ``[H, W]`` either way.
 
         Domain: buffer → buffer
 
         Args:
-            keepdims: Keep the channel axis, as size 1 (default), or drop it.
+            keepdims: Keep an ``[H, W, C]`` image's channel axis, as size 1 (default),
+                or drop it.
         """
         return self._append_typed("grayscale", {"keepdims": keepdims})
 

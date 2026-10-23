@@ -48,6 +48,8 @@ def server():
     files = {
         "/big.png": _noise_png(600, 500),
         "/late.jpg": _jpeg_behind_a_comment(33, 21),
+        # No image header anywhere, and longer than the prefix.
+        "/junk.bin": bytes(3 * PREFIX),
     }
     log: list[tuple[str, str | None, int]] = []
     honour_range = {"on": True}
@@ -111,6 +113,19 @@ def test_a_server_that_ignores_range_still_answers(server) -> None:
         log.clear()
         assert _info(f"{base}/big.png")["height"] == 500
         assert log[0][2] == len(files["/big.png"])
+    finally:
+        honour["on"] = True
+
+
+def test_a_whole_body_is_not_fetched_twice(server) -> None:
+    """A server that ignores ``Range`` sent the whole object already: with
+    no header in it there is nothing more to read."""
+    base, files, log, honour = server
+    honour["on"] = False
+    try:
+        log.clear()
+        assert _info(f"{base}/junk.bin") is None
+        assert log == [("/junk.bin", f"bytes=0-{PREFIX - 1}", len(files["/junk.bin"]))]
     finally:
         honour["on"] = True
 

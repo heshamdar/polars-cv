@@ -409,11 +409,30 @@ pub struct AccessReport {
     pub backend: String,
     /// The credential in effect, as an error would name it.
     pub credential_source: String,
-    /// `"ok"`, `"not_found"` (credentials accepted, no such object), or
-    /// `"error"`.
-    pub status: &'static str,
-    /// The failure, when `status` is `"error"`.
-    pub error: Option<String>,
+    /// What the probe found.
+    pub access: Access,
+}
+
+/// What a [`check_access`] probe found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Access {
+    /// The object (or prefix) is readable.
+    Ok,
+    /// The credentials were accepted, and there is no such object.
+    NotFound,
+    /// The request failed: the reason.
+    Error(String),
+}
+
+impl Access {
+    /// The status Python reads: `"ok"`, `"not_found"` or `"error"`.
+    pub fn status(&self) -> &'static str {
+        match self {
+            Access::Ok => "ok",
+            Access::NotFound => "not_found",
+            Access::Error(_) => "error",
+        }
+    }
 }
 
 /// Resolve the credential a read of `path` would use and exercise it once: a
@@ -466,16 +485,15 @@ pub fn check_access(
             .map_err(|e| e.to_string())
     };
     let outcome = pyo3_polars::export::polars_core::runtime::ASYNC.block_on(probe);
-    let (status, error) = match outcome {
-        Ok(true) => ("ok", None),
-        Ok(false) => ("not_found", None),
-        Err(e) => ("error", Some(e)),
+    let access = match outcome {
+        Ok(true) => Access::Ok,
+        Ok(false) => Access::NotFound,
+        Err(e) => Access::Error(e),
     };
     Ok(AccessReport {
         backend,
         credential_source,
-        status,
-        error,
+        access,
     })
 }
 

@@ -516,8 +516,11 @@ impl<'a> Fetcher<'a> {
             let cloud::Reach::Prefix(n) = self.shared.reach else {
                 return Ok(None);
             };
-            if (prefix.len() as u64) < n {
-                return Ok(None); // The whole object, and no header in it.
+            // Only exactly `n` bytes is a cut-off prefix. Fewer is the whole
+            // object; more is a server that ignored `Range` and sent it all.
+            // Either way there is nothing more to read, and no header in it.
+            if prefix.len() as u64 != n {
+                return Ok(None);
             }
             drop(prefix);
             // Rare (a header behind a large segment), so read in line;

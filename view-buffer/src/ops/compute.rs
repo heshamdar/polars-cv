@@ -720,16 +720,26 @@ impl ComputeOp {
         low: Option<f32>,
         high: Option<f32>,
     ) -> Normalization {
-        let (low, high) = (low.unwrap_or(0.0), high.unwrap_or(0.0));
+        // `check` refuses a method without the fields it reads, before any
+        // op executes; a missing one here is that contract broken, not a
+        // value to stand in for.
+        const CHECKED: &str = "normalize's check requires the fields its method reads";
+        let window = || (low.expect(CHECKED), high.expect(CHECKED));
         match method {
             NormalizeMethod::MinMax => Normalization::MinMax,
             NormalizeMethod::ZScore => Normalization::ZScore,
             NormalizeMethod::Preset => Normalization::Preset {
-                mean: mean.clone().unwrap_or_default(),
-                std: std.clone().unwrap_or_default(),
+                mean: mean.clone().expect(CHECKED),
+                std: std.clone().expect(CHECKED),
             },
-            NormalizeMethod::Percentile => Normalization::Percentile { low, high },
-            NormalizeMethod::Range => Normalization::Range { low, high },
+            NormalizeMethod::Percentile => {
+                let (low, high) = window();
+                Normalization::Percentile { low, high }
+            }
+            NormalizeMethod::Range => {
+                let (low, high) = window();
+                Normalization::Range { low, high }
+            }
         }
     }
 }
