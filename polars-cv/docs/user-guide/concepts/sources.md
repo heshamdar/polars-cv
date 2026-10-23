@@ -185,6 +185,13 @@ To source the token another way, set `token_command` to any shell command that
 prints an access token (it takes precedence over the automatic `gcloud`
 delegation), or pass `gcs_bearer_token` to supply one yourself.
 
+`polars_cv.check_cloud_access(path, cloud_options=...)` resolves the
+credential a read of `path` would use and exercises it once (a `HEAD`, or a
+one-level listing of a prefix ending in `/`), before any row is read. It
+returns `{"backend", "credential_source", "status"}` (`status` is `"ok"` or
+`"not_found"`) and raises `polars_cv.CloudCredentialError`, naming the
+credential, when the credential cannot be obtained or is refused.
+
 `token_command` is provider-agnostic across the OAuth-bearer backends: the same
 option works for **Azure** Blob Storage (e.g.
 `az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv`).

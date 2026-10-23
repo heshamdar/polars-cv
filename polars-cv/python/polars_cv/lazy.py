@@ -518,15 +518,12 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         The stat nodes are aliased with prefixed names: "stat_mean", "stat_std", etc.
 
         Args:
-            include: List of statistics to compute. Valid options:
-                - "mean": Arithmetic mean
-                - "std": Standard deviation
-                - "min": Minimum value
-                - "max": Maximum value
-                - "sum": Sum of all values
-                If None, defaults to ["mean", "std", "min", "max"].
-
-        mask: Reduce only the pixels this mask selects, as ``statistics()``.
+            include: Statistics to compute, as ``statistics()`` names them
+                ("mean", "std", "min", "max", "sum", "median", "count", or a
+                percentile "pNN"). If None, defaults to
+                ["mean", "std", "min", "max"].
+            mask: Reduce only the pixels this mask selects, as
+                ``statistics()``.
 
         Returns:
             A LazyPipelineExpr representing the merged statistics pipelines.

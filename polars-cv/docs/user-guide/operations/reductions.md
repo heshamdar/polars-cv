@@ -87,6 +87,16 @@ heat.reduce_masked(breast, reduction="p75", axis=0).sink("numpy")
 heat.statistics(include=["mean", "median", "p10", "p90", "count"], mask=breast)
 ```
 
+`masked_select` is the selection itself, NumPy's `image[mask > 0].ravel()`:
+a 1-D buffer of the image's dtype, as long as the row's selection. Any
+buffer op reads it, so a histogram or a reduction of the masked values is a
+pipe away; `reduce_masked(mask, reduction=r)` with no axis is
+`masked_select(mask)` then `reduce(r)`.
+
+```python
+heat.masked_select(breast).pipe(Pipeline().histogram(bins=32)).sink("native")
+```
+
 ## Popcount
 
 Count the number of set bits (1s) in the buffer. Useful for binary masks or Hamming distances.
