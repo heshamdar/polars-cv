@@ -38,6 +38,17 @@ uv run pytest tests/reference/ -v                   # reference tests
 python scripts/test_multiple_python.py --all        # multi-Python (3.11-3.13)
 ```
 
+### Engines: never pin in-memory
+
+The suite runs under the lane's engine: streaming by default (`conftest.py`),
+in-memory in `verify.sh`'s second lane. **A test never switches to the
+in-memory engine on its own** — that runs it in memory in both lanes and hides
+exactly the failures only streaming shows (a `(row n)` that was a batch's index
+shipped that way). Run both engines explicitly when comparing them; otherwise
+call `.collect()` and let the lane decide. An assertion about a row number uses
+`tests/_rows.py::assert_names_row`, which holds on every engine.
+`test_engine_pin_guard.py` rejects a pin.
+
 The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`.
 Build it with `maturin develop` — **debug**, not `--release`. That is what CI and
 `scripts/verify.sh` build, the whole suite passes against it, and a release

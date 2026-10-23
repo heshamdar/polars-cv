@@ -325,11 +325,11 @@ fn flat_values(
     // values half-filled.
     for (i, row) in rows.iter().enumerate() {
         if let Some(other) = row.as_ref().filter(|data| data.dtype() != dtype) {
-            polars_bail!(ComputeError:
-                "row {} produced {} but the column was planned as {}. The \
-                 planner's dtype contract disagrees with the Rust implementation.",
-                i, other.dtype().short_name(), dtype.short_name()
-            );
+            polars_bail!(ComputeError: "{}", crate::row_ref::at_row(format!(
+                "produced {} but the column was planned as {}. The planner's dtype \
+                 contract disagrees with the Rust implementation.",
+                other.dtype().short_name(), dtype.short_name()
+            ), i, rows.len()));
         }
     }
     // Each row's place in the values: where it starts, and how many it takes
@@ -466,8 +466,10 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
             polars_ensure!(
                 data.shape().len() == ndim,
                 ComputeError:
-                "row {} has shape {:?} but the list column was planned with rank {}",
-                i, data.shape(), ndim
+                "{}", crate::row_ref::at_row(format!(
+                    "shape {:?}, but the list column was planned with rank {}",
+                    data.shape(), ndim
+                ), i, rows.len())
             );
         }
     }
@@ -545,8 +547,10 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
             polars_ensure!(
                 element_count(data) == expected_len,
                 ComputeError:
-                "row {} has {} values but the array column was planned with shape {:?} ({} values)",
-                i, element_count(data), shape, expected_len
+                "{}", crate::row_ref::at_row(format!(
+                    "{} values, but the array column was planned with shape {:?} ({} values)",
+                    element_count(data), shape, expected_len
+                ), i, rows.len())
             );
         }
     }

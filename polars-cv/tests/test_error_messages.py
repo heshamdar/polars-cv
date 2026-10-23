@@ -17,6 +17,7 @@ import pytest
 
 from polars_cv import Pipeline
 
+from ._rows import ROW, assert_names_row
 from .conftest import plugin_required
 
 pytestmark = plugin_required
@@ -210,7 +211,8 @@ def test_a_per_row_value_is_refused_by_the_same_rule_as_a_literal() -> None:
         _contour_frame([_SQUARE], k=0).select(
             pl.col("c").contour.largest(k=pl.col("k"))
         )
-    assert f"{rule} (row 0)" in str(ran.value), (rule, str(ran.value))
+    assert rule in str(ran.value), (rule, str(ran.value))
+    assert_names_row(str(ran.value), 0, 1)
 
 
 @pytest.mark.parametrize(
@@ -247,14 +249,14 @@ def test_a_set_operation_names_its_step_as_every_step_does(op, engine_name):
 def _row_error(run) -> str:
     """The refusal *run* raises, without either surface's wrapping: the
     pipeline's ``Pipeline execution failed:`` / ``Op resolution error:``, the
-    accessor's `` (row n)``, and polars' trailing expression trace."""
+    row reference (``tests/_rows.py``), and polars' trailing expression trace."""
     with pytest.raises(pl.exceptions.ComputeError) as raised:
         run()
     message = str(raised.value).split("\n\nThis error occurred")[0]
     message = message.replace("the plugin failed with message: ", "")
     for wrapper in ("Pipeline execution failed: ", "Op resolution error: "):
         message = message.replace(wrapper, "")
-    return re.sub(r" \(row \d+\)$", "", message)
+    return ROW.sub("", message).rstrip()
 
 
 #: (pipeline method, accessor method, arguments, the row, its step's name)
@@ -341,19 +343,20 @@ def _first_line(err: pytest.ExceptionInfo) -> str:
     return str(err.value).split("\n\nThis error occurred")[0]
 
 
-def test_a_failing_row_is_named_as_the_accessors_name_it(in_memory_engine) -> None:
-    """A row an op refuses ends ``(row n)``, as a ``.contour`` accessor's
-    refusal does: the second row here is narrower than the crop."""
+def test_a_failing_row_is_named_as_the_accessors_name_it() -> None:
+    """A row an op refuses ends with its row reference, as a ``.contour``
+    accessor's refusal does: the second row here is narrower than the crop."""
     frame = pl.DataFrame({"img": [_rgb_png(40, 12), _rgb_png(31, 12)]})
     pipe = _image().crop(left=8, width=24)
     with pytest.raises(pl.exceptions.ComputeError) as err:
         frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
     first = _first_line(err)
     assert "crop window 8..32 on axis 1" in first, first
-    assert first.endswith("(row 1)"), first
+    assert ROW.search(first) and first.endswith(")"), first
+    assert_names_row(first, 1, 2)
 
 
-def test_a_bad_per_row_value_names_its_op_and_parameter(in_memory_engine) -> None:
+def test_a_bad_per_row_value_names_its_op_and_parameter() -> None:
     """A per-row value no op can take names the op, the parameter it was
     bound to and the column it came from, once each."""
     frame = pl.DataFrame({"img": [_rgb_png(31, 12)], "l": [-1]})
@@ -361,8 +364,34 @@ def test_a_bad_per_row_value_names_its_op_and_parameter(in_memory_engine) -> Non
     with pytest.raises(pl.exceptions.ComputeError) as err:
         frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
     first = _first_line(err)
-    assert "crop: width: Parameter column 'l' at row 0: -1 cannot be negative" in first
-    assert "(row 0)" not in first, first
+    assert "crop: width: Parameter column 'l': -1 cannot be negative" in first, first
+    assert first.count("crop:") == 1, first
+    assert_names_row(first, 0, 1)
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_a_row_is_named_within_its_batch_on_every_engine(engine: str) -> None:
+    """The row a refusal names is the batch's, and the message says so.
+
+    The 51st row is bad. In memory the plugin is called once with the whole
+    frame, so the batch is the frame and the row is 50. Under streaming,
+    with batches of at most 8 rows, the plugin cannot know where its batch
+    starts: the row is within a batch of 8 or fewer, which the message states
+    rather than presenting a batch index as the frame's.
+    """
+    rows = [_rgb_png(40, 12)] * 50 + [_rgb_png(31, 12)]
+    lf = pl.DataFrame({"img": rows}).lazy()
+    pipe = _image().crop(left=8, width=24)
+    with pl.Config(streaming_chunk_size=8):
+        with pytest.raises(pl.exceptions.ComputeError) as err:
+            lf.select(pl.col("img").cv.pipe(pipe).sink("numpy")).collect(engine=engine)
+    first = _first_line(err)
+    assert_names_row(first, 50, 51)
+    ((index, batch),) = [(int(i), int(n)) for i, n in ROW.findall(first)]
+    if engine == "in-memory":
+        assert (index, batch) == (50, 51), first
+    else:
+        assert batch <= 8, first
 
 
 def test_a_window_bound_past_2_31_suggests_an_unsigned_wrap() -> None:
@@ -377,3 +406,18 @@ def test_a_window_bound_past_2_31_suggests_an_unsigned_wrap() -> None:
     first = _first_line(err)
     assert "4294967295" in first
     assert "unsigned subtraction" in first, first
+
+
+def test_a_parameter_is_named_as_the_user_wrote_it_not_by_its_wrapper() -> None:
+    """``resize(height=pl.col("h"))``'s null names ``resize: height:``. The
+    engine's ``ImageOp { kind }`` wrapper is not a parameter, and its field
+    name leaked into the message as ``resize: kind: height:``."""
+    frame = pl.DataFrame(
+        {"img": [_rgb_png(4, 4)], "h": [None]}, schema_overrides={"h": pl.Int64}
+    )
+    pipe = _image().resize(height=pl.col("h"), width=4)
+    with pytest.raises(pl.exceptions.ComputeError) as err:
+        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+    first = _first_line(err)
+    assert "resize: height: Parameter column 'h' has a null value" in first, first
+    assert "kind" not in first, first

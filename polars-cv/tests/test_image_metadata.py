@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 
 import polars_cv  # noqa: F401 — registers .cv namespace
+from tests._rows import assert_names_row
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -322,5 +323,5 @@ class TestSignedMetadata:
             df.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
         msg = str(err.value)
         assert "crop: left = -1 is negative" in msg
-        assert "(row 0)" in msg
+        assert_names_row(msg, 0, 1)
         assert "4294967295.." not in msg

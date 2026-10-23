@@ -134,7 +134,7 @@ impl<'a> ContourColumn<'a> {
             .map(|outline| {
                 outline
                     .into_region()
-                    .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
+                    .map_err(|e| polars_err!(ComputeError: "{}", e))
             })
             .collect::<PolarsResult<_>>()
             .map(Some)
@@ -180,7 +180,7 @@ impl<'a> ContourColumn<'a> {
             }
             _ => Ok(None),
         };
-        contours.map_err(|e| e.at_row(row))
+        contours.map_err(ReadError::into_error)
     }
 
     /// Row `i`'s one contour, for a function of a single contour, or `None`
@@ -291,13 +291,13 @@ impl From<String> for ReadError {
 }
 
 impl ReadError {
-    /// The error for row `row`: a layout is the column's
-    /// ([`column_error`]), raised under every `on_error` policy; a value is
-    /// the row's, naming it.
-    fn at_row(self, row: usize) -> PolarsError {
+    /// The error: a layout is the column's ([`column_error`]), raised under
+    /// every `on_error` policy; a value is the row's (which the row loop,
+    /// `GeomParams::map_rows`, names).
+    fn into_error(self) -> PolarsError {
         match self {
             ReadError::Layout(msg) => column_error(msg),
-            ReadError::Value(msg) => polars_err!(ComputeError: "{} (row {})", msg, row),
+            ReadError::Value(msg) => polars_err!(ComputeError: "{}", msg),
         }
     }
 }
@@ -463,7 +463,7 @@ impl<'a, T> Chunks<'a, T> {
             }
             i -= chunk.0.len();
         }
-        polars_bail!(OutOfBounds: "geometry row {} out of bounds", row)
+        polars_bail!(OutOfBounds: "internal: a geometry row past the column's end")
     }
 }
 
@@ -525,7 +525,7 @@ impl<'a> PointColumn<'a> {
             }
         };
         read.map(Some)
-            .map_err(|msg| polars_err!(ComputeError: "{} (row {})", msg, row))
+            .map_err(|msg| polars_err!(ComputeError: "{}", msg))
     }
 
     /// Row `row`'s one point, or `None` for a null row, for an operand that
@@ -601,7 +601,7 @@ impl<'a> BBoxColumn<'a> {
             }
         };
         read.map(Some)
-            .map_err(|msg| polars_err!(ComputeError: "{} (row {})", msg, row))
+            .map_err(|msg| polars_err!(ComputeError: "{}", msg))
     }
 
     /// Row `row`'s one bbox, or `None` for a null row. A set is refused.
@@ -801,7 +801,8 @@ mod tests {
             let column = ContourColumn::new(&col);
             assert!(column.row(0).is_ok());
             let err = column.row(1).unwrap_err().to_string();
-            assert!(err.contains("null") && err.contains("row 1"), "{err}");
+            // The reader names no row: the row loop does (`GeomParams::map_rows`).
+            assert!(err.contains("null") && !err.contains("(row"), "{err}");
         }
         // A null point struct in the ring.
         let null_point =
@@ -834,7 +835,7 @@ mod tests {
                 let column = ContourColumn::new(&col);
                 assert!(column.row(0).is_ok());
                 let err = column.row(1).unwrap_err().to_string();
-                assert!(err.contains("non-finite") && err.contains("row 1"), "{err}");
+                assert!(err.contains("non-finite") && !err.contains("(row"), "{err}");
                 let pts = points(["x", "y"], &xs, &ys);
                 let err = PointColumn::new(&pts).get(1).unwrap_err().to_string();
                 assert!(err.contains("non-finite"), "{bad}: {err}");
@@ -959,7 +960,7 @@ mod tests {
         );
         let col = points(["x", "y"], &[Some(1.0), None], &[Some(3.0), Some(4.0)]);
         let err = PointColumn::new(&col).get(1).unwrap_err().to_string();
-        assert!(err.contains("null x") && err.contains("row 1"), "{err}");
+        assert!(err.contains("null x") && !err.contains("(row"), "{err}");
     }
 
     #[test]
@@ -1022,7 +1023,7 @@ mod tests {
             [&[Some(1.0)], &[Some(2.0)], &[None], &[Some(4.0)]],
         );
         let err = BBoxColumn::new(&col).single(0).unwrap_err().to_string();
-        assert!(err.contains("null width") && err.contains("row 0"), "{err}");
+        assert!(err.contains("null width") && !err.contains("(row"), "{err}");
         let three = StructChunked::from_series(
             "b".into(),
             1,

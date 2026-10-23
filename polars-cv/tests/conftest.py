@@ -42,7 +42,7 @@ _ENGINE_AFFINITY = os.environ.setdefault("POLARS_ENGINE_AFFINITY", "streaming")
 pl.Config.set_engine_affinity(_ENGINE_AFFINITY)  # type: ignore[arg-type]
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    pass
 
 
 # --- Parity declarations (tests/_parity.py) ---------------------------------
@@ -125,27 +125,6 @@ plugin_required = pytest.mark.skipif(
     not _plugin_available(),
     reason="Requires compiled plugin (run maturin develop first)",
 )
-
-
-@pytest.fixture
-def in_memory_engine() -> Iterator[None]:
-    """Pin the default engine to ``in-memory`` for the duration of one test.
-
-    For a test whose assertion is only well-defined under the in-memory engine —
-    an error that names the *absolute* row index of an offending parameter. A
-    per-row plugin under the streaming engine sees one morsel at a time and
-    cannot know its global offset, so it reports a morsel-local row number
-    instead. The suite defaults to streaming (see the affinity set above), so a
-    test asserting the absolute index must opt back into in-memory explicitly;
-    this mirrors the explicit ``engine=`` legs of the streaming-vs-eager
-    equivalence tests.
-    """
-    previous = os.environ.get("POLARS_ENGINE_AFFINITY")
-    pl.Config.set_engine_affinity("in-memory")
-    try:
-        yield
-    finally:
-        pl.Config.set_engine_affinity(previous)  # type: ignore[arg-type]  # None clears it
 
 
 def make_test_png(

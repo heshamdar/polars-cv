@@ -103,8 +103,13 @@ A parameter column can contain nulls. By default a null parameter fails the
 query, naming the column and the row:
 
 ```
-Parameter column 'target_h' has a null value at row 7
+resize: height: Parameter column 'target_h' has a null value (row 7 of 64 in this batch)
 ```
+
+A row is named within the batch the plugin was called with: the whole frame
+under the in-memory engine, one batch of it under the streaming engine (which
+cannot tell the plugin where its batch starts). When the batch is the whole
+frame (`7 of 64` in a 64-row frame), the number is the frame's row.
 
 `.on_null_param("null")` opts into null-in/null-out instead: the outputs that
 depend on the affected operation are null for that row, exactly as for a null

@@ -74,7 +74,7 @@ def run(
     input_column: str,
     pipe: Pipeline,
     *,
-    engine: str = "in-memory",
+    engine: str | None = None,
     name: str = "out",
     sink: str | None = None,
 ) -> list:
@@ -83,10 +83,13 @@ def run(
     *sink* defaults to :func:`sink_for`. Naming one is for callers whose
     pipeline cannot use the domain default — the ``list`` sink needs a
     concrete element dtype, which an image source without ``dtype=`` does not
-    have.
+    have. *engine* ``None`` is the lane's engine (streaming by default, then
+    in-memory in the second lane); a test comparing engines names both.
     """
     expr = pl.col(input_column).cv.pipe(pipe).sink(sink or sink_for(pipe))
-    return df.lazy().with_columns(**{name: expr}).collect(engine=engine)[name].to_list()
+    lf = df.lazy().with_columns(**{name: expr})
+    out = lf.collect() if engine is None else lf.collect(engine=engine)
+    return out[name].to_list()
 
 
 def assert_matches_per_row_literals(

@@ -21,6 +21,7 @@ import math
 import polars as pl
 import pytest
 
+from tests._rows import assert_names_row
 from tests.conftest import plugin_required
 
 # A CCW unit square, 100x100 at the origin.
@@ -253,14 +254,14 @@ class TestDetectionMatchingThreshold:
         assert out[0]["right_idx"] == [0]
         assert out[1]["right_idx"] == [None]
 
-    def test_out_of_range_threshold_names_the_row(self, in_memory_engine: None) -> None:
-        # Absolute row index in the message is an in-memory-engine guarantee.
+    def test_out_of_range_threshold_names_the_row(self) -> None:
         pred, gt = self._boxes()
         df = _two_rows(p=[pred, pred], g=[gt, gt], thr=[0.5, 1.5])
-        with pytest.raises(Exception, match=r"threshold must be in \[0, 1\].*row 1"):
+        with pytest.raises(Exception, match=r"threshold must be in \[0, 1\]") as err:
             df.with_columns(
                 m=pl.col("p").bbox.correspond(pl.col("g"), threshold=pl.col("thr"))
             )
+        assert_names_row(str(err.value), 1, 2)
 
 
 @plugin_required

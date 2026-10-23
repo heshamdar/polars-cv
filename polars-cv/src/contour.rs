@@ -206,7 +206,7 @@ fn correspondence_anyvalue(result: &pairwise::Correspondence) -> AnyValue<'stati
 /// caller mistake that would otherwise show up as elements silently never
 /// visited — the class of quiet degradation this codebase rejects — so it
 /// fails here, naming the row.
-fn parse_order_list(value: &AnyValue, n_left: usize, row: usize) -> PolarsResult<Vec<usize>> {
+fn parse_order_list(value: &AnyValue, n_left: usize) -> PolarsResult<Vec<usize>> {
     let AnyValue::List(series) = value else {
         return Err(crate::geom_params::column_error(format!(
             "Expected List[UInt32] for order, got {value:?}"
@@ -214,8 +214,8 @@ fn parse_order_list(value: &AnyValue, n_left: usize, row: usize) -> PolarsResult
     };
     if series.len() != n_left {
         polars_bail!(ComputeError:
-            "order length ({}) must match the number of left elements ({}) in row {}",
-            series.len(), n_left, row
+            "order length ({}) must match the number of left elements ({})",
+            series.len(), n_left
         );
     }
     let mut order = Vec::with_capacity(series.len());
@@ -224,17 +224,17 @@ fn parse_order_list(value: &AnyValue, n_left: usize, row: usize) -> PolarsResult
         let item = series.get(i)?;
         let index = item.try_extract::<u32>().map_err(|_| {
             polars_err!(ComputeError:
-                "order must contain non-negative integers, found {:?} in row {}", item, row)
+                "order must contain non-negative integers, found {:?}", item)
         })? as usize;
         if index >= n_left {
             polars_bail!(ComputeError:
-                "order entry {} is out of range for {} left elements in row {}",
-                index, n_left, row
+                "order entry {} is out of range for {} left elements",
+                index, n_left
             );
         }
         if std::mem::replace(&mut seen[index], true) {
             polars_bail!(ComputeError:
-                "order repeats entry {} in row {}; it must be a permutation", index, row
+                "order repeats entry {}; it must be a permutation", index
             );
         }
         order.push(index);
@@ -268,14 +268,14 @@ fn correspond_rows<T>(
         // check names the offending row. A null `threshold` under
         // `on_null="null"` nulls this row instead (`map_rows`).
         let threshold = params.value(threshold, i)?;
-        check_range("threshold", threshold, 0.0, 1.0, i)?;
+        check_range("threshold", threshold, 0.0, 1.0)?;
         let order = match order {
             Some(column) => {
                 let value = params.operand_value(column, i)?;
                 if value.is_null() {
                     None
                 } else {
-                    Some(parse_order_list(&value, left.len(), i)?)
+                    Some(parse_order_list(&value, left.len())?)
                 }
             }
             None => None,
@@ -554,16 +554,16 @@ fn contour_correspond_by_coverage(inputs: &[Series], kwargs: GeomKwargs) -> Pola
             let tolerance = params.value(tolerance, i)?;
             if !(tolerance.is_finite() && tolerance >= 0.0) {
                 polars_bail!(ComputeError:
-                    "{}: tolerance must be a non-negative number, got {} (row {})",
-                    NAME, tolerance, i);
+                    "{}: tolerance must be a non-negative number, got {}",
+                    NAME, tolerance);
             }
             let step = match sample_step {
                 Some(step) => {
                     let step = params.value(step, i)?;
                     if !(step.is_finite() && step > 0.0) {
                         polars_bail!(ComputeError:
-                            "{}: sample_step must be a positive number, got {} (row {})",
-                            NAME, step, i);
+                            "{}: sample_step must be a positive number, got {}",
+                            NAME, step);
                     }
                     Some(step)
                 }
@@ -599,7 +599,7 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
         // holding a null. A null or empty heatmap is a null row.
         let Some(heatmap) =
             crate::graph::decode::decode_list_or_array_source(heatmap_series, i, None, false)
-                .map_err(|e| polars_err!(ComputeError: "label_reduce image, row {}: {}", i, e))?
+                .map_err(|e| polars_err!(ComputeError: "label_reduce image: {}", e))?
         else {
             return Ok(None);
         };
@@ -661,9 +661,8 @@ contour_accessor! {
     |outline, params, row| {
         if !outline.holes().is_empty() {
             polars_bail!(ComputeError:
-                "to_coords: a contour with holes has no single coordinate list \
-                 (row {}); read its rings from the struct's exterior and holes",
-                row
+                "to_coords: a contour with holes has no single coordinate list; \
+                 read its rings from the struct's exterior and holes"
             );
         }
         let order = params.value(order, row)?;
@@ -726,7 +725,7 @@ fn boundary_options(
             if !(step.is_finite() && step > 0.0) {
                 polars_bail!(ComputeError:
                     "boundary_distances: sample_step must be a positive number, \
-                     got {} (row {})", step, row);
+                     got {}", step);
             }
             Some(step)
         }
@@ -739,7 +738,7 @@ fn boundary_options(
             Some(f) if f.width > 0.0 && f.height > 0.0 => Some(f),
             Some(f) => polars_bail!(ComputeError:
                 "boundary_distances: the frame must have a positive width and \
-                 height, got {} x {} (row {})", f.width, f.height, row),
+                 height, got {} x {}", f.width, f.height),
         },
     };
     Ok(Some((step, frame)))
@@ -835,9 +834,8 @@ contour_accessor! {
     |outline, params, row| {
         let Outline::Open(line) = outline else {
             polars_bail!(ComputeError:
-                "close_along_border: the contour is already closed (row {}); it \
-                 takes an open line (is_closed = false)",
-                row
+                "close_along_border: the contour is already closed; it \
+                 takes an open line (is_closed = false)"
             );
         };
         transforms::close_along_border(
@@ -847,7 +845,7 @@ contour_accessor! {
             params.value(arc, row)?,
             params.value(max_snap, row)?,
         )
-        .map_err(|e| polars_err!(ComputeError: "close_along_border: {} (row {})", e, row))
+        .map_err(|e| polars_err!(ComputeError: "close_along_border: {}", e))
     }
 }
 

@@ -155,7 +155,9 @@ impl<'a> GeomParams<'a> {
     /// thread), and each row runs under [`row`](Self::row): `Ok(None)` is a
     /// null row (a null input), and so is a null per-row parameter under
     /// `on_null="null"`. The first failing range's error is the earliest
-    /// failing row's, as a sequential loop would report.
+    /// failing row's, as a sequential loop would report. A row's error is
+    /// named here, once, by [`crate::row_ref`] (a column error is about no
+    /// row and is left as it is); `row` names none of its own.
     pub fn map_rows<T: Send>(
         &self,
         len: usize,
@@ -165,7 +167,15 @@ impl<'a> GeomParams<'a> {
         let parts = crate::row_split::run_split(len, |_, range| {
             let params = shared.params();
             range
-                .map(|i| params.row(|| row(&params, i)).map(Option::flatten))
+                .map(|i| {
+                    params
+                        .row(|| row(&params, i))
+                        .map(Option::flatten)
+                        .map_err(|e| match e {
+                            PolarsError::SchemaMismatch(_) => e,
+                            e => e.wrap_msg(|m| crate::row_ref::at_row(m, i, len)),
+                        })
+                })
                 .collect::<PolarsResult<Vec<_>>>()
         });
         let mut rows = Vec::with_capacity(len);
@@ -220,10 +230,8 @@ impl<'a> GeomParams<'a> {
             shape: None,
         };
         let step: GeometryOp = view_buffer::mode::Resolve::resolve(op, &values)?;
-        step.check().map_err(|e| match row {
-            Some(row) => polars_err!(ComputeError: "{} (row {})", e, row),
-            None => polars_err!(ComputeError: "{}", e),
-        })?;
+        step.check()
+            .map_err(|e| polars_err!(ComputeError: "{}", e))?;
         Ok(step)
     }
 
@@ -266,11 +274,11 @@ pub fn parsed_as_another(name: &str) -> PolarsError {
 /// Validate a resolved parameter that must lie within an inclusive range.
 ///
 /// Per-row parameters cannot be range-checked once per batch, so the check
-/// moves into the row loop and names the offending row.
-pub fn check_range(name: &str, value: f64, lo: f64, hi: f64, row: usize) -> PolarsResult<()> {
+/// moves into the row loop (whose [`GeomParams::map_rows`] names the row).
+pub fn check_range(name: &str, value: f64, lo: f64, hi: f64) -> PolarsResult<()> {
     if !(lo..=hi).contains(&value) {
         polars_bail!(ComputeError:
-            "{} must be in [{}, {}], got {} at row {}", name, lo, hi, value, row
+            "{} must be in [{}, {}], got {}", name, lo, hi, value
         );
     }
     Ok(())

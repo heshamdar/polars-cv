@@ -126,20 +126,19 @@ impl<'a> ParamCol<'a> {
     /// [`NullParamPolicy::Null`] the context is additionally flagged, and the
     /// caller that owns the row (`graph::compiled`, or `GeomParams::row`) turns
     /// that flag into a null result instead of propagating the error.
-    fn on_null(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsError {
+    fn on_null(&self, ctx: &ParamCtx) -> PolarsError {
         if ctx.null_policy() == NullParamPolicy::Null {
             ctx.flag_null();
         }
         polars_err!(ComputeError:
-            "Parameter column '{}' has a null value at row {}",
-            self.series.name(), row_idx
+            "Parameter column '{}' has a null value", self.series.name()
         )
     }
 
-    fn cast_err(&self, row_idx: usize, target: &str) -> PolarsError {
+    fn cast_err(&self, target: &str) -> PolarsError {
         polars_err!(ComputeError:
-            "Parameter column '{}' value at row {} cannot be represented as {}",
-            self.series.name(), row_idx, target
+            "Parameter column '{}' value cannot be represented as {}",
+            self.series.name(), target
         )
     }
 
@@ -155,23 +154,21 @@ impl<'a> ParamCol<'a> {
             TypedCol::U32(ca) => ca.get(idx).map(i64::from),
             TypedCol::I32(ca) => ca.get(idx).map(i64::from),
             TypedCol::U64(ca) => match ca.get(idx) {
-                Some(v) => Some(i64::try_from(v).map_err(|_| self.cast_err(row_idx, "i64"))?),
+                Some(v) => Some(i64::try_from(v).map_err(|_| self.cast_err("i64"))?),
                 None => None,
             },
             TypedCol::I64(ca) => ca.get(idx),
             TypedCol::F32(ca) => match ca.get(idx) {
-                Some(v) => {
-                    Some(float_to_i64(v as f64).ok_or_else(|| self.cast_err(row_idx, "i64"))?)
-                }
+                Some(v) => Some(float_to_i64(v as f64).ok_or_else(|| self.cast_err("i64"))?),
                 None => None,
             },
             TypedCol::F64(ca) => match ca.get(idx) {
-                Some(v) => Some(float_to_i64(v).ok_or_else(|| self.cast_err(row_idx, "i64"))?),
+                Some(v) => Some(float_to_i64(v).ok_or_else(|| self.cast_err("i64"))?),
                 None => None,
             },
             // A Boolean column for a numeric parameter is a mis-routed
             // expression, not a 0/1 value the user asked for.
-            TypedCol::Bool(_) | TypedCol::Str(_) => return Err(self.cast_err(row_idx, "i64")),
+            TypedCol::Bool(_) | TypedCol::Str(_) => return Err(self.cast_err("i64")),
             // Route the fallback path's null through `on_null` too, rather than
             // letting `try_extract` report it as a cast failure.
             TypedCol::Other(s) => match s.get(idx)? {
@@ -179,7 +176,7 @@ impl<'a> ParamCol<'a> {
                 v => return v.try_extract::<i64>(),
             },
         };
-        value.ok_or_else(|| self.on_null(row_idx, ctx))
+        value.ok_or_else(|| self.on_null(ctx))
     }
 
     /// Read the value at `row_idx` as f64.
@@ -196,13 +193,13 @@ impl<'a> ParamCol<'a> {
             TypedCol::I64(ca) => ca.get(idx).map(|v| v as f64),
             TypedCol::F32(ca) => ca.get(idx).map(f64::from),
             TypedCol::F64(ca) => ca.get(idx),
-            TypedCol::Bool(_) | TypedCol::Str(_) => return Err(self.cast_err(row_idx, "f64")),
+            TypedCol::Bool(_) | TypedCol::Str(_) => return Err(self.cast_err("f64")),
             TypedCol::Other(s) => match s.get(idx)? {
                 AnyValue::Null => None,
                 v => return v.try_extract::<f64>(),
             },
         };
-        value.ok_or_else(|| self.on_null(row_idx, ctx))
+        value.ok_or_else(|| self.on_null(ctx))
     }
 
     /// Read the value at `row_idx` as a string, for per-row enum parameters.
@@ -213,7 +210,7 @@ impl<'a> ParamCol<'a> {
     pub fn get_str(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<&'a str> {
         let idx = self.value_index(row_idx);
         match &self.typed {
-            TypedCol::Str(ca) => ca.get(idx).ok_or_else(|| self.on_null(row_idx, ctx)),
+            TypedCol::Str(ca) => ca.get(idx).ok_or_else(|| self.on_null(ctx)),
             _ => Err(polars_err!(ComputeError:
                 "Parameter column '{}' must be a String column for an enum \
                  parameter, got {}",
@@ -226,7 +223,7 @@ impl<'a> ParamCol<'a> {
     pub fn get_bool(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<bool> {
         let idx = self.value_index(row_idx);
         match &self.typed {
-            TypedCol::Bool(ca) => ca.get(idx).ok_or_else(|| self.on_null(row_idx, ctx)),
+            TypedCol::Bool(ca) => ca.get(idx).ok_or_else(|| self.on_null(ctx)),
             _ => Err(polars_err!(ComputeError:
                 "Parameter column '{}' must be a Boolean column for a flag \
                  parameter, got {}",

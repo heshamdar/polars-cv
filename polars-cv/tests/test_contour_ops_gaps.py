@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 
 from polars_cv.geometry import CONTOUR_SCHEMA, POINT_SCHEMA
+from tests._rows import assert_names_row
 from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
@@ -985,7 +986,7 @@ class TestContourEnumParamsResolvePerRow:
             )
 
     def test_a_null_in_the_parameter_column_follows_on_null(
-        self, ccw_square: dict, in_memory_engine: None
+        self, ccw_square: dict
     ) -> None:
         """A per-row field also buys the shared null-param policy.
 
@@ -1003,8 +1004,9 @@ class TestContourEnumParamsResolvePerRow:
             x=pl.col("contour").contour.on_null("null").ensure_winding(pl.col("want"))
         )
         assert nulled["x"][1] is None
-        with pytest.raises(Exception, match="null value at row 1"):
+        with pytest.raises(Exception, match="null value") as err:
             df.with_columns(x=pl.col("contour").contour.ensure_winding(pl.col("want")))
+        assert_names_row(str(err.value), 1, 2)
 
 
 @plugin_required

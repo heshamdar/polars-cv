@@ -389,7 +389,7 @@ pub(crate) fn decode_list_or_array_source(
     }
     if require_contiguous {
         return Err(format!(
-            "Source 'require_contiguous=true' reads rows in place, but row {row_idx} holds \
+            "Source 'require_contiguous=true' reads rows in place, but this row holds \
              {:?} values, not {}: they would have to be converted. Declare the column's own \
              dtype (and .cast() after the source), cast the column, or use \
              require_contiguous=false.",
@@ -428,7 +428,7 @@ fn list_row_grid(series: &Series, row_idx: usize) -> Result<Option<RowGrid<'_>>,
         }
         here
     }) else {
-        return Err(format!("row {row_idx} is past the end of the column"));
+        return Err("internal: the row is past the end of the column".to_string());
     };
     if chunk.is_null(i) {
         return Ok(None);
