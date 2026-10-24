@@ -11,15 +11,15 @@ Categories
 1. ``test_plan_equals_exec_*`` — the headline invariant: the dtype Polars infers
    at planning time (``collect_schema``) MUST equal the dtype actually produced at
    execution time (``collect``). This is the contract the whole architecture rests
-   on (assessment findings A1/A2/A3).
+   on.
 2. ``test_registry_parity_*`` — every operation known to the Python ``Pipeline``
    builder must be known to the Rust executor and have exactly one contract
-   (findings B1/B2). Activated once the Rust introspection API lands; until then
+   (registry parity). Activated once the Rust introspection API lands; until then
    they skip with a clear reason so they switch on automatically.
 3. ``test_enum_parity_*`` — Python user-facing enums must match the Rust enum
-   variants exactly; no second hand-authored copy (finding A4).
+   variants exactly; no second hand-authored copy (enum parity).
 4. ``test_no_duplicate_enum_*`` — the overlapping Python dtype enums collapse into
-   one (finding A4 / "no repeated enums").
+   one ("no repeated enums").
 
 Tests that depend on not-yet-implemented introspection hooks are written now (so
 the target is unambiguous) and skip until the hook exists, rather than being
@@ -118,7 +118,7 @@ _leaf_dtype = leaf_dtype
 
 
 # ---------------------------------------------------------------------------
-# 1. Plan == Exec (A1/A2/A3) — the headline invariant
+# 1. Plan == Exec — the headline invariant
 # ---------------------------------------------------------------------------
 
 # (label, build-pipeline-callable) for image-source pipelines whose output dtype
@@ -180,7 +180,7 @@ def test_plan_equals_exec_list_sink(label, build):
 def test_plan_equals_exec_blur_preserves_float_dtype():
     """blur preserves dtype: `cast(f32).blur()` must plan AND produce f32.
 
-    Regression for an A1 contract drift: the Python blur contract declared
+    Regression for a Plan == Exec contract drift: the Python blur contract declared
     FIXED_U8 while view-buffer's blur preserves the input dtype, so this
     pipeline previously failed the execution-time dtype guard.
     """
@@ -220,7 +220,7 @@ def test_plan_equals_exec_scalar_reduction():
 
 @plugin_required
 def test_auto_16bit_image_list_sink_requires_explicit_dtype():
-    """A2: an image source with no known dtype cannot feed a typed list sink.
+    """Plan == Exec: an image source with no known dtype cannot feed a typed list sink.
 
     The decoded dtype is only known at runtime, so the planner must refuse to
     guess (it would silently fall back to u8 and diverge from the realized u16).
@@ -233,7 +233,7 @@ def test_auto_16bit_image_list_sink_requires_explicit_dtype():
 
 @plugin_required
 def test_auto_16bit_with_explicit_dtype_plan_equals_exec():
-    """A2: with an explicit source dtype, the 16-bit image plans and realizes u16."""
+    """Plan == Exec: with an explicit source dtype, the 16-bit image plans and realizes u16."""
     df = pl.DataFrame({"out": [_png(mode="I;16")]})
     pipe = Pipeline().source("image_bytes", dtype="u16")
     expr = pl.col("out").cv.pipe(pipe).sink("list")
@@ -244,7 +244,7 @@ def test_auto_16bit_with_explicit_dtype_plan_equals_exec():
 
 @plugin_required
 def test_plan_equals_exec_binary_promote():
-    """A3: a promoting binary op (true division) declares the promoted dtype.
+    """Plan == Exec: a promoting binary op (true division) declares the promoted dtype.
 
     ``divide`` of two u8 images promotes to f32 (true division), and the planned
     dtype must match what execution produces — not the left operand's u8. The
@@ -364,7 +364,7 @@ def test_plan_equals_exec_shape(label, build, mode):
 
 
 # ---------------------------------------------------------------------------
-# 2. Registry parity (B1/B2) — one op, known everywhere, contracted once
+# 2. Registry parity — one op, known everywhere, contracted once
 # ---------------------------------------------------------------------------
 
 
@@ -507,11 +507,11 @@ def test_every_op_is_emitted_by_a_builder():
 
 @plugin_required
 def test_registry_parity_no_dead_contracts():
-    """Ops the Pipeline never emits are not executable (B2: sobel/laplacian/sharpen)."""
+    """Ops the Pipeline never emits are not executable (registry parity: sobel/laplacian/sharpen)."""
     import json
 
     # sobel/laplacian/sharpen lower to convolve2d; they are not real executable
-    # ops, so planning them must fail (their standalone contracts are dead, B2).
+    # ops, so planning them must fail (their standalone contracts are dead: registry parity).
     for lowered in ("sobel", "laplacian", "sharpen"):
         with pytest.raises(ValueError, match="Unknown operation"):
             _planned_after(json.dumps({"op": lowered}), _plan_state("buffer", "u8", 3))
@@ -734,7 +734,7 @@ def test_op_schema_rules_are_required_not_defaulted():
 
 
 # ---------------------------------------------------------------------------
-# 3. Enum parity (A4) — Python user enums match Rust variants
+# 3. Enum parity — Python user enums match Rust variants
 # ---------------------------------------------------------------------------
 
 
@@ -805,7 +805,7 @@ def test_binary_ops_match_rust():
 
 
 def test_dtype_is_the_only_python_dtype_name_table():
-    """No Python enum may re-list dtype spellings alongside DType (A4).
+    """No Python enum may re-list dtype spellings alongside DType (enum parity).
 
     `OutputDType` used to: `f32`/`f64`/`u8` plus a `preserve` value that was a
     synonym for the default rather than a dtype. It is gone, and `out_dtype`

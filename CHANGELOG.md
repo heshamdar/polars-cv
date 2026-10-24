@@ -19,6 +19,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   implementation. `OptFlags(common_subexpression_elimination=...)` and
   `POLARS_CV_OPTIMIZATIONS` are unchanged; `PassSpec.tier` gains `"graph"`
   (#159).
+- **The benchmark project's `polars-cv` pin is now checked.**
+  `benchmarks/pyproject.toml` pins the published wheel and lags the repo on
+  purpose, so `test_version_consistency.py` no longer lets it drift unseen: it
+  must be an exact pin, no later than `__version__`, match `benchmarks/uv.lock`,
+  and be named in `benchmarks/README.md`. `CONTRIBUTING.md`'s release checklist
+  says the pin tracks PyPI and is not bumped with the repo.
+- Test and docs housekeeping: `test_sanitation.py` sections are named by the
+  invariant they check (Plan == Exec, registry parity, enum parity) instead of
+  by assessment-finding labels, and both READMEs and `polars-cv/benchmarks/
+  AGENTS.md` point to the explanation of the two benchmark trees.
 
 ## [0.41.0] — 2026-10-23
 

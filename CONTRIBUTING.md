@@ -107,6 +107,12 @@ production publishing (consider adding required reviewers).
      `scripts/with-pyo3-env.sh cargo update -p polars-cv -p view-buffer -p polars-cv-macros`
    - `polars-cv/uv.lock` — refresh with `uv lock` from `polars-cv/`
 
+   `benchmarks/pyproject.toml` (and its `uv.lock`) is deliberately **not**
+   bumped here: its `polars-cv==` pin tracks PyPI, not the repo version, and
+   moves only once the new release is published and the benchmarks are re-run
+   against it (see `benchmarks/README.md`). `test_version_consistency.py` checks
+   that it never runs ahead of the repo and that its lock and README agree.
+
    The compiled extension needs no action: its `__version__` and its source
    hash are both baked in at build time. The hash is what detects a stale `.so`
    — the install is editable, so Python edits are live but the extension is not
