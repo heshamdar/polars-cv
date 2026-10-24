@@ -23,6 +23,7 @@ sys.path.insert(0, str(python_src))
 # imported it first (`test_expression_params.py` did, and failed run alone).
 # Pure Python; importing it loads no compiled code.
 import polars_cv  # noqa: E402, F401
+from tests._plugin_gate import ci_requires_plugin  # noqa: E402
 
 # Streaming is the project's default execution engine (see
 # docs/user-guide/concepts/streaming.md), and polars' too for lazy queries since
@@ -125,6 +126,18 @@ plugin_required = pytest.mark.skipif(
     not _plugin_available(),
     reason="Requires compiled plugin (run maturin develop first)",
 )
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    # Under CI the skip above would turn a missing build into a green run, so
+    # the session ends instead. The decision is tests/_plugin_gate.py's.
+    if ci_requires_plugin(os.environ, _plugin_available()):
+        pytest.exit(
+            "CI is set but the compiled plugin is not built: plugin_required "
+            "tests would be skipped and the run would pass without them. "
+            "Run `maturin develop` before pytest.",
+            returncode=1,
+        )
 
 
 def make_test_png(
