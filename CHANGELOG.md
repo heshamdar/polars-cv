@@ -9,6 +9,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **A graph node's per-row value, `NodeOutput`, lives in the plugin's graph
+  (`polars-cv/src/graph/node_output.rs`), not in the view-buffer engine**, which
+  has no node concept and never used it. `Domain` stays in the engine, whose
+  histogram, reduction and LUT ops report their output domain with it.
+  `ViewDto::input_domain`/`output_domain`, which returned `Buffer` as
+  constants, are gone: `GraphStep` states that a single-buffer op maps a buffer
+  to a buffer (#160).
 - **Common-subexpression elimination is declared where it runs: in Python.**
   It reads the expressions' identities, which only the Python graph holds, yet
   it was a variant of Rust's `LogicalPass` whose only arm refused to run it,

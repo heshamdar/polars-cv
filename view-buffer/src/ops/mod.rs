@@ -10,19 +10,15 @@
 //! - Histogram operations (binning and quantization)
 //! - Perceptual hash operations (image fingerprinting)
 //!
-//! # Typed Pipeline Nodes
+//! # Domains
 //!
-//! The [`NodeOutput`] enum represents outputs from pipeline nodes across different
-//! data domains. The [`Domain`] enum categorizes these domains for type-checking
-//! during pipeline construction and execution.
-
-use std::sync::Arc;
+//! The [`Domain`] enum names the kind of data an op consumes or produces
+//! (buffer, contour, scalar, vector); the ops whose output domain depends on
+//! their parameters (histogram, reduction, …) report it. The per-node value
+//! that carries one of them belongs to the plugin's graph.
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-
-use crate::geometry::contour::Outline;
-use crate::ViewBuffer;
 
 pub mod affine;
 pub mod binary;
@@ -72,7 +68,7 @@ pub use view::ViewOp;
 pub use crate::geometry::ops::GeometryOp;
 
 // ============================================================
-// Typed Pipeline Node System
+// Domains
 // ============================================================
 
 /// Data domain for type-checking pipeline operations.
@@ -112,69 +108,5 @@ impl Domain {
 impl std::fmt::Display for Domain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
-    }
-}
-
-/// Output from a pipeline node - supports multiple data domains.
-///
-/// Uses `Arc` for cheap cloning and efficient graph caching
-/// without copying data.
-#[derive(Debug, Clone)]
-pub enum NodeOutput {
-    /// Array/image data (reference-counted for cheap cloning).
-    Buffer(Arc<ViewBuffer>),
-    /// Extracted contours (geometry domain).
-    Contours(Arc<Vec<Outline>>),
-    /// Single scalar value.
-    Scalar(f64),
-    /// Multiple scalar values (bbox, centroid, etc.).
-    Vector(Arc<Vec<f64>>),
-}
-
-impl NodeOutput {
-    /// Get the domain of this output.
-    pub fn domain(&self) -> Domain {
-        match self {
-            NodeOutput::Buffer(_) => Domain::Buffer,
-            NodeOutput::Contours(_) => Domain::Contour,
-            NodeOutput::Scalar(_) => Domain::Scalar,
-            NodeOutput::Vector(_) => Domain::Vector,
-        }
-    }
-
-    /// Try to extract a buffer from this output.
-    pub fn as_buffer(&self) -> Option<&Arc<ViewBuffer>> {
-        match self {
-            NodeOutput::Buffer(buf) => Some(buf),
-            _ => None,
-        }
-    }
-
-    /// Try to extract contours from this output.
-    pub fn as_contours(&self) -> Option<&Arc<Vec<Outline>>> {
-        match self {
-            NodeOutput::Contours(contours) => Some(contours),
-            _ => None,
-        }
-    }
-
-    /// Create a Buffer output from a ViewBuffer (takes ownership).
-    pub fn from_buffer(buf: ViewBuffer) -> Self {
-        NodeOutput::Buffer(Arc::new(buf))
-    }
-
-    /// Create a Contours output from a Vec of contours.
-    pub fn from_contours(contours: Vec<Outline>) -> Self {
-        NodeOutput::Contours(Arc::new(contours))
-    }
-
-    /// Create a Scalar output.
-    pub fn from_scalar(val: f64) -> Self {
-        NodeOutput::Scalar(val)
-    }
-
-    /// Create a Vector output.
-    pub fn from_vector(vals: Vec<f64>) -> Self {
-        NodeOutput::Vector(Arc::new(vals))
     }
 }

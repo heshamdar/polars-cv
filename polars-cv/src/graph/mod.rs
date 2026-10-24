@@ -6,6 +6,7 @@
 //! - Source decoding and output encoding utilities
 
 // Internal modules with descriptive names
+pub(crate) mod node_output;
 #[path = "types.rs"]
 pub(crate) mod types;
 

@@ -28,7 +28,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use view_buffer::ops::{Domain, NodeOutput};
+use crate::graph::node_output::NodeOutput;
+use view_buffer::ops::Domain;
 use view_buffer::{PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::formats::source::Source;
