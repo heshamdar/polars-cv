@@ -49,6 +49,26 @@ repos:
         files: \.pyi?$
         pass_filenames: false
 
+      # Dead code and undeclared dependencies in the shipped package. Both read
+      # their configuration from [tool.vulture] / [tool.deptry] in
+      # polars-cv/pyproject.toml, and resolve paths from that directory, so each
+      # entry changes into it first. Not yet in CI: see the commit message.
+      - id: vulture
+        name: vulture (dead code, 90% confidence)
+        description: Find unused imports and unreachable code in the package
+        entry: sh -c "cd polars-cv && uvx vulture"
+        language: system
+        files: \.py$
+        pass_filenames: false
+
+      - id: deptry
+        name: deptry (dependency declarations)
+        description: Find undeclared and unused dependencies of the package
+        entry: sh -c "cd polars-cv && uvx deptry ."
+        language: system
+        files: \.py$|pyproject\.toml$
+        pass_filenames: false
+
       - id: cargo-fmt
         name: cargo fmt
         description: Check Rust formatting
