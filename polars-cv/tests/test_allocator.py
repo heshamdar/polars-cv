@@ -11,6 +11,7 @@ call after the first (~40% slower). This makes that fallback a failure.
 
 import pytest
 
+from tests._plugin_gate import subprocess_env
 from tests.conftest import plugin_required
 
 pytestmark = [pytest.mark.structural, plugin_required]
@@ -65,7 +66,11 @@ def test_polars_counts_the_plugins_memory() -> None:
         """
     )
     r = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=subprocess_env(),
     )
     size, held, after = map(int, r.stdout.split())
     slack = 64 * 2**20  # polars' per-thread batching, over a few threads
