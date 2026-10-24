@@ -122,9 +122,8 @@ node's state, by id) and makes the node a dependency:
 (`Plan.operands`, Rust's `operands()`) and `merge_pipe`'s `_merged` branches, and
 `PipelineGraph._dependencies()` the same over the graph (through CSE's
 `_renamed`); Rust derives the same set from `input` plus the ops' `operands()`.
-There used to be a separate `upstream` list, positional (its first entry was
-the input) and restating the operands, which a builder could forget to extend
-(CR-117).
+There is no separate positional `upstream` list restating the operands: a
+builder could forget to extend one, so the dependencies are derived.
 
 ### Operation Contracts (view-buffer is the authority)
 
@@ -415,7 +414,7 @@ struct operations (measured on py-polars 1.42):
 
 Polars documents the extension-type API as unstable: keep every use of it in
 `extension_types.py` and `src/ext_types.rs`. Remaining work (tagged geometry
-outputs, defaults, metadata) is CR-80 to CR-82 in the root `ISSUES.md`.
+outputs, defaults, metadata) is listed under "Extension types" in the root `ISSUES.md`.
 
 ## Common Pitfalls
 

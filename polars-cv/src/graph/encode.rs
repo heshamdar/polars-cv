@@ -281,9 +281,9 @@ fn element_count(buf: &ViewBuffer) -> usize {
 // validity. Each value is copied once, from the row's buffer — through its
 // strides, whatever its layout — into the flat buffer.
 //
-// They used to build one `AnyValue` per *element* whenever the column was not
-// perfectly regular — every rank >= 2 list sink, and any array sink with a single
-// null row — which made those sinks ~34-40x slower than the numpy sink (CR-33).
+// They never build one `AnyValue` per *element*: that is ~34-40x slower than
+// the numpy sink, and an irregular column (every rank >= 2 list sink, any array
+// sink with a null row) must not need it.
 // There is no slow path to fall back to: an irregular row is either
 // representable here (ragged list rows, null rows) or an error.
 
@@ -1068,7 +1068,7 @@ mod tests {
 /// The tensor sinks (`list`, `array`) are built straight from one flat values
 /// buffer — never element by element through `AnyValue`, which made a rank-3
 /// `list` sink ~34x, and an `array` sink with a single null row ~40x, slower
-/// than the zero-copy numpy sink (CR-33).
+/// than the zero-copy numpy sink.
 #[cfg(test)]
 mod tensor_sink_tests {
     use super::{
@@ -1283,7 +1283,7 @@ mod tensor_sink_tests {
     }
 }
 
-/// The contour sink builds its column straight into Arrow (CR-36), and must
+/// The contour sink builds its column straight into Arrow, and must
 /// publish exactly what the per-contour `AnyValue` construction published.
 #[cfg(test)]
 mod contour_sink_tests {

@@ -679,7 +679,7 @@ mod boundary_close_tests {
 }
 
 // ============================================================================
-// Shaping: offset, union, smoothing, densifying, stroking (CR-98)
+// Shaping: offset, union, smoothing, densifying, stroking
 // ============================================================================
 
 /// The gap, in pixels, a round join's or cap's polygon aims for against its

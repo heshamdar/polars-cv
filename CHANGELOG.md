@@ -41,6 +41,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `tests/test_import_layering.py` holds both rules (no cycle in the top-level
   import graph; nothing inside the package imports the package root) and
   imports each submodule alone in a fresh interpreter.
+- Documentation only (issue #164): the architecture overview, data flow,
+  domain system, alpha-channel handling and known issues now live once, in the
+  root `AGENTS.md`, and `CLAUDE.md` points to them; the `lib.rs` description no
+  longer claims it defines `Plan`/`PlanState` (they are in `plan.rs`). Source
+  comments no longer cite `CR-NN` ledger ids (they state the invariant
+  instead), history-narrating docstrings are in the present tense, and the
+  `view-buffer` runner docs no longer link the removed `execution::tiling`
+  module.
 
 ## [0.41.0] — 2026-10-23
 

@@ -14,9 +14,9 @@
 //!   (`input_domains` for the input, `operand_domains` for the operands) and
 //!   validated against their concrete shapes and dtypes in one call.
 //!
-//! The executor's arms used to repeat flush → buffer read → operand lookup by
-//! id → validation → execute per step, each with its own error strings, and
-//! `rasterize(shape=<node>)` had a resolver of its own (CR-117).
+//! The executor's arms do not repeat flush → buffer read → operand lookup by
+//! id → validation → execute per step with their own error strings, and
+//! `rasterize(shape=<node>)` has no resolver of its own: this is the one path.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -376,7 +376,7 @@ fn operand_buffer(
 /// Whether a runtime `NodeOutput::Vector` may be read as a 1-D buffer here.
 ///
 /// The planner's `vector` *domain* and the runtime `Vector` *representation*
-/// are not the same set (CR-116). `perceptual_hash` and the histogram vector
+/// are not the same set. `perceptual_hash` and the histogram vector
 /// modes plan as `vector` but execute as `Buffer`, so the only steps that
 /// ever receive a runtime `Vector` are those fed by `ExtractShape`,
 /// `LabelReduce` or a contour measure.

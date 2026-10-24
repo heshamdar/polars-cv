@@ -179,8 +179,7 @@ pub struct ViewBuffer {
 ///
 /// The named argument for [`ViewBuffer::from_slice_aligned`] and
 /// [`ViewBuffer::is_aligned`], which together are this crate's alignment API.
-/// Zero-argument wrappers hardcoding it (`from_slice_simd_aligned`,
-/// `is_simd_aligned`) had no caller and were removed; the parameterised pair
+/// There are no zero-argument wrappers hardcoding it; the parameterised pair
 /// answers strictly more.
 pub const SIMD_ALIGNMENT: usize = 64;
 
@@ -498,7 +497,7 @@ impl ViewBuffer {
         // into a `&[T]`, and a misaligned slice is undefined behaviour rather
         // than a wrong value. A panic here is caught per row by the plugin and
         // reported as an engine bug; the constructors (e.g. `parse_blob`) are
-        // what keep untrusted data from reaching it (CR-41).
+        // what keep untrusted data from reaching it.
         assert!(
             (ptr as usize).is_multiple_of(std::mem::align_of::<T>()),
             "ViewBuffer pointer is not aligned for type {}; address={:p}, align={}",
@@ -1112,7 +1111,7 @@ impl ViewBuffer {
         // built), and every row `y < H` starts `y * row_stride` bytes from it
         // and spans `row_len` packed elements, which the layout keeps inside
         // the data. Offsets and strides are whole elements, so each row is
-        // aligned for `T` (CR-41).
+        // aligned for `T`.
         let base = unsafe { self.data.as_ptr().add(self.layout.offset) };
         Some(
             (0..shape[0])
@@ -1602,7 +1601,7 @@ impl ViewBuffer {
         let count: usize = self.layout.shape.iter().product();
         // SAFETY: the view is contiguous, so its `count` elements are packed
         // from `offset` inside the allocation this buffer solely owns;
-        // offsets are whole, aligned elements (CR-41).
+        // offsets are whole, aligned elements.
         Some(unsafe {
             std::slice::from_raw_parts_mut(
                 bytes.as_mut_ptr().add(self.layout.offset).cast::<T>(),

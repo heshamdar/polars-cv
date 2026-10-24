@@ -186,7 +186,7 @@ mod tests {
         s
     }
 
-    /// A row of the wrong kind is an error, never a null (CR-38).
+    /// A row of the wrong kind is an error, never a null.
     ///
     /// `encode_node_output` and `SinkKind` are two halves of one contract; if
     /// they ever disagree, `build_series_from_spec` used to publish the row as

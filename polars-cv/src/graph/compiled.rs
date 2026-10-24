@@ -131,7 +131,7 @@ pub struct CompiledGraph {
     /// The executed nodes in topological order, each with everything the row
     /// loop needs about it. Rows address nodes by position here, never by
     /// hashing their id: the id-keyed maps this replaced cost about a third
-    /// of the per-row executor time (CR-37).
+    /// of the per-row executor time.
     plan: Vec<NodePlan>,
     /// Node id → position in `plan`, for cross-node operand reads (`Binary`,
     /// `ApplyMask`, `ChannelMerge`, shape references), which name a node.
@@ -458,7 +458,7 @@ impl CompiledGraph {
             // (e.g. operands that cannot broadcast) by panicking. Caught only
             // once per call, one such row failed the whole batch even under
             // `on_error="null"`, and under streaming how much of the query it
-            // took down depended on the morsel size (CR-34). The per-row state
+            // took down depended on the morsel size. The per-row state
             // is rebuilt from scratch every row (`node_outputs` is reset, and the
             // null policies truncate `results` back to this row), so nothing a
             // panicking row half-wrote survives it.
@@ -823,12 +823,12 @@ struct CachedPlan {
 
 /// Distinct source layouts remembered per segment. A column whose rows keep
 /// changing shape stops being cached once this many are held, so a call's
-/// cache stays small; such segments plan per row, as they did before CR-37.
+/// cache stays small; such segments plan per row, as an uncached segment does.
 const PLAN_CACHE_LAYOUTS: usize = 16;
 
 /// The plans of every static buffer-op segment for one call, shared by the
 /// row ranges that call runs in parallel: a segment is planned once per
-/// distinct source layout per call (CR-37), whichever thread meets it first.
+/// distinct source layout per call, whichever thread meets it first.
 /// Per call, so nothing data-derived outlives it.
 struct PlanCache {
     /// Per node, per segment start: the layouts planned so far.
@@ -1867,7 +1867,7 @@ mod tests {
     }
 
     /// A static op segment is planned once per source dtype/shape/strides in a
-    /// call, not once per row (CR-37), and replanned when any of them changes.
+    /// call, not once per row, and replanned when any of them changes.
     #[test]
     fn static_segments_plan_once_per_source_layout() {
         let rows: Vec<Vec<u8>> = vec![
@@ -2129,8 +2129,8 @@ mod tests {
     }
 
     /// One call spreads its rows over the plugin's thread pool, so a
-    /// single-chunk frame on the in-memory engine is not single-threaded
-    /// (CR-32), and the rows still come back in order.
+    /// single-chunk frame on the in-memory engine is not single-threaded,
+    /// and the rows still come back in order.
     #[test]
     fn a_call_runs_its_rows_on_several_threads() {
         let _pool = crate::row_split::exclusive_pool();
@@ -2368,7 +2368,7 @@ mod tests {
         );
     }
 
-    // --- One operand path (CR-117) ---
+    // --- One operand path ---
 
     /// Every registered op that reads another node, with its operands renamed
     /// to `to`, and the domain its own input and its operands are in.

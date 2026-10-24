@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(typ(b"not json"), None);
     }
 
-    /// The ADC probe runs on every remote read with no options (CR-131), so
+    /// The ADC probe runs on every remote read with no options, so
     /// it reads the file once per version of it: again only when its mtime
     /// or size changes.
     #[test]

@@ -11,7 +11,7 @@ use crate::core::map::{map_new, ElementMap};
 use crate::ops::binary::BinaryOp;
 
 /// Whether [`apply_mask`] can combine a buffer of `buffer_shape` with a mask of
-/// `mask_shape` and `mask_dtype` (CR-34, CR-110).
+/// `mask_shape` and `mask_dtype`.
 ///
 /// The mask's dtype says its scale, so only a u8 mask (`[0, 255]`) or a float
 /// one (`[0, 1]`) has one; any other is refused, never read on a guessed
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(inverted.as_slice::<f32>(), &[0.0, 0.0, 1.5, 2.0]);
     }
 
-    /// The mask's dtype says its scale, whatever the buffer's (CR-110): a
+    /// The mask's dtype says its scale, whatever the buffer's: a
     /// u8 255 keeps a float pixel, a u8 mask weighs a u16 one by `m / 255`,
     /// a float mask weighs a u8 one by `m`, and no other mask dtype passes.
     #[test]

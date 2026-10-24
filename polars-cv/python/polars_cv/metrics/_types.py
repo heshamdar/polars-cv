@@ -36,11 +36,9 @@ DEFAULT_CLASS = "__all__"
 
 #: The detection frame every matcher produces: names **and** dtypes.
 #:
-#: The dtypes used to live only inside ``_empty_detection_table()``, which
-#: hand-wrote them because this table declared names alone. Nothing tied that
-#: hand-written set to what a populated match returns, so the empty and
-#: non-empty paths could disagree — and a caller concatenating the two would
-#: have found out at the concat, not here.
+#: The dtypes are declared here, beside the names, so the empty and non-empty
+#: paths cannot disagree: a caller concatenating the two would otherwise find
+#: out at the concat, not here.
 #:
 #: ``test_matcher_schemas_match_the_declaration`` pins this against real matcher
 #: output, so this is a record of observed behaviour rather than an intention.

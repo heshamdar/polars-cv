@@ -274,7 +274,7 @@ impl<'a> Walk<'a> {
                     let unit_ptr = std::hint::black_box(row.wrapping_offset(k as isize * step));
                     // SAFETY: unit `k` of a row is `unit_elems` packed
                     // elements inside the view's data, aligned for `T`
-                    // (offsets and strides are whole elements, CR-41).
+                    // (offsets and strides are whole elements).
                     sink.take(unsafe {
                         std::slice::from_raw_parts(unit_ptr.cast::<T>(), unit_elems)
                     });
@@ -413,7 +413,7 @@ impl<'w> Cursor<'w> {
             self.consume(bytes);
             // SAFETY: the `n` elements from `at` lie inside one packed unit
             // of the view's data, aligned for `T` (offsets and strides are
-            // whole elements, CR-41), and live as long as the view.
+            // whole elements), and live as long as the view.
             return unsafe { std::slice::from_raw_parts(at.cast::<T>(), n) };
         }
         assert!(
