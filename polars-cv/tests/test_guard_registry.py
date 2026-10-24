@@ -34,6 +34,7 @@ GUARDS = (
     "test_guard_registry.py",
     "test_join_ratchet.py",
     "test_parity_ratchets.py",
+    "test_pre_tool_hook_guard.py",
     "test_plugin_gate_guard.py",
     "test_row_ref_guard.py",
     "test_version_consistency.py",
