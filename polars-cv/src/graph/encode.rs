@@ -6,12 +6,12 @@
 //! - Building typed list/array series from row data
 //! - Converting contours to Polars representations
 
+use crate::graph::node_output::NodeOutput;
 use polars::prelude::*;
 use view_buffer::geometry::contour::Outline;
 use view_buffer::geometry::{
     extract::extract_contours, measures, rasterize::rasterize, transforms, Contour,
 };
-use view_buffer::ops::NodeOutput;
 use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 
 use super::sink_kind::SinkKind;
@@ -947,11 +947,12 @@ mod tests {
     /// registering it.
     #[test]
     fn every_graph_geometry_op_executes() {
+        use crate::graph::node_output::NodeOutput;
         use crate::graph::step::GraphStep;
         use crate::params::ParamCtx;
         use view_buffer::geometry::contour::Outline;
         use view_buffer::geometry::Contour;
-        use view_buffer::ops::{Domain, NodeOutput};
+        use view_buffer::ops::Domain;
         use view_buffer::ViewBuffer;
 
         let sample_contours = || {

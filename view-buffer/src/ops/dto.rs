@@ -5,7 +5,6 @@ use crate::ops::filter::ConvolveOp;
 use crate::ops::image::ImageOp;
 use crate::ops::traits::{IdentityRule, Op};
 use crate::ops::view::ViewOp;
-use crate::ops::Domain;
 use polars_cv_macros::Resolve;
 
 /// A pure Data Transfer Object (DTO) for single-buffer operation plans.
@@ -61,17 +60,6 @@ impl<M: Mode> ViewDto<M> {
             ViewDto::Color(op) => op.check(),
             ViewDto::Filter(op) => op.check(),
         }
-    }
-
-    /// Every single-buffer op consumes a buffer.
-    pub fn input_domain(&self) -> Domain {
-        Domain::Buffer
-    }
-
-    /// Every single-buffer op produces a buffer (domain-changing steps are
-    /// graph-level concerns in the plugin's `GraphStep`).
-    pub fn output_domain(&self) -> Domain {
-        Domain::Buffer
     }
 
     /// The rule that determines this operation's output dtype.

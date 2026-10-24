@@ -15,9 +15,9 @@
 use polars::prelude::*;
 use std::sync::Arc;
 
+use crate::graph::node_output::NodeOutput;
 use view_buffer::geometry::contour::Outline;
 use view_buffer::mode::Wire;
-use view_buffer::ops::NodeOutput;
 use view_buffer::GeometryOp;
 
 use crate::geom_arity::{Arity, ContourOutput};

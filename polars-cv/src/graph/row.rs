@@ -22,9 +22,10 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use crate::graph::node_output::NodeOutput;
 use smallvec::SmallVec;
 use view_buffer::geometry::label::{label_plane, reduce_regions, region_pixels, LabelRegionMode};
-use view_buffer::ops::{Domain, NodeOutput};
+use view_buffer::ops::Domain;
 use view_buffer::ViewBuffer;
 
 use super::encode::{execute_geometry_op, execute_region_op};

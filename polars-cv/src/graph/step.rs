@@ -92,7 +92,8 @@ impl<M: Mode> GraphStep<M> {
     /// The domain this step produces from an `input` in its accepted domains.
     pub fn output_domain(&self, input: Domain) -> Domain {
         match self {
-            GraphStep::Buffer(dto) => dto.output_domain(),
+            // A single-buffer op maps a buffer to a buffer.
+            GraphStep::Buffer(_) => Domain::Buffer,
             GraphStep::Geometry(op) => op.output_domain(),
             GraphStep::Reduction(op) => op.output_domain(),
             GraphStep::Histogram(op) => op.output_domain(),

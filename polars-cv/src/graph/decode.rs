@@ -6,8 +6,8 @@
 //! - Building output series from row results
 //! - Padding and masking operations
 
+use crate::graph::node_output::NodeOutput;
 use polars::prelude::*;
-use view_buffer::ops::NodeOutput;
 use view_buffer::{PlannedDType, ViewBuffer};
 
 use crate::execute::decode_image_bytes;
