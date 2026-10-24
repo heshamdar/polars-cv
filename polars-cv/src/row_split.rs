@@ -3,7 +3,7 @@
 //! Rows are independent, so a call can be split into contiguous row ranges
 //! that run on several threads and come back in row order. Without this a
 //! call used one core however many rows it held, so the in-memory engine was
-//! single-threaded on a single-chunk frame (CR-32). The pool is the plugin's
+//! single-threaded on a single-chunk frame. The pool is the plugin's
 //! own copy of polars' `THREAD_POOL` (a plugin links its own polars-core, so
 //! it cannot join the host's), sized by `POLARS_MAX_THREADS`.
 //!

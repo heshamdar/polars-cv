@@ -320,29 +320,7 @@ uv run mkdocs build --strict     # Build the site (fails on broken links/nav)
 
 ## Architecture
 
-The project has three layers:
-
-```
-Python: polars_cv
-  Pipeline builder, expression namespaces, DAG construction,
-  schema inference, lazy composition, geometry/metrics APIs
-        ↕ JSON graph serialization
-Rust: polars-cv (the plugin)
-  vb_graph expression entry point, graph execution, source
-  decoding, sink encoding, per-row parameter resolution, cloud I/O
-        ↕ Rust crate dependency
-Rust: view-buffer (the engine)
-  ViewBuffer, ViewExpr, stride-aware operations, kernel fusion,
-  zero-copy interop with Arrow/ndarray
-```
-
-### Data Flow
-
-1. User builds a `Pipeline` in Python → internally creates a `PipelineGraph` (DAG of `GraphNode`s).
-2. `.sink(...)` on a `LazyPipelineExpr` serializes the graph to JSON and calls `_plugin.call("vb_graph", ...)` — the only route to `register_plugin_function`, which pins the exact `.so` and hands the plugin storage rather than extension types.
-3. Polars calls the Rust `vb_graph` expression function with the JSON and any per-row expression parameters.
-4. Rust deserializes into a `UnifiedGraph` and compiles it once into a process-wide cache (`graph/compiled.rs`: parsed spec, topological order, slot-bound params); repeat calls (e.g. per streaming morsel) pay only a hash lookup. It then executes topologically per-row: decode source → apply operations → encode sink.
-5. Returns a Polars `Series` (dtype depends on sink: Binary, Float64, Struct, List, Array).
+The three-layer overview (Python builder, Rust plugin, view-buffer engine) is in [`AGENTS.md`](AGENTS.md#architecture), and the end-to-end flow from `Pipeline` to `Series` in [`AGENTS.md`](AGENTS.md#data-flow). The module tables below say where each piece lives.
 
 ### Key Python Modules (`polars-cv/python/polars_cv/`)
 
@@ -370,7 +348,7 @@ Rust: view-buffer (the engine)
 ### Key Rust Modules
 
 **polars-cv/src/**
-- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `Plan`/`PlanState` classes and `enum_catalog`/`op_catalog`/`io_catalog`/`check_graph` FFI the Python builder reads (`plan.rs` holds `Plan` — a pipeline's source, typed ops and the state at every op boundary — and `plan::step`, run once per appended op; `passes.rs` the node-scope optimisation passes)
+- `lib.rs` — the one `#[pymodule]`: it registers every class and function the Python side sees, defines the `vb_graph` polars expression function and dtype inference, and holds the `#[pyfunction]` catalogue/check FFI the Python builder reads (`enum_catalog`/`op_catalog`/`io_catalog`/`geom_catalog`/`check_graph`/`check_geom_call`, the geometry `*_schema` functions, `extension_types`, the `_check_cloud_access`/`_this_repr` helpers and the row-parallelism controls). The `#[pyclass]`es and the rest are defined elsewhere: `plan.rs` holds `Plan` and `PlanState` (Rust type `plan::State`) — a pipeline's source, typed ops and the state at every op boundary, plus `plan::step` (run once per appended op) and the `_plan_from_json`/`_plan_state_from_json` functions; `passes.rs` the node-scope optimisation passes and `pass_catalog`; `output.rs` the `ArrowBytes` class and `binary_rows`
 - `ops/` — the typed op catalogue: `typed_ops!` lists the op *families* — view-buffer's engine enums (`ImageOpKind`, `ComputeOp`, `ViewOp`, …) and `ops/graph.rs`'s `GraphOp` for the graph-only ops — each generic over a `Mode` (`Wire`: `Param<T>`/`Literal<T>` fields; `Exec`: plain values), deriving `Ops`/`Resolve`, with the position it takes in a `GraphStep` (`graph/step.rs`). `TypedOp` is `GraphStep<Wire>`: the planner reads its rules (generic `Op` impls, `GraphOp`'s own) directly, and resolving it per row gives the `GraphStep<Exec>` that runs; `catalog_json()` feeds `scripts/gen_ops.py`
 - `formats/` — the typed sources and sinks: the `Source`/`Sink` families, one `#[derive(Ops)]` variant per format
 - `execute.rs` — source decoding helpers (image bytes) and byte-sink encoding
@@ -406,16 +384,7 @@ Rust: view-buffer (the engine)
 
 ### Domain System
 
-Every `Pipeline` tracks a **domain** through operations:
-
-| Domain | What it holds | Produced by |
-|--------|---------------|-------------|
-| `buffer` | Multi-dimensional array | `source()` (defaults to `"auto"`; also `"image_bytes"`, `"file_path"`, …) |
-| `contour` | Geometry vectors | `extract_contours()`, `source("contour")` |
-| `scalar` | Single numeric value | `reduce_sum()` |
-| `vector` | 1-D numeric array (incl. histogram buckets) | `perceptual_hash()`, `histogram()` |
-
-Domain constraints are enforced at pipeline-build time. Operations that don't match the current domain raise immediately in Python, not at execution time.
+The `buffer` / `contour` / `scalar` / `vector` domains, what produces each, and the build-time enforcement are in [`AGENTS.md`](AGENTS.md#domain-system).
 
 ### Parameter Values
 
@@ -431,17 +400,7 @@ Every operation on `Pipeline` returns a new clone. Do not mutate an existing pip
 
 ### Alpha Channel Handling
 
-Image sources always preserve alpha. How each operation treats channels (and
-therefore alpha) is its `OpShape` (`view-buffer/src/ops/shape_rule.rs`), the
-one authority for shape: the planner reads the channel count as the shape's
-axis 2 and the rank as its length, so neither is declared twice.
-- `Preserve` (and the H/W-only shapes: resize, pad, crop, …) — the channel axis
-  passes through (alpha included).
-- `ColorChannels { channels, .. }` — alpha is split off, the op runs on the
-  color channels, then alpha is re-attached (e.g. `RGBA`→gray yields `GrayA`).
-- `SingleChannel` — `[H, W, C]` → `[H, W, 1]` (`grayscale`/`canny`), dropping
-  any alpha.
-- `Dynamic` / an unknown input channel count — not knowable at plan time.
+How each op treats channels and alpha (its `OpShape`) is in [`AGENTS.md`](AGENTS.md#alpha-channel-handling).
 
 ### Canonical Paths
 
@@ -545,4 +504,4 @@ Subsystem-specific AGENTS.md files provide deeper guidance:
 
 ## Known Limitations
 
-- f64 and 32/64-bit integer inputs through the float-promoting scalar ops execute correctly (in f64) but are excluded from kernel fusion, which computes in f32.
+See [`AGENTS.md`](AGENTS.md#known-issues).

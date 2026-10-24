@@ -1,9 +1,9 @@
 //! Pure operation runners — apply one op to one full buffer.
 //!
-//! These functions have no tiling or strategy logic; that lives in
-//! [`execution::tiling`] and [`execution::plan`].  Everything here is
-//! `pub(crate)` so both the full-image path and the tiling path can call the
-//! same implementations.
+//! These functions carry no sequencing or strategy logic; the flat
+//! execution plan that calls them is in [`crate::execution::plan`].
+//! Everything here is `pub(crate)` so the plan executor and the expression
+//! layer share the same implementations.
 
 use crate::core::buffer::ViewBuffer;
 #[cfg(feature = "image_interop")]
@@ -175,8 +175,8 @@ pub fn apply_channel_swap(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
     })
 }
 
-/// Whether [`apply_channel_merge`] can merge buffers of these shapes and dtypes
-/// (CR-34, CR-111): at least one input, every input `[H, W]` or `[H, W, C]`
+/// Whether [`apply_channel_merge`] can merge buffers of these shapes and dtypes:
+/// at least one input, every input `[H, W]` or `[H, W, C]`
 /// with the same H and W, and all of one dtype (each is read as the first
 /// input's element type).
 ///
@@ -481,7 +481,7 @@ thread_local! {
     /// Scratch buffer for the horizontal pass of separable Gaussian blur.
     /// Holds f32 values for the current image (h × w × channels). Grows to
     /// fit the largest image seen per thread and is never shrunk — amortised
-    /// O(1) allocation like TILE_EXTRACT_BUF in tiling.rs.
+    /// O(1) allocation.
     static BLUR_HORIZ_BUF: std::cell::RefCell<Vec<f32>> =
         const { std::cell::RefCell::new(Vec::new()) };
 
@@ -1064,7 +1064,7 @@ fn coordinate_grid(buf: &ViewBuffer, normalized: bool) -> ViewBuffer {
     ViewBuffer::from_vec_with_shape(data, vec![h, w, 2])
 }
 
-/// Inner implementation of image operations (without tiling logic).
+/// Inner implementation of image operations (the per-op dispatch, without plan sequencing).
 #[cfg(feature = "image_interop")]
 #[inline]
 fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
@@ -1296,8 +1296,8 @@ impl BlurAcc for f64 {
 /// is never shrunk — zero allocator round-trip on warm paths.
 #[cfg(feature = "image_interop")]
 /// The separable Gaussian blur, run through [`dispatch`] so the whole body
-/// (conversion, both passes, the output clamp) has an AVX2 build (CR-35:
-/// ~1.4x over the wheels' SSE2 baseline; dispatching only the row axpy
+/// (conversion, both passes, the output clamp) has an AVX2 build
+/// (~1.4x over the wheels' SSE2 baseline; dispatching only the row axpy
 /// measured slower).
 fn separable_gaussian_blur_typed<T, F>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where

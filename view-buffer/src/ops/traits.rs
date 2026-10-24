@@ -190,7 +190,7 @@ pub trait Op {
     /// ([`validate_concrete`](crate::ops::validation::validate_concrete)), so
     /// one definition serves both and nothing classifies an error afterwards.
     ///
-    /// **Required, with no default** (CR-34): the executor calls it against
+    /// **Required, with no default**: the executor calls it against
     /// the concrete input before running the op, so a shape the plan could not
     /// see becomes a row error instead of an index-out-of-bounds panic. An op
     /// that accepts anything says so with an explicit `Ok(())`; a new op cannot

@@ -48,16 +48,20 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 
 ## Architecture
 
+The project has three layers:
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Python: polars_cv                                      │
-│  Pipeline builder, expression namespaces, graph         │
-│  construction, schema inference, validation             │
-├─────────────────────────────────────────────────────────┤
+│  Pipeline builder, expression namespaces, DAG           │
+│  construction, schema inference, validation, lazy       │
+│  composition, geometry/metrics APIs                     │
+├────────────── JSON graph serialization ─────────────────┤
 │  Rust: polars-cv (the plugin)                           │
-│  Graph execution, source decoding, sink encoding,       │
-│  parameter resolution, cloud I/O                        │
-├─────────────────────────────────────────────────────────┤
+│  vb_graph expression entry point, graph execution,      │
+│  source decoding, sink encoding, per-row parameter      │
+│  resolution, cloud I/O                                  │
+├────────────── Rust crate dependency ────────────────────┤
 │  Rust: view-buffer (the engine)                         │
 │  ViewBuffer, ViewExpr, stride-aware ops, kernel fusion, │
 │  zero-copy interop (Arrow, ndarray, image)              │
@@ -66,37 +70,11 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 
 ### Data Flow
 
-```
-Python Pipeline spec
-  → JSON graph serialization (PipelineGraph)
-  → _plugin.call("vb_graph", graph_json, input columns)   # the one route to register_plugin_function
-  → Polars calls Rust vb_graph(inputs, kwargs)
-  → UnifiedGraph::from_json() → topological execution
-  → Per-row: decode source → apply ops (ViewExpr/ViewBuffer) → encode sink
-  → Returns Series (Binary, Float64, Struct, List, Array)
-```
-
-### Domain System
-
-Pipelines track data domain through operations:
-
-| Domain | Description | Example |
-|--------|-------------|---------|
-| `buffer` | Multi-dimensional arrays (images) | After `source()` (defaults to `"auto"`; also `"image_bytes"`, `"file_path"`, …) |
-| `contour` | Geometry (vectors of points) | After `extract_contours()` |
-| `scalar` | Single numeric values | After `reduce_sum()` |
-| `vector` | Fixed-length numeric arrays, incl. histogram buckets | After `perceptual_hash()`, `bounding_box()`, `histogram()` |
-
-### Alpha Channel Handling
-
-Alpha channels are **always preserved** during image decoding (RGBA → 4ch, GrayA → 2ch). How each operation treats channels (and therefore alpha) is its `OpShape` (`view-buffer/src/ops/shape_rule.rs`); the planner reads the channel count as the shape's axis 2 and the rank as its length:
-
-- **`Preserve`** and the H/W-only shapes — all channels processed uniformly (resize, normalize, flip, etc.)
-- **`ColorChannels { channels, .. }`** — alpha separated, op applied to color channels, alpha restored (cvt_color)
-- **`SingleChannel`** — alpha discarded, one output channel (grayscale, canny)
-- **`Dynamic`**, or an unknown input channel count — not knowable at plan time
-
-Image sources have unknown channel count at planning time. Users can assert known channels with `.assert_shape(channels=4)`.
+1. The user builds a `Pipeline` in Python, which internally creates a `PipelineGraph` (a DAG of `GraphNode`s).
+2. `.sink(...)` on a `LazyPipelineExpr` serializes the graph to JSON and calls `_plugin.call("vb_graph", graph_json, input columns)`. That is the only route to `register_plugin_function`: it pins the exact `.so` and hands the plugin storage rather than extension types.
+3. Polars calls the Rust `vb_graph` expression function with the JSON and any per-row expression parameters.
+4. Rust deserializes the JSON into a `UnifiedGraph` and compiles it once into a process-wide cache (`graph/compiled.rs`: parsed spec, topological order, slot-bound params). Repeat calls (e.g. per streaming morsel) pay only a hash lookup. It then executes topologically, per row: decode source → apply ops (`ViewExpr`/`ViewBuffer`) → encode sink.
+5. It returns a Polars `Series` (dtype depends on the sink: Binary, Float64, Struct, List, Array).
 
 ### Expression Namespaces
 
@@ -179,7 +157,9 @@ CI and wheel jobs clear it with `RUSTFLAGS=""`.
 
 ## Known Issues
 
-- **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers (`view-buffer/src/ops/elementwise/mod.rs::lower_to_scalars`).
+- **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers. They execute correctly (in f64) but are excluded from kernel fusion (`view-buffer/src/ops/elementwise/mod.rs::lower_to_scalars`).
+
+Deferred work and verified defects are tracked in the root `ISSUES.md`, not here.
 
 ## Release History
 

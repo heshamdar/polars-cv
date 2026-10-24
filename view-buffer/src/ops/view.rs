@@ -460,7 +460,7 @@ impl<M: Mode> Op for ViewOp<M> {
                 // An `end` of `usize::MAX` is "to the end of this axis". Any
                 // other bound past the axis is a window outside the input:
                 // rejected rather than clamped, since clamping returns a
-                // smaller region than the caller asked for (CR-42).
+                // smaller region than the caller asked for.
                 // A bound a per-row value sets is checked per row.
                 // Each axis whose size is known; an unknown one is checked
                 // per row.

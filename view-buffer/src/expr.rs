@@ -108,7 +108,7 @@ impl ViewExpr {
     }
 
     /// Validate `op` against this expression's tracked shape and dtype, then
-    /// apply it — the executor's only way to build a chain (CR-34).
+    /// apply it — the executor's only way to build a chain.
     ///
     /// The planner checks shapes it knows; a source that carries its shape per
     /// row (a blob, a list) reaches the engine with shapes the plan never saw.

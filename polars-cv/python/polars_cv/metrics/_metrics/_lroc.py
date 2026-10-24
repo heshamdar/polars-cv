@@ -1,7 +1,6 @@
 """LROC metric: localization sensitivity vs FP fraction (lazy, expression-valued).
 
-The eager ``lroc_curve``/``LROCResult`` API was removed in favour of the
-expression-valued functions here: :func:`lroc_curve_lazy`, :func:`lroc_auc`,
+The API is the expression-valued functions here: :func:`lroc_curve_lazy`, :func:`lroc_auc`,
 :func:`lroc_sensitivity_at_fpf`. Confidence intervals come from
 ``lroc_auc_ci_lazy`` in :mod:`polars_cv.metrics._bootstrap`.
 """

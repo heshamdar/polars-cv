@@ -238,7 +238,7 @@ impl ContourOutput for Outline {
 /// Transforms: a contour per contour, built straight into Arrow through
 /// [`crate::geom_schema::contour_array`] rather than as an `AnyValue` with a
 /// sub-`Series` per ring, which made `.contour.translate()` cost as much as
-/// extracting the contours in the first place (CR-36). `empty` fills a null
+/// extracting the contours in the first place. `empty` fills a null
 /// row's slot.
 fn contour_column<C: crate::geom_schema::ContourParts>(
     name: PlSmallStr,
@@ -480,7 +480,7 @@ macro_rules! contour_accessor {
     };
 }
 
-/// A transform's per-contour result is assembled straight into Arrow (CR-36),
+/// A transform's per-contour result is assembled straight into Arrow,
 /// and must publish exactly what the per-contour `AnyValue` assembly did.
 #[cfg(test)]
 mod contour_output_tests {
@@ -539,7 +539,7 @@ mod contour_output_tests {
 }
 
 /// The single-column accessors spread a call's rows over the plugin's thread
-/// pool, as the pipeline executor does (CR-32): without it a `.contour`
+/// pool, as the pipeline executor does: without it a `.contour`
 /// accessor used one core however many rows it held.
 #[cfg(test)]
 mod split_tests {

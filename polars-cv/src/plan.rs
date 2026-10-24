@@ -851,7 +851,7 @@ impl Plan {
     /// maps them. The one writer of a node's wire form: a root decodes its
     /// column through this plan's source, and a continuation reads a node and
     /// has no source, so a plan whose source contradicts its input is refused
-    /// rather than written with a source nothing reads (CR-117).
+    /// rather than written with a source nothing reads.
     pub(crate) fn node_spec(
         &self,
         slot_map: &[usize],
@@ -1203,8 +1203,7 @@ mod tests {
 
     /// A plan writes its own node wire form: a root decodes its column
     /// through its source, a continuation reads a node and has no source.
-    /// Neither mismatch can be written, so no dummy source reaches the wire
-    /// (CR-117).
+    /// Neither mismatch can be written, so no dummy source reaches the wire.
     #[test]
     fn a_plan_writes_its_node_and_refuses_an_input_its_source_contradicts() {
         let source: crate::formats::source::Source =

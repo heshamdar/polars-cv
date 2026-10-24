@@ -3,17 +3,15 @@
 Every AUC in the package reduces through these functions. Each takes a lazy
 curve (or score buckets) and returns ``[*keys, auc]``: one row per group, or
 one row for the whole frame with no ``keys``. A ``float`` is then
-``trapz_auc(lf).collect().item()``. There is no second, eager implementation.
-The Series-based ``trapz_auc`` / ``partial_auc`` that once lived in ``_auc.py``
-were removed once ``MetricResult.auc`` and the FROC/LROC/PR paths all routed
-through here.
+``trapz_auc(lf).collect().item()``. There is no second, eager implementation:
+``MetricResult.auc`` and the FROC/LROC/PR paths all route through here.
 
-They used to be ``pl.Expr`` reductions for ``group_by().agg(...)``. A sort and
-a shift inside an aggregation are not native to polars' streaming engine, which
-then collected the whole input, and a bootstrap's input is
-``n_bootstrap × curve points``. They are now ordered scans per group
-(:func:`~._grouped_scan.grouped_scan`) followed by exact sums
-(:func:`~._grouped_scan.exact_sums`), all native streaming steps.
+They are ordered scans per group (:func:`~._grouped_scan.grouped_scan`)
+followed by exact sums (:func:`~._grouped_scan.exact_sums`), all native
+streaming steps. They are not ``pl.Expr`` reductions for
+``group_by().agg(...)``: a sort and a shift inside an aggregation are not
+native to polars' streaming engine, which would collect the whole input, and
+a bootstrap's input is ``n_bootstrap × curve points``.
 
 The two stages are kept separate:
 

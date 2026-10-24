@@ -42,7 +42,7 @@ use view_buffer::mode::Wire;
 ///   open polyline is an `Outline::Open`, written by `contour_array`).
 ///
 /// Test-only: production contour columns are built straight into Arrow by
-/// `geom_schema::contour_array` (CR-36). This per-value construction stays as
+/// `geom_schema::contour_array`. This per-value construction stays as
 /// the independent oracle the equivalence tests compare that builder against.
 #[cfg(test)]
 pub fn contour_to_anyvalue(contour: &view_buffer::geometry::contour::Contour) -> AnyValue<'static> {

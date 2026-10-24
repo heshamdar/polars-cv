@@ -1,7 +1,6 @@
 """FROC metric: sensitivity vs false positives per image (lazy, expression-valued).
 
-The eager ``froc_curve``/``FROCResult`` API was removed in favour of the
-expression-valued functions here: :func:`froc_curve_lazy` (group-aware curve),
+The API is the expression-valued functions here: :func:`froc_curve_lazy` (group-aware curve),
 :func:`froc_auc` (one row per group), :func:`froc_sensitivity_at_fp` and
 :func:`froc_summary_table`, all reading the curve past its last operating
 point by one ``extrapolate`` policy, and :func:`froc_operating_range` (how far

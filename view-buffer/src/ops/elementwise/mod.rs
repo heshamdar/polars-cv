@@ -657,7 +657,7 @@ fn as_f32_mut<S: ViewType>(data: &mut [S]) -> Option<&mut [f32]> {
 }
 
 /// `entries[x]` for every element `x` of a u8 or u16 buffer, stored as
-/// `out` by the conversion rule: `apply_lut`'s read (CR-95), through the
+/// `out` by the conversion rule: `apply_lut`'s read, through the
 /// element-map traversal (any view read where it lies; a u8/u16 buffer only
 /// this read holds is written in place). Only the `entries` are converted
 /// and held: no table padded to every possible input value.

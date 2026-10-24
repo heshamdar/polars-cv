@@ -354,7 +354,7 @@ metrics/
 - The two are **identical on every curve, ties included** (pinned by
   `test_precision_recall.py::TestAllPointsAPAuthority` and, end to end, by
   `test_bootstrap_ci_lazy.py::test_pr_point_matches_average_precision`). Both
-  apply the same canonical tie convention (CR-30): all detections sharing a
+  apply the same canonical tie convention: all detections sharing a
   score collapse into a single PR point, taken at the cumulative TP/FP *after*
   the whole tied block. So the all-points AP no longer depends on the input row
   order among equal scores, and the scalar and grouped paths no longer diverge.

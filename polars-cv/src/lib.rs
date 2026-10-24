@@ -62,7 +62,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The Cargo profile it was built with (`debug`, `release`, `benchmark`):
     // benchmark results from two different profiles must not be compared.
     m.add("__build_profile__", env!("POLARS_CV_BUILD_PROFILE"))?;
-    // The allocator the plugin's allocations actually go to (CR-60).
+    // The allocator the plugin's allocations actually go to.
     m.add("__allocator__", allocator::allocator_name())?;
     m.add_class::<plan::State>()?;
     m.add_class::<plan::Plan>()?;

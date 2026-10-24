@@ -1,4 +1,4 @@
-//! `apply_lut`: each u8/u16 value read as an index into a table (CR-95).
+//! `apply_lut`: each u8/u16 value read as an index into a table.
 //!
 //! Its own family rather than an engine `ViewDto` op because a value past the
 //! table is a *data* error, which an engine op cannot report: it surfaces as

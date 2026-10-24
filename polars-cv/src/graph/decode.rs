@@ -181,8 +181,8 @@ pub(crate) fn decode_binary_row(
 /// sits in one of the array's shared data buffers, and reading it in place is
 /// that buffer, sliced. The typed views built over a row are `&[T]`, so what
 /// `in_place` checks is that `T`'s alignment holds where the row lies: an
-/// unconditional 8-byte rule copied every u8 row at an odd address (CR-41
-/// made alignment a requirement; this makes it the dtype's).
+/// unconditional 8-byte rule copied every u8 row at an odd address; alignment is a
+/// requirement, and this makes it the dtype's.
 ///
 /// # Returns
 /// `Some((buffer, offset, len))` if the row is valid and not null.
@@ -489,7 +489,7 @@ fn null_row_part(what: &str) -> String {
 
 /// A row whose values are not `dtype`, converted once by polars' strict
 /// cast: a value `dtype` cannot hold is an error naming it. Polars'
-/// non-strict cast, which this used, left 0 in its place (CR-61).
+/// non-strict cast, which this used, left 0 in its place.
 fn convert_row_values(grid: RowGrid<'_>, dtype: view_buffer::DType) -> Result<ViewBuffer, String> {
     let values = grid.leaf.sliced(grid.values.start, grid.values.len());
     let converted = Series::from_arrow(PlSmallStr::EMPTY, values)
@@ -647,9 +647,9 @@ fn get_primitive_values(
 /// The primitive array's values as a byte buffer that *shares* its storage.
 ///
 /// A reinterpretation, not a copy: `Buffer<T>` → `Buffer<u8>` keeps the same
-/// allocation, so the caller's per-row window is a view into the column. It
-/// used to copy the entire values buffer here — once per row — which made the
-/// `array` source quadratic in the batch size (CR-40). Sharing is safe because
+/// allocation, so the caller's per-row window is a view into the column. Copying
+/// the entire values buffer once per row would make the `array` source
+/// quadratic in the batch size. Sharing is safe because
 /// view-buffer never writes through `PolarsArrow` storage (its in-place paths
 /// require uniquely-owned `Rust` storage).
 ///
@@ -956,7 +956,7 @@ pub(crate) fn long_layout(spec: &OutputSpec) -> crate::formats::sink::LongLayout
 ///
 /// `encode_node_output` and [`SinkKind`] are two halves of one contract, so
 /// reaching this means they disagree. Publishing the row as null (the former
-/// `_ => None` arms) would pass the bug off as data (CR-38).
+/// `_ => None` arms) would pass the bug off as data.
 fn foreign_row(kind: SinkKind, variant: &str) -> PolarsError {
     polars_err!(ComputeError:
         "internal: a {:?} sink received a {} row. The encode half and the sink \
@@ -1136,9 +1136,9 @@ pub(crate) fn build_series_from_spec(
 }
 
 /// The `array` source reads a row as a *view* into the column's own values
-/// buffer. It used to copy the chunk's entire values buffer on every row to
-/// take one row's window, which made a batch quadratic: ~35 µs per 64-byte row
-/// at 100k rows (CR-40).
+/// buffer. Copying the chunk's entire values buffer on every row to take one
+/// row's window would make a batch quadratic: ~35 µs per 64-byte row at 100k
+/// rows.
 /// A `List` row decodes to a buffer only when it is a rectangular grid of
 /// values: a jagged row, a null value or a null inner list is refused. The
 /// decoder used to take each level's size from its first element and read the
@@ -1322,7 +1322,7 @@ mod list_source_tests {
     }
 
     /// A value the declared dtype cannot hold is refused, never stored as
-    /// the 0 polars' non-strict cast leaves in its place (CR-61).
+    /// the 0 polars' non-strict cast leaves in its place.
     #[test]
     fn a_value_the_declared_dtype_cannot_hold_is_refused() {
         for (values, what) in [(vec![7i64, 300, 1, 2], "300"), (vec![7i64, -1, 1, 2], "-1")] {
