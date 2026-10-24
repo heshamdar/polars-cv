@@ -181,6 +181,10 @@ polars-cv trails OpenCV on thumbnails because its JPEG encoder is slower than
 libjpeg-turbo. Methodology, every table and the command to reproduce them are
 in [`benchmarks/`](https://github.com/heshamdar/polars-cv/tree/main/benchmarks).
 
+**Which benchmark tree?** `benchmarks/` compares the published wheel against
+other libraries; `polars-cv/benchmarks/` measures the checkout for regressions.
+See the [split explained in `benchmarks/README.md`](https://github.com/heshamdar/polars-cv/blob/main/benchmarks/README.md).
+
 ## Checked against OpenCV, SciPy, NumPy, PIL and imagehash
 
 <!-- parity:start -->

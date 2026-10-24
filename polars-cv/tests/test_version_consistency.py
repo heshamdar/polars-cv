@@ -12,6 +12,7 @@ Guards against the two ways a reported version can be wrong.
    distribution turns that into a test failure instead of a wrong answer.
 """
 
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -209,4 +210,66 @@ def test_imported_package_is_the_source_tree() -> None:
         f"polars_cv is imported from {imported}, not the source tree at {source}. "
         f"Editing the Python sources will not affect this run. "
         f"sys.path[0] is {sys.path[0]!r}"
+    )
+
+
+# --- the benchmark project's pin -------------------------------------------------
+#
+# ``benchmarks/pyproject.toml`` pins the *published* wheel, so it lags the repo
+# on purpose (``benchmarks/README.md``: "the pin moves to 0.38.0 when it is
+# published"). It is not one of the version sources above; a lag is not drift.
+
+
+def _release_tuple(version: str) -> tuple[int, ...]:
+    assert re.fullmatch(r"\d+(\.\d+)*", version), f"not a plain release: {version!r}"
+    return tuple(int(part) for part in version.split("."))
+
+
+def _benchmark_pin() -> str:
+    dependencies = _read_toml("benchmarks/pyproject.toml")["project"]["dependencies"]
+    pins = [d for d in dependencies if re.match(r"polars-cv\s*[=<>~!]", d)]
+    assert len(pins) == 1, f"expected exactly one polars-cv pin, found {pins}"
+    match = re.fullmatch(r"polars-cv\s*==\s*(\S+)", pins[0])
+    assert match, f"the benchmark pin must be an exact `==` pin, got {pins[0]!r}"
+    return match.group(1)
+
+
+@requires_checkout
+def test_benchmark_pin_is_exact_published_and_documented() -> None:
+    """The benchmark project's deliberate lag stays tied to its justification.
+
+    The pin may trail ``__version__`` -- the README explains that it moves only
+    once a release reaches PyPI, and that the published results were measured at
+    a specific version -- so "equals ``__version__``" would be the wrong rule. What
+    must hold for the lag to be deliberate rather than forgotten:
+
+    * the pin is exact and **not ahead** of the repo (a version that cannot exist
+      on PyPI yet is a typo or a premature bump);
+    * ``benchmarks/uv.lock`` resolves the same version (the README: "``X`` from
+      ``uv.lock``"), so the pin and the lock the results record cannot split;
+    * ``benchmarks/README.md`` names the pinned version, so whoever moves the pin
+      meets the prose that says which release the results were measured at.
+
+    A pin the README does not mention is drift nobody has justified.
+    """
+    pin = _benchmark_pin()
+    assert _release_tuple(pin) <= _release_tuple(polars_cv.__version__), (
+        f"benchmarks/pyproject.toml pins polars-cv=={pin}, ahead of "
+        f"polars_cv.__version__ {polars_cv.__version__!r}; the pin tracks PyPI "
+        "and can only lag the repo."
+    )
+    locked = [
+        package["version"]
+        for package in _read_toml("benchmarks/uv.lock")["package"]
+        if package["name"] == "polars-cv"
+    ]
+    assert locked == [pin], (
+        f"benchmarks/uv.lock resolves polars-cv {locked} but pyproject.toml "
+        f"pins =={pin}; re-lock with `uv lock` in benchmarks/."
+    )
+    readme = (REPO_ROOT / "benchmarks" / "README.md").read_text()
+    assert f"`{pin}`" in readme, (
+        f"benchmarks/README.md never names the pinned version `{pin}`. Update "
+        "the paragraph on which release the published results were measured "
+        "at, and the pin, together (see CONTRIBUTING.md)."
     )

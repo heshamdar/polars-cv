@@ -319,8 +319,9 @@ generates its Python class; there is no FFI arm or Python mirror to add.
 
 This is written down because it was not. The phased plan behind the
 single-authority work existed only in the agent session that produced it, so
-recovering it meant reading commit messages and the assessment markers still
-embedded in `tests/test_sanitation.py` (findings A1/A2/A3, A4, A10, B1/B2).
+recovering it meant reading commit messages and the sections of
+`tests/test_sanitation.py`, each named by the invariant it checks (Plan == Exec,
+registry parity, enum parity).
 A plan that lives in a session is a plan that ends with it — keep this section
 current instead.
 
