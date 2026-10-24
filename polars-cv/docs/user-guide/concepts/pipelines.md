@@ -135,6 +135,12 @@ and [Parameters & Errors](parameters.md) gives the rule in full.
 2. **Dynamic Parameters**: Use Polars expressions for per-row customization.
 3. **Modular Sinks**: Keep pipelines generic and choose the sink format at the last step.
 
+## Terminology
+
+Contributors: the words *view*, *plan*, *node*, *step* and *graph* each have one
+meaning in the docs and the code's prose. See the
+[glossary](https://github.com/heshamdar/polars-cv/blob/main/GLOSSARY.md).
+
 ## Next Steps
 
 - [Sources](sources.md) - Source formats and auto dtype behavior
