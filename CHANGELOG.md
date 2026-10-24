@@ -21,7 +21,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `encode.rs` into `geometry/exec.rs`. The flat `contour.rs`, `point.rs` and
   `geom_*.rs` files are under `src/geometry/` (`accessor`, `arity`, `columns`,
   `construct`, `fns`, `params`, `schema`), mirroring the engine's
-  `geometry/` (#161).
+  `geometry/`. `graph/compiled.rs`, which was the cache, the compiler and the
+  row executor at once, is `graph/compiled/` with `compile.rs`, `cache.rs` and
+  `run.rs` (#161).
 - **A graph node's per-row value, `NodeOutput`, lives in the plugin's graph
   (`polars-cv/src/graph/node_output.rs`), not in the view-buffer engine**, which
   has no node concept and never used it. `Domain` stays in the engine, whose

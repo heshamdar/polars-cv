@@ -640,7 +640,7 @@ class TestContourSourceShapeReference:
 @plugin_required
 class TestSourceAndSinkParamSites:
     """Per-row parameter sites outside `resolve_op`, which have their own
-    interception points in `graph/compiled.rs`."""
+    interception points in `graph/compiled/run.rs`."""
 
     def test_null_contour_source_fill_value(self) -> None:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))

@@ -245,7 +245,7 @@ impl Bearer {
 /// hits, and every read rebuilds its connection pool: exactly the bug this
 /// delegation exists to fix, one layer down and with nothing to show for it.
 ///
-/// Bounded and MRU like the compiled-graph cache in `graph/compiled.rs`, for the
+/// Bounded and MRU like the compiled-graph cache in `graph/compiled/cache.rs`, for the
 /// same reason: a caller minting a fresh `bearer_token` per query would
 /// otherwise grow this without limit.
 const PROVIDER_CACHE_CAP: usize = 32;

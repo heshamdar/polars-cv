@@ -6,7 +6,7 @@ time (`lf.collect_schema()`) must exactly equal the schema of the collected data
 guessed source rank (raw/list/array → 3) while the sink followed the decoded
 shape — a divergence that stayed silent because no test compared the two.
 
-The Rust `validate_output_schema` guard (graph/compiled.rs) enforces the same
+The Rust `validate_output_schema` guard (graph/compiled/run.rs) enforces the same
 invariant per row at execution time; this file pins it from the Python side
 across representative shapes.
 """

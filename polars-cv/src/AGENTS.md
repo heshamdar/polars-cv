@@ -37,7 +37,7 @@ LTO); `--release` is for distributable wheels.
 | `fetch.rs` | Stage one of every path-based read: path column → bytes through `Fetcher` (one per call and path column: each row fetches its path and a window of the next rows' on polars' `ASYNC`, distinct paths once, a body freed after its last row; `bytes`, `header`) and `parse_on_error`. Shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy`, the `allowed_roots` sandbox both of them check against. Fetch concurrency is **not** a knob here — it is polars-io's `POLARS_CONCURRENCY_BUDGET` semaphore (the plugin's copy, separate from the host's), taken one permit per request in `cloud.rs` |
 | `read_bytes.rs` | `read_file_bytes` plugin function — `fetch.rs` with the decode omitted, for byte-identical passthrough |
 | `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — graph execution engine, `on_error` handling |
-| `graph/compiled.rs` | `CompiledGraph` — process-wide compiled-graph cache (parsed spec, topo order, slot-bound params) |
+| `graph/compiled/` | `CompiledGraph`: `compile.rs` (parse, slot-bound params, topo order, output planning, static op resolution), `cache.rs` (the process-wide compiled-graph cache, `get_or_compile`), `run.rs` (the row loop: `ExecState`, fused engine segments and their per-layout plan cache, `Carried`, the output-schema guard); the module docs hold the cache-safety invariants |
 | `graph/row.rs` | `RowOutputs` — one row's node outputs, read for a step only through `RowOutputs::operands` (positions compiled from the step's `operands()`; a null operand nulls the reader), and `run_step`, every non-fusable step's body, given its input and operands already gathered and validated |
 | `graph/source.rs` | Source decoding: a row of an input column to the buffer a node starts from (blob/raw/image bytes, in place where the bytes allow; list/array columns) |
 | `graph/sink.rs` | Sinks: `dtype_for_output` (the planned output dtype), `encode_node_output` (each row's value), `build_series_from_spec` (the Series the rows assemble into) |
@@ -98,7 +98,7 @@ Returns a single `Series` (typed column for single output, Struct for multi-outp
 ### Graph Execution Flow
 
 Execution is split into a cacheable **compile** phase and a per-call phase
-(`graph/compiled.rs`):
+(`graph/compiled/`):
 
 1. `get_or_compile()` fetches a `CompiledGraph` from a process-wide cache
    keyed by `graph_json` — hash plus full string equality, never the hash
@@ -116,7 +116,7 @@ Execution is split into a cacheable **compile** phase and a per-call phase
 **Cache-safety invariant:** `CompiledGraph` must contain nothing derived from
 the data (no input dtypes, shapes, row counts, or null masks) — one cached
 graph must behave identically across heterogeneous inputs. See the module
-docs in `graph/compiled.rs` and `tests/test_graph_cache.py`.
+docs in `graph/compiled/mod.rs` and `tests/test_graph_cache.py`.
 
 ### Op resolution
 
@@ -209,7 +209,7 @@ encoding (`encode_sink`), shared by the graph executor.
 - Null inputs produce null outputs (null propagation)
 - `on_error="null"` on source spec: decode errors produce `None` for that node instead of propagating (parsed once at compile into `CompiledGraph::source_null_nodes`)
 - Graph-level `RowErrorPolicy` (`graph.on_error`: `raise` | `null` | `null_with_message`): any `Result` error while producing a row either fails the expression (raise), nulls all of that row's outputs (null), or additionally records the message in a reserved `_error: String` struct field (null_with_message — forces struct output even for single-output graphs; `unified_output_dtype` mirrors this so plan==exec). Set from Python via `Pipeline.on_error()`. Engine panics are covered: they are caught per row and treated as that row's error.
-- `NullParamPolicy` (`params.rs`; `graph.on_null_param`: `raise` | `null`) — a **null in a per-row expression parameter column**, which is not the same thing as an error. It is a shared mechanism, not per-op: every null reaches `ParamCol::on_null`, the only caller of the null error, which flags the `ParamCtx` (`null_hit: Cell<bool>`) under `Null` and always returns `Err` so resolution short-circuits with no placeholder value reaching an op. One site in `compiled.rs` clears the flag before a fallible resolution and tests it after — dynamic op resolution (a source has no per-row parameter) — and turns a flagged error into `continue 'nodes`, leaving the node without an output. That is the *existing* null-propagation path (`source(on_error="null")`), so nulling is **node-scoped**: only outputs depending on that node go null. Set from Python via `Pipeline.on_null_param()`; the geometry namespaces get it as an `on_null` kwarg applied by `GeomParams::row`. Independent of `RowErrorPolicy`, so it records no `_error` message and does not weaken any other error reporting.
+- `NullParamPolicy` (`params.rs`; `graph.on_null_param`: `raise` | `null`) — a **null in a per-row expression parameter column**, which is not the same thing as an error. It is a shared mechanism, not per-op: every null reaches `ParamCol::on_null`, the only caller of the null error, which flags the `ParamCtx` (`null_hit: Cell<bool>`) under `Null` and always returns `Err` so resolution short-circuits with no placeholder value reaching an op. One site in `graph/compiled/run.rs` clears the flag before a fallible resolution and tests it after — dynamic op resolution (a source has no per-row parameter) — and turns a flagged error into `continue 'nodes`, leaving the node without an output. That is the *existing* null-propagation path (`source(on_error="null")`), so nulling is **node-scoped**: only outputs depending on that node go null. Set from Python via `Pipeline.on_null_param()`; the geometry namespaces get it as an `on_null` kwarg applied by `GeomParams::row`. Independent of `RowErrorPolicy`, so it records no `_error` message and does not weaken any other error reporting.
 - A step reads another node only as one of its `GraphStep::operands`, through `RowOutputs::operands` (`graph/row.rs`): the positions are compiled once from `operands()`, and a node with no output this row nulls the reader there, for every step alike, so a null operand propagates node-scoped like a null input. `RowOutputs`'s storage is private to its module and `run_step` receives only the gathered operands, so a step that reads another node some other way does not compile; a new operand-reading op only declares the operand in `operands()`. A reference to a node the graph does not have is refused when the graph is parsed (`UnifiedGraph::check_references`), never at a row.
 - One exception, and it is not a parameter: `GraphOp::LabelReduce` (`Role::LabelReduce`) reads its *contours operand* by column name through `ParamCol::at` (the column and its broadcast row, read by `ContourColumn`) and maps a null to an **empty score vector**, not a null. That is a data operand with pre-existing semantics, deliberately left alone — `at` is the one accessor with no `on_null` path.
 

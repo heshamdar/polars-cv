@@ -74,7 +74,7 @@ The project has three layers:
 1. The user builds a `Pipeline` in Python, which internally creates a `PipelineGraph` (a DAG of `GraphNode`s).
 2. `.sink(...)` on a `LazyPipelineExpr` serializes the graph to JSON and calls `_plugin.call("vb_graph", graph_json, input columns)`. That is the only route to `register_plugin_function`: it pins the exact `.so` and hands the plugin storage rather than extension types.
 3. Polars calls the Rust `vb_graph` expression function with the JSON and any per-row expression parameters.
-4. Rust deserializes the JSON into a `UnifiedGraph` and compiles it once into a process-wide cache (`graph/compiled.rs`: parsed spec, topological order, slot-bound params). Repeat calls (e.g. per streaming morsel) pay only a hash lookup. It then executes topologically, per row: decode source → apply ops (`ViewExpr`/`ViewBuffer`) → encode sink.
+4. Rust deserializes the JSON into a `UnifiedGraph` and compiles it once into a process-wide cache (`graph/compiled/`: parsed spec, topological order, slot-bound params). Repeat calls (e.g. per streaming morsel) pay only a hash lookup. It then executes topologically, per row: decode source → apply ops (`ViewExpr`/`ViewBuffer`) → encode sink.
 5. It returns a Polars `Series` (dtype depends on the sink: Binary, Float64, Struct, List, Array).
 
 ### Expression Namespaces
@@ -192,7 +192,7 @@ changes; they explain *why* the code is shaped the way it is.
   a kernel panic is an engine bug), so such an op is its own family whose
   `execute` returns `Result`, as `HistogramOp`'s does.
 - **Compiled-graph cache.** The `vb_graph` plugin compiles each graph once into a
-  process-wide cache (`graph/compiled.rs`: parsed spec, topo order, slot-bound
+  process-wide cache (`graph/compiled/`: parsed spec, topo order, slot-bound
   params, pre-resolved static ops). The streaming engine invokes the plugin per
   morsel, so repeat calls pay only a hash lookup, and graph structure is validated
   at compile time instead of failing late.
