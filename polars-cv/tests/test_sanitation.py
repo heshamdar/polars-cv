@@ -1746,6 +1746,7 @@ _CI_COMMAND_CLASSIFICATION: "dict[str, str | None]" = {
     "cargo clippy": "cargo clippy",
     "cargo test": "cargo test",
     "cargo deny": "cargo deny",
+    "cargo machete": "cargo machete",
     "cargo check": "cargo check -p view-buffer",
     "maturin develop": "maturin develop",
     "pytest": "pytest",

@@ -175,6 +175,10 @@ def test_session_start_hook_provisions_every_verify_lane() -> None:
         "the hook must install cargo-deny, or verify.sh's `cargo deny` lane fails "
         "with `no such command: deny`"
     )
+    assert "cargo install --locked cargo-machete" in hook, (
+        "the hook must install cargo-machete, or verify.sh's `cargo machete` lane "
+        "fails with `no such command: machete`"
+    )
 
 
 def test_session_start_hook_exports_the_pyo3_env_to_the_session() -> None:

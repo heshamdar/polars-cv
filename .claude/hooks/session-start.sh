@@ -122,5 +122,13 @@ if ! command -v cargo-deny >/dev/null 2>&1; then
     || echo "session-start: 'cargo install cargo-deny' failed; verify.sh's cargo deny lane will fail" >&2
 fi
 
+# 5. cargo-machete, for verify.sh's unused-dependency lane (CI installs it with
+#    an action). Same reasoning as cargo-deny: built from crates.io, last, and a
+#    failure shows as a clear `cargo machete` FAIL in verify.sh.
+if ! command -v cargo-machete >/dev/null 2>&1; then
+  cargo install --locked cargo-machete \
+    || echo "session-start: 'cargo install cargo-machete' failed; verify.sh's cargo machete lane will fail" >&2
+fi
+
 echo "session-start: environment ready"
 touch "$DONE"

@@ -59,7 +59,6 @@ polars-cv-macros = { path = "../polars-cv-macros" }
 bytemuck = { version = "1.14", features = ["derive"], optional = true }
 
 [dev-dependencies]
-anyhow = "1.0"
 ndarray = "0.17"
 image = "0.25"
 tiff = "0.10"

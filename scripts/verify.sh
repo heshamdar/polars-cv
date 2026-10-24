@@ -102,6 +102,11 @@ run_check "cargo test polars-cv"     cargo test -p polars-cv
 # shows here as a clear FAIL, consistent with this script's no-false-green rule.
 run_check "cargo deny"               cargo deny check
 
+# Unused dependencies. cargo-machete is a fast text search over the sources:
+# exit 1 on any finding, 2 on a processing error. A missing binary shows here
+# as a FAIL, like cargo-deny. The session hook installs it.
+run_check "cargo machete"            cargo machete
+
 # The Python lanes need the compiled extension to match the working tree. The
 # install is editable, so Python sources are always current while the .so stays
 # at its last build -- a stale .so silently turns plugin tests into skips.

@@ -312,6 +312,17 @@ jobs:
           uv sync --directory polars-cv --group dev --no-install-project
           uvx ty check --project polars-cv
 
+  unused-dependencies:
+    name: Unused dependencies (cargo-machete)
+    # Fast static check over the sources. Exit 1 when a declared dependency is
+    # never referenced; ignores are listed in the crate's Cargo.toml metadata.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-machete
+      - name: cargo machete
+        run: cargo machete
+
   cargo-deny:
     name: cargo-deny (advisories + licenses)
     # Supply-chain / license gate over the whole dependency graph (the cloud
