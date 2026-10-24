@@ -14,7 +14,7 @@ from typing import Literal, get_args
 
 import polars as pl
 
-from polars_cv import _plugin
+import polars_cv._plugin as _plugin
 from polars_cv._ops_generated import CoordOrder
 
 
