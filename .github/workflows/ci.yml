@@ -313,15 +313,19 @@ jobs:
           uvx ty check --project polars-cv
 
   unused-dependencies:
-    name: Unused dependencies (cargo-machete)
-    # Fast static check over the sources. Exit 1 when a declared dependency is
-    # never referenced; ignores are listed in the crate's Cargo.toml metadata.
+    name: Unused dependencies (cargo-machete + cargo-udeps)
+    # cargo-machete is a fast static check over the sources; cargo-udeps compiles
+    # every target and catches what the text search cannot. udeps needs nightly.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@cargo-machete
       - name: cargo machete
         run: cargo machete
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-udeps
+      - name: cargo udeps (nightly)
+        run: cargo +nightly udeps --workspace --all-targets
 
   cargo-deny:
     name: cargo-deny (advisories + licenses)

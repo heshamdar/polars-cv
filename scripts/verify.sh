@@ -107,6 +107,11 @@ run_check "cargo deny"               cargo deny check
 # as a FAIL, like cargo-deny. The session hook installs it.
 run_check "cargo machete"            cargo machete
 
+# The whole-build check: cargo-udeps compiles every target and sees what the
+# source search cannot. It needs a nightly toolchain (`rustup toolchain install
+# nightly`), and the session hook installs both.
+run_check "cargo udeps (nightly)"    cargo +nightly udeps --workspace --all-targets
+
 # The Python lanes need the compiled extension to match the working tree. The
 # install is editable, so Python sources are always current while the .so stays
 # at its last build -- a stale .so silently turns plugin tests into skips.
