@@ -93,3 +93,6 @@ dist/
 
 # Hypothesis example database (tests/parity and friends)
 **/.hypothesis/
+
+# Agent git worktrees (nested checkouts; tests/_discovery.py skips them too)
+.claude/worktrees/
