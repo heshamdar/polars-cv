@@ -14,13 +14,12 @@ use view_buffer::{IdentityRule, SpatialDependency};
 
 use crate::plan::State;
 
-/// Every logical optimisation pass, by the name `OptFlags` knows it by.
+/// Every node-scope logical optimisation pass, by the name `OptFlags` knows
+/// it by. The graph-scope pass (common-subexpression elimination) is not one:
+/// it reads the expressions' identities, which only the Python graph holds, so
+/// Python declares and runs it (`polars_cv/_graph_passes.py`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogicalPass {
-    /// Compute every distinct value once and give each linear run one node
-    /// (graph scope; applied by the Python graph, which holds the expression
-    /// identities).
-    CommonSubexpressionElimination,
     /// Delete ops that provably change nothing.
     IdentityElimination,
     /// Hoist a crop earlier past the pointwise ops before it.
@@ -28,7 +27,6 @@ pub enum LogicalPass {
 }
 
 view_buffer::naming::named_variants!(LogicalPass: "A logical optimisation pass (``OptFlags`` field names)." {
-    "common_subexpression_elimination" => CommonSubexpressionElimination,
     "identity_elimination" => IdentityElimination,
     "spatial_window_pushdown" => SpatialWindowPushdown,
 });
@@ -37,9 +35,6 @@ impl LogicalPass {
     /// One line on what the pass does (the catalogue's `summary`).
     pub fn summary(self) -> &'static str {
         match self {
-            LogicalPass::CommonSubexpressionElimination => {
-                "Compute each distinct value once — the same op on the same inputs, however the pipelines were written — and fuse each linear run of ops no other node reads into one node."
-            }
             LogicalPass::IdentityElimination => {
                 "Delete no-op operations — a zero pad, a same-dtype cast, a full-frame crop — that preserve their input byte for byte."
             }
@@ -54,15 +49,17 @@ impl LogicalPass {
 #[derive(serde::Serialize)]
 struct PassDesc {
     name: &'static str,
-    /// `logical` (rewrites the graph before serialization) or `engine` (a
-    /// per-row lowering in view-buffer, toggled through `OptConfig`).
+    /// `logical` (rewrites one node's ops before serialization, through
+    /// `Plan::run_pass`) or `engine` (a per-row lowering in view-buffer,
+    /// toggled through `OptConfig`).
     tier: &'static str,
     summary: &'static str,
 }
 
 /// Every optimisation pass, in the order they apply: the logical ones
 /// (`LogicalPass`), then the engine's (`view_buffer::ENGINE_PASSES`). The
-/// Python `OptFlags` and `OPTIMIZATION_PASSES` are generated from it.
+/// Python `OptFlags` and `OPTIMIZATION_PASSES` are generated from it, after
+/// the graph-scope passes Python declares (`polars_cv/_graph_passes.py`).
 pub fn pass_catalog_json() -> String {
     let logical = LogicalPass::NAMED.iter().map(|(name, pass)| PassDesc {
         name,
@@ -95,7 +92,7 @@ pub(crate) struct Node<'a> {
     pub states: &'a [State],
 }
 
-/// Run a node-scope pass. `Err` for a graph-scope pass.
+/// Run a node-scope pass.
 pub(crate) fn run(pass: LogicalPass, node: &Node<'_>) -> Result<Option<Vec<usize>>, String> {
     if node.states.len() != node.ops.len() + 1 {
         return Err(format!(
@@ -106,11 +103,6 @@ pub(crate) fn run(pass: LogicalPass, node: &Node<'_>) -> Result<Option<Vec<usize
         ));
     }
     let order = match pass {
-        LogicalPass::CommonSubexpressionElimination => {
-            return Err(
-                "common_subexpression_elimination rewrites the graph, not one node".to_string(),
-            )
-        }
         LogicalPass::IdentityElimination => eliminate_identities(node)?,
         LogicalPass::SpatialWindowPushdown => hoist_spatial_windows(node)?,
     };
@@ -293,16 +285,6 @@ mod tests {
              POLARS_CV_BLESS=1 cargo test -p polars-cv catalog_matches, then \
              python scripts/gen_ops.py"
         );
-    }
-
-    #[test]
-    fn a_graph_pass_is_refused_on_a_node() {
-        let err = run(
-            LogicalPass::CommonSubexpressionElimination,
-            &node(&[], &[image(1, 1)]),
-        )
-        .unwrap_err();
-        assert!(err.contains("rewrites the graph"), "{err}");
     }
 
     /// A verdict resting on a parameter's literal value is not provable when

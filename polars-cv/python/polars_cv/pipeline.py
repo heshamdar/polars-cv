@@ -20,7 +20,6 @@ from polars_cv._ops_generated import (
     OP_DOMAINS,
     OP_FIELDS,
     SOURCE_FIELDS,
-    LogicalPass,
     _OpsMixin,
 )
 from polars_cv._this import ThisExpr
@@ -1411,13 +1410,9 @@ class Pipeline(_OpsMixin):
         # pass is applied here automatically and this never drifts from `.sink()`
         # (which is exactly how identity elimination went missing when it was
         # hand-listed). Only logical, node-scope passes change the op chain this
-        # renders: CSE is graph-scope and inert for a lone pipeline, and
+        # renders: graph-tier passes (CSE) are inert for a lone pipeline, and
         # engine-tier passes are Rust lowering with no effect on the logical ops.
         for spec in OPTIMIZATION_PASSES:
-            if (
-                spec.tier == "logical"
-                and spec.name != LogicalPass.COMMON_SUBEXPRESSION_ELIMINATION
-                and flags.enabled(spec.name)
-            ):
+            if spec.tier == "logical" and flags.enabled(spec.name):
                 physical._run_node_pass(spec.name)
         return repr(physical)

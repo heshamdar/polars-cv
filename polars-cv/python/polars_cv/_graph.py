@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import polars as pl
 
+from polars_cv._graph_passes import GRAPH_PASSES
 from polars_cv._graph_viz import get_graphviz_out
-from polars_cv._ops_generated import LogicalPass
 from polars_cv._types import SlotTable
 
 if TYPE_CHECKING:
@@ -280,10 +280,13 @@ class PipelineGraph:
         registered pass, gated by ``flags``, in :data:`OPTIMIZATION_PASSES`
         order, mutating the graph in place and returning ``self`` for chaining.
 
-        The two tiers are handled differently, by each pass's ``tier``:
+        The tiers are handled differently, by each pass's ``tier``:
 
-        - **logical** passes (CSE, identity elimination, spatial-window
-          pushdown) are applied here, rewriting node pipelines.
+        - **graph** passes (CSE) are applied here by Python, which declares them
+          (:mod:`polars_cv._graph_passes`), comparing and merging nodes.
+        - **logical** passes (identity elimination, spatial-window pushdown)
+          are applied here node by node, each decided by Rust
+          (``Plan.run_pass``).
         - **engine** passes are per-row lowering that runs later in Rust; their
           flags are captured into :attr:`_opt_config` and serialized in the
           graph's ``opt`` object (see :meth:`_to_dict`), gating the Rust
@@ -308,10 +311,10 @@ class PipelineGraph:
         self._drop_unread_nodes()
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
-        logical = [
-            spec.name
+        rewrites = [
+            spec
             for spec in OPTIMIZATION_PASSES
-            if spec.tier == "logical" and flags.enabled(spec.name)
+            if spec.tier in ("graph", "logical") and flags.enabled(spec.name)
         ]
         # The passes feed each other: a node pass can make two nodes equal
         # (a no-op removed, a crop moved) that CSE then shares, and CSE's
@@ -321,16 +324,14 @@ class PipelineGraph:
         # after `_MAX_ROUNDS` is a pass that does not settle, and is refused.
         for _ in range(_MAX_ROUNDS):
             before = self._fingerprint()
-            for name in logical:
-                if name == LogicalPass.COMMON_SUBEXPRESSION_ELIMINATION:
-                    # Graph scope: it needs the expressions' identities, which
-                    # only Python holds.
-                    self._optimize_common_subexpressions()
+            for spec in rewrites:
+                if spec.tier == "graph":
+                    _GRAPH_PASS_IMPLS[spec.name](self)
                 else:
                     # Node scope: Rust (`Plan.run_pass`) decides, and refuses a
                     # name that is not a `LogicalPass`.
                     for node in self._nodes.values():
-                        node.pipeline._run_node_pass(name)
+                        node.pipeline._run_node_pass(spec.name)
             if self._fingerprint() == before:
                 break
         else:
@@ -854,6 +855,22 @@ class PipelineGraph:
     def show_graph(self) -> pydot.Dot:
         """Build dot representation of graph."""
         return get_graphviz_out(self)  # ty: ignore[invalid-return-type]
+
+
+#: Each graph-scope pass :mod:`polars_cv._graph_passes` declares, by name: its
+#: implementation. A declared pass with no implementation (or one implemented
+#: but undeclared) refuses the import, so ``OptFlags`` never offers a pass
+#: ``optimize`` cannot run.
+_GRAPH_PASS_IMPLS: dict[str, Callable[[PipelineGraph], None]] = {
+    "common_subexpression_elimination": PipelineGraph._optimize_common_subexpressions,
+}
+if set(_GRAPH_PASS_IMPLS) != {name for name, _, _ in GRAPH_PASSES}:
+    msg = (
+        "graph-scope passes declared in polars_cv._graph_passes "
+        f"{sorted(name for name, _, _ in GRAPH_PASSES)} do not match the ones "
+        f"PipelineGraph implements {sorted(_GRAPH_PASS_IMPLS)}"
+    )
+    raise ImportError(msg)
 
 
 def _rewired(value: Any, src: "Pipeline", dst: "Pipeline") -> Any:

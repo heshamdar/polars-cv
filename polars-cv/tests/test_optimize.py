@@ -8,12 +8,17 @@ output regardless of flags) lives in ``test_optimize_equivalence.py``.
 from __future__ import annotations
 
 import dataclasses
+import json
+import subprocess
+import sys
+from pathlib import Path
 
 import polars as pl
 import pytest
 
 from polars_cv import Pipeline
 from polars_cv._graph import PipelineGraph
+from polars_cv._graph_passes import GRAPH_PASSES
 from polars_cv._optimize import (
     ENGINE_PASS_NAMES,
     LOGICAL_PASS_NAMES,
@@ -64,7 +69,42 @@ class TestRegistry:
         for spec in OPTIMIZATION_PASSES:
             assert isinstance(spec, PassSpec)
             assert spec.summary
-            assert spec.tier in ("logical", "engine")
+            assert spec.tier in ("graph", "logical", "engine")
+
+    def test_the_graph_tier_is_declared_by_python_alone(self) -> None:
+        """A graph-scope pass has one declaration, ``_graph_passes``: Rust's
+        catalogue (``LogicalPass`` + the engine's) never also names it."""
+        graph = {spec.name for spec in OPTIMIZATION_PASSES if spec.tier == "graph"}
+        assert graph == {name for name, _, _ in GRAPH_PASSES}
+        root = Path(__file__).resolve().parent
+        rust = json.loads((root / "golden" / "pass_catalog.json").read_text())
+        assert graph.isdisjoint(p["name"] for p in rust)
+        assert {p["tier"] for p in rust} <= {"logical", "engine"}
+
+    def test_a_graph_pass_without_an_implementation_refuses_the_import(
+        self,
+    ) -> None:
+        """Declaring a graph-scope pass ``PipelineGraph`` cannot run is refused
+        when ``PipelineGraph``'s module imports, not skipped when ``optimize``
+        runs."""
+        path = Path(__file__).resolve().parents[1] / "python" / "polars_cv"
+        script = f"""
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location(
+    "polars_cv._graph_passes", {str(path / "_graph_passes.py")!r}
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.GRAPH_PASSES += (("unimplemented_pass", "graph", "Nothing runs it."),)
+sys.modules["polars_cv._graph_passes"] = module
+import polars_cv._graph
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, check=False
+        )
+        assert result.returncode != 0
+        assert "ImportError" in result.stderr
+        assert "unimplemented_pass" in result.stderr
 
     def test_tier_partitions_the_registry(self) -> None:
         assert set(LOGICAL_PASS_NAMES) | set(ENGINE_PASS_NAMES) == set(PASS_NAMES)
