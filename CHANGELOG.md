@@ -29,6 +29,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   invariant they check (Plan == Exec, registry parity, enum parity) instead of
   by assessment-finding labels, and both READMEs and `polars-cv/benchmarks/
   AGENTS.md` point to the explanation of the two benchmark trees.
+- **The package has no import cycle, and `__init__` only re-exports.** A static
+  11-module cycle (`_namespace`, `expressions`, `geometry.*`, `metrics.*`, via
+  `from polars_cv import _plugin`) made import order load-bearing. Those edges
+  now name the submodule (`import polars_cv._plugin as _plugin`), and the
+  implementations that lived in `__init__.py` or `lazy.py` moved to named
+  modules: `numpy_io` (`numpy_from_struct`, `numpy_from_column`), `masks`
+  (`mask_iou`, `mask_dice`, `region_stats`) and `hashing` (`hamming_distance`,
+  `hash_similarity`). Every public name is unchanged and still importable from
+  `polars_cv`; `polars_cv.lazy.region_stats` is now `polars_cv.masks.region_stats`.
+  `tests/test_import_layering.py` holds both rules (no cycle in the top-level
+  import graph; nothing inside the package imports the package root) and
+  imports each submodule alone in a fresh interpreter.
 
 ## [0.41.0] — 2026-10-23
 

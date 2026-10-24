@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 
 import polars as pl
 
-from polars_cv import _plugin
+import polars_cv._plugin as _plugin
 from polars_cv._types import NullParamPolicy, RowErrorPolicy, _literal
 
 #: Accepted ``on_null(...)`` values, read from ``NullParamPolicy`` — a class

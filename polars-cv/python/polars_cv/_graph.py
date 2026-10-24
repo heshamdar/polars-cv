@@ -668,7 +668,7 @@ class PipelineGraph:
             RuntimeError: If the graph has not been optimized. Call
                 ``optimize(flags)`` first (``.sink()`` does this).
         """
-        from polars_cv import _plugin
+        import polars_cv._plugin as _plugin
 
         if self._output is None and self._multi_output is None:
             raise ValueError(
