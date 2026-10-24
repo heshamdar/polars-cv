@@ -71,6 +71,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   instead), history-narrating docstrings are in the present tense, and the
   `view-buffer` runner docs no longer link the removed `execution::tiling`
   module.
+- **The engine's five op families are routed once, by `ViewDto`.** `ExprNode`
+  and `PlanStep` each had a variant per family (view, compute, image, color,
+  filter), matched in `apply_op`, `optimize_with`, `build_plan` and the plan
+  executor. Both now hold `Op(ViewDto)`; `ViewDto::execute` is the one dispatch
+  to the family runners, `ViewExpr::op_node` the one construction of a node
+  from the op's contract (shape, strides, dtype), and `ViewDto::lowered` the
+  one place a disguised op (a lattice rotation) becomes the op it executes as.
+  A family added to `ViewDto` now fails to compile in exactly those two
+  functions. A colour conversion's tracked strides are now the contiguous
+  strides of its output (they were `None`); nothing executes from them.
 
 ## [0.41.0] — 2026-10-23
 

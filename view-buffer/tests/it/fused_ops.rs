@@ -82,7 +82,7 @@ fn test_fused_on_strided_input() {
 
 use std::sync::Arc;
 use view_buffer::execution::PlanStep;
-use view_buffer::ComputeOp;
+use view_buffer::{ComputeOp, ViewDto};
 
 /// Execute `build` as ONE expression (fusion allowed).
 fn run_fused(
@@ -94,7 +94,7 @@ fn run_fused(
     let fused_kernels = plan
         .steps
         .iter()
-        .filter(|s| matches!(s, PlanStep::Compute(ComputeOp::Fused(_))))
+        .filter(|s| matches!(s, PlanStep::Op(ViewDto::Compute(ComputeOp::Fused(_)))))
         .count();
     (plan.execute(), fused_kernels)
 }
