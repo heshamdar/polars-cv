@@ -9,6 +9,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`GLOSSARY.md`** fixes one meaning for each overloaded word (*view*,
+  *plan*, *node*, *step*, *graph*, *op*, *domain*) and lists the type names
+  that use one another way (`ViewBuffer`, `ViewDto`, `ExecutionPlan`,
+  `ExprNode`, …). It is linked from `CLAUDE.md`, `AGENTS.md` and the
+  Pipelines concepts page. No type is renamed (#163).
 - **Plugin modules are named for what they hold.** `graph/decode.rs` and
   `graph/encode.rs`, which imported each other, are now `graph/source.rs`
   (source decoding) and `graph/sink.rs` (an output's planned dtype, each row's

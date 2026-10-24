@@ -492,6 +492,8 @@ contract is incomplete — fix the contract.
 
 ## Detailed Context
 
+[`GLOSSARY.md`](GLOSSARY.md) fixes one meaning for each overloaded word (view, plan, node, step, graph, …) and lists the type names that use one another way. Use the glossary meaning in prose.
+
 Subsystem-specific AGENTS.md files provide deeper guidance:
 
 - `AGENTS.md` — root navigation, cross-cutting architecture decisions
