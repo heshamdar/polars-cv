@@ -81,6 +81,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   A family added to `ViewDto` now fails to compile in exactly those two
   functions. A colour conversion's tracked strides are now the contiguous
   strides of its output (they were `None`); nothing executes from them.
+- Documentation: the package `AGENTS.md` names `display.py` as the one exception to "no computation happens here" (notebook display normalises already-computed values), and the root `AGENTS.md` tree labels the repository root as the Cargo workspace and shows the root `scripts/` and `benchmarks/` directories beside their `polars-cv/` counterparts.
 
 ## [0.41.0] — 2026-10-23
 
