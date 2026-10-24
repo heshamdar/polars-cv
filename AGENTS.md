@@ -94,7 +94,7 @@ what a null in a per-row expression parameter means. `.cv` deliberately has no
 ## Directory Structure
 
 ```
-polars-cv/                          # Workspace root
+./                                  # Repository root (the Cargo workspace)
 ├── AGENTS.md                       # ← You are here
 ├── Cargo.toml                      # Workspace Cargo.toml
 ├── CONTRIBUTING.md                 # Release process, CI
@@ -112,16 +112,20 @@ polars-cv/                          # Workspace root
 │   │   └── metrics/AGENTS.md
 │   ├── tests/                      # Python tests (pytest)
 │   │   └── AGENTS.md
-│   ├── benchmarks/                 # Benchmark suite
+│   ├── benchmarks/                 # Regression suite over the checkout
 │   │   └── AGENTS.md
 │   ├── examples/                   # Runnable demos (13 numbered 01–13 + detection_data.py)
 │   ├── docs/                       # MkDocs user-guide documentation
 │   └── scripts/                    # Generators (gen_ops.py, ...) and utilities
+├── scripts/                        # Repo tooling: verify.sh (CI checks), with-pyo3-env.sh (PyO3 env for cargo), dev-clean.sh (reclaim disk)
+├── benchmarks/                     # Published-wheel comparison against PIL, OpenCV and others
 └── CHANGELOG.md                    # Keep-a-Changelog release history
 ```
 
 See root [`CONTRIBUTING.md`](CONTRIBUTING.md) for the release process and CI, and
-[`README.docker.md`](README.docker.md) for the Docker build environment.
+[`README.docker.md`](README.docker.md) for the Docker build environment. The two
+`benchmarks/` directories (repository root and `polars-cv/`) are explained in
+[`benchmarks/README.md`](benchmarks/README.md).
 
 ## Task Routing
 

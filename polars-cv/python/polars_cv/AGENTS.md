@@ -14,7 +14,7 @@ The **user-facing Python layer**. Responsible for:
 - **Validation** — enforcing domain, dtype, and operation contracts before execution
 - **Expression namespaces** — registering `.cv`, `.point`, `.contour`, `.bbox` on `pl.Expr`
 
-**No computation happens here.** This layer builds specs and validates contracts. All execution is in Rust.
+**No computation happens here.** This layer builds specs and validates contracts. All execution is in Rust. The one exception is `display.py`, which renders values a pipeline has already computed (`_ndarray_to_png` min-max normalises a float array to `uint8` for notebook display); display is never part of a pipeline.
 
 ## Key Files
 
