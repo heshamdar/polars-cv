@@ -128,13 +128,29 @@ def rust_src_dir() -> Path:
     return src
 
 
+def _in_nested_checkout(path: Path) -> bool:
+    """Is ``path`` inside another checkout below :data:`REPO_ROOT`?
+
+    A directory with its own ``.git`` (a file for a git worktree, such as the
+    agent worktrees under ``.claude/worktrees/``; a directory for a clone)
+    holds a second copy of the sources, which a scan would report as a second
+    declaration of every authority. The root's own ``.git`` is not consulted.
+    """
+    relative = path.relative_to(REPO_ROOT)
+    return any(
+        (REPO_ROOT / parent / ".git").exists() for parent in relative.parents[:-1]
+    )
+
+
 def rust_sources() -> list[Path]:
-    """Every ``.rs`` file this repository owns, build output excluded."""
+    """Every ``.rs`` file this repository owns: build output and nested
+    checkouts excluded."""
     return discovered(
         sorted(
             path
             for path in REPO_ROOT.glob("**/*.rs")
             if not any(marker in str(path) for marker in _EXCLUDED_DIRS)
+            and not _in_nested_checkout(path)
         ),
         "Rust sources",
     )
