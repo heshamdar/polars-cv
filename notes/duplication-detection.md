@@ -1,0 +1,108 @@
+# Duplication detection: exploration notes
+
+Status: exploratory. Nothing here is wired into `verify.sh`, CI or pre-commit.
+Written so the work can be picked up later without re-running it.
+
+## Question
+
+Which duplication tool can find the duplicates this repo cares about, and in
+which languages? In particular:
+
+1. The same list declared twice, across Rust and Python, where a human must
+   check that the two copies agree (generated copies are fine).
+2. Fragmented operations that should be combined, which needs semantic
+   understanding rather than textual matching.
+
+## Tool: jscpd 5.4.2
+
+Run through npm, with no install in the repo:
+
+```sh
+npx -y jscpd@5.4.2 polars-cv/src view-buffer/src polars-cv/python \
+  --format rust,python --min-lines 5 --min-tokens 50 \
+  --reporters console,json --output <dir>
+```
+
+### Languages
+
+- Language is chosen by file extension, through `--format`. Without a format
+  flag it scanned four formats here, including Markdown, which had no clones.
+- **It never compares a Rust file with a Python file.** Every clone pair in the
+  report had the same extension on both sides (123 Rust-Rust, 90 Python-Python,
+  0 cross-language). So question 1 is not answered by this tool at all.
+
+### Results on this tree
+
+| Language | Clones | Duplicated lines | Share of code |
+|----------|--------|------------------|---------------|
+| Rust (`polars-cv/src`, `view-buffer/src`) | 123 | 1,105 | 1.8% |
+| Python (`polars-cv/python`) | 90 | 997 | 4.6% |
+
+- The largest Python clones are in `_ops_generated.py` and
+  `_lazy_forwarders.py`. Both are generated (`scripts/gen_ops.py`), so they
+  are noise. Excluding them with `--ignore` is untested.
+- Clone kind is `exact` for every record. Other kinds (`renamed`, `similar`,
+  `semantic`) need extra flags and were not run.
+
+### One confirmed duplicate
+
+`metrics/_metrics/_froc.py` lines 313-333 and `metrics/_metrics/_lroc.py`
+lines 270-290 are the same 21 lines (diff is empty). It is the same
+join-then-`collapse_scores` block in two metric modules. A shared helper would
+remove it. This is a design choice, so it is not done.
+
+### Reliability of the report
+
+- The reported line ranges are often wrong. For the Python clones, the
+  matched text (the `fragment` field) appears in both files for 76 of 90
+  pairs. For Rust, it does for 96 of 123, with 5 pairs unresolved because the
+  basename was ambiguous.
+- Most of the unverified pairs are not explained yet. A constant line offset
+  does not account for them.
+- **Rule for later use:** verify a clone by its `fragment` against the file
+  before acting on it. Do not trust the reported line numbers.
+
+## Concern 1: the same list declared in two languages
+
+jscpd cannot see this, for the reason above. What the repo already has:
+
+- Generated declarations are the single authority, per CLAUDE.md. `_ops_generated.py`
+  comes from the Rust catalogue; `_dtype_names.py` comes from
+  `scripts/gen_dtype_names.py`; `geom_catalog.json` drives the geometry
+  accessors. Duplicates that come from these are acceptable.
+- Hand-written lists are the risk. Nothing checks them against the other
+  language today.
+
+Options, not yet tried:
+
+- A small script that extracts identifier sets from Rust enums and arrays and
+  from Python literal lists, then reports overlaps that are not generated. It
+  would need an allowlist of intentional overlaps.
+- Extend the existing registry tests (the canonical-paths rule) to assert that
+  each hand-written list has a single source.
+
+## Concern 2: fragmented operations that should be combined
+
+Textual matching cannot find this. Options:
+
+- jscpd's `semantic` mode (`--semantic`, experimental). It compares embeddings
+  of functions and can match across languages. It needs a local model, which
+  the tool downloads once. Not run.
+- `similarity-rs` (Rust), which was not searched or tried.
+- Manual review of the clone list, grouped by module, once the generated code
+  is excluded.
+
+## Next steps when picking this up
+
+1. Re-run the command above with `--ignore` for the generated Python files, and
+   record the counts again.
+2. Try `--semantic` on the same paths to see whether it finds the
+   froc/lroc-style cases, and whether it finds anything cross-language.
+3. Decide on the list-duplication check: a script or an extension of the
+   registry tests.
+4. Decide thresholds before any gate. Report-only is the safe first step.
+
+## What was not done
+
+- No change was made to the repo's code or CI.
+- The raw JSON reports were written to `/tmp` and are not committed.
