@@ -7,6 +7,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **Common-subexpression elimination is declared where it runs: in Python.**
+  It reads the expressions' identities, which only the Python graph holds, yet
+  it was a variant of Rust's `LogicalPass` whose only arm refused to run it,
+  and `PipelineGraph.optimize` picked it out by name. It is now the one
+  graph-tier pass in `polars_cv/_graph_passes.py`, which `scripts/gen_ops.py`
+  places ahead of Rust's catalogue. `optimize` dispatches by tier, and
+  `_graph.py` refuses to import if a declared graph pass has no
+  implementation. `OptFlags(common_subexpression_elimination=...)` and
+  `POLARS_CV_OPTIMIZATIONS` are unchanged; `PassSpec.tier` gains `"graph"`
+  (#159).
+
 ## [0.41.0] — 2026-10-23
 
 Reductions, filters and windows for image analytics. One `reduce` takes any

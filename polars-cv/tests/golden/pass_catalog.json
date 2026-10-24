@@ -1,10 +1,5 @@
 [
   {
-    "name": "common_subexpression_elimination",
-    "tier": "logical",
-    "summary": "Compute each distinct value once — the same op on the same inputs, however the pipelines were written — and fuse each linear run of ops no other node reads into one node."
-  },
-  {
     "name": "identity_elimination",
     "tier": "logical",
     "summary": "Delete no-op operations — a zero pad, a same-dtype cast, a full-frame crop — that preserve their input byte for byte."

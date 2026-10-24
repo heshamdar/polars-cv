@@ -192,7 +192,6 @@
     "name": "LogicalPass",
     "doc": "A logical optimisation pass (``OptFlags`` field names).",
     "variants": [
-      "common_subexpression_elimination",
       "identity_elimination",
       "spatial_window_pushdown"
     ]

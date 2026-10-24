@@ -6,12 +6,14 @@ serialization emits whatever graph it is handed and does nothing else; the one
 :meth:`PipelineGraph.optimize` call between them rewrites the logical graph into
 an equivalent physical graph.
 
-Which optimizations exist is declared in Rust — the logical passes by
-``LogicalPass`` (``src/passes.rs``), the engine's by ``engine_passes!``
-(view-buffer, which also declares ``OptConfig``) — and reaches Python as the
-generated ``PASS_CATALOG``, from which this module builds
+Which optimizations exist is declared where each runs — the graph-scope passes
+(CSE) by :mod:`polars_cv._graph_passes`, since only Python holds the
+expressions' identities they compare; the node-scope logical passes by Rust's
+``LogicalPass`` (``src/passes.rs``); the engine's by ``engine_passes!``
+(view-buffer, which also declares ``OptConfig``) — and reaches this module as
+the generated ``PASS_CATALOG``, from which it builds
 :data:`OPTIMIZATION_PASSES` and the control surface that toggles them,
-:class:`OptFlags`. It spans both tiers: the logical (Tier-1) passes applied by
+:class:`OptFlags`. It spans every tier: the graph and logical passes applied by
 ``PipelineGraph.optimize``, and the per-row engine-lowering rewrites (scalar fusion, cast
 elimination, flip/transpose algebra) that run in the Rust engine on the
 *already optimized* graph. Each pass carries a ``tier`` saying how it is
@@ -41,16 +43,17 @@ OPT_ENV_VAR = "POLARS_CV_OPTIMIZATIONS"
 
 @dataclass(frozen=True)
 class PassSpec:
-    """One optimization pass, as the Rust pass catalogue describes it.
+    """One optimization pass, as the generated pass catalogue describes it.
 
     Attributes:
         name: Stable identifier; also the :class:`OptFlags` field name (both
             are generated from the catalogue).
         summary: One-line description for ``explain`` output and docs.
-        tier: ``"logical"`` — applied by ``PipelineGraph.optimize``, rewriting
-            the logical graph before serialization (CSE in Python, which holds
-            the expression identities; the node-scope passes in Rust,
-            ``Plan.run_pass``); or ``"engine"`` — a per-row lowering rewrite in the
+        tier: ``"graph"`` — declared and applied by Python
+            (:mod:`polars_cv._graph_passes`), comparing and merging the graph's
+            nodes before serialization; ``"logical"`` — a node-scope rewrite
+            ``PipelineGraph.optimize`` applies to each node, decided by Rust
+            (``Plan.run_pass``); or ``"engine"`` — a per-row lowering rewrite in the
             Rust engine, whose flag is serialized into the graph's ``opt``
             object and gates the matching ``OptConfig`` field. Mandatory
             correctness lowering (materialization, the f64 fusion exclusion) is
@@ -78,9 +81,10 @@ ENGINE_PASS_NAMES: tuple[str, ...] = tuple(
     p.name for p in OPTIMIZATION_PASSES if p.tier == "engine"
 )
 
-#: Logical-tier pass names — applied by ``PipelineGraph.optimize``.
+#: Graph- and logical-tier pass names — the rewrites ``PipelineGraph.optimize``
+#: applies.
 LOGICAL_PASS_NAMES: tuple[str, ...] = tuple(
-    p.name for p in OPTIMIZATION_PASSES if p.tier == "logical"
+    p.name for p in OPTIMIZATION_PASSES if p.tier in ("graph", "logical")
 )
 
 

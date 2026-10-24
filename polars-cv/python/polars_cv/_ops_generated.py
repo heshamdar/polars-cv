@@ -297,7 +297,6 @@ class LineJoin(str, Enum):
 class LogicalPass(str, Enum):
     """A logical optimisation pass (``OptFlags`` field names)."""
 
-    COMMON_SUBEXPRESSION_ELIMINATION = "common_subexpression_elimination"
     IDENTITY_ELIMINATION = "identity_elimination"
     SPATIAL_WINDOW_PUSHDOWN = "spatial_window_pushdown"
 
@@ -609,7 +608,7 @@ TYPED_OPS: frozenset[str] = frozenset(
 PASS_CATALOG: tuple[tuple[str, str, str], ...] = (
     (
         "common_subexpression_elimination",
-        "logical",
+        "graph",
         "Compute each distinct value once — the same op on the same inputs, however the pipelines were written — and fuse each linear run of ops no other node reads into one node.",
     ),
     (
