@@ -88,16 +88,54 @@ Textual matching cannot find this. Options:
 - jscpd's `semantic` mode (`--semantic`, experimental). It compares embeddings
   of functions and can match across languages. It needs a local model, which
   the tool downloads once. Not run.
-- `similarity-rs` (Rust), which was not searched or tried.
 - Manual review of the clone list, grouped by module, once the generated code
   is excluded.
+
+## Results: the experimental modes
+
+### jscpd `--semantic`: blocked
+
+The local model (`nomic-ai/CodeRankEmbed`, 548 MB) is hosted on
+`huggingface.co`. The egress proxy refused the connection with a policy 403,
+recorded in `/__agentproxy/status`. The proxy's README says policy denials are
+reported rather than worked around, so it was not retried another way. The
+`--semantic-provider http` option needs an embeddings API, which this session
+does not have. **Not run.** To try it later, run `npx jscpd --semantic-download`
+from an environment that can reach Hugging Face.
+
+### `similarity-rs` 0.5.0: ran
+
+Installed from crates.io (`cargo install similarity-rs --locked`). It compares
+function syntax trees with tree-edit distance, so it catches structural
+similarity that text matching misses.
+
+```sh
+similarity-rs polars-cv/src view-buffer/src --skip-test --threshold 0.85 --min-lines 5
+```
+
+- 319 function pairs at 85% or higher: 166 at 85–90%, 122 at 90–95%, 31 at 95%
+  or higher.
+- The top matches are mostly expected: per-type `clone`, `describe` and `new`
+  implementations, and inverse pairs such as `rgb_to_gray` / `gray_to_rgb`.
+  Those are not duplicates to remove.
+- **A fragmented-operations candidate:** `geom_contour_from_coords` and
+  `geom_contour_set_from_coords` in `polars-cv/src/geom_construct.rs` (97%).
+  They are the same operation at two nesting depths. They are not safe to merge
+  blindly: the set version treats a null ring as an error
+  (`polars_bail!(ComputeError: "a ring is null")`), while the single-contour
+  version does not. A shared helper would need to keep that difference
+  deliberately. This is the semantic judgement the task needs.
+- Also worth a look, not yet read: `into_polars_buffer_with_policy` and
+  `into_polars_buffer_strided_with_policy` in `view-buffer/src/core/buffer.rs`
+  (93%).
 
 ## Next steps when picking this up
 
 1. Re-run the command above with `--ignore` for the generated Python files, and
    record the counts again.
-2. Try `--semantic` on the same paths to see whether it finds the
-   froc/lroc-style cases, and whether it finds anything cross-language.
+2. Run `--semantic` once from an environment that can reach Hugging Face (blocked
+   from this session). Check whether it finds the froc/lroc-style cases and
+   anything cross-language.
 3. Decide on the list-duplication check: a script or an extension of the
    registry tests.
 4. Decide thresholds before any gate. Report-only is the safe first step.
