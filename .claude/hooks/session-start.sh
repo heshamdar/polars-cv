@@ -122,5 +122,22 @@ if ! command -v cargo-deny >/dev/null 2>&1; then
     || echo "session-start: 'cargo install cargo-deny' failed; verify.sh's cargo deny lane will fail" >&2
 fi
 
+# 5. cargo-machete, for verify.sh's unused-dependency lane (CI installs it with
+#    an action). Same reasoning as cargo-deny: built from crates.io, last, and a
+#    failure shows as a clear `cargo machete` FAIL in verify.sh.
+if ! command -v cargo-machete >/dev/null 2>&1; then
+  cargo install --locked cargo-machete \
+    || echo "session-start: 'cargo install cargo-machete' failed; verify.sh's cargo machete lane will fail" >&2
+fi
+
+# 6. cargo-udeps, for verify.sh's whole-build unused-dependency lane. It runs on
+#    nightly, so the nightly toolchain comes first. Last and best-effort, like
+#    the lines above: a failure shows as a clear `cargo udeps` FAIL.
+if ! cargo +nightly udeps --version >/dev/null 2>&1; then
+  rustup toolchain install nightly --profile minimal \
+    && cargo +nightly install --locked cargo-udeps \
+    || echo "session-start: installing nightly + cargo-udeps failed; verify.sh's cargo udeps lane will fail" >&2
+fi
+
 echo "session-start: environment ready"
 touch "$DONE"

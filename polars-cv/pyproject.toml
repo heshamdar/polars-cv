@@ -68,6 +68,12 @@ viz = [
     "graphviz>=0.21",
     "pydot>=4.0.1",
 ]
+# Image and notebook rendering: `show_images` and the notebook display hooks.
+# Both are imported lazily, so a plain install does not need either package.
+display = [
+    "pillow>=10.0",
+    "ipython>=8.0",
+]
 
 [dependency-groups]
 dev = [
@@ -191,6 +197,32 @@ include = ["python/polars_cv"]
 
 [tool.ty.environment]
 python-version = "3.11"
+
+[tool.vulture]
+# Dead code, gated at 90% confidence: unused imports and unreachable code. The
+# 60% level also reports every public method, which the tests and docs use, so
+# it is a manual sweep rather than a gate. Run it on the package only.
+paths = ["python/polars_cv"]
+min_confidence = 90
+# Named only inside quoted annotations, which vulture does not follow.
+ignore_names = ["PlanState", "SlotOf"]
+
+[tool.deptry]
+# Without these, deptry reports the project's own imports and every module
+# whose import name differs from its distribution name (182 findings).
+known_first_party = ["polars_cv"]
+extend_exclude = ["benchmarks", "examples", "docs", "scripts"]
+
+[tool.deptry.package_module_name_map]
+pillow = "PIL"
+ipython = "IPython"
+opencv-python = "cv2"
+opencv-python-headless = "cv2"
+
+[tool.deptry.per_rule_ignores]
+# networkx imports pydot for the `viz` extra; the package imports it only under
+# TYPE_CHECKING, so deptry sees it as unused.
+DEP002 = ["pydot"]
 
 [tool.ruff]
 target-version = "py311"

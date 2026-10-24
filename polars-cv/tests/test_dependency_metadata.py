@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._plugin_gate import subprocess_env
+
 from .conftest import plugin_required
 
 pytestmark = pytest.mark.structural
@@ -161,6 +163,10 @@ def test_the_package_works_without_the_viz_extra() -> None:
         """
     )
     out = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=subprocess_env(),
     )
     assert "pip install 'polars-cv[viz]'" in out.stdout, out.stdout + out.stderr

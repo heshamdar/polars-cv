@@ -102,6 +102,16 @@ run_check "cargo test polars-cv"     cargo test -p polars-cv
 # shows here as a clear FAIL, consistent with this script's no-false-green rule.
 run_check "cargo deny"               cargo deny check
 
+# Unused dependencies. cargo-machete is a fast text search over the sources:
+# exit 1 on any finding, 2 on a processing error. A missing binary shows here
+# as a FAIL, like cargo-deny. The session hook installs it.
+run_check "cargo machete"            cargo machete
+
+# The whole-build check: cargo-udeps compiles every target and sees what the
+# source search cannot. It needs a nightly toolchain (`rustup toolchain install
+# nightly`), and the session hook installs both.
+run_check "cargo udeps (nightly)"    cargo +nightly udeps --workspace --all-targets
+
 # The Python lanes need the compiled extension to match the working tree. The
 # install is editable, so Python sources are always current while the .so stays
 # at its last build -- a stale .so silently turns plugin tests into skips.
@@ -164,6 +174,12 @@ run_check "ruff format" uvx ruff format --check polars-cv/python polars-cv/tests
 # under [tool.ty]). Reads the source and the committed .pyi stubs; needs the dev
 # deps synced so polars/numpy imports resolve, but no compiled extension.
 run_check "ty check" uvx ty check --project polars-cv
+
+# Dead code (vulture, at its configured 90% confidence) and dependency
+# declarations (deptry). Both read [tool.vulture] / [tool.deptry] from
+# polars-cv/pyproject.toml and resolve paths from that directory.
+run_check "vulture" bash -c 'cd polars-cv && uvx vulture'
+run_check "deptry" bash -c 'cd polars-cv && uvx deptry .'
 
 # `--strict` matches the `docs` job in ci.yml: a warning fails the build instead
 # of scrolling past.

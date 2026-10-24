@@ -248,6 +248,12 @@ jobs:
           uvx ruff check python tests benchmarks
           uvx ruff format --check python tests benchmarks
 
+      - name: Dead code and dependency declarations
+        run: |
+          if [ -d "polars-cv" ]; then cd polars-cv; fi
+          uvx vulture
+          uvx deptry .
+
   docs:
     name: Docs build
     # The docs had no CI at all: `docs.yml` is `workflow_dispatch:`-only, so a
@@ -311,6 +317,21 @@ jobs:
         run: |
           uv sync --directory polars-cv --group dev --no-install-project
           uvx ty check --project polars-cv
+
+  unused-dependencies:
+    name: Unused dependencies (cargo-machete + cargo-udeps)
+    # cargo-machete is a fast static check over the sources; cargo-udeps compiles
+    # every target and catches what the text search cannot. udeps needs nightly.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-machete
+      - name: cargo machete
+        run: cargo machete
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-udeps
+      - name: cargo udeps (nightly)
+        run: cargo +nightly udeps --workspace --all-targets
 
   cargo-deny:
     name: cargo-deny (advisories + licenses)
