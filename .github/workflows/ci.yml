@@ -248,6 +248,12 @@ jobs:
           uvx ruff check python tests benchmarks
           uvx ruff format --check python tests benchmarks
 
+      - name: Dead code and dependency declarations
+        run: |
+          if [ -d "polars-cv" ]; then cd polars-cv; fi
+          uvx vulture
+          uvx deptry .
+
   docs:
     name: Docs build
     # The docs had no CI at all: `docs.yml` is `workflow_dispatch:`-only, so a

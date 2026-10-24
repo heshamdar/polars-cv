@@ -1754,6 +1754,8 @@ _CI_COMMAND_CLASSIFICATION: "dict[str, str | None]" = {
     "uvx ruff check": "ruff check",
     "uvx ruff format": "ruff format",
     "uvx ty": "ty check",
+    "uvx vulture": "vulture",
+    "uvx deptry": "deptry",
     "uv run mkdocs": "mkdocs build",
     "uv run pytest": "pytest",
     # Setup: installs and environment, nothing a code change can break.

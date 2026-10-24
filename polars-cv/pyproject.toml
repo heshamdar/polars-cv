@@ -68,6 +68,12 @@ viz = [
     "graphviz>=0.21",
     "pydot>=4.0.1",
 ]
+# Image and notebook rendering: `show_images` and the notebook display hooks.
+# Both are imported lazily, so a plain install does not need either package.
+display = [
+    "pillow>=10.0",
+    "ipython>=8.0",
+]
 
 [dependency-groups]
 dev = [
@@ -209,6 +215,7 @@ extend_exclude = ["benchmarks", "examples", "docs", "scripts"]
 
 [tool.deptry.package_module_name_map]
 pillow = "PIL"
+ipython = "IPython"
 opencv-python = "cv2"
 opencv-python-headless = "cv2"
 
@@ -216,10 +223,6 @@ opencv-python-headless = "cv2"
 # networkx imports pydot for the `viz` extra; the package imports it only under
 # TYPE_CHECKING, so deptry sees it as unused.
 DEP002 = ["pydot"]
-# Pending a decision: display.py imports these lazily but they are not declared
-# as a runtime or optional extra. Either declare an extra or guard the imports,
-# then remove this line.
-DEP001 = ["PIL", "IPython"]
 
 [tool.ruff]
 target-version = "py311"

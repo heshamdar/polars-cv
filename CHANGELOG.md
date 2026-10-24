@@ -7,6 +7,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`display` extra** (`pip install polars-cv[display]`): Pillow and IPython,
+  which `show_images` and the notebook display hooks import. They were used
+  without being declared anywhere a user could install them from.
+
 ### Removed
 
 - **`view_buffer::ops::validation::require_spatial`** (view-buffer, a public

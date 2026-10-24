@@ -175,6 +175,12 @@ run_check "ruff format" uvx ruff format --check polars-cv/python polars-cv/tests
 # deps synced so polars/numpy imports resolve, but no compiled extension.
 run_check "ty check" uvx ty check --project polars-cv
 
+# Dead code (vulture, at its configured 90% confidence) and dependency
+# declarations (deptry). Both read [tool.vulture] / [tool.deptry] from
+# polars-cv/pyproject.toml and resolve paths from that directory.
+run_check "vulture" bash -c 'cd polars-cv && uvx vulture'
+run_check "deptry" bash -c 'cd polars-cv && uvx deptry .'
+
 # `--strict` matches the `docs` job in ci.yml: a warning fails the build instead
 # of scrolling past.
 #
