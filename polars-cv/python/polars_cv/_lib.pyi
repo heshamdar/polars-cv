@@ -9,6 +9,15 @@ is declared here — the plugin functions themselves (``vb_graph``,
 Signatures mirror the call sites in ``pipeline.py`` / ``lazy.py`` / ``_graph.py``;
 ``*_json`` inputs are wire JSON, expression parameters as ``{"$slot": i}`` over
 the pipeline's own expression table.
+
+**This stub is checked against the built extension**, in both directions, by
+``tests/test_lib_stub_parity.py`` (the comparison is ``tests/_stub_parity.py``):
+every name, parameter name/kind/order/default and member kind here must match
+``polars_cv._lib``, and every name ``_lib`` exports must be declared here or be
+in that test's ``UNSTUBBED`` table with a reason. So a ``#[pyfunction]`` change
+in Rust fails that test until this file follows it; there is no other check, so
+edit the two together. Types are not compared (they are not recoverable from the
+extension), only the shape of each signature.
 """
 
 from __future__ import annotations
@@ -19,6 +28,7 @@ __version__: str
 __source_hash__: str
 __debug_assertions__: bool
 __build_profile__: str
+__allocator__: str
 
 class PlanState:
     """The planner's state at one op boundary (``src/plan.rs``'s ``State``).
@@ -51,9 +61,7 @@ class Plan:
 
     @staticmethod
     def continuing(start: PlanState) -> Plan: ...
-    def with_source(
-        self, source_json: str, refs: dict[str, PlanState] | None = None
-    ) -> Plan: ...
+    def with_source(self, source_json: str) -> Plan: ...
     def rebased(self, start: PlanState) -> Plan: ...
     def push(self, op_json: str, refs: dict[str, PlanState] | None = None) -> Plan: ...
     def select(self, positions: list[int], start: int | None = None) -> Plan: ...

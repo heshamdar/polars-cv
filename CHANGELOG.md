@@ -9,6 +9,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`_lib.pyi` is checked against the built extension.**
+  `tests/test_lib_stub_parity.py` compares the hand-written stub with
+  `polars_cv._lib` in both directions (names, parameter names/kinds/order/
+  defaults, member kinds; every export stubbed or allowlisted with a reason),
+  with fixtures for the comparison in `test_stub_parity_fixtures.py`. It found
+  two drifts, now fixed: `Plan.with_source` was stubbed with a `refs`
+  parameter Rust lacks, and `__allocator__` was undeclared (#167).
 - **`GLOSSARY.md`** fixes one meaning for each overloaded word (*view*,
   *plan*, *node*, *step*, *graph*, *op*, *domain*) and lists the type names
   that use one another way (`ViewBuffer`, `ViewDto`, `ExecutionPlan`,
