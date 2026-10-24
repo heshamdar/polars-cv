@@ -144,3 +144,34 @@ similarity-rs polars-cv/src view-buffer/src --skip-test --threshold 0.85 --min-l
 
 - No change was made to the repo's code or CI.
 - The raw JSON reports were written to `/tmp` and are not committed.
+
+## Results: ast-grep 0.51.0 (cross-language lists)
+
+Installed with `uvx --from ast-grep-cli ast-grep`, nothing added to the repo.
+Two rules matched list and array literals, one per language:
+
+- Python: `kind: list | tuple | set`, on `polars-cv/python`
+- Rust: `kind: array_expression`, on `polars-cv/src` and `view-buffer/src`
+
+Then a small script kept lists of at least four string literals and paired
+Python with Rust lists that share at least three strings. Scratch files were
+in `/tmp/ast_exp` and are not committed.
+
+- 166 Python and 52 Rust string lists, and 21 cross-language pairs that share
+  three or more strings.
+- Most of the strong pairs are the generated Python op-name list
+  (`_ops_generated.py`) against Rust lists of op names. The generated side is
+  fine. The Rust side needs a check:
+  - `graph/copy_census.rs`, the `KNOWN` table, is a hand-written list of op
+    names with expected copy counts. It is guarded both ways: the census fails
+    if a listed op did not run, and fails if a run op is missing. So the
+    duplication is checked, which is the pattern to copy.
+  - The matches in `ops/mod.rs`, `passes.rs` and `plan.rs` are test fixtures
+    that name ops. Repeating names there is expected.
+- Generic matches, such as `height, width, x, y` in geometry schemas and
+  operator tokens, are false positives.
+
+What this shows: the extraction works on both languages, and the cross-language
+list question can be answered with a script over ast-grep output. What it
+does not do is decide whether a shared list is safe, which still needs a
+person or a guard.
