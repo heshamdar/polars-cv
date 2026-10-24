@@ -28,8 +28,8 @@ use view_buffer::geometry::label::{label_plane, reduce_regions, region_pixels, L
 use view_buffer::ops::Domain;
 use view_buffer::ViewBuffer;
 
-use super::encode::{execute_geometry_op, execute_region_op};
 use super::step::GraphStep;
+use crate::geometry::exec::{execute_geometry_op, execute_region_op};
 use crate::ops::graph::Role;
 use crate::params::ParamCtx;
 
@@ -304,7 +304,7 @@ pub(crate) fn run_step(
                 let contours_col = contours.0;
                 let column = ctx.col(contours_col).map_err(|e| e.to_string())?;
                 let (series, row) = column.at(row_idx);
-                let contours = crate::geom_columns::ContourColumn::new(series)
+                let contours = crate::geometry::columns::ContourColumn::new(series)
                     .row(row)
                     .map_err(|e| named(format!("contour parsing failed: {e}")))?;
                 let Some(contours) = contours else {

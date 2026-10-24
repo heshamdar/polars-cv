@@ -3,7 +3,7 @@
 ``.cv.width()``, ``.contour.area()``, ``.point.distance()``,
 ``.bbox.pairwise_iou()`` and the rest do **not** go through ``vb_graph``. They
 are their own ``#[polars_expr]`` functions, each declaring its output type with
-``output_type=`` or ``output_type_func=`` in ``src/contour.rs``, ``point.rs``,
+``output_type=`` or ``output_type_func=`` in ``src/geometry/contour.rs``, ``geometry/point.rs``,
 ``image_metadata.rs`` and ``read_bytes.rs`` — a second, entirely separate
 plan/runtime pair from the pipeline graph's.
 
@@ -324,7 +324,7 @@ def test_contour_results_publish_the_canonical_struct(name: str) -> None:
     lacked: an inferred ``holes: List(Null)`` holds no hole a union makes,
     and a struct without ``is_closed`` turns ``boundary()``'s lines back
     into regions. Casting to it either loses data or fails, so the one
-    declaration (``geom_schema::contour_fields``) is the only output layout.
+    declaration (``geometry::schema::contour_fields``) is the only output layout.
     """
     df = _inferred_contour_df()
     assert df.schema["a"] != CONTOUR_SCHEMA, "the fixture must not be canonical"

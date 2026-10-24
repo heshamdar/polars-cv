@@ -706,7 +706,7 @@ mod tests {
         // The executor sets the canvas from the node it names; run without
         // one, the op is refused rather than given a size.
         let contours = crate::graph::node_output::NodeOutput::from_contours(Vec::new());
-        let err = crate::graph::encode::execute_geometry_op(contours, &geo).unwrap_err();
+        let err = crate::geometry::exec::execute_geometry_op(contours, &geo).unwrap_err();
         assert!(err.contains("canvas"), "{err}");
         assert_eq!(geo.with_canvas(4, 6).canvas(), Some((4, 6)));
     }

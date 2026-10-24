@@ -43,9 +43,9 @@ use view_buffer::geometry::contour::{Contour, Outline, Point};
 
 use view_buffer::geometry::contour::BoundingBox;
 
-use crate::geom_arity::{is_point_dtype, Arity, ReadContour};
-use crate::geom_params::column_error;
-use crate::geom_schema::{BBOX_FIELD_NAMES, POINT_FIELD_SPELLINGS};
+use crate::geometry::arity::{is_point_dtype, Arity, ReadContour};
+use crate::geometry::params::column_error;
+use crate::geometry::schema::{BBOX_FIELD_NAMES, POINT_FIELD_SPELLINGS};
 
 /// A contour column's rows, each as the contours it holds.
 pub(crate) struct ContourColumn<'a> {
@@ -621,7 +621,7 @@ mod tests {
     use view_buffer::geometry::contour::{Contour, Point};
 
     use super::ContourColumn;
-    use crate::geom_arity::{Arity, ContourOutput};
+    use crate::geometry::arity::{Arity, ContourOutput};
 
     fn square(x0: f64, with_hole: bool) -> Contour {
         let exterior = vec![
@@ -653,7 +653,7 @@ mod tests {
 
     /// A column in the canonical schema, written by the contour writer.
     fn written(rows: Vec<Option<Vec<Contour>>>, arity: Arity) -> Series {
-        let elem = crate::geom_schema::contour_struct_dtype();
+        let elem = crate::geometry::schema::contour_struct_dtype();
         Contour::column("c".into(), rows, arity, &elem).unwrap()
     }
 

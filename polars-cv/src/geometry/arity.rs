@@ -12,7 +12,7 @@
 //!
 //! Nothing forces those two to agree. Before this module the accessors declared
 //! a *constant* output type (`#[polars_expr(output_type=Float64)]`, fifteen
-//! times) and called [`crate::contour::parse_contour`] directly, which rejects a
+//! times) and called [`crate::geometry::contour::parse_contour`] directly, which rejects a
 //! set outright — so the whole question was answered by failing. Answering it
 //! per accessor instead would be fifteen opportunities to declare `Float64` and
 //! build a `List(Float64)`, and `test_schema_parity_namespaces` exists because
@@ -45,9 +45,9 @@ use polars::prelude::*;
 
 use view_buffer::geometry::contour::{Contour, Outline};
 
-use crate::geom_columns::ContourColumn;
-use crate::geom_params::GeomParams;
-use crate::geom_schema::POINT_FIELD_SPELLINGS;
+use crate::geometry::columns::ContourColumn;
+use crate::geometry::params::GeomParams;
+use crate::geometry::schema::POINT_FIELD_SPELLINGS;
 
 /// Whether a geometry column holds one contour per row or a set per row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,11 +236,11 @@ impl ContourOutput for Outline {
 }
 
 /// Transforms: a contour per contour, built straight into Arrow through
-/// [`crate::geom_schema::contour_array`] rather than as an `AnyValue` with a
+/// [`crate::geometry::schema::contour_array`] rather than as an `AnyValue` with a
 /// sub-`Series` per ring, which made `.contour.translate()` cost as much as
 /// extracting the contours in the first place. `empty` fills a null
 /// row's slot.
-fn contour_column<C: crate::geom_schema::ContourParts>(
+fn contour_column<C: crate::geometry::schema::ContourParts>(
     name: PlSmallStr,
     rows: Vec<Option<Vec<C>>>,
     arity: Arity,
@@ -270,11 +270,11 @@ fn contour_column<C: crate::geom_schema::ContourParts>(
                     None => Ok(&empty),
                 })
                 .collect::<PolarsResult<_>>()?;
-            crate::geom_schema::contour_array(slots.iter().copied())?.with_validity(validity)
+            crate::geometry::schema::contour_array(slots.iter().copied())?.with_validity(validity)
         }
         Arity::Set => {
             let all: Vec<&C> = rows.iter().flatten().flatten().collect();
-            let values = crate::geom_schema::contour_array(all.iter().copied())?;
+            let values = crate::geometry::schema::contour_array(all.iter().copied())?;
             let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
             let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
             let dtype = ListArray::<i64>::default_datatype(values.dtype().clone());
@@ -289,7 +289,7 @@ fn contour_column<C: crate::geom_schema::ContourParts>(
     if series.dtype() != &declared {
         polars_bail!(ComputeError:
             "internal: a contour result is declared {declared:?}, but contours \
-             are published as {:?} (geom_schema::contour_struct_dtype)",
+             are published as {:?} (geometry::schema::contour_struct_dtype)",
             series.dtype()
         );
     }
@@ -302,7 +302,7 @@ fn contour_column<C: crate::geom_schema::ContourParts>(
 ///
 /// **The one decode-and-assemble path for the single-column `.contour`
 /// functions that are not pipeline ops** (an op-backed accessor runs its
-/// pipeline step instead, `crate::geom_accessor`). Rows are read through [`ContourColumn`] in the arity the
+/// pipeline step instead, `crate::geometry::accessor`). Rows are read through [`ContourColumn`] in the arity the
 /// column's dtype declares, so no accessor is free to disagree with what its
 /// `output_type_func` declared.
 ///
@@ -412,7 +412,7 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
 /// macro provides is over the *element type*, not the names.
 ///
 /// Each form names the definition its arguments parse as (a `ContourFn`, or
-/// the `GeometryOp` a pipeline op shares — see `geom_fns`), and destructures
+/// the `GeometryOp` a pipeline op shares — see `geometry::fns`), and destructures
 /// it; the body reads a per-row field through `params.value(field, row)`:
 ///
 /// - `map` — one contour column, per-row values resolved under
@@ -429,18 +429,18 @@ macro_rules! contour_accessor {
         |$c:ident, $params:ident, $row:ident| $body:expr
     ) => {
         fn $out_ty(input_fields: &[Field]) -> PolarsResult<Field> {
-            $crate::geom_arity::elementwise_field(input_fields, stringify!($name), $elem)
+            $crate::geometry::arity::elementwise_field(input_fields, stringify!($name), $elem)
         }
         $(#[$meta])*
         #[polars_expr(output_type_func=$out_ty)]
-        fn $name(inputs: &[Series], kwargs: $crate::geom_params::GeomKwargs) -> PolarsResult<Series> {
-            let (op, geom_params) = $crate::geom_params::GeomParams::parse::<
+        fn $name(inputs: &[Series], kwargs: $crate::geometry::params::GeomKwargs) -> PolarsResult<Series> {
+            let (op, geom_params) = $crate::geometry::params::GeomParams::parse::<
                 $fam<::view_buffer::mode::Wire>,
             >(inputs, kwargs, stringify!($name))?;
             let $fam::$var $({ $($field),* })? = &op else {
-                return Err($crate::geom_params::parsed_as_another(stringify!($name)));
+                return Err($crate::geometry::params::parsed_as_another(stringify!($name)));
             };
-            $crate::geom_arity::map_contours::<$read, _>(
+            $crate::geometry::arity::map_contours::<$read, _>(
                 &inputs[0],
                 &geom_params,
                 $elem,
@@ -457,18 +457,18 @@ macro_rules! contour_accessor {
         |$a:ident, $b:ident, $params:ident, $row:ident| $body:expr
     ) => {
         fn $out_ty(input_fields: &[Field]) -> PolarsResult<Field> {
-            $crate::geom_arity::binary_field(input_fields, stringify!($name), $elem)
+            $crate::geometry::arity::binary_field(input_fields, stringify!($name), $elem)
         }
         $(#[$meta])*
         #[polars_expr(output_type_func=$out_ty)]
-        fn $name(inputs: &[Series], kwargs: $crate::geom_params::GeomKwargs) -> PolarsResult<Series> {
-            let (op, params) = $crate::geom_params::GeomParams::parse::<
+        fn $name(inputs: &[Series], kwargs: $crate::geometry::params::GeomKwargs) -> PolarsResult<Series> {
+            let (op, params) = $crate::geometry::params::GeomParams::parse::<
                 $fam<::view_buffer::mode::Wire>,
             >(inputs, kwargs, stringify!($name))?;
             let $fam::$var { $other $(, $field)* } = &op else {
-                return Err($crate::geom_params::parsed_as_another(stringify!($name)));
+                return Err($crate::geometry::params::parsed_as_another(stringify!($name)));
             };
-            $crate::geom_arity::zip_contours::<$read, _>(
+            $crate::geometry::arity::zip_contours::<$read, _>(
                 &inputs[0],
                 params.column($other),
                 &params,
@@ -500,15 +500,18 @@ mod contour_output_tests {
     }
 
     fn elem() -> DataType {
-        crate::geom_schema::contour_struct_dtype()
+        crate::geometry::schema::contour_struct_dtype()
     }
 
     fn both(rows: Vec<Option<Vec<Contour>>>, arity: Arity) -> (Series, Series) {
         let as_anyvalues: Vec<Option<Vec<AnyValue<'static>>>> = rows
             .iter()
             .map(|r| {
-                r.as_ref()
-                    .map(|cs| cs.iter().map(crate::contour::contour_to_anyvalue).collect())
+                r.as_ref().map(|cs| {
+                    cs.iter()
+                        .map(crate::geometry::contour::contour_to_anyvalue)
+                        .collect()
+                })
             })
             .collect();
         let expected =
@@ -548,13 +551,13 @@ mod split_tests {
     use view_buffer::mode::Wire;
     use view_buffer::GeometryOp;
 
-    use crate::geom_fns::PointFn;
+    use crate::geometry::fns::PointFn;
     use crate::row_split::Rendezvous;
 
     use super::*;
 
     fn column(rows: usize) -> Series {
-        let elem = crate::geom_schema::contour_struct_dtype();
+        let elem = crate::geometry::schema::contour_struct_dtype();
         let rows = (0..rows)
             .map(|i| {
                 let x = i as f64;

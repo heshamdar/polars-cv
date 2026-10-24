@@ -2,7 +2,7 @@
 
 ``RULES`` maps repository paths to the selectors (``selection`` syntax) whose
 cases execute that code. As in ``CODEOWNERS``, the **last** matching rule wins,
-so a file rule (``graph/encode.rs``) overrides its directory's (``graph/**``)
+so a file rule (``graph/sink.rs``) overrides its directory's (``graph/**``)
 and must name everything the file moves. A change selects the union over its
 files. An empty selector records that no scenario measures the file.
 
@@ -90,12 +90,12 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/src/ops/**", _OPS),
     ("polars-cv/src/graph/**", _OPS),
     (
-        "polars-cv/src/graph/encode.rs",
+        "polars-cv/src/graph/sink.rs",
         f"{_OPS},zero_copy,targeted:sink_*,targeted:codec_*",
     ),
     ("polars-cv/src/graph/sink_kind.rs", f"{_OPS},zero_copy,targeted:sink_*"),
     (
-        "polars-cv/src/graph/decode.rs",
+        "polars-cv/src/graph/source.rs",
         f"{_OPS},zero_copy,targeted:codec_*,targeted:blob_*",
     ),
     ("polars-cv/src/formats/**", f"{_OPS},zero_copy,targeted"),
@@ -112,9 +112,9 @@ RULES: tuple[tuple[str, str], ...] = (
     ),
     # Renders a failing row's reference: only an error path reads it.
     ("polars-cv/src/row_ref.rs", _NONE),
-    ("polars-cv/src/geom_*.rs", _GEOM),
-    ("polars-cv/src/contour.rs", _GEOM),
-    ("polars-cv/src/point.rs", _GEOM),
+    ("polars-cv/src/geometry/**", _GEOM),
+    # The one geometry step runner: the pipeline's geometry ops run it too.
+    ("polars-cv/src/geometry/exec.rs", f"{_OPS},{_GEOM}"),
     ("polars-cv/src/fetch.rs", "remote"),
     ("polars-cv/src/cloud.rs", "remote"),
     ("polars-cv/src/cloud_auth.rs", "remote"),

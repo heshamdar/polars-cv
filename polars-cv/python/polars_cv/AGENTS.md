@@ -235,10 +235,10 @@ Guarded by `TestStructuralParamsRejectExpressions` in
 
 **The geometry namespaces use the same wire form.** `.contour`/`.point`/`.bbox`
 bypass `vb_graph`, but each accessor method is generated from its Rust
-definition (`src/geom_fns.rs`) as one `_GeomNamespace._call` (`_namespace.py`),
+definition (`src/geometry/fns.rs`) as one `_GeomNamespace._call` (`_namespace.py`),
 which appends an expression-valued parameter or data operand as an extra
 argument and writes `{"$slot": n}` into that field. Rust parses the arguments
-as the function's own definition (`GeomParams::parse`, `src/geom_params.rs`).
+as the function's own definition (`GeomParams::parse`, `src/geometry/params.rs`).
 Each field names its own position, so the optional data operands (`order`,
 `origin`) cannot be confused with an appended parameter.
 

@@ -1,6 +1,6 @@
 """A ``.contour`` accessor and the pipeline op it is give one answer.
 
-Each op-backed accessor (``geom_fns::OP_ACCESSORS``: the accessor methods
+Each op-backed accessor (``geometry::fns::OP_ACCESSORS``: the accessor methods
 whose function is a pipeline op) is that op's definition, and each runs the
 same engine function, but through its own plugin function rather than the
 pipeline's executor. So for drawn contour sets — traced regions, their

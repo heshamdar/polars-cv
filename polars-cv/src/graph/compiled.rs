@@ -40,11 +40,8 @@ use super::row::{run_step, RowOutputs};
 use super::step::GraphStep;
 use smallvec::SmallVec;
 
-use super::decode::{
-    build_series_from_spec, decode_source_row, dtype_from_polars_leaf, null_row_result_for_spec,
-    RowFetch, RowParts,
-};
-use super::encode::encode_node_output;
+use super::sink::{build_series_from_spec, encode_node_output, null_row_result_for_spec, RowParts};
+use super::source::{decode_source_row, dtype_from_polars_leaf, RowFetch};
 use super::types::{NodeInput, OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
 use crate::plan::State;
 
@@ -330,7 +327,7 @@ impl CompiledGraph {
             }) = np.input.decode()
             {
                 if inputs[*col].dtype() != &DataType::Null {
-                    crate::geom_columns::ContourColumn::new(&inputs[*col]).check_layout()?;
+                    crate::geometry::columns::ContourColumn::new(&inputs[*col]).check_layout()?;
                 }
             }
         }
@@ -1363,7 +1360,7 @@ mod tests {
     /// so nothing checked that the other nine had a graph. Two tests close
     /// that now: `every_graph_step_variant_is_reachable_from_a_known_op`
     /// over the catalogue's samples, the same way `every_graph_geometry_op_executes`
-    /// does in `encode.rs`, and the coverage assertion at the end of
+    /// does in `geometry/exec.rs`, and the coverage assertion at the end of
     /// `every_graph_step_variant_executes`, which records what that test
     /// actually ran.
     fn step_name(step: &GraphStep) -> &'static str {
@@ -1726,7 +1723,7 @@ mod tests {
             (3.0, 3.0),
             (0.0, 3.0),
         ]);
-        let contour_av = crate::contour::contour_to_anyvalue(&contour);
+        let contour_av = crate::geometry::contour::contour_to_anyvalue(&contour);
         let inner = Series::from_any_values("".into(), &[contour_av], false).unwrap();
         let row = AnyValue::List(inner);
         let cont_col = Series::from_any_values("cont".into(), &[row], false).unwrap();
@@ -2432,7 +2429,7 @@ mod tests {
         ]);
         let inner = Series::from_any_values(
             "".into(),
-            &[crate::contour::contour_to_anyvalue(&contour)],
+            &[crate::geometry::contour::contour_to_anyvalue(&contour)],
             false,
         )
         .unwrap();
