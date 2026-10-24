@@ -419,7 +419,12 @@ def test_namespace_plugin_symbols_match_registrations():
         # arm has to be added here rather than quietly going unscanned.
         r"(?:^|\n)\s*(?:map|zip|op)\s+fn\s+([a-z_0-9]+)\s*/",
     )
-    for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs"):
+    for rs in (
+        "geometry/contour.rs",
+        "geometry/point.rs",
+        "image_metadata.rs",
+        "read_bytes.rs",
+    ):
         text = (src / rs).read_text()
         for pattern in declarations:
             registered |= set(re.findall(pattern, text))
@@ -430,7 +435,12 @@ def test_namespace_plugin_symbols_match_registrations():
     for pattern in declarations:
         assert any(
             re.findall(pattern, (src / rs).read_text())
-            for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs")
+            for rs in (
+                "geometry/contour.rs",
+                "geometry/point.rs",
+                "image_metadata.rs",
+                "read_bytes.rs",
+            )
         ), f"declaration pattern matched nothing, so it covers nothing: {pattern}"
 
     missing = sorted(called - registered)
@@ -543,11 +553,11 @@ _REQUIRED_LIB_HOOKS = (
     # OPTIMIZATION_PASSES are generated from.
     "pass_catalog",
     # The `{x, y}` point struct authority, read by the geometry parity test so
-    # Python's POINT_SCHEMA cannot drift from `geom_schema::point_fields`.
+    # Python's POINT_SCHEMA cannot drift from `geometry::schema::point_fields`.
     "point_schema",
     # The contour and bbox field-name authorities, the siblings of
     # `point_schema` that hold Python's CONTOUR_SCHEMA / BBOX_SCHEMA to
-    # `geom_schema::{CONTOUR,BBOX}_FIELD_NAMES`.
+    # `geometry::schema::{CONTOUR,BBOX}_FIELD_NAMES`.
     "contour_schema",
     "bbox_schema",
     # Every extension type as (name, empty storage Series), read by
@@ -1198,7 +1208,7 @@ def test_non_structural_geometry_enums_accept_an_expression() -> None:
 
     Two of the four were literal-only once, and the rejection they raised
     claimed the opposite. Each accessor's fields are its Rust definition's
-    (`src/geom_fns.rs`, or the pipeline op it shares), catalogued with whether
+    (`src/geometry/fns.rs`, or the pipeline op it shares), catalogued with whether
     each may be per-row, so this reads the catalogue: a new literal-only enum
     field has to be listed above with a reason.
     """
@@ -1632,7 +1642,7 @@ def test_contour_source_accepts_boolean_masks() -> None:
 
     Regression guard. It briefly raised, on the theory that Boolean is not a
     buffer element type and declaring one was a silent lie. The source decoder
-    *casts* rather than reinterprets (``convert_row_values`` in graph/decode.rs),
+    *casts* rather than reinterprets (``convert_row_values`` in graph/source.rs),
     so the declared dtype was always honest and boolean masks worked; the
     rejection broke them.
     """
@@ -2350,13 +2360,13 @@ class TestPointSchemaHasOneDeclaration:
     """The `{x, y}` point struct is declared once in Rust and mirrored once in Python.
 
     It used to be spelled out eight times — four inline constructions in
-    `contour.rs::contour_to_anyvalue`, `contour.rs::point_struct_dtype`,
-    `contour.rs::point_anyvalue`, `point.rs::point_output_type` and
+    `geometry/contour.rs::contour_to_anyvalue`, `geometry/contour.rs::point_struct_dtype`,
+    `geometry/contour.rs::point_anyvalue`, `geometry/point.rs::point_output_type` and
     `geometry/schemas.py::POINT_SCHEMA` — with nothing relating them. Dtypes,
     op names and enum variants all have a named authority and a bidirectional
     parity guard; this surface had neither.
 
-    Rust now reads `geom_schema::point_fields`. Python still declares
+    Rust now reads `geometry::schema::point_fields`. Python still declares
     `POINT_SCHEMA` itself, so `polars_cv.geometry` imports with no compiled
     extension present, and this test is what stops the two drifting — the
     `point_schema` FFI is decoration without it.
@@ -2371,9 +2381,9 @@ class TestPointSchemaHasOneDeclaration:
         python_names = [field.name for field in POINT_SCHEMA.fields]
 
         assert python_names == rust_names, (
-            f"POINT_SCHEMA and geom_schema::point_fields disagree: Python has "
+            f"POINT_SCHEMA and geometry::schema::point_fields disagree: Python has "
             f"{python_names}, Rust has {rust_names}. The Rust declaration in "
-            f"polars-cv/src/geom_schema.rs is the authority — change it there "
+            f"polars-cv/src/geometry/schema.rs is the authority — change it there "
             f"and mirror it here."
         )
 
@@ -2389,7 +2399,7 @@ class TestPointSchemaHasOneDeclaration:
 
         dtypes = {field.name: field.dtype for field in POINT_SCHEMA.fields}
         assert all(dtype == pl.Float64 for dtype in dtypes.values()), (
-            f"point fields must be Float64 to match geom_schema::point_fields, "
+            f"point fields must be Float64 to match geometry::schema::point_fields, "
             f"got {dtypes}"
         )
 
@@ -2401,10 +2411,10 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
     The same treatment the point struct has, extended to the other two geometry
     structs. Before this, the contour `{exterior, holes, is_closed}` dtype was
     spelled in `contour_to_anyvalue` and again in a test helper, `parse_bbox`
-    existed in both `point.rs` and `contour.rs`, and Python's CONTOUR_SCHEMA /
+    existed in both `geometry/point.rs` and `geometry/contour.rs`, and Python's CONTOUR_SCHEMA /
     BBOX_SCHEMA were tied to Rust only by round-trip tests. Now Rust reads
-    `geom_schema::{contour,bbox}_fields`, and these tests hold the Python
-    mirrors to `geom_schema::{CONTOUR,BBOX}_FIELD_NAMES` — the FFIs are
+    `geometry::schema::{contour,bbox}_fields`, and these tests hold the Python
+    mirrors to `geometry::schema::{CONTOUR,BBOX}_FIELD_NAMES` — the FFIs are
     decoration without them.
     """
 
@@ -2412,7 +2422,7 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
         """CONTOUR_SCHEMA field names, held to the Rust authority both ways.
 
         The sibling of the point guard for contours. Rust reads
-        `geom_schema::CONTOUR_FIELD_NAMES` (via `contour_to_anyvalue` and the
+        `geometry::schema::CONTOUR_FIELD_NAMES` (via `contour_to_anyvalue` and the
         `contour_schema` FFI); Python declares CONTOUR_SCHEMA. The nested field
         *dtypes* are pinned structurally by
         `test_geometry_schemas.py::TestContourSchema`; this pins the names.
@@ -2424,9 +2434,9 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
         python_names = [field.name for field in CONTOUR_SCHEMA.fields]
 
         assert python_names == rust_names, (
-            f"CONTOUR_SCHEMA and geom_schema::contour_fields disagree: Python "
+            f"CONTOUR_SCHEMA and geometry::schema::contour_fields disagree: Python "
             f"has {python_names}, Rust has {rust_names}. The Rust declaration in "
-            f"polars-cv/src/geom_schema.rs is the authority — change it there "
+            f"polars-cv/src/geometry/schema.rs is the authority — change it there "
             f"and mirror it here."
         )
 
@@ -2439,9 +2449,9 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
         python_names = [field.name for field in BBOX_SCHEMA.fields]
 
         assert python_names == rust_names, (
-            f"BBOX_SCHEMA and geom_schema::bbox_fields disagree: Python has "
+            f"BBOX_SCHEMA and geometry::schema::bbox_fields disagree: Python has "
             f"{python_names}, Rust has {rust_names}. The Rust declaration in "
-            f"polars-cv/src/geom_schema.rs is the authority — change it there "
+            f"polars-cv/src/geometry/schema.rs is the authority — change it there "
             f"and mirror it here."
         )
 
@@ -2455,7 +2465,7 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
 
         dtypes = {field.name: field.dtype for field in BBOX_SCHEMA.fields}
         assert all(dtype == pl.Float64 for dtype in dtypes.values()), (
-            f"bbox fields must be Float64 to match geom_schema::bbox_fields, "
+            f"bbox fields must be Float64 to match geometry::schema::bbox_fields, "
             f"got {dtypes}"
         )
 
@@ -2494,7 +2504,7 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
         )
         assert len(declarations) == 1, (
             f"the point struct is built in more than one place: {declarations}. "
-            f"polars-cv/src/geom_schema.rs is the authority -- call "
+            f"polars-cv/src/geometry/schema.rs is the authority -- call "
             f"point_fields()/point_struct_dtype() instead of respelling it."
         )
 

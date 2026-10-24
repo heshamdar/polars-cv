@@ -44,7 +44,7 @@
 //! ran on one thread, 3.9x slower.
 //!
 //! **The one row splitter of the plugin**: the pipeline executor
-//! (`graph::compiled`) and the geometry accessors (`geom_params`) both run
+//! (`graph::compiled`) and the geometry accessors (`geometry::params`) both run
 //! their rows through [`run_split`], or [`split`] when a call splits more
 //! than one phase (running the rows, then filling the output column).
 

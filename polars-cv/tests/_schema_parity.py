@@ -10,10 +10,10 @@ promise the planner makes and execution has to keep.
 In this plugin the two halves are computed by *different code*:
 
 * plan:    ``unified_output_dtype`` (src/lib.rs) -> ``dtype_for_output``
-           (src/graph/decode.rs), from the hint bundle Python folded into the
+           (src/graph/sink.rs), from the hint bundle Python folded into the
            graph JSON (``expected_domain``/``_dtype``/``_shape``/``_ndim``).
-* runtime: ``build_series_from_spec`` (src/graph/decode.rs) -> the typed
-           builders in src/graph/encode.rs.
+* runtime: ``build_series_from_spec`` (src/graph/sink.rs) -> the typed
+           builders in src/graph/sink.rs.
 
 and the runtime half reads the *data* to decide. ``build_typed_list_series_
 from_rows_with_dtype`` takes both the leaf dtype and the nesting depth from

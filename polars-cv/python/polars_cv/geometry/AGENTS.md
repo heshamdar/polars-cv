@@ -102,13 +102,13 @@ Point and contour namespace operations go through `_GeomNamespace._call` → `_p
 ### Parameter policy: one typed definition per function, like every op
 
 Each plugin function is described the way an op is: a variant of a
-mode-generic family in `polars-cv/src/geom_fns.rs` (`ContourFn`, `PointFn`,
+mode-generic family in `polars-cv/src/geometry/fns.rs` (`ContourFn`, `PointFn`,
 `BBoxFn`) with the wire's fields — `M::V<T>` for a value that may be per-row,
 `ColumnRef` / `Option<ColumnRef>` for a data operand — its doc comment as the
 Python docstring, and its defaults declared once with `#[param(default = ...)]`.
 A function that is also a pipeline op (`.contour.area`, `translate`, `scale`,
 …) *is* that `GeometryOp` variant, and *runs* as that pipeline step
-(`src/geom_accessor.rs`): resolved and checked as the pipeline resolves its
+(`src/geometry/accessor.rs`): resolved and checked as the pipeline resolves its
 step, executed by the executor's own `execute_geometry_op`, and only its
 presentation (`Form`: a value per member, or a set) is its own. So the two
 surfaces cannot drift in fields, defaults, docs, answers or refusals —
@@ -142,14 +142,14 @@ names the offending row — see the `threshold` range check in
 ## Adding a Geometry Operation
 
 1. **Definition:** add a variant to `ContourFn`/`PointFn`/`BBoxFn` in
-   `src/geom_fns.rs` — `#[op(name = "<fn>", python = "<method>", sample =
+   `src/geometry/fns.rs` — `#[op(name = "<fn>", python = "<method>", sample =
    {...})]`, a doc comment (the docstring, with its `Returns:`), a doc comment
    per field, and `#[param(default = ...)]` where the method has a default.
    (If the method is a pipeline op, add one `op fn` line to `op_accessors!`
-   in `src/contour.rs` instead — it declares the plugin function and its
+   in `src/geometry/contour.rs` instead — it declares the plugin function and its
    `OP_ACCESSORS` entry together — and skip step 2.)
-2. **Function:** add the `#[polars_expr]` function in `src/contour.rs` or
-   `src/point.rs` (a `contour_accessor!` arm for a contour one), parsing its
+2. **Function:** add the `#[polars_expr]` function in `src/geometry/contour.rs` or
+   `src/geometry/point.rs` (a `contour_accessor!` arm for a contour one), parsing its
    definition with `GeomParams::parse` and reading each field per row.
 3. **Regenerate:** re-bless the catalogues (`POLARS_CV_BLESS=1
    scripts/with-pyo3-env.sh cargo test -p polars-cv catalog_matches`), run
@@ -180,7 +180,7 @@ the N×M matrix (`pairwise_iou`) or an index-wise pairing (`.explode()` one
 side), and guessing between two different answers is the fallback behaviour this
 codebase removes. The set-level accessors (`pairwise_iou`, `correspond`,
 `label_reduce`) run the same rule backwards: a lone contour is read as a set of
-one, via `ContourColumn::row` (`src/geom_columns.rs`).
+one, via `ContourColumn::row` (`src/geometry/columns.rs`).
 
 ### Why it is a mechanism and not a per-accessor `if`
 
@@ -192,7 +192,7 @@ attributes would have been fifteen chances to declare `Float64` and build
 
 So the arity is **one value, read from the column dtype** (never from a row —
 `output_type_func` only sees `Field`s, so a row-level decision is one the
-declaration could not have made), and `src/geom_arity.rs` drives both halves
+declaration could not have made), and `src/geometry/arity.rs` drives both halves
 from it:
 
 - `Arity::of` reads it, using `is_point_dtype()` — the same field names the
@@ -211,13 +211,13 @@ forgotten.
 `GeomParams::row` applies `on_error` the same way: under `"null"` any row
 error nulls the row **except** a `SchemaMismatch`, which marks an error about
 the operand column (an arity a function cannot take, a layout no reader
-understands — `geom_params::column_error`). Such an error must be raised with
+understands — `geometry::params::column_error`). Such an error must be raised with
 `column_error`, never `ComputeError`, or `on_error("null")` would turn a query
 that cannot work into an all-null column. The readers carry the distinction
-internally (`geom_columns::ReadError`), since a layout error is deferred to
+internally (`geometry::columns::ReadError`), since a layout error is deferred to
 the first non-null row.
 
-Every reader locates rows through `geom_columns::Chunks`, which broadcasts a
+Every reader locates rows through `geometry::columns::Chunks`, which broadcasts a
 one-row operand to every row, as `ParamCol` does for a parameter.
 
 `contour_contains_point` is the one accessor with its own loop: its second
@@ -236,7 +236,7 @@ a schema its data contradicts.
 
 `.point` follows the same rule over `POINT_SET_SCHEMA` (`Arity::of_points`:
 a `List` of point structs is a set in a point column, one ring in a contour
-column). Every point function runs through `point.rs`'s `map_points` (one
+column). Every point function runs through `geometry/point.rs`'s `map_points` (one
 point column; a contour/bbox operand broadcasts) or `zip_points` (two point
 columns, broadcast either way, set x set refused), and declares its type with
 `unary_field`/`binary_field` over the same arities. A null point inside a set

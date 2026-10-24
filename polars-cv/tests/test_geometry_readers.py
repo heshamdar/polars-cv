@@ -1,7 +1,7 @@
 """Geometry values are read by field name, and a missing value is never 0.0.
 
 Every ``.point``/``.contour``/``.bbox`` function reads its operands through one
-reader per geometry type (``src/geom_columns.rs``). These pin, at the user-facing
+reader per geometry type (``src/geometry/columns.rs``). These pin, at the user-facing
 entry points, what the hand-written parsers they replaced got wrong:
 ``contains_point`` read a point's first two fields by position and turned a
 missing or non-float coordinate into 0.0; a bbox with a null field read it as

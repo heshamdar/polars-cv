@@ -3,7 +3,7 @@
 //! An extension type tags a column with what it is (`polars_cv.point`, …) on
 //! top of the plain struct that stores it. [`ExtType`] is the single list of
 //! them: its name, and its storage read from the authority that already owns
-//! that layout (`geom_schema`, [`crate::output::numpy_output_dtype`]).
+//! that layout (`geometry::schema`, [`crate::output::numpy_output_dtype`]).
 //!
 //! ## Only outputs are tagged here
 //!
@@ -78,9 +78,9 @@ impl ExtType {
     pub(crate) fn storage(self) -> DataType {
         match self {
             ExtType::NdArray => crate::output::numpy_output_dtype(),
-            ExtType::Point => crate::geom_schema::point_struct_dtype(),
-            ExtType::Contour => crate::geom_schema::contour_struct_dtype(),
-            ExtType::BBox => crate::geom_schema::bbox_struct_dtype(),
+            ExtType::Point => crate::geometry::schema::point_struct_dtype(),
+            ExtType::Contour => crate::geometry::schema::contour_struct_dtype(),
+            ExtType::BBox => crate::geometry::schema::bbox_struct_dtype(),
         }
     }
 
