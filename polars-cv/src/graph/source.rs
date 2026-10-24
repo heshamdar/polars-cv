@@ -293,7 +293,7 @@ fn decode_blob_zero_copy(
 /// The buffer element type a Polars *leaf* type holds, if it is one.
 ///
 /// **The single Polars→DType mapping in this crate.** `resolved_output_specs`
-/// (graph/compiled.rs) had a second copy of it that returned dtype *strings*,
+/// (the compiled graph) had a second copy of it that returned dtype *strings*,
 /// so the two were free to disagree about which Polars types are buffer
 /// elements at all — and did: that copy fell back to `"u8"` for everything
 /// unmatched, which is how a `List(Decimal)` column came to claim it was a

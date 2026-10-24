@@ -10,7 +10,6 @@ pub(crate) mod node_output;
 #[path = "types.rs"]
 pub(crate) mod types;
 
-#[path = "compiled.rs"]
 pub(crate) mod compiled;
 pub(crate) mod row;
 pub(crate) mod step;
