@@ -3,7 +3,7 @@
 //! Rows are independent, so a call can be split into contiguous row ranges
 //! that run on several threads and come back in row order. Without this a
 //! call used one core however many rows it held, so the in-memory engine was
-//! single-threaded on a single-chunk frame (CR-32). The pool is the plugin's
+//! single-threaded on a single-chunk frame. The pool is the plugin's
 //! own copy of polars' `THREAD_POOL` (a plugin links its own polars-core, so
 //! it cannot join the host's), sized by `POLARS_MAX_THREADS`.
 //!
@@ -44,7 +44,7 @@
 //! ran on one thread, 3.9x slower.
 //!
 //! **The one row splitter of the plugin**: the pipeline executor
-//! (`graph::compiled`) and the geometry accessors (`geom_params`) both run
+//! (`graph::compiled`) and the geometry accessors (`geometry::params`) both run
 //! their rows through [`run_split`], or [`split`] when a call splits more
 //! than one phase (running the rows, then filling the output column).
 

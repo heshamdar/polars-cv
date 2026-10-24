@@ -1,13 +1,12 @@
 //! The one declaration of each geometry struct — point, contour, bbox — the
 //! geometry surfaces publish.
 //!
-//! `contour.rs`, `point.rs` and `geometry/schemas.py` each used to spell these
-//! out — the `{x, y}` point in eight places, the contour `{exterior, holes,
-//! is_closed}` layout in two, and a per-row bbox parser in two — with nothing
-//! relating the copies. Dtypes, op names and enum variants all have a named
-//! authority and a bidirectional parity guard; these surfaces had neither, so a
-//! rename could land in one module and not the others, and the mismatch would
-//! only show as a confusing dtype error at query time.
+//! `geometry/contour.rs`, `geometry/point.rs` and `geometry/schemas.py` read these declarations
+//! rather than spelling out the `{x, y}` point, the contour `{exterior, holes,
+//! is_closed}` layout or a per-row bbox parser themselves. Dtypes, op names and
+//! enum variants all have a named authority and a bidirectional parity guard,
+//! and so do these: a copy that drifted would only show as a confusing dtype
+//! error at query time.
 //!
 //! Rust reads [`point_fields`] / [`contour_fields`] / [`bbox_fields`]; Python
 //! holds `POINT_SCHEMA` / `CONTOUR_SCHEMA` / `BBOX_SCHEMA` to them through the
@@ -33,8 +32,8 @@ pub(crate) const POINT_FIELD_NAMES: [&str; 2] = ["x", "y"];
 /// order, the canonical [`POINT_FIELD_NAMES`] first.
 ///
 /// **The single authority for "is this a point?".** Read by the geometry
-/// column readers (`geom_columns`), which parse by these names, and by
-/// [`is_point_dtype`](crate::geom_arity::is_point_dtype), which decides from
+/// column readers (`geometry::columns`), which parse by these names, and by
+/// [`is_point_dtype`](crate::geometry::arity::is_point_dtype), which decides from
 /// the dtype whether a `List` is one contour's ring or a set of contours.
 pub(crate) const POINT_FIELD_SPELLINGS: [&[&str]; 2] =
     [&[POINT_FIELD_NAMES[0], "X"], &[POINT_FIELD_NAMES[1], "Y"]];
@@ -73,7 +72,7 @@ pub(crate) const CONTOUR_FIELD_NAMES: [&str; 3] = ["exterior", "holes", "is_clos
 ///
 /// **This is the declaration.** `contour_array` (the column builder),
 /// `contour_to_anyvalue` (its test oracle) and the test helper that
-/// used to re-spell this layout both read it.
+/// needs this layout all read it.
 ///
 /// Composed from [`point_fields`] — a contour genuinely *is* built of points, so
 /// `exterior` is a list of them and each hole a ring of them. A bbox, by
@@ -105,7 +104,7 @@ pub(crate) fn contour_struct_dtype() -> DataType {
 /// exterior rings, the holes and each hole's ring.
 ///
 /// Replaces building one `AnyValue` per point and a sub-`Series` per ring, which
-/// cost ~30 ms per ~90k points in the contour sink (CR-36). Each declared
+/// cost ~30 ms per ~90k points in the contour sink. Each declared
 /// field is matched by name to the array that fills it; a field this does not
 /// know is an error, so a schema change cannot be half-applied here.
 pub(crate) fn contour_array<'a, C: ContourParts + 'a>(
@@ -285,7 +284,7 @@ mod tests {
 
     #[test]
     fn a_contour_value_matches_the_published_dtype() {
-        // `contour_to_anyvalue` (in `contour.rs`) builds its struct from
+        // `contour_to_anyvalue` (in `geometry/contour.rs`) builds its struct from
         // `contour_fields()`; hold its output to that declaration so a future
         // divergence fails here.
         use view_buffer::geometry::contour::{Contour, Point};
@@ -295,7 +294,9 @@ mod tests {
             Point::new(1.0, 0.0),
             Point::new(1.0, 1.0),
         ]);
-        let AnyValue::StructOwned(payload) = crate::contour::contour_to_anyvalue(&contour) else {
+        let AnyValue::StructOwned(payload) =
+            crate::geometry::contour::contour_to_anyvalue(&contour)
+        else {
             panic!("contour_to_anyvalue must be an owned struct");
         };
         assert_eq!(payload.1, fields);
@@ -333,7 +334,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let reader = crate::geom_columns::BBoxColumn::new(&column);
+        let reader = crate::geometry::columns::BBoxColumn::new(&column);
         assert_eq!(reader.single(0).unwrap(), Some(source));
         assert_eq!(reader.single(1).unwrap(), None);
     }

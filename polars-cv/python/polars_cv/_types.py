@@ -40,7 +40,7 @@ BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
 #: A boolean mask is the documented shape for a ground-truth mask column and
 #: the natural output of ``np_mask.astype(bool).tolist()``. It is not a buffer
 #: element type, but the source decoder casts rather than reinterprets
-#: (``convert_row_values`` in ``graph/decode.rs``), so ``u8`` gives the 0/1 a mask
+#: (``convert_row_values`` in ``graph/source.rs``), so ``u8`` gives the 0/1 a mask
 #: means. This is the one correspondence not derivable from ``dtype_table!``,
 #: so it is written out here and nowhere else.
 _CAST_ONLY_NAMES: dict[str, str] = {"boolean": "u8"}
@@ -66,8 +66,8 @@ def dtype_name_for(dtype: pl.DataType) -> str:
 
     Raises:
         ValueError: If *dtype* has no meaningful buffer representation. It does
-            not fall back: an unmappable type used to become an ``f32`` source
-            and fail later and deeper with a cast error.
+            not fall back to a default dtype: an unmappable type would become
+            a source that fails later and deeper with a cast error.
     """
     name = getattr(dtype, "__name__", None) or str(dtype)
     key = name.lower()
@@ -106,7 +106,7 @@ class SlotTable:
 
     Expressions are identified by ``Expr.meta.eq``, never by display text:
     ``str(expr)`` is not an identity (every ``pl.lit(pl.Series(...))`` prints
-    alike, as do two Python UDFs — CR-31), and the text-keyed registry that
+    alike, as do two Python UDFs), and the text-keyed registry that
     papered over that made the graph JSON depend on which *other* expressions
     were alive. A graph builds one table (root columns first, then every
     expression parameter) and serializes each parameter as its position.

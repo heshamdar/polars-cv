@@ -1,11 +1,13 @@
+use crate::core::buffer::ViewBuffer;
+use crate::execution::runner::{apply_compute_inner, apply_image_inner, apply_view};
 use crate::mode::{Exec, Mode};
+use crate::ops::color::apply_color_convert;
 use crate::ops::color::ColorConvertOp;
 use crate::ops::compute::ComputeOp;
-use crate::ops::filter::ConvolveOp;
+use crate::ops::filter::{apply_convolve2d, ConvolveOp};
 use crate::ops::image::ImageOp;
 use crate::ops::traits::{IdentityRule, Op};
 use crate::ops::view::ViewOp;
-use crate::ops::Domain;
 use polars_cv_macros::Resolve;
 
 /// A pure Data Transfer Object (DTO) for single-buffer operation plans.
@@ -63,17 +65,6 @@ impl<M: Mode> ViewDto<M> {
         }
     }
 
-    /// Every single-buffer op consumes a buffer.
-    pub fn input_domain(&self) -> Domain {
-        Domain::Buffer
-    }
-
-    /// Every single-buffer op produces a buffer (domain-changing steps are
-    /// graph-level concerns in the plugin's `GraphStep`).
-    pub fn output_domain(&self) -> Domain {
-        Domain::Buffer
-    }
-
     /// The rule that determines this operation's output dtype.
     pub fn output_dtype_rule(&self) -> crate::core::dtype::OutputDTypeRule {
         self.as_op().output_dtype_rule()
@@ -97,5 +88,50 @@ impl<M: Mode> ViewDto<M> {
     /// Get the name of this operation for error messages.
     pub fn name(&self) -> &'static str {
         self.as_op().name()
+    }
+}
+
+/// Each family's op is a [`ViewDto`] by its own variant: the one place that
+/// pairing is written, so a caller holding a family op converts with `.into()`
+/// instead of naming the variant.
+macro_rules! family_into_dto {
+    ($($variant:ident: $op:ident),+ $(,)?) => {$(
+        impl<M: Mode> From<$op<M>> for ViewDto<M> {
+            fn from(op: $op<M>) -> Self {
+                ViewDto::$variant(op)
+            }
+        }
+    )+};
+}
+
+family_into_dto! {
+    View: ViewOp,
+    Compute: ComputeOp,
+    Image: ImageOp,
+    Color: ColorConvertOp,
+    Filter: ConvolveOp,
+}
+
+impl ViewDto {
+    /// Run this op on `buf`: the one dispatch from a plan step to its family's
+    /// runner. Adding a variant without a runner fails to compile here.
+    pub(crate) fn execute(self, buf: ViewBuffer) -> ViewBuffer {
+        match self {
+            ViewDto::View(op) => apply_view(buf, op),
+            ViewDto::Compute(op) => apply_compute_inner(buf, op),
+            ViewDto::Image(op) => apply_image_inner(buf, op),
+            ViewDto::Color(op) => apply_color_convert(&buf, &op),
+            ViewDto::Filter(op) => apply_convolve2d(&buf, &op),
+        }
+    }
+
+    /// This op as the engine executes it: a compute op that is another op in
+    /// disguise (a lattice rotation is a view, any other rotation a warp)
+    /// becomes that op ([`ComputeOp::lowered`]); every other op is itself.
+    pub(crate) fn lowered(self) -> Self {
+        match self {
+            ViewDto::Compute(op) => op.lowered(),
+            ViewDto::View(_) | ViewDto::Image(_) | ViewDto::Color(_) | ViewDto::Filter(_) => self,
+        }
     }
 }

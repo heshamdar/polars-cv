@@ -291,7 +291,7 @@ def test_null_with_message_struct_is_planned_field_for_field(position: str) -> N
     """``null_with_message`` turns a single output into a two-field struct.
 
     The struct is synthesised in the planner (``lib.rs``) and again at
-    execution (``compiled.rs``), so the field list is one more thing computed
+    execution (``graph/compiled/run.rs``), so the field list is one more thing computed
     twice.
     """
     images = _images()

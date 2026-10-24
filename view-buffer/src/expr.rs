@@ -8,8 +8,7 @@ use crate::ops::affine::AffineParams;
 use crate::ops::scalar::FusedKernel;
 use crate::ops::traits::{InputLayout, MemoryEffect};
 use crate::ops::{
-    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op,
-    ViewDto, ViewOp,
+    ComputeOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op, ViewDto, ViewOp,
 };
 
 /// Declares [`OptConfig`] and [`ENGINE_PASSES`] from one list, so a toggle
@@ -70,20 +69,9 @@ pub enum ExprNode {
     /// Concrete source data.
     Source(Arc<ViewBuffer>),
 
-    /// View operation (zero-copy).
-    View(ViewOp, Arc<ViewExpr>),
-
-    /// Compute operation (allocating).
-    Compute(ComputeOp, Arc<ViewExpr>),
-
-    /// Image processing operation.
-    Image(ImageOp, Arc<ViewExpr>),
-
-    /// Color space conversion.
-    Color(ColorConvertOp, Arc<ViewExpr>),
-
-    /// 2D convolution.
-    Filter(ConvolveOp, Arc<ViewExpr>),
+    /// An engine op of any family applied to its child. The family is the
+    /// op's own business ([`ViewDto`]); a node never restates it.
+    Op(ViewDto, Arc<ViewExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +96,7 @@ impl ViewExpr {
     }
 
     /// Validate `op` against this expression's tracked shape and dtype, then
-    /// apply it — the executor's only way to build a chain (CR-34).
+    /// apply it — the executor's only way to build a chain.
     ///
     /// The planner checks shapes it knows; a source that carries its shape per
     /// row (a blob, a list) reaches the engine with shapes the plan never saw.
@@ -131,130 +119,87 @@ impl ViewExpr {
     /// delegate here, so none of them can track metadata a contract does not
     /// declare.
     pub fn apply_op(self: &Arc<Self>, op: ViewDto) -> Arc<Self> {
-        match op {
-            ViewDto::View(view) => match view {
-                ViewOp::Transpose { .. } => self.transpose(view.axes()),
-                ViewOp::Reshape { shape } => {
-                    self.reshape(shape.iter().map(|&d| d as usize).collect())
-                }
-                // A flip a row declines is no node: every flip node flips.
-                ViewOp::Flip { when: false, .. } => self.clone(),
-                ViewOp::Flip { .. } => self.flip(view.axes()),
-                ViewOp::CropClip { .. } | ViewOp::CropPad { .. } => {
-                    // The window placed in this input: its in-bounds part,
-                    // then a padded crop's padding as the `pad` op.
-                    let placed = view.place(&self.shape).expect("a crop has a placement");
-                    let cropped = self.crop(placed.start, placed.end);
-                    match placed.pad {
-                        None => cropped,
-                        Some((top, bottom, left, right, value)) => {
-                            cropped.apply_op(ViewDto::Image(crate::ops::ImageOp {
-                                kind: crate::ops::ImageOpKind::Pad {
-                                    top,
-                                    bottom,
-                                    left,
-                                    right,
-                                    value,
-                                    mode: crate::ops::PadMode::Constant,
-                                },
-                            }))
+        // A compute op that is another op in disguise (a lattice rotation is
+        // a view) is built as that op.
+        let op = op.lowered();
+        if let ViewDto::View(view) = &op {
+            return self.apply_view_op(view);
+        }
+        // A cast's strides depend on its source dtype; every other op is one
+        // node.
+        if let ViewDto::Compute(ComputeOp::Cast { dtype }) = &op {
+            return self.cast(*dtype);
+        }
+        self.op_node(op)
+    }
+
+    /// Build the nodes of a view op: most are one node, a few are a chain of
+    /// views, and a padded crop ends in the `pad` op.
+    fn apply_view_op(self: &Arc<Self>, view: &ViewOp) -> Arc<Self> {
+        match view {
+            ViewOp::Transpose { .. } => self.transpose(view.axes()),
+            ViewOp::Reshape { shape } => self.reshape(shape.iter().map(|&d| d as usize).collect()),
+            // A flip a row declines is no node: every flip node flips.
+            ViewOp::Flip { when: false, .. } => self.clone(),
+            ViewOp::Flip { .. } => self.flip(view.axes()),
+            ViewOp::CropClip { .. } | ViewOp::CropPad { .. } => {
+                // The window placed in this input: its in-bounds part,
+                // then a padded crop's padding as the `pad` op.
+                let placed = view.place(&self.shape).expect("a crop has a placement");
+                let cropped = self.crop(placed.start, placed.end);
+                match placed.pad {
+                    None => cropped,
+                    Some((top, bottom, left, right, value)) => cropped.apply_op(
+                        ImageOp {
+                            kind: ImageOpKind::Pad {
+                                top,
+                                bottom,
+                                left,
+                                right,
+                                value,
+                                mode: crate::ops::PadMode::Constant,
+                            },
                         }
-                    }
+                        .into(),
+                    ),
                 }
-                ViewOp::Crop { .. } | ViewOp::Slice { .. } => {
-                    let (start, end) = view.window().expect("a crop or slice has a window");
-                    self.crop(start, end)
-                }
-                ViewOp::Rotate90 => {
-                    if self.shape.len() < 2 {
-                        return self.clone();
-                    }
-                    let perm = if self.shape.len() == 2 {
-                        vec![1, 0]
-                    } else {
-                        vec![1, 0, 2]
-                    };
-                    self.transpose(perm).flip(vec![1])
-                }
-                ViewOp::Rotate180 => self.flip(vec![0, 1]),
-                ViewOp::Rotate270 => {
-                    if self.shape.len() < 2 {
-                        return self.clone();
-                    }
-                    let perm = if self.shape.len() == 2 {
-                        vec![1, 0]
-                    } else {
-                        vec![1, 0, 2]
-                    };
-                    self.transpose(perm).flip(vec![0])
-                }
-                ViewOp::ChannelSelect { index, keepdims } => {
-                    self.channel_select(index as usize, keepdims)
-                }
-                ViewOp::Squeeze { .. } | ViewOp::ExpandDims { .. } => self.view_node(view),
-            },
-            ViewDto::Compute(compute) => match compute.lowered() {
-                // A cast's strides depend on its source dtype; every other
-                // compute op is one node.
-                ViewDto::Compute(ComputeOp::Cast { dtype }) => self.cast(dtype),
-                ViewDto::Compute(other) => self.compute_node(other),
-                // A lattice rotation lowers to a view.
-                lowered => self.apply_op(lowered),
-            },
-            ViewDto::Image(img) => {
-                // The one construction path for every image op. Output metadata
-                // is derived from the op's own contract and never restated
-                // here: shape from `shape()`, strides from `calc_strides`
-                // (which honours the op's declared `MemoryEffect`), dtype from
-                // its `OutputDTypeRule`. The typed builders (`grayscale`,
-                // `threshold`, `resize`, `blur`, the morphology ops) are thin
-                // wrappers over this arm, so no op can track a dtype its
-                // contract does not declare.
-                //
-                // This used to be split: `Canny`/`HistogramEqualize` had arms
-                // hardcoding `DType::U8`, and `Grayscale`/`Threshold`/`Resize`/
-                // `Blur` routed through builders that recomputed metadata by
-                // hand — `grayscale()` hardcoded `DType::U8`, diverging from
-                // its `PreserveInput` contract on non-u8 input and silently
-                // poisoning downstream kernel fusion (a fused `invert` read the
-                // mistracked `U8` and computed `255 - x` instead of `1 - x`).
-                // One arm, one authority, removes that whole class.
-                let new_shape = img.shape().concrete(&[&self.shape]);
-                let new_strides = self.calc_strides(&img, &new_shape);
-                let new_dtype = img.resolve_output_dtype(self.dtype);
-                Arc::new(Self {
-                    shape: new_shape,
-                    strides: new_strides,
-                    dtype: new_dtype,
-                    node: ExprNode::Image(img, self.clone()),
-                })
             }
-            ViewDto::Filter(op) => {
-                let new_shape = op.shape().concrete(&[&self.shape]);
-                let new_strides = self.calc_strides(&op, &new_shape);
-                let new_dtype = op.resolve_output_dtype(self.dtype);
-                Arc::new(Self {
-                    shape: new_shape,
-                    strides: new_strides,
-                    dtype: new_dtype,
-                    node: ExprNode::Filter(op, self.clone()),
-                })
+            ViewOp::Crop { .. } | ViewOp::Slice { .. } => {
+                let (start, end) = view.window().expect("a crop or slice has a window");
+                self.crop(start, end)
             }
-            ViewDto::Color(op) => {
-                let new_shape = op.shape().concrete(&[&self.shape]);
-                let new_dtype = Op::resolve_output_dtype(&op, self.dtype);
-                Arc::new(Self {
-                    shape: new_shape,
-                    strides: None, // Color conversion always allocates
-                    dtype: new_dtype,
-                    node: ExprNode::Color(op, self.clone()),
-                })
+            ViewOp::Rotate90 => {
+                if self.shape.len() < 2 {
+                    return self.clone();
+                }
+                let perm = if self.shape.len() == 2 {
+                    vec![1, 0]
+                } else {
+                    vec![1, 0, 2]
+                };
+                self.transpose(perm).flip(vec![1])
             }
+            ViewOp::Rotate180 => self.flip(vec![0, 1]),
+            ViewOp::Rotate270 => {
+                if self.shape.len() < 2 {
+                    return self.clone();
+                }
+                let perm = if self.shape.len() == 2 {
+                    vec![1, 0]
+                } else {
+                    vec![1, 0, 2]
+                };
+                self.transpose(perm).flip(vec![0])
+            }
+            ViewOp::ChannelSelect { index, keepdims } => {
+                self.channel_select(*index as usize, *keepdims)
+            }
+            ViewOp::Squeeze { .. } | ViewOp::ExpandDims { .. } => self.op_node(view.clone().into()),
         }
     }
 
     // Helper to calculate next strides
-    fn calc_strides(&self, op: &impl Op, new_shape: &[usize]) -> Option<Vec<isize>> {
+    fn calc_strides(&self, op: &dyn Op, new_shape: &[usize]) -> Option<Vec<isize>> {
         if let Some(current_strides) = &self.strides {
             // Try to infer strides from the operation
             let res = op.infer_strides(&self.shape, current_strides);
@@ -281,49 +226,33 @@ impl ViewExpr {
         }
     }
 
-    /// Build a `Compute` node whose metadata comes entirely from the op's own
-    /// contract: shape from `shape()`, strides from `calc_strides` (which
+    /// Build the node of one op, whose metadata comes entirely from the op's
+    /// own contract: shape from `shape()`, strides from `calc_strides` (which
     /// honours the op's declared `MemoryEffect`), dtype from its
-    /// `OutputDTypeRule`. The compute analogue of `apply_op`'s `Image` arm and
-    /// the single construction authority the compute builders share, so none of
-    /// them can track metadata a contract does not declare.
+    /// `OutputDTypeRule`. The single construction authority every builder
+    /// shares, so none of them can track metadata a contract does not declare.
     ///
-    /// `cast` keeps its own builder: a same-dtype cast passes the input strides
-    /// through untouched, which this generic contiguous-or-inferred path cannot
-    /// express.
-    fn compute_node(self: &Arc<Self>, op: ComputeOp) -> Arc<Self> {
-        let new_shape = op.shape().concrete(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-        let new_dtype = op.resolve_output_dtype(self.dtype);
+    /// `cast` and `reshape` keep their own builders: a same-dtype cast passes
+    /// the input strides through untouched, and a reshape's output strides are
+    /// contiguous whatever its input's (the planner packs a strided input
+    /// first); the generic path expresses neither.
+    fn op_node(self: &Arc<Self>, op: ViewDto) -> Arc<Self> {
+        let contract = op.as_op();
+        let new_shape = contract.shape().concrete(&[&self.shape]);
+        let new_strides = self.calc_strides(contract, &new_shape);
+        let new_dtype = contract.resolve_output_dtype(self.dtype);
         Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
             shape: new_shape,
             strides: new_strides,
             dtype: new_dtype,
-        })
-    }
-
-    /// Build a `View` node from the op's contract (shape via `shape()`,
-    /// strides via `calc_strides`); a view never changes dtype, so it is
-    /// preserved. The view analogue of [`compute_node`](Self::compute_node).
-    ///
-    /// `reshape` keeps its own builder: its output strides are contiguous
-    /// whatever its input's (the planner packs a strided input first).
-    fn view_node(self: &Arc<Self>, op: ViewOp) -> Arc<Self> {
-        let new_shape = op.shape().concrete(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-        Arc::new(Self {
-            node: ExprNode::View(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
+            node: ExprNode::Op(op, self.clone()),
         })
     }
 
     // --- View Ops ---
 
     pub fn transpose(self: &Arc<Self>, perm: Vec<usize>) -> Arc<Self> {
-        self.view_node(ViewOp::transpose(&perm))
+        self.op_node(ViewOp::transpose(&perm).into())
     }
 
     pub fn reshape(self: &Arc<Self>, new_shape: Vec<usize>) -> Arc<Self> {
@@ -341,7 +270,7 @@ impl ViewExpr {
         };
 
         Arc::new(Self {
-            node: ExprNode::View(op, self.clone()),
+            node: ExprNode::Op(op.into(), self.clone()),
             shape: new_shape,
             strides: new_strides,
             dtype: self.dtype,
@@ -349,11 +278,11 @@ impl ViewExpr {
     }
 
     pub fn crop(self: &Arc<Self>, start: Vec<usize>, end: Vec<usize>) -> Arc<Self> {
-        self.view_node(ViewOp::Slice { start, end })
+        self.op_node(ViewOp::Slice { start, end }.into())
     }
 
     pub fn flip(self: &Arc<Self>, axes: Vec<usize>) -> Arc<Self> {
-        self.view_node(ViewOp::flip(&axes))
+        self.op_node(ViewOp::flip(&axes).into())
     }
 
     // --- Compute Ops ---
@@ -377,7 +306,7 @@ impl ViewExpr {
         };
 
         Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
+            node: ExprNode::Op(op.into(), self.clone()),
             shape: new_shape,
             strides: new_strides,
             dtype: target,
@@ -385,19 +314,19 @@ impl ViewExpr {
     }
 
     pub fn affine(self: &Arc<Self>, params: AffineParams) -> Arc<Self> {
-        self.compute_node(ComputeOp::Affine(params))
+        self.op_node(ComputeOp::Affine(params).into())
     }
 
     pub fn scale(self: &Arc<Self>, factor: f32) -> Arc<Self> {
-        self.compute_node(ComputeOp::Scale { factor })
+        self.op_node(ComputeOp::Scale { factor }.into())
     }
 
     pub fn relu(self: &Arc<Self>) -> Arc<Self> {
-        self.compute_node(ComputeOp::Relu)
+        self.op_node(ComputeOp::Relu.into())
     }
 
     pub fn fused(self: &Arc<Self>, kernel: FusedKernel) -> Arc<Self> {
-        self.compute_node(ComputeOp::Fused(kernel))
+        self.op_node(ComputeOp::Fused(kernel).into())
     }
 
     /// Normalize by the image's own statistics (`method`), emitting
@@ -406,10 +335,13 @@ impl ViewExpr {
     /// the normalized result cast to it (folded into the op's `Fixed` output
     /// rule).
     pub fn normalize(self: &Arc<Self>, method: NormalizeMethod, out_dtype: DType) -> Arc<Self> {
-        self.compute_node(ComputeOp::Normalize {
-            method,
-            out_dtype: Some(out_dtype),
-        })
+        self.op_node(
+            ComputeOp::Normalize {
+                method,
+                out_dtype: Some(out_dtype),
+            }
+            .into(),
+        )
     }
 
     /// Normalize each channel by given statistics, `(x - mean[c]) / std[c]`,
@@ -420,75 +352,93 @@ impl ViewExpr {
         std: Vec<f32>,
         out_dtype: DType,
     ) -> Arc<Self> {
-        self.compute_node(ComputeOp::NormalizePreset {
-            mean,
-            std,
-            out_dtype: Some(out_dtype),
-        })
+        self.op_node(
+            ComputeOp::NormalizePreset {
+                mean,
+                std,
+                out_dtype: Some(out_dtype),
+            }
+            .into(),
+        )
     }
 
     /// Clamp values to [min, max] range.
     pub fn clamp(self: &Arc<Self>, min: f32, max: f32) -> Arc<Self> {
-        self.compute_node(ComputeOp::Clamp { min, max })
+        self.op_node(ComputeOp::Clamp { min, max }.into())
     }
 
     /// Adjust contrast: `(pixel - mean) * factor + mean`.
     pub fn adjust_contrast(self: &Arc<Self>, factor: f32) -> Arc<Self> {
-        self.compute_node(ComputeOp::AdjustContrast { factor })
+        self.op_node(ComputeOp::AdjustContrast { factor }.into())
     }
 
     /// Adjust gamma (power-law transformation).
     pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
-        self.compute_node(ComputeOp::AdjustGamma { gamma })
+        self.op_node(ComputeOp::AdjustGamma { gamma }.into())
     }
 
     /// Invert pixel values: `max_val - pixel`.
     pub fn invert(self: &Arc<Self>) -> Arc<Self> {
-        self.compute_node(ComputeOp::Invert)
+        self.op_node(ComputeOp::Invert.into())
     }
 
     /// Select a single channel from a [H, W, C] buffer, producing [H, W].
     pub fn channel_select(self: &Arc<Self>, index: usize, keepdims: bool) -> Arc<Self> {
-        self.view_node(ViewOp::ChannelSelect {
-            index: index as u32,
-            keepdims,
-        })
+        self.op_node(
+            ViewOp::ChannelSelect {
+                index: index as u32,
+                keepdims,
+            }
+            .into(),
+        )
     }
 
     // --- Image Ops ---
 
     // The image builders below are sugar over `apply_op` — they name the op and
-    // delegate. `apply_op`'s `ViewDto::Image` arm is the single authority for
+    // delegate. `apply_op` (through `op_node`) is the single authority for
     // output shape/strides/dtype, so a builder cannot track metadata its
     // contract does not declare (the bug that `grayscale`/`threshold` carried
     // when they built the node by hand and hardcoded `DType::U8`).
 
     pub fn resize(self: &Arc<Self>, width: u32, height: u32, filter: FilterType) -> Arc<Self> {
-        self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Resize {
-                width,
-                height,
-                filter,
-            },
-        }))
+        self.apply_op(
+            ImageOp {
+                kind: ImageOpKind::Resize {
+                    width,
+                    height,
+                    filter,
+                },
+            }
+            .into(),
+        )
     }
 
     pub fn blur(self: &Arc<Self>, sigma: f32) -> Arc<Self> {
-        self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Blur { sigma },
-        }))
+        self.apply_op(
+            ImageOp {
+                kind: ImageOpKind::Blur { sigma },
+            }
+            .into(),
+        )
     }
 
     pub fn threshold(self: &Arc<Self>, value: f64) -> Arc<Self> {
-        self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Threshold { value },
-        }))
+        self.apply_op(
+            ImageOp {
+                kind: ImageOpKind::Threshold { value },
+            }
+            .into(),
+        )
     }
 
     pub fn grayscale(self: &Arc<Self>) -> Arc<Self> {
-        self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Grayscale { keepdims: true },
-        }))
+        self.apply_op(
+            ImageOp {
+                kind: ImageOpKind::Grayscale { keepdims: true },
+            }
+            .into(),
+        )
     }
 
     /// Morphological erosion: local minimum over the footprint.
@@ -498,13 +448,16 @@ impl ViewExpr {
         iterations: u32,
         footprint: crate::ops::Footprint,
     ) -> Arc<Self> {
-        self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Erode {
-                ksize,
-                iterations,
-                footprint,
-            },
-        }))
+        self.apply_op(
+            ImageOp {
+                kind: ImageOpKind::Erode {
+                    ksize,
+                    iterations,
+                    footprint,
+                },
+            }
+            .into(),
+        )
     }
 
     /// Morphological dilation: local maximum over the footprint.
@@ -514,13 +467,16 @@ impl ViewExpr {
         iterations: u32,
         footprint: crate::ops::Footprint,
     ) -> Arc<Self> {
-        self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Dilate {
-                ksize,
-                iterations,
-                footprint,
-            },
-        }))
+        self.apply_op(
+            ImageOp {
+                kind: ImageOpKind::Dilate {
+                    ksize,
+                    iterations,
+                    footprint,
+                },
+            }
+            .into(),
+        )
     }
 
     /// Morphological gradient: dilate − erode (edge outline).
@@ -529,9 +485,12 @@ impl ViewExpr {
         ksize: u32,
         footprint: crate::ops::Footprint,
     ) -> Arc<Self> {
-        self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::MorphGradient { ksize, footprint },
-        }))
+        self.apply_op(
+            ImageOp {
+                kind: ImageOpKind::MorphGradient { ksize, footprint },
+            }
+            .into(),
+        )
     }
 
     // --- Optimization ---
@@ -549,20 +508,16 @@ impl ViewExpr {
     pub fn optimize_with(self: &Arc<Self>, cfg: &OptConfig) -> Arc<Self> {
         let optimized_node = match &self.node {
             ExprNode::Source(_) => return self.clone(),
-            ExprNode::View(op, child) => ExprNode::View(op.clone(), child.optimize_with(cfg)),
-            ExprNode::Compute(op, child) => ExprNode::Compute(op.clone(), child.optimize_with(cfg)),
-            ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize_with(cfg)),
-            ExprNode::Color(op, child) => ExprNode::Color(op.clone(), child.optimize_with(cfg)),
-            ExprNode::Filter(op, child) => ExprNode::Filter(op.clone(), child.optimize_with(cfg)),
+            ExprNode::Op(op, child) => ExprNode::Op(op.clone(), child.optimize_with(cfg)),
         };
 
         match optimized_node {
-            ExprNode::View(ViewOp::Flip { axes: axes1, when }, child) => {
+            ExprNode::Op(ViewDto::View(ViewOp::Flip { axes: axes1, when }), child) => {
                 if cfg.view_flip_involution {
-                    if let ExprNode::View(
-                        ViewOp::Flip {
+                    if let ExprNode::Op(
+                        ViewDto::View(ViewOp::Flip {
                             axes: ref axes2, ..
-                        },
+                        }),
                         ref grandchild,
                     ) = &child.node
                     {
@@ -571,13 +526,18 @@ impl ViewExpr {
                         }
                     }
                 }
-                self.rebuild(ExprNode::View(ViewOp::Flip { axes: axes1, when }, child))
+                self.rebuild(ExprNode::Op(
+                    ViewDto::View(ViewOp::Flip { axes: axes1, when }),
+                    child,
+                ))
             }
 
-            ExprNode::View(ViewOp::Transpose { axes: p1 }, child) => {
+            ExprNode::Op(ViewDto::View(ViewOp::Transpose { axes: p1 }), child) => {
                 if cfg.view_transpose_merge {
-                    if let ExprNode::View(ViewOp::Transpose { axes: ref p2 }, ref grandchild) =
-                        &child.node
+                    if let ExprNode::Op(
+                        ViewDto::View(ViewOp::Transpose { axes: ref p2 }),
+                        ref grandchild,
+                    ) = &child.node
                     {
                         // Compose the two permutations: applying `p1` after `p2` is a
                         // single transpose by `merged[i] = p2[p1[i]]`.
@@ -595,10 +555,13 @@ impl ViewExpr {
                         return grandchild.transpose(merged);
                     }
                 }
-                self.rebuild(ExprNode::View(ViewOp::Transpose { axes: p1 }, child))
+                self.rebuild(ExprNode::Op(
+                    ViewDto::View(ViewOp::Transpose { axes: p1 }),
+                    child,
+                ))
             }
 
-            ExprNode::Compute(op1, child) => {
+            ExprNode::Op(ViewDto::Compute(op1), child) => {
                 // Cast optimization: eliminate redundant casts
                 if let ComputeOp::Cast {
                     dtype: target_dtype,
@@ -627,8 +590,10 @@ impl ViewExpr {
                     // wrapping one (u16 300 -> f32 -> u8 is 255, u16 300 -> u8 is
                     // 44), so that shape is kept too.
                     if cfg.cast_chain_collapse {
-                        if let ExprNode::Compute(ComputeOp::Cast { dtype: inner }, ref grandchild) =
-                            &child.node
+                        if let ExprNode::Op(
+                            ViewDto::Compute(ComputeOp::Cast { dtype: inner }),
+                            ref grandchild,
+                        ) = &child.node
                         {
                             // Dropping a float intermediate replaces its
                             // float -> target conversion with the
@@ -641,10 +606,10 @@ impl ViewExpr {
                                 // Skip the (lossless) intermediate cast, cast directly
                                 // from grandchild.
                                 return Arc::new(Self {
-                                    node: ExprNode::Compute(
-                                        ComputeOp::Cast {
+                                    node: ExprNode::Op(
+                                        ViewDto::Compute(ComputeOp::Cast {
                                             dtype: *target_dtype,
-                                        },
+                                        }),
                                         grandchild.clone(),
                                     ),
                                     shape: self.shape.clone(),
@@ -658,7 +623,7 @@ impl ViewExpr {
 
                 // Try fusing scalar operations
                 if cfg.scalar_fusion {
-                    if let ExprNode::Compute(ref op2, ref grandchild) = &child.node {
+                    if let ExprNode::Op(ViewDto::Compute(ref op2), ref grandchild) = &child.node {
                         // Each op's lowering may depend on the dtype it would have
                         // received unfused; the kernel's output is pinned to the
                         // chain's planned dtype.
@@ -668,7 +633,7 @@ impl ViewExpr {
                             try_fuse(&op1, op2, inner_input_dtype, outer_input_dtype, self.dtype)
                         {
                             return Arc::new(Self {
-                                node: ExprNode::Compute(fused, grandchild.clone()),
+                                node: ExprNode::Op(ViewDto::Compute(fused), grandchild.clone()),
                                 shape: self.shape.clone(),
                                 strides: self.strides.clone(),
                                 dtype: self.dtype,
@@ -676,7 +641,7 @@ impl ViewExpr {
                         }
                     }
                 }
-                self.rebuild(ExprNode::Compute(op1, child))
+                self.rebuild(ExprNode::Op(ViewDto::Compute(op1), child))
             }
 
             _ => self.rebuild(optimized_node),
@@ -714,34 +679,10 @@ impl ViewExpr {
                 source: buf.as_ref().clone(),
                 steps: Vec::new(),
             },
-            ExprNode::View(op, child) => {
+            ExprNode::Op(op, child) => {
                 let mut plan = child.build_plan();
-                materialize_if_needed(&mut plan, op.memory_effect());
-                plan.steps.push(PlanStep::View(op.clone()));
-                plan
-            }
-            ExprNode::Compute(op, child) => {
-                let mut plan = child.build_plan();
-                materialize_if_needed(&mut plan, op.memory_effect());
-                plan.steps.push(PlanStep::Compute(op.clone()));
-                plan
-            }
-            ExprNode::Image(op, child) => {
-                let mut plan = child.build_plan();
-                materialize_if_needed(&mut plan, op.memory_effect());
-                plan.steps.push(PlanStep::Image(op.clone()));
-                plan
-            }
-            ExprNode::Color(op, child) => {
-                let mut plan = child.build_plan();
-                materialize_if_needed(&mut plan, op.memory_effect());
-                plan.steps.push(PlanStep::Color(op.clone()));
-                plan
-            }
-            ExprNode::Filter(op, child) => {
-                let mut plan = child.build_plan();
-                materialize_if_needed(&mut plan, op.memory_effect());
-                plan.steps.push(PlanStep::Filter(op.clone()));
+                materialize_if_needed(&mut plan, op.as_op().memory_effect());
+                plan.steps.push(PlanStep::Op(op.clone()));
                 plan
             }
         }
@@ -769,7 +710,7 @@ fn materialize_if_needed(plan: &mut ExecutionPlan, effect: MemoryEffect) {
 }
 
 fn plan_ends_in_view(plan: &ExecutionPlan) -> bool {
-    matches!(plan.steps.last(), Some(PlanStep::View(_)))
+    matches!(plan.steps.last(), Some(PlanStep::Op(ViewDto::View(_))))
 }
 
 // --- Helper for Fusion ---
@@ -1057,7 +998,7 @@ mod scalar_op_tests {
             .plan()
             .steps
             .iter()
-            .filter(|s| matches!(s, PlanStep::Compute(_)))
+            .filter(|s| matches!(s, PlanStep::Op(ViewDto::Compute(_))))
             .count();
         assert_eq!(
             compute_steps, 1,
@@ -1087,7 +1028,7 @@ mod scalar_op_tests {
             .plan()
             .steps
             .iter()
-            .filter(|s| matches!(s, PlanStep::Compute(_)))
+            .filter(|s| matches!(s, PlanStep::Op(ViewDto::Compute(_))))
             .count();
         assert_eq!(compute_steps, 2, "f64 scalar ops must not fuse");
 

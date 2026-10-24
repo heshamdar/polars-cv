@@ -3,6 +3,11 @@
 > Read the [root AGENTS.md](../../AGENTS.md) first for project-wide context.
 > Update this file when you add new scenarios, frameworks, or change the benchmark harness.
 
+> **Which benchmark tree?** This one measures the local checkout. The
+> cross-library comparison of the *published* wheel is the separate uv project
+> in [`benchmarks/`](../../benchmarks/README.md), which explains the split;
+> do not restate it here.
+
 ## Purpose
 
 This directory contains a comprehensive benchmarking suite for comparing polars-cv against other vision processing frameworks. The focus is on **batch preprocessing for inference** and **ETL workloads** — not training-time random augmentation.

@@ -7,7 +7,7 @@
 //! naming the plugin input that holds it per row — and an optional data
 //! operand (`point.rotate`'s `origin`, `correspond`'s `order`) is a
 //! [`ColumnRef`]. Each function's arguments are its typed definition
-//! (`geom_fns`), parsed strictly by name; the generated Python accessor appends
+//! (`geometry::fns`), parsed strictly by name; the generated Python accessor appends
 //! each expression as an input and writes its position into its field, so
 //! nothing is looked up by name.
 //!
@@ -287,7 +287,7 @@ pub fn check_range(name: &str, value: f64, lo: f64, hi: f64) -> PolarsResult<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom_fns::PointFn;
+    use crate::geometry::fns::PointFn;
     use view_buffer::mode::Wire;
 
     fn params<'a>(inputs: &'a [Series], on_error: &str) -> PolarsResult<GeomParams<'a>> {

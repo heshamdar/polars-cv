@@ -7,6 +7,82 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **`GLOSSARY.md`** fixes one meaning for each overloaded word (*view*,
+  *plan*, *node*, *step*, *graph*, *op*, *domain*) and lists the type names
+  that use one another way (`ViewBuffer`, `ViewDto`, `ExecutionPlan`,
+  `ExprNode`, …). It is linked from `CLAUDE.md`, `AGENTS.md` and the
+  Pipelines concepts page. No type is renamed (#163).
+- **Plugin modules are named for what they hold.** `graph/decode.rs` and
+  `graph/encode.rs`, which imported each other, are now `graph/source.rs`
+  (source decoding) and `graph/sink.rs` (an output's planned dtype, each row's
+  encoded value, and the Series assembly). Geometry-step execution moved out of
+  `encode.rs` into `geometry/exec.rs`. The flat `contour.rs`, `point.rs` and
+  `geom_*.rs` files are under `src/geometry/` (`accessor`, `arity`, `columns`,
+  `construct`, `fns`, `params`, `schema`), mirroring the engine's
+  `geometry/`. `graph/compiled.rs`, which was the cache, the compiler and the
+  row executor at once, is `graph/compiled/` with `compile.rs`, `cache.rs` and
+  `run.rs` (#161).
+- **A graph node's per-row value, `NodeOutput`, lives in the plugin's graph
+  (`polars-cv/src/graph/node_output.rs`), not in the view-buffer engine**, which
+  has no node concept and never used it. `Domain` stays in the engine, whose
+  histogram, reduction and LUT ops report their output domain with it.
+  `ViewDto::input_domain`/`output_domain`, which returned `Buffer` as
+  constants, are gone: `GraphStep` states that a single-buffer op maps a buffer
+  to a buffer (#160).
+- **Common-subexpression elimination is declared where it runs: in Python.**
+  It reads the expressions' identities, which only the Python graph holds, yet
+  it was a variant of Rust's `LogicalPass` whose only arm refused to run it,
+  and `PipelineGraph.optimize` picked it out by name. It is now the one
+  graph-tier pass in `polars_cv/_graph_passes.py`, which `scripts/gen_ops.py`
+  places ahead of Rust's catalogue. `optimize` dispatches by tier, and
+  `_graph.py` refuses to import if a declared graph pass has no
+  implementation. `OptFlags(common_subexpression_elimination=...)` and
+  `POLARS_CV_OPTIMIZATIONS` are unchanged; `PassSpec.tier` gains `"graph"`
+  (#159).
+- **The benchmark project's `polars-cv` pin is now checked.**
+  `benchmarks/pyproject.toml` pins the published wheel and lags the repo on
+  purpose, so `test_version_consistency.py` no longer lets it drift unseen: it
+  must be an exact pin, no later than `__version__`, match `benchmarks/uv.lock`,
+  and be named in `benchmarks/README.md`. `CONTRIBUTING.md`'s release checklist
+  says the pin tracks PyPI and is not bumped with the repo.
+- Test and docs housekeeping: `test_sanitation.py` sections are named by the
+  invariant they check (Plan == Exec, registry parity, enum parity) instead of
+  by assessment-finding labels, and both READMEs and `polars-cv/benchmarks/
+  AGENTS.md` point to the explanation of the two benchmark trees.
+- **The package has no import cycle, and `__init__` only re-exports.** A static
+  11-module cycle (`_namespace`, `expressions`, `geometry.*`, `metrics.*`, via
+  `from polars_cv import _plugin`) made import order load-bearing. Those edges
+  now name the submodule (`import polars_cv._plugin as _plugin`), and the
+  implementations that lived in `__init__.py` or `lazy.py` moved to named
+  modules: `numpy_io` (`numpy_from_struct`, `numpy_from_column`), `masks`
+  (`mask_iou`, `mask_dice`, `region_stats`) and `hashing` (`hamming_distance`,
+  `hash_similarity`). Every public name is unchanged and still importable from
+  `polars_cv`; `polars_cv.lazy.region_stats` is now `polars_cv.masks.region_stats`.
+  `tests/test_import_layering.py` holds both rules (no cycle in the top-level
+  import graph; nothing inside the package imports the package root) and
+  imports each submodule alone in a fresh interpreter.
+- Documentation only (issue #164): the architecture overview, data flow,
+  domain system, alpha-channel handling and known issues now live once, in the
+  root `AGENTS.md`, and `CLAUDE.md` points to them; the `lib.rs` description no
+  longer claims it defines `Plan`/`PlanState` (they are in `plan.rs`). Source
+  comments no longer cite `CR-NN` ledger ids (they state the invariant
+  instead), history-narrating docstrings are in the present tense, and the
+  `view-buffer` runner docs no longer link the removed `execution::tiling`
+  module.
+- **The engine's five op families are routed once, by `ViewDto`.** `ExprNode`
+  and `PlanStep` each had a variant per family (view, compute, image, color,
+  filter), matched in `apply_op`, `optimize_with`, `build_plan` and the plan
+  executor. Both now hold `Op(ViewDto)`; `ViewDto::execute` is the one dispatch
+  to the family runners, `ViewExpr::op_node` the one construction of a node
+  from the op's contract (shape, strides, dtype), and `ViewDto::lowered` the
+  one place a disguised op (a lattice rotation) becomes the op it executes as.
+  A family added to `ViewDto` now fails to compile in exactly those two
+  functions. A colour conversion's tracked strides are now the contiguous
+  strides of its output (they were `None`); nothing executes from them.
+- Documentation: the package `AGENTS.md` names `display.py` as the one exception to "no computation happens here" (notebook display normalises already-computed values), and the root `AGENTS.md` tree labels the repository root as the Cargo workspace and shows the root `scripts/` and `benchmarks/` directories beside their `polars-cv/` counterparts.
+
 ## [0.41.0] — 2026-10-23
 
 Reductions, filters and windows for image analytics. One `reduce` takes any

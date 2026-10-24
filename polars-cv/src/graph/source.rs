@@ -1,24 +1,13 @@
-//! Source decoding and series building utilities.
-//!
-//! This module contains functions for:
-//! - Decoding binary sources (blob, raw, zero-copy)
-//! - Decoding list/array sources from Polars
-//! - Building output series from row results
-//! - Padding and masking operations
+//! Source decoding: a row of an input column to the buffer a graph node
+//! starts from (binary blobs, raw bytes and images, in place where the
+//! bytes allow; list/array columns).
 
 use polars::prelude::*;
-use view_buffer::ops::NodeOutput;
-use view_buffer::{PlannedDType, ViewBuffer};
+use view_buffer::ViewBuffer;
 
 use crate::execute::decode_image_bytes;
 use crate::formats::source::Source;
-
-use super::encode::{
-    build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
-    contour_set_series, histogram_buckets_to_polars_value, histogram_struct_dtype, TypedListRow,
-};
-use super::sink_kind::SinkKind;
-use super::types::{OutputSpec, RowResult};
+use crate::graph::node_output::NodeOutput;
 
 /// What a path-based source (`file_path`) reads a row's bytes through: this
 /// call's [`Fetcher`](crate::fetch::Fetcher) for the node's column (its cloud
@@ -53,7 +42,7 @@ pub(crate) fn decode_source_row(
     match source {
         // The column's contour set, lines (`is_closed = false`) and regions
         // alike; a mask is the `rasterize` op that follows, if any.
-        Source::Contour { .. } => crate::geom_columns::ContourColumn::new(series)
+        Source::Contour { .. } => crate::geometry::columns::ContourColumn::new(series)
             .outlines(row)
             .map(|set| set.map(NodeOutput::from_contours))
             .map_err(|e| format!("Contour decode error: {e}")),
@@ -181,8 +170,8 @@ pub(crate) fn decode_binary_row(
 /// sits in one of the array's shared data buffers, and reading it in place is
 /// that buffer, sliced. The typed views built over a row are `&[T]`, so what
 /// `in_place` checks is that `T`'s alignment holds where the row lies: an
-/// unconditional 8-byte rule copied every u8 row at an odd address (CR-41
-/// made alignment a requirement; this makes it the dtype's).
+/// unconditional 8-byte rule copied every u8 row at an odd address; alignment is a
+/// requirement, and this makes it the dtype's.
 ///
 /// # Returns
 /// `Some((buffer, offset, len))` if the row is valid and not null.
@@ -304,7 +293,7 @@ fn decode_blob_zero_copy(
 /// The buffer element type a Polars *leaf* type holds, if it is one.
 ///
 /// **The single Polars→DType mapping in this crate.** `resolved_output_specs`
-/// (graph/compiled.rs) had a second copy of it that returned dtype *strings*,
+/// (the compiled graph) had a second copy of it that returned dtype *strings*,
 /// so the two were free to disagree about which Polars types are buffer
 /// elements at all — and did: that copy fell back to `"u8"` for everything
 /// unmatched, which is how a `List(Decimal)` column came to claim it was a
@@ -489,7 +478,7 @@ fn null_row_part(what: &str) -> String {
 
 /// A row whose values are not `dtype`, converted once by polars' strict
 /// cast: a value `dtype` cannot hold is an error naming it. Polars'
-/// non-strict cast, which this used, left 0 in its place (CR-61).
+/// non-strict cast, which this used, left 0 in its place.
 fn convert_row_values(grid: RowGrid<'_>, dtype: view_buffer::DType) -> Result<ViewBuffer, String> {
     let values = grid.leaf.sliced(grid.values.start, grid.values.len());
     let converted = Series::from_arrow(PlSmallStr::EMPTY, values)
@@ -647,9 +636,9 @@ fn get_primitive_values(
 /// The primitive array's values as a byte buffer that *shares* its storage.
 ///
 /// A reinterpretation, not a copy: `Buffer<T>` → `Buffer<u8>` keeps the same
-/// allocation, so the caller's per-row window is a view into the column. It
-/// used to copy the entire values buffer here — once per row — which made the
-/// `array` source quadratic in the batch size (CR-40). Sharing is safe because
+/// allocation, so the caller's per-row window is a view into the column. Copying
+/// the entire values buffer once per row would make the `array` source
+/// quadratic in the batch size. Sharing is safe because
 /// view-buffer never writes through `PolarsArrow` storage (its in-place paths
 /// require uniquely-owned `Rust` storage).
 ///
@@ -709,441 +698,6 @@ pub fn polars_dtype_for(dt: view_buffer::DType) -> DataType {
     }
 }
 
-/// The Polars element type of a typed `list`/`array` sink.
-///
-/// Refuses a dtype the planner never pinned down (`auto`, `auto_float`): a
-/// typed column cannot be planned from it, and mapping it to anything would be
-/// a column execution may contradict.
-fn list_array_inner_dtype(
-    dtype: PlannedDType,
-    sink: &str,
-    facts: ColumnFacts,
-) -> PolarsResult<DataType> {
-    match dtype {
-        PlannedDType::Known(dtype) => Ok(polars_dtype_for(dtype)),
-        // The column will supply it; this schema is only checked, never
-        // published (`check_output_before_column`).
-        PlannedDType::SomeFloat | PlannedDType::Unknown
-            if matches!(facts, ColumnFacts::Pending { .. }) =>
-        {
-            Ok(DataType::Null)
-        }
-        // Not labelled an internal error: the common way to get here is a
-        // source column whose element type the planner cannot map to a buffer
-        // dtype (a boolean or decimal list), which is the user's input, not a
-        // bug. The fix is the same either way — say what it is.
-        PlannedDType::SomeFloat | PlannedDType::Unknown => polars_bail!(ComputeError:
-            "the '{sink}' sink needs to know the element dtype at planning \
-             time, and it could not be inferred from the input column. \
-             Supply it explicitly, e.g. source(..., dtype=\"u16\") or \
-             .cast(...) before the sink."
-        ),
-    }
-}
-/// Whether the input column has been seen when an output's schema is decided.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ColumnFacts {
-    /// Polars is planning the query: the plan already holds everything the
-    /// column reveals.
-    Resolved,
-    /// `.sink()` is checking a graph whose root takes its element type and
-    /// rank — and, when `sizes`, its sizes — from a column not yet seen. Those
-    /// facts are the column's to supply, so an unknown one is not refused;
-    /// everything else is decided now.
-    Pending { sizes: bool },
-}
-
-/// Get the Polars DataType for a given output specification.
-///
-/// Returns the appropriate dtype based on domain, sink format, and expected dtype.
-pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
-    output_schema(spec, ColumnFacts::Resolved)
-}
-
-/// Check an output's sink before its column is seen (see
-/// [`ColumnFacts::Pending`]). The schema is not returned: what the column
-/// will supply is not known yet.
-pub(crate) fn check_output_before_column(
-    spec: &OutputSpec,
-    facts: ColumnFacts,
-) -> PolarsResult<()> {
-    output_schema(spec, facts).map(|_| ())
-}
-
-/// The one sink-schema decision, for [`dtype_for_output`] and
-/// [`check_output_before_column`].
-fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType> {
-    let inner = |sink: &str| list_array_inner_dtype(spec.expected_dtype, sink, facts);
-    match SinkKind::resolve(spec)? {
-        SinkKind::HistogramBuckets => Ok(DataType::List(Box::new(histogram_struct_dtype()))),
-        SinkKind::NumpyStruct => Ok(crate::output::numpy_output_dtype()),
-        SinkKind::NdArray => Ok(crate::ext_types::ExtType::NdArray.dtype()),
-        // A VIEW blob is self-describing, so it carries no codec precondition.
-        SinkKind::Blob => Ok(DataType::Binary),
-        kind @ SinkKind::EncodedImage => {
-            // The codec's dtype/rank/channel precondition is decidable now, from
-            // the same OutputSpec that produced this dtype — so decide it now.
-            // Leaving it to the encoder meant a query planned as `Binary` and
-            // then died part-way through `collect()`, which is precisely the
-            // "planned one thing, executed another" failure the sink contract
-            // exists to prevent. `ImageCodec::check_shape` is the one entry
-            // point both halves read, and it treats an unknown as permission,
-            // so a source whose dtype is still "auto" is not refused here.
-            let codec = kind
-                .image_codec(spec)
-                .expect("EncodedImage carries a codec");
-            let dtype = spec.expected_dtype;
-            codec
-                .check_shape(dtype, spec.expected_shape.as_deref(), spec.expected_ndim)
-                .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
-            Ok(DataType::Binary)
-        }
-        SinkKind::BufferList => {
-            let inner = inner("list")?;
-            let ndim = spec
-                .expected_shape
-                .as_ref()
-                .map(|shape| shape.len())
-                .or(spec.expected_ndim)
-                .or(matches!(facts, ColumnFacts::Pending { .. }).then_some(1));
-            // Not a fallback to depth 1: the nesting depth *is* the schema for
-            // a list sink, and guessing it is how `source("auto")` on a Binary
-            // column came to publish `List(u8)` for data that executes as
-            // `List(List(List(u8)))`. `auto` is the one source whose rank
-            // Python cannot know, and `resolved_output_specs` can only recover
-            // it from a List/Array column — for image bytes the rank is not
-            // settled until the decode. Refusing here is what turns that into
-            // an error the user sees before any data moves.
-            let Some(ndim) = ndim else {
-                polars_bail!(ComputeError:
-                    "the 'list' sink needs the output rank at planning time, and it \
-                     is not knowable for this source. `source(\"auto\")` over a \
-                     binary column decides between an image and a VIEW blob by \
-                     inspecting the bytes, so the rank is only settled during \
-                     execution. Name the source explicitly \
-                     (e.g. `source(\"image_bytes\")`), or use a `numpy` sink, \
-                     which does not encode the rank in its Polars dtype."
-                );
-            };
-            let mut dtype = inner;
-            for _ in 0..ndim {
-                dtype = DataType::List(Box::new(dtype));
-            }
-            Ok(dtype)
-        }
-        SinkKind::BufferArray => {
-            let inner = inner("array")?;
-            let sink_shape = spec.sink.shape();
-            let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
-            if let Some(shape) = shape {
-                let mut dtype = inner;
-                for &dim in shape.iter().rev() {
-                    dtype = DataType::Array(Box::new(dtype), dim);
-                }
-                Ok(dtype)
-            } else if facts == (ColumnFacts::Pending { sizes: true }) {
-                // A fixed-size `Array` column's type states every size, so
-                // this is decided when the query is planned with the column.
-                // The dtype is not returned for `Pending`.
-                Ok(inner)
-            } else {
-                // Names what each remedy actually supplies. The advice this
-                // replaces was circular for the source that reaches it most: a
-                // list column's sizes vary per row, so it lands here — and was
-                // told to call `.assert_shape()`, which
-                // published nothing without a rank, and `.resize()`, which never
-                // supplies the channel count.
-                polars_bail!(ComputeError:
-                    "an 'array' sink needs the full output shape at planning time, and \
-                     this pipeline's is not known. Three ways to supply it:\n  \
-                     .sink('array', shape=[8, 8, 3])   — always works; the shape belongs \
-                     to the sink\n  \
-                     .assert_shape(dims=[8, 8, 3])     — when you know it and the source \
-                     does not (a list column's sizes are only settled per row)\n  \
-                     .resize(height=8, width=8)        — supplies height and width only"
-                );
-            }
-        }
-        SinkKind::Long => {
-            let layout = long_layout(spec);
-            if let Some(ndim) = spec.expected_ndim.filter(|n| !matches!(n, 2 | 3)) {
-                polars_bail!(ComputeError:
-                    "the 'long' sink takes an [H, W] or [H, W, C] buffer, and this \
-                     one has rank {ndim}"
-                );
-            }
-            if let Some(channels) = spec.expected_channels {
-                layout
-                    .check_channels(channels)
-                    .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
-            }
-            Ok(super::encode::long_dtype(&layout, inner("long")?))
-        }
-        SinkKind::Scalar => Ok(DataType::Float64),
-        SinkKind::VectorList => {
-            // Reject an unresolved "auto" element dtype the same way the
-            // buffer/list and array arms do, instead of silently mapping it to
-            // U8 — a plan/data divergence if a vector output ever reached the
-            // sink still "auto". (Today vector dtypes are always concrete.)
-            let inner = inner("list")?;
-            if let Some(ref shape) = spec.expected_shape {
-                let mut dtype = inner;
-                for _ in 0..shape.len() {
-                    dtype = DataType::List(Box::new(dtype));
-                }
-                Ok(dtype)
-            } else if let Some(ndim) = spec.expected_ndim {
-                let mut dtype = inner;
-                for _ in 0..ndim {
-                    dtype = DataType::List(Box::new(dtype));
-                }
-                Ok(dtype)
-            } else {
-                Ok(DataType::List(Box::new(inner)))
-            }
-        }
-        // Fixed-size vector outputs (e.g. perceptual hashes) as Array.
-        // This pair used to ride the silent Binary fallthrough: execution
-        // produced an Array while lazy schema claimed Binary.
-        SinkKind::VectorArray => {
-            let inner = inner("array")?;
-            let sink_shape = spec.sink.shape();
-            let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
-            if let Some(shape) = shape {
-                let mut dtype = inner;
-                for &dim in shape.iter().rev() {
-                    dtype = DataType::Array(Box::new(dtype), dim);
-                }
-                Ok(dtype)
-            } else {
-                polars_bail!(ComputeError:
-                    "array sink requires a known shape at planning time. \
-                     Provide shape via .sink(shape=[...])."
-                );
-            }
-        }
-        SinkKind::Contours => Ok(DataType::List(Box::new(DataType::Struct(
-            crate::geom_schema::contour_fields(),
-        )))),
-    }
-}
-/// Create a null RowResult with the correct type based on OutputSpec.
-///
-/// This ensures that null values are pushed with the appropriate type variant,
-/// allowing the series builder to use static type information.
-pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowResult> {
-    let kind = SinkKind::resolve(spec)?;
-    Ok(match kind {
-        SinkKind::HistogramBuckets => RowResult::HistogramBuckets(None),
-        SinkKind::NumpyStruct | SinkKind::NdArray => RowResult::NumpyStruct(None),
-        SinkKind::EncodedImage | SinkKind::Blob => RowResult::Binary(None),
-        SinkKind::BufferList | SinkKind::VectorList => RowResult::TypedList(None),
-        SinkKind::BufferArray | SinkKind::VectorArray => RowResult::TypedArray(None),
-        SinkKind::Scalar => RowResult::Scalar(None),
-        SinkKind::Contours => RowResult::Contours(None),
-        SinkKind::Long => RowResult::Long(None),
-    })
-}
-
-/// The `long` sink's layout, for a spec that resolved to [`SinkKind::Long`]
-/// (which only a `long` sink resolves to).
-pub(crate) fn long_layout(spec: &OutputSpec) -> crate::formats::sink::LongLayout<'_> {
-    spec.sink
-        .long_layout()
-        .expect("SinkKind::Long is resolved from a long sink")
-}
-/// A row whose variant the sink kind does not accept.
-///
-/// `encode_node_output` and [`SinkKind`] are two halves of one contract, so
-/// reaching this means they disagree. Publishing the row as null (the former
-/// `_ => None` arms) would pass the bug off as data (CR-38).
-fn foreign_row(kind: SinkKind, variant: &str) -> PolarsError {
-    polars_err!(ComputeError:
-        "internal: a {:?} sink received a {} row. The encode half and the sink \
-         kind disagree about this output.",
-        kind, variant
-    )
-}
-
-/// Convert every row with `accept`, which returns the variant's name for a
-/// variant the kind does not accept; that becomes an error rather than a null.
-fn convert_rows<T>(
-    kind: SinkKind,
-    data: RowParts,
-    accept: impl Fn(RowResult) -> Result<Option<T>, &'static str>,
-) -> PolarsResult<Vec<Option<T>>> {
-    let mut rows = Vec::with_capacity(data.iter().map(Vec::len).sum());
-    for row in data.into_iter().flatten() {
-        rows.push(accept(row).map_err(|variant| foreign_row(kind, variant))?);
-    }
-    Ok(rows)
-}
-
-/// A column's row results in row order, as the row ranges that computed
-/// them left them: converted straight from the parts, never concatenated
-/// into one call-sized vector of (large) `RowResult`s first.
-pub(crate) type RowParts = Vec<Vec<RowResult>>;
-
-/// A vector row as typed list data.
-fn vector_row(vals: Vec<f64>) -> ViewBuffer {
-    ViewBuffer::from_vec(vals)
-}
-
-/// Build a series from row results using the OutputSpec to determine the type.
-///
-/// This function uses static type information from the OutputSpec rather than
-/// inspecting the first row's data. This allows proper handling of null values
-/// while preserving the expected output type. Each kind accepts a fixed set of
-/// row variants; `None` of an accepted variant is a null row, and any other
-/// variant is an internal error.
-pub(crate) fn build_series_from_spec(
-    name: PlSmallStr,
-    spec: &OutputSpec,
-    data: RowParts,
-    split: Option<&crate::row_split::Split>,
-) -> PolarsResult<Series> {
-    let dtype = spec.expected_dtype;
-    let kind = SinkKind::resolve(spec)?;
-    match kind {
-        // Every arm below is keyed on the resolved kind, so a new one is a
-        // compile error here rather than a row that quietly becomes Binary.
-        SinkKind::HistogramBuckets => {
-            let rows = convert_rows(kind, data, |r| match r {
-                RowResult::HistogramBuckets(b) => Ok(b),
-                other => Err(other.variant_name()),
-            })?;
-            let values = rows
-                .iter()
-                .map(|r| match r {
-                    Some(buckets) => histogram_buckets_to_polars_value(buckets),
-                    None => Ok(AnyValue::Null),
-                })
-                .collect::<PolarsResult<Vec<_>>>()?;
-            let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
-            Series::from_any_values_and_dtype(name, &values, &histogram_dtype, true)
-        }
-        SinkKind::NumpyStruct | SinkKind::NdArray => {
-            // Move the buffers in so each is the sole Arc owner: that lets
-            // `into_polars_buffer_strided` take the zero-copy *strided* branch
-            // for non-contiguous (transposed/flipped/rotated) outputs. The
-            // numpy/torch struct carries shape/strides/offset, and the Python
-            // consumers (`numpy_from_struct`, the struct->PNG helper) honor them
-            // via `np.lib.stride_tricks.as_strided`, so permuted layouts decode
-            // correctly without materialising to contiguous here.
-            let buffers = convert_rows(kind, data, |r| match r {
-                RowResult::NumpyStruct(b) => Ok(b),
-                other => Err(other.variant_name()),
-            })?;
-            let series = crate::output::build_numpy_series(name, buffers, spec.sink.as_f16())?;
-            match kind {
-                SinkKind::NdArray => crate::ext_types::ExtType::NdArray.tag(series),
-                _ => Ok(series),
-            }
-        }
-        SinkKind::EncodedImage | SinkKind::Blob => {
-            // Register each row's already-materialised bytes as a BinaryView
-            // backing buffer instead of copying them into a builder — see
-            // `crate::output::binary_view_series_from_rows`.
-            let rows = convert_rows(kind, data, |r| match r {
-                RowResult::Binary(b) => Ok(b),
-                other => Err(other.variant_name()),
-            })?;
-            Ok(crate::output::binary_view_series_from_rows(
-                name,
-                rows.into_iter(),
-            ))
-        }
-        SinkKind::BufferList => {
-            let rows = convert_rows(kind, data, |r| match r {
-                RowResult::TypedList(t) => Ok(t),
-                other => Err(other.variant_name()),
-            })?;
-            build_typed_list_series_from_rows_with_dtype(
-                name,
-                &rows,
-                dtype,
-                spec.expected_shape.as_ref(),
-                spec.expected_ndim,
-                split,
-            )
-        }
-        SinkKind::BufferArray => {
-            let rows = convert_rows(kind, data, |r| match r {
-                RowResult::TypedArray(t) => Ok(t),
-                other => Err(other.variant_name()),
-            })?;
-            build_typed_array_series_from_rows_with_dtype(
-                name,
-                &rows,
-                dtype,
-                &spec.sink.shape(),
-                spec.expected_shape.as_ref(),
-                split,
-            )
-        }
-        SinkKind::Scalar => {
-            let rows = convert_rows(kind, data, |r| match r {
-                RowResult::Scalar(s) => Ok(s),
-                other => Err(other.variant_name()),
-            })?;
-            Ok(Float64Chunked::from_iter_options(name, rows.into_iter()).into_series())
-        }
-        SinkKind::VectorList => {
-            let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
-                RowResult::TypedList(t) => Ok(t),
-                RowResult::Vector(v) => Ok(v.map(vector_row)),
-                other => Err(other.variant_name()),
-            })?;
-            build_typed_list_series_from_rows_with_dtype(
-                name,
-                &rows,
-                dtype,
-                spec.expected_shape.as_ref(),
-                spec.expected_ndim,
-                split,
-            )
-        }
-        SinkKind::VectorArray => {
-            let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
-                RowResult::TypedList(t) | RowResult::TypedArray(t) => Ok(t),
-                RowResult::Vector(v) => Ok(v.map(vector_row)),
-                other => Err(other.variant_name()),
-            })?;
-            build_typed_array_series_from_rows_with_dtype(
-                name,
-                &rows,
-                dtype,
-                &spec.sink.shape(),
-                spec.expected_shape.as_ref(),
-                split,
-            )
-        }
-        SinkKind::Contours => {
-            let rows = convert_rows(kind, data, |r| match r {
-                RowResult::Contours(c) => Ok(c),
-                other => Err(other.variant_name()),
-            })?;
-            contour_set_series(name, &rows)
-        }
-        SinkKind::Long => {
-            let rows = convert_rows(kind, data, |r| match r {
-                RowResult::Long(l) => Ok(l),
-                other => Err(other.variant_name()),
-            })?;
-            super::encode::long_series(name, &rows, &long_layout(spec), dtype, split)
-        }
-    }
-}
-
-/// The `array` source reads a row as a *view* into the column's own values
-/// buffer. It used to copy the chunk's entire values buffer on every row to
-/// take one row's window, which made a batch quadratic: ~35 µs per 64-byte row
-/// at 100k rows (CR-40).
-/// A `List` row decodes to a buffer only when it is a rectangular grid of
-/// values: a jagged row, a null value or a null inner list is refused. The
-/// decoder used to take each level's size from its first element and read the
-/// row's values as that shape — past the end of them for `[[1, 2], [3]]`,
-/// silently re-rowed for `[[1, 2], [3], [4, 5, 6]]` — and read a null as 0.
 #[cfg(test)]
 mod list_source_tests {
     use polars::prelude::*;
@@ -1322,7 +876,7 @@ mod list_source_tests {
     }
 
     /// A value the declared dtype cannot hold is refused, never stored as
-    /// the 0 polars' non-strict cast leaves in its place (CR-61).
+    /// the 0 polars' non-strict cast leaves in its place.
     #[test]
     fn a_value_the_declared_dtype_cannot_hold_is_refused() {
         for (values, what) in [(vec![7i64, 300, 1, 2], "300"), (vec![7i64, -1, 1, 2], "-1")] {

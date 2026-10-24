@@ -1,271 +1,456 @@
-//! Output encoding and geometry execution utilities.
-//!
-//! This module contains functions for:
-//! - Encoding node outputs to various formats (numpy, png, list, array)
-//! - Executing geometry operations (extract_contours, rasterize, transforms)
-//! - Building typed list/array series from row data
-//! - Converting contours to Polars representations
+//! Sinks: what an output publishes and how its rows become a Series — the
+//! planned output dtype, each row's encoded value, and the column the rows
+//! assemble into.
 
 use polars::prelude::*;
-use view_buffer::geometry::contour::Outline;
-use view_buffer::geometry::{
-    extract::extract_contours, measures, rasterize::rasterize, transforms, Contour,
-};
-use view_buffer::ops::NodeOutput;
-use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
-
-use super::sink_kind::SinkKind;
-use super::types::{LongRow, OutputSpec, OutputValue};
-use crate::formats::sink::LongLayout;
-use crate::formats::Format as _;
-use crate::row_split::Split;
 use std::mem::MaybeUninit;
 use std::ops::Range;
+use view_buffer::geometry::contour::Outline;
+use view_buffer::{DType, PlannedDType, ViewBuffer};
 
-/// Execute a geometry step: the pipeline's, and every op-backed `.contour`
-/// accessor's (`crate::geom_accessor`), so the two cannot answer or refuse
-/// differently.
+use super::sink_kind::SinkKind;
+use super::source::polars_dtype_for;
+use super::types::{LongRow, OutputSpec, OutputValue, RowResult};
+use crate::formats::sink::LongLayout;
+use crate::formats::Format as _;
+use crate::graph::node_output::NodeOutput;
+use crate::row_split::Split;
+
+/// The Polars element type of a typed `list`/`array` sink.
 ///
-/// Every refusal is named here, once, by the step (`Offset: ...`), as the
-/// executor names every step; the engine functions it calls do not name
-/// themselves.
-pub(crate) fn execute_geometry_op(
-    input: NodeOutput,
-    op: &GeometryOp,
-) -> Result<NodeOutput, String> {
-    run_geometry_op(input, op).map_err(|e| format!("{}: {e}", op.name()))
+/// Refuses a dtype the planner never pinned down (`auto`, `auto_float`): a
+/// typed column cannot be planned from it, and mapping it to anything would be
+/// a column execution may contradict.
+fn list_array_inner_dtype(
+    dtype: PlannedDType,
+    sink: &str,
+    facts: ColumnFacts,
+) -> PolarsResult<DataType> {
+    match dtype {
+        PlannedDType::Known(dtype) => Ok(polars_dtype_for(dtype)),
+        // The column will supply it; this schema is only checked, never
+        // published (`check_output_before_column`).
+        PlannedDType::SomeFloat | PlannedDType::Unknown
+            if matches!(facts, ColumnFacts::Pending { .. }) =>
+        {
+            Ok(DataType::Null)
+        }
+        // Not labelled an internal error: the common way to get here is a
+        // source column whose element type the planner cannot map to a buffer
+        // dtype (a boolean or decimal list), which is the user's input, not a
+        // bug. The fix is the same either way — say what it is.
+        PlannedDType::SomeFloat | PlannedDType::Unknown => polars_bail!(ComputeError:
+            "the '{sink}' sink needs to know the element dtype at planning \
+             time, and it could not be inferred from the input column. \
+             Supply it explicitly, e.g. source(..., dtype=\"u16\") or \
+             .cast(...) before the sink."
+        ),
+    }
+}
+/// Whether the input column has been seen when an output's schema is decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColumnFacts {
+    /// Polars is planning the query: the plan already holds everything the
+    /// column reveals.
+    Resolved,
+    /// `.sink()` is checking a graph whose root takes its element type and
+    /// rank — and, when `sizes`, its sizes — from a column not yet seen. Those
+    /// facts are the column's to supply, so an unknown one is not refused;
+    /// everything else is decided now.
+    Pending { sizes: bool },
 }
 
-/// [`execute_geometry_op`]'s dispatch, its refusals unnamed.
-fn run_geometry_op(input: NodeOutput, op: &GeometryOp) -> Result<NodeOutput, String> {
-    let shapes: Vec<&[usize]> = input.as_buffer().map(|b| b.shape()).into_iter().collect();
-    let dtypes: Vec<view_buffer::DType> =
-        input.as_buffer().map(|b| b.dtype()).into_iter().collect();
-    view_buffer::ops::validation::validate_concrete(op, &shapes, &dtypes)
-        .map_err(|e| e.to_string())?;
-    let expected_domain = op.input_domain();
-    let actual_domain = input.domain();
-    if expected_domain != actual_domain {
-        return Err(format!(
-            "expects {} input but received {}. Add a domain-converting operation.",
-            expected_domain.name(),
-            actual_domain.name()
-        ));
-    }
-    match op {
-        GeometryOp::ExtractContours {
-            mode,
-            method,
-            min_area,
-            min_area_fraction,
-        } => {
-            let buffer = input
-                .as_buffer()
-                .ok_or_else(|| "requires Buffer input".to_string())?;
-            // The fraction is of this image's own H x W; a contour must pass
-            // both thresholds, so the larger absolute one is the filter. Its
-            // range, (0, 1], is `GeometryOp::check`'s, run as the step resolves.
-            let relative = min_area_fraction.map(|f| {
-                let shape = buffer.shape();
-                let pixels =
-                    shape.first().copied().unwrap_or(0) * shape.get(1).copied().unwrap_or(0);
-                f * pixels as f64
-            });
-            let threshold = match (*min_area, relative) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (a, b) => a.or(b),
+/// Get the Polars DataType for a given output specification.
+///
+/// Returns the appropriate dtype based on domain, sink format, and expected dtype.
+pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
+    output_schema(spec, ColumnFacts::Resolved)
+}
+
+/// Check an output's sink before its column is seen (see
+/// [`ColumnFacts::Pending`]). The schema is not returned: what the column
+/// will supply is not known yet.
+pub(crate) fn check_output_before_column(
+    spec: &OutputSpec,
+    facts: ColumnFacts,
+) -> PolarsResult<()> {
+    output_schema(spec, facts).map(|_| ())
+}
+
+/// The one sink-schema decision, for [`dtype_for_output`] and
+/// [`check_output_before_column`].
+fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType> {
+    let inner = |sink: &str| list_array_inner_dtype(spec.expected_dtype, sink, facts);
+    match SinkKind::resolve(spec)? {
+        SinkKind::HistogramBuckets => Ok(DataType::List(Box::new(histogram_struct_dtype()))),
+        SinkKind::NumpyStruct => Ok(crate::output::numpy_output_dtype()),
+        SinkKind::NdArray => Ok(crate::ext_types::ExtType::NdArray.dtype()),
+        // A VIEW blob is self-describing, so it carries no codec precondition.
+        SinkKind::Blob => Ok(DataType::Binary),
+        kind @ SinkKind::EncodedImage => {
+            // The codec's dtype/rank/channel precondition is decidable now, from
+            // the same OutputSpec that produced this dtype — so decide it now.
+            // Leaving it to the encoder meant a query planned as `Binary` and
+            // then died part-way through `collect()`, which is precisely the
+            // "planned one thing, executed another" failure the sink contract
+            // exists to prevent. `ImageCodec::check_shape` is the one entry
+            // point both halves read, and it treats an unknown as permission,
+            // so a source whose dtype is still "auto" is not refused here.
+            let codec = kind
+                .image_codec(spec)
+                .expect("EncodedImage carries a codec");
+            let dtype = spec.expected_dtype;
+            codec
+                .check_shape(dtype, spec.expected_shape.as_deref(), spec.expected_ndim)
+                .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
+            Ok(DataType::Binary)
+        }
+        SinkKind::BufferList => {
+            let inner = inner("list")?;
+            let ndim = spec
+                .expected_shape
+                .as_ref()
+                .map(|shape| shape.len())
+                .or(spec.expected_ndim)
+                .or(matches!(facts, ColumnFacts::Pending { .. }).then_some(1));
+            // Not a fallback to depth 1: the nesting depth *is* the schema for
+            // a list sink, and guessing it is how `source("auto")` on a Binary
+            // column came to publish `List(u8)` for data that executes as
+            // `List(List(List(u8)))`. `auto` is the one source whose rank
+            // Python cannot know, and `resolved_output_specs` can only recover
+            // it from a List/Array column — for image bytes the rank is not
+            // settled until the decode. Refusing here is what turns that into
+            // an error the user sees before any data moves.
+            let Some(ndim) = ndim else {
+                polars_bail!(ComputeError:
+                    "the 'list' sink needs the output rank at planning time, and it \
+                     is not knowable for this source. `source(\"auto\")` over a \
+                     binary column decides between an image and a VIEW blob by \
+                     inspecting the bytes, so the rank is only settled during \
+                     execution. Name the source explicitly \
+                     (e.g. `source(\"image_bytes\")`), or use a `numpy` sink, \
+                     which does not encode the rank in its Polars dtype."
+                );
             };
-            let contours = extract_contours(buffer, *mode, *method, threshold);
-            Ok(NodeOutput::from_contours(
-                contours.into_iter().map(Outline::Closed).collect(),
-            ))
-        }
-        GeometryOp::Rasterize {
-            fill_value,
-            background,
-            supersample,
-            ..
-        } => {
-            let (height, width) = op
-                .canvas()
-                .ok_or_else(|| "rasterize reached execution without its canvas".to_string())?;
-            // The whole set in one call: `rasterize` paints the regions'
-            // union, which is order-independent and honours an inverted
-            // fill/background pair. Folding per-contour masks with `max`
-            // here did neither.
-            let regions = regions(outlines(&input)?)?;
-            Ok(NodeOutput::from_buffer(rasterize(
-                &regions,
-                width,
-                height,
-                *fill_value,
-                *background,
-                *supersample,
-            )))
-        }
-        GeometryOp::Area { signed } => {
-            let regions = regions(outlines(&input)?)?;
-            Ok(NodeOutput::from_vector(
-                regions.iter().map(|c| measures::area(c, *signed)).collect(),
-            ))
-        }
-        // A line's length has no closing edge (`outline_length`), as the
-        // accessor measures it.
-        GeometryOp::Perimeter => Ok(NodeOutput::from_vector(
-            outlines(&input)?
-                .iter()
-                .map(measures::outline_length)
-                .collect(),
-        )),
-        GeometryOp::Centroid => {
-            // Flat interleaved: [cx₀, cy₀, cx₁, cy₁, ...]
-            let regions = regions(outlines(&input)?)?;
-            let mut coords = Vec::with_capacity(regions.len() * 2);
-            for c in &regions {
-                let pt = measures::centroid(c);
-                coords.push(pt.x);
-                coords.push(pt.y);
+            let mut dtype = inner;
+            for _ in 0..ndim {
+                dtype = DataType::List(Box::new(dtype));
             }
-            Ok(NodeOutput::from_vector(coords))
+            Ok(dtype)
         }
-        GeometryOp::BoundingBox => {
-            // Flat interleaved: [x₀, y₀, w₀, h₀, x₁, y₁, w₁, h₁, ...]. A
-            // contour with no points has no extent: NaN, which a measure
-            // vector can hold where it cannot hold a null (never a 0x0 box
-            // at the origin, which is not there).
-            let all = outlines(&input)?;
-            let mut coords = Vec::with_capacity(all.len() * 4);
-            for o in all.iter() {
-                coords.extend_from_slice(&match o.bounding_box() {
-                    Some(bb) => [bb.x, bb.y, bb.width, bb.height],
-                    None => [f64::NAN; 4],
-                });
+        SinkKind::BufferArray => {
+            let inner = inner("array")?;
+            let sink_shape = spec.sink.shape();
+            let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
+            if let Some(shape) = shape {
+                let mut dtype = inner;
+                for &dim in shape.iter().rev() {
+                    dtype = DataType::Array(Box::new(dtype), dim);
+                }
+                Ok(dtype)
+            } else if facts == (ColumnFacts::Pending { sizes: true }) {
+                // A fixed-size `Array` column's type states every size, so
+                // this is decided when the query is planned with the column.
+                // The dtype is not returned for `Pending`.
+                Ok(inner)
+            } else {
+                // Names what each remedy actually supplies. The advice this
+                // replaces was circular for the source that reaches it most: a
+                // list column's sizes vary per row, so it lands here — and was
+                // told to call `.assert_shape()`, which
+                // published nothing without a rank, and `.resize()`, which never
+                // supplies the channel count.
+                polars_bail!(ComputeError:
+                    "an 'array' sink needs the full output shape at planning time, and \
+                     this pipeline's is not known. Three ways to supply it:\n  \
+                     .sink('array', shape=[8, 8, 3])   — always works; the shape belongs \
+                     to the sink\n  \
+                     .assert_shape(dims=[8, 8, 3])     — when you know it and the source \
+                     does not (a list column's sizes are only settled per row)\n  \
+                     .resize(height=8, width=8)        — supplies height and width only"
+                );
             }
-            Ok(NodeOutput::from_vector(coords))
         }
-        GeometryOp::Translate { dx, dy } => Ok(NodeOutput::from_contours(
-            outlines(&input)?
+        SinkKind::Long => {
+            let layout = long_layout(spec);
+            if let Some(ndim) = spec.expected_ndim.filter(|n| !matches!(n, 2 | 3)) {
+                polars_bail!(ComputeError:
+                    "the 'long' sink takes an [H, W] or [H, W, C] buffer, and this \
+                     one has rank {ndim}"
+                );
+            }
+            if let Some(channels) = spec.expected_channels {
+                layout
+                    .check_channels(channels)
+                    .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
+            }
+            Ok(super::sink::long_dtype(&layout, inner("long")?))
+        }
+        SinkKind::Scalar => Ok(DataType::Float64),
+        SinkKind::VectorList => {
+            // Reject an unresolved "auto" element dtype the same way the
+            // buffer/list and array arms do, instead of silently mapping it to
+            // U8 — a plan/data divergence if a vector output ever reached the
+            // sink still "auto". (Today vector dtypes are always concrete.)
+            let inner = inner("list")?;
+            if let Some(ref shape) = spec.expected_shape {
+                let mut dtype = inner;
+                for _ in 0..shape.len() {
+                    dtype = DataType::List(Box::new(dtype));
+                }
+                Ok(dtype)
+            } else if let Some(ndim) = spec.expected_ndim {
+                let mut dtype = inner;
+                for _ in 0..ndim {
+                    dtype = DataType::List(Box::new(dtype));
+                }
+                Ok(dtype)
+            } else {
+                Ok(DataType::List(Box::new(inner)))
+            }
+        }
+        // Fixed-size vector outputs (e.g. perceptual hashes) as Array.
+        // This pair used to ride the silent Binary fallthrough: execution
+        // produced an Array while lazy schema claimed Binary.
+        SinkKind::VectorArray => {
+            let inner = inner("array")?;
+            let sink_shape = spec.sink.shape();
+            let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
+            if let Some(shape) = shape {
+                let mut dtype = inner;
+                for &dim in shape.iter().rev() {
+                    dtype = DataType::Array(Box::new(dtype), dim);
+                }
+                Ok(dtype)
+            } else {
+                polars_bail!(ComputeError:
+                    "array sink requires a known shape at planning time. \
+                     Provide shape via .sink(shape=[...])."
+                );
+            }
+        }
+        SinkKind::Contours => Ok(DataType::List(Box::new(DataType::Struct(
+            crate::geometry::schema::contour_fields(),
+        )))),
+    }
+}
+/// Create a null RowResult with the correct type based on OutputSpec.
+///
+/// This ensures that null values are pushed with the appropriate type variant,
+/// allowing the series builder to use static type information.
+pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowResult> {
+    let kind = SinkKind::resolve(spec)?;
+    Ok(match kind {
+        SinkKind::HistogramBuckets => RowResult::HistogramBuckets(None),
+        SinkKind::NumpyStruct | SinkKind::NdArray => RowResult::NumpyStruct(None),
+        SinkKind::EncodedImage | SinkKind::Blob => RowResult::Binary(None),
+        SinkKind::BufferList | SinkKind::VectorList => RowResult::TypedList(None),
+        SinkKind::BufferArray | SinkKind::VectorArray => RowResult::TypedArray(None),
+        SinkKind::Scalar => RowResult::Scalar(None),
+        SinkKind::Contours => RowResult::Contours(None),
+        SinkKind::Long => RowResult::Long(None),
+    })
+}
+
+/// The `long` sink's layout, for a spec that resolved to [`SinkKind::Long`]
+/// (which only a `long` sink resolves to).
+pub(crate) fn long_layout(spec: &OutputSpec) -> crate::formats::sink::LongLayout<'_> {
+    spec.sink
+        .long_layout()
+        .expect("SinkKind::Long is resolved from a long sink")
+}
+/// A row whose variant the sink kind does not accept.
+///
+/// `encode_node_output` and [`SinkKind`] are two halves of one contract, so
+/// reaching this means they disagree. Publishing the row as null (the former
+/// `_ => None` arms) would pass the bug off as data.
+fn foreign_row(kind: SinkKind, variant: &str) -> PolarsError {
+    polars_err!(ComputeError:
+        "internal: a {:?} sink received a {} row. The encode half and the sink \
+         kind disagree about this output.",
+        kind, variant
+    )
+}
+
+/// Convert every row with `accept`, which returns the variant's name for a
+/// variant the kind does not accept; that becomes an error rather than a null.
+fn convert_rows<T>(
+    kind: SinkKind,
+    data: RowParts,
+    accept: impl Fn(RowResult) -> Result<Option<T>, &'static str>,
+) -> PolarsResult<Vec<Option<T>>> {
+    let mut rows = Vec::with_capacity(data.iter().map(Vec::len).sum());
+    for row in data.into_iter().flatten() {
+        rows.push(accept(row).map_err(|variant| foreign_row(kind, variant))?);
+    }
+    Ok(rows)
+}
+
+/// A column's row results in row order, as the row ranges that computed
+/// them left them: converted straight from the parts, never concatenated
+/// into one call-sized vector of (large) `RowResult`s first.
+pub(crate) type RowParts = Vec<Vec<RowResult>>;
+
+/// A vector row as typed list data.
+fn vector_row(vals: Vec<f64>) -> ViewBuffer {
+    ViewBuffer::from_vec(vals)
+}
+
+/// Build a series from row results using the OutputSpec to determine the type.
+///
+/// This function uses static type information from the OutputSpec rather than
+/// inspecting the first row's data. This allows proper handling of null values
+/// while preserving the expected output type. Each kind accepts a fixed set of
+/// row variants; `None` of an accepted variant is a null row, and any other
+/// variant is an internal error.
+pub(crate) fn build_series_from_spec(
+    name: PlSmallStr,
+    spec: &OutputSpec,
+    data: RowParts,
+    split: Option<&crate::row_split::Split>,
+) -> PolarsResult<Series> {
+    let dtype = spec.expected_dtype;
+    let kind = SinkKind::resolve(spec)?;
+    match kind {
+        // Every arm below is keyed on the resolved kind, so a new one is a
+        // compile error here rather than a row that quietly becomes Binary.
+        SinkKind::HistogramBuckets => {
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::HistogramBuckets(b) => Ok(b),
+                other => Err(other.variant_name()),
+            })?;
+            let values = rows
                 .iter()
-                .map(|o| o.map_points(|c| transforms::translate(c, *dx, *dy)))
-                .collect(),
-        )),
-        GeometryOp::Scale { sx, sy, origin } => outlines(&input)?
-            .iter()
-            .map(|o| transforms::scale_outline(o, *sx, *sy, *origin))
-            .collect::<Result<Vec<_>, _>>()
-            .map(NodeOutput::from_contours)
-            .map_err(str::to_string),
-        GeometryOp::Simplify { tolerance } => Ok(NodeOutput::from_contours(
-            outlines(&input)?
-                .iter()
-                .map(|o| transforms::simplify_outline(o, *tolerance))
-                .collect(),
-        )),
-        // `k >= 1` is `GeometryOp::check`'s, run as every step resolves.
-        GeometryOp::Largest { k } => {
-            let regions = regions(outlines(&input)?)?;
-            Ok(NodeOutput::from_contours(
-                transforms::largest(&regions, *k as usize)
-                    .into_iter()
-                    .map(Outline::Closed)
-                    .collect(),
+                .map(|r| match r {
+                    Some(buckets) => histogram_buckets_to_polars_value(buckets),
+                    None => Ok(AnyValue::Null),
+                })
+                .collect::<PolarsResult<Vec<_>>>()?;
+            let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
+            Series::from_any_values_and_dtype(name, &values, &histogram_dtype, true)
+        }
+        SinkKind::NumpyStruct | SinkKind::NdArray => {
+            // Move the buffers in so each is the sole Arc owner: that lets
+            // `into_polars_buffer_strided` take the zero-copy *strided* branch
+            // for non-contiguous (transposed/flipped/rotated) outputs. The
+            // numpy/torch struct carries shape/strides/offset, and the Python
+            // consumers (`numpy_from_struct`, the struct->PNG helper) honor them
+            // via `np.lib.stride_tricks.as_strided`, so permuted layouts decode
+            // correctly without materialising to contiguous here.
+            let buffers = convert_rows(kind, data, |r| match r {
+                RowResult::NumpyStruct(b) => Ok(b),
+                other => Err(other.variant_name()),
+            })?;
+            let series = crate::output::build_numpy_series(name, buffers, spec.sink.as_f16())?;
+            match kind {
+                SinkKind::NdArray => crate::ext_types::ExtType::NdArray.tag(series),
+                _ => Ok(series),
+            }
+        }
+        SinkKind::EncodedImage | SinkKind::Blob => {
+            // Register each row's already-materialised bytes as a BinaryView
+            // backing buffer instead of copying them into a builder — see
+            // `crate::output::binary_view_series_from_rows`.
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::Binary(b) => Ok(b),
+                other => Err(other.variant_name()),
+            })?;
+            Ok(crate::output::binary_view_series_from_rows(
+                name,
+                rows.into_iter(),
             ))
         }
-        // The hull reads only the points, so a line has one too: a region.
-        GeometryOp::ConvexHull => Ok(NodeOutput::from_contours(
-            outlines(&input)?
-                .iter()
-                .map(|o| Outline::Closed(transforms::convex_hull_outline(o)))
-                .collect(),
-        )),
-        GeometryOp::Boundary => {
-            let mut lines = Vec::new();
-            for o in outlines(&input)?.iter() {
-                lines.extend(transforms::boundary_outline(o)?);
-            }
-            Ok(NodeOutput::from_contours(lines))
+        SinkKind::BufferList => {
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::TypedList(t) => Ok(t),
+                other => Err(other.variant_name()),
+            })?;
+            build_typed_list_series_from_rows_with_dtype(
+                name,
+                &rows,
+                dtype,
+                spec.expected_shape.as_ref(),
+                spec.expected_ndim,
+                split,
+            )
         }
-        GeometryOp::Offset { distance, join } => {
-            let regions = regions(outlines(&input)?)?;
-            transforms::offset(&regions, *distance, *join)
-                .map(|c| NodeOutput::from_contours(c.into_iter().map(Outline::Closed).collect()))
+        SinkKind::BufferArray => {
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::TypedArray(t) => Ok(t),
+                other => Err(other.variant_name()),
+            })?;
+            build_typed_array_series_from_rows_with_dtype(
+                name,
+                &rows,
+                dtype,
+                &spec.sink.shape(),
+                spec.expected_shape.as_ref(),
+                split,
+            )
         }
-        GeometryOp::Stroke { width, cap, join } => {
-            let style = transforms::Stroke {
-                width: *width,
-                cap: *cap,
-                join: *join,
-            };
-            transforms::stroke(outlines(&input)?, &style)
-                .map(|c| NodeOutput::from_contours(c.into_iter().map(Outline::Closed).collect()))
+        SinkKind::Scalar => {
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::Scalar(s) => Ok(s),
+                other => Err(other.variant_name()),
+            })?;
+            Ok(Float64Chunked::from_iter_options(name, rows.into_iter()).into_series())
         }
-        GeometryOp::UnionAll => {
-            let regions = regions(outlines(&input)?)?;
-            Ok(NodeOutput::from_contours(
-                transforms::union_all(&regions)
-                    .into_iter()
-                    .map(Outline::Closed)
-                    .collect(),
-            ))
+        SinkKind::VectorList => {
+            let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
+                RowResult::TypedList(t) => Ok(t),
+                RowResult::Vector(v) => Ok(v.map(vector_row)),
+                other => Err(other.variant_name()),
+            })?;
+            build_typed_list_series_from_rows_with_dtype(
+                name,
+                &rows,
+                dtype,
+                spec.expected_shape.as_ref(),
+                spec.expected_ndim,
+                split,
+            )
         }
-        GeometryOp::Smooth { iterations } => {
-            transforms::smooth(outlines(&input)?, *iterations).map(NodeOutput::from_contours)
+        SinkKind::VectorArray => {
+            let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
+                RowResult::TypedList(t) | RowResult::TypedArray(t) => Ok(t),
+                RowResult::Vector(v) => Ok(v.map(vector_row)),
+                other => Err(other.variant_name()),
+            })?;
+            build_typed_array_series_from_rows_with_dtype(
+                name,
+                &rows,
+                dtype,
+                &spec.sink.shape(),
+                spec.expected_shape.as_ref(),
+                split,
+            )
         }
-        GeometryOp::Densify { max_segment_length } => {
-            transforms::densify(outlines(&input)?, *max_segment_length)
-                .map(NodeOutput::from_contours)
+        SinkKind::Contours => {
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::Contours(c) => Ok(c),
+                other => Err(other.variant_name()),
+            })?;
+            contour_set_series(name, &rows)
         }
-        GeometryOp::Close => outlines(&input)?
-            .iter()
-            .map(transforms::close_outline)
-            .collect::<Result<Vec<_>, _>>()
-            .map(NodeOutput::from_contours)
-            .map_err(str::to_string),
+        SinkKind::Long => {
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::Long(l) => Ok(l),
+                other => Err(other.variant_name()),
+            })?;
+            super::sink::long_series(name, &rows, &long_layout(spec), dtype, split)
+        }
     }
 }
 
-/// A boolean combination of two contour sets (`union`, `intersection`, …):
-/// the step's own and the operand node's, each read as its regions'
-/// union — the pipeline form of the `.contour` accessors, over the same
-/// engine function.
-pub(crate) fn execute_region_op(
-    op: transforms::RegionOp,
-    input: &NodeOutput,
-    other: &NodeOutput,
-) -> Result<NodeOutput, String> {
-    fn side(output: &NodeOutput) -> Result<Vec<&Contour>, String> {
-        let outlines = output
-            .as_contours()
-            .ok_or_else(|| "requires Contour input".to_string())?;
-        regions(outlines)
-    }
-    let named = |e: String| format!("{}: {e}", op.name());
-    let (a, b) = (side(input).map_err(named)?, side(other).map_err(named)?);
-    Ok(NodeOutput::from_contours(
-        transforms::boolean(&a, &b, op)
-            .into_iter()
-            .map(Outline::Closed)
-            .collect(),
-    ))
-}
-
-/// The step's contour set, or the domain error.
-fn outlines(input: &NodeOutput) -> Result<&[Outline], String> {
-    input
-        .as_contours()
-        .map(|c| c.as_slice())
-        .ok_or_else(|| "requires Contour input".to_string())
-}
-
-/// Every member's region, borrowed, or the one refusal an open contour gets
-/// from a region op (`Outline::region`); the step names it.
-fn regions(outlines: &[Outline]) -> Result<Vec<&Contour>, String> {
-    outlines
-        .iter()
-        .map(|o| o.region().map_err(str::to_string))
-        .collect()
-}
-
+/// The `array` source reads a row as a *view* into the column's own values
+/// buffer. Copying the chunk's entire values buffer on every row to take one
+/// row's window would make a batch quadratic: ~35 µs per 64-byte row at 100k
+/// rows.
+/// A `List` row decodes to a buffer only when it is a rectangular grid of
+/// values: a jagged row, a null value or a null inner list is refused. The
+/// decoder used to take each level's size from its first element and read the
+/// row's values as that shape — past the end of them for `[[1, 2], [3]]`,
+/// silently re-rowed for `[[1, 2], [3], [4, 5, 6]]` — and read a null as 0.
 /// One row of a tensor sink: the row's buffer, in any layout. Its shape is
 /// the row's shape in the column.
 pub(crate) type TypedListRow = Option<ViewBuffer>;
@@ -281,9 +466,9 @@ fn element_count(buf: &ViewBuffer) -> usize {
 // validity. Each value is copied once, from the row's buffer — through its
 // strides, whatever its layout — into the flat buffer.
 //
-// They used to build one `AnyValue` per *element* whenever the column was not
-// perfectly regular — every rank >= 2 list sink, and any array sink with a single
-// null row — which made those sinks ~34-40x slower than the numpy sink (CR-33).
+// They never build one `AnyValue` per *element*: that is ~34-40x slower than
+// the numpy sink, and an irregular column (every rank >= 2 list sink, any array
+// sink with a null row) must not need it.
 // There is no slow path to fall back to: an irregular row is either
 // representable here (ragged list rows, null rows) or an error.
 
@@ -606,13 +791,12 @@ fn typed_array_of(
 
 /// Encode a NodeOutput to an output value, keyed on the resolved [`SinkKind`].
 ///
-/// `dtype_for_output` (graph/decode.rs) decides the Polars *dtype*; this
+/// `dtype_for_output` decides the Polars *dtype*; this
 /// decides the *value*. Both halves of one contract, so both key on the same
 /// resolved kind. They used to key on the `(expected_domain, format)` string
 /// pair separately and "mirror each other one for one, deliberately, so a
 /// reader can check the correspondence" — a correspondence whose only guard
-/// was a reader, and which the two null/build halves in `decode.rs` did not
-/// keep at all.
+/// was a reader, and which the two null/build halves did not keep at all.
 ///
 /// This used to match on the `NodeOutput` *variant* instead, which is a
 /// different fact: a domain can arrive in more than one representation. A
@@ -717,7 +901,7 @@ pub(crate) fn encode_node_output(
             )),
         },
         SinkKind::Long => {
-            let layout = super::decode::long_layout(spec);
+            let layout = super::sink::long_layout(spec);
             long_row(require_buffer(output, domain, format)?, &layout).map(OutputValue::Long)
         }
         SinkKind::Contours => match output {
@@ -858,7 +1042,7 @@ pub(super) fn long_series(
 }
 
 /// A `List[Contour]` column, one contour set per row, built straight into Arrow
-/// (see [`crate::geom_schema::contour_array`]).
+/// (see [`crate::geometry::schema::contour_array`]).
 ///
 /// A null row (no input, or a failed row) is null; a row whose image simply
 /// contains no contours is the empty set `[]`. The two used to be collapsed
@@ -873,7 +1057,7 @@ pub(super) fn contour_set_series(
 
     // Each member written with its own `is_closed`: a line stays a line.
     let all: Vec<&Outline> = rows.iter().flatten().flatten().collect();
-    let values = crate::geom_schema::contour_array(all.iter().copied())?;
+    let values = crate::geometry::schema::contour_array(all.iter().copied())?;
     let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
     let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
     let validity = rows
@@ -930,145 +1114,10 @@ pub(super) fn histogram_struct_dtype() -> DataType {
     ])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::types::UnifiedGraph;
-    use super::execute_geometry_op;
-
-    /// Structural coverage: every geometry op the graph builder can construct
-    /// by resolving must actually execute. This is the geometry analog of
-    /// view-buffer's `apply_op_coverage` probe.
-    ///
-    /// `GeometryOp` carries only variants the graph routes, so a variant
-    /// `execute_geometry_op` cannot handle is a non-exhaustive-match compile
-    /// error rather than a runtime string. What remains for this test is the
-    /// other direction: that resolving and running each op *works*. Every
-    /// registered op carries a sample, so a new geometry op is covered by
-    /// registering it.
-    #[test]
-    fn every_graph_geometry_op_executes() {
-        use crate::graph::step::GraphStep;
-        use crate::params::ParamCtx;
-        use view_buffer::geometry::contour::Outline;
-        use view_buffer::geometry::Contour;
-        use view_buffer::ops::{Domain, NodeOutput};
-        use view_buffer::ViewBuffer;
-
-        let sample_contours = || {
-            NodeOutput::from_contours(vec![Outline::Closed(Contour::from_tuples(&[
-                (0.0, 0.0),
-                (10.0, 0.0),
-                (10.0, 10.0),
-                (0.0, 10.0),
-            ]))])
-        };
-        let sample_buffer = || {
-            NodeOutput::from_buffer(ViewBuffer::from_vec_with_shape(
-                vec![0u8, 255, 255, 0],
-                vec![2, 2, 1],
-            ))
-        };
-
-        let mut executed = 0;
-        for op in crate::ops::TypedOp::samples() {
-            let name = op.name();
-            let step = op
-                .resolve(0, &ParamCtx::empty())
-                .expect("a registered sample resolves");
-            if let GraphStep::Geometry(geo) = step {
-                let input = if geo.input_domain() == Domain::Buffer {
-                    sample_buffer()
-                } else if matches!(geo, view_buffer::GeometryOp::Close) {
-                    // `close` takes a line: the region's boundary.
-                    NodeOutput::from_contours(vec![Outline::Open(vec![
-                        view_buffer::geometry::Point::new(0.0, 0.0),
-                        view_buffer::geometry::Point::new(10.0, 0.0),
-                        view_buffer::geometry::Point::new(10.0, 10.0),
-                    ])])
-                } else {
-                    sample_contours()
-                };
-                if let Err(err) = execute_geometry_op(input, &geo) {
-                    panic!("op '{name}' resolves to {geo:?} but does not execute: {err}");
-                }
-                executed += 1;
-            }
-        }
-        // extract_contours, rasterize, four measures, four transforms.
-        assert!(executed >= 10, "only {executed} geometry ops executed");
-    }
-
-    #[test]
-    fn test_parse_unified_single_output() {
-        let json = r#"{
-            "version": 2,
-            "nodes": {
-                "_node_0": {
-                    "input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}},
-                    "ops": []
-                }
-            },
-            "outputs": {
-                "_output": {"node": "_node_0", "sink": {"format": "numpy"}}
-            }
-        }"#;
-        let graph = UnifiedGraph::from_json(json).unwrap();
-        assert_eq!(graph.nodes.len(), 1);
-        assert!(graph.is_single_output());
-        assert!(graph.outputs.contains_key("_output"));
-    }
-    #[test]
-    fn test_parse_unified_multi_output() {
-        let json = r#"{
-            "version": 2,
-            "nodes": {
-                "_node_0": {
-                    "input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}},
-                    "ops": []
-                },
-                "_node_1": {
-                    "ops": [],
-                    "input": {"node": "_node_0"}
-                }
-            },
-            "outputs": {
-                "original": {"node": "_node_0", "sink": {"format": "png"}},
-                "processed": {"node": "_node_1", "sink": {"format": "numpy"}}
-            }
-        }"#;
-        let graph = UnifiedGraph::from_json(json).unwrap();
-        assert_eq!(graph.nodes.len(), 2);
-        assert!(!graph.is_single_output());
-        assert!(graph.outputs.contains_key("original"));
-        assert!(graph.outputs.contains_key("processed"));
-    }
-    #[test]
-    fn test_unified_topological_order() {
-        let json = r#"{
-            "version": 2,
-            "nodes": {
-                "a": {"input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}}, "ops": []},
-                "b": {"ops": [], "input": {"node": "a"}}
-            },
-            "outputs": {
-                "out_a": {"node": "a", "sink": {"format": "numpy"}},
-                "out_b": {"node": "b", "sink": {"format": "png"}}
-            }
-        }"#;
-        let graph = UnifiedGraph::from_json(json).unwrap();
-        let order = graph.topological_order();
-        assert!(order.contains(&"a".to_string()));
-        assert!(order.contains(&"b".to_string()));
-        let b_pos = order.iter().position(|x| x == "b").unwrap();
-        let a_pos = order.iter().position(|x| x == "a").unwrap();
-        assert!(b_pos > a_pos);
-    }
-}
-
 /// The tensor sinks (`list`, `array`) are built straight from one flat values
 /// buffer — never element by element through `AnyValue`, which made a rank-3
 /// `list` sink ~34x, and an `array` sink with a single null row ~40x, slower
-/// than the zero-copy numpy sink (CR-33).
+/// than the zero-copy numpy sink.
 #[cfg(test)]
 mod tensor_sink_tests {
     use super::{
@@ -1283,11 +1332,11 @@ mod tensor_sink_tests {
     }
 }
 
-/// The contour sink builds its column straight into Arrow (CR-36), and must
+/// The contour sink builds its column straight into Arrow, and must
 /// publish exactly what the per-contour `AnyValue` construction published.
 #[cfg(test)]
 mod contour_sink_tests {
-    use crate::graph::decode::build_series_from_spec;
+    use crate::graph::sink::build_series_from_spec;
     use crate::graph::types::{OutputSpec, RowResult};
     use polars::prelude::*;
     use view_buffer::geometry::{Contour, Point};
@@ -1329,14 +1378,14 @@ mod contour_sink_tests {
     /// The per-value construction, kept here as the oracle. An empty set is
     /// `[]` and only a null row is null.
     fn oracle(rows: &[Option<Vec<Contour>>]) -> Series {
-        let element = crate::geom_schema::contour_struct_dtype();
+        let element = crate::geometry::schema::contour_struct_dtype();
         let values: Vec<AnyValue<'static>> = rows
             .iter()
             .map(|row| match row {
                 Some(contours) => {
                     let items: Vec<AnyValue<'static>> = contours
                         .iter()
-                        .map(crate::contour::contour_to_anyvalue)
+                        .map(crate::geometry::contour::contour_to_anyvalue)
                         .collect();
                     AnyValue::List(
                         Series::from_any_values_and_dtype(

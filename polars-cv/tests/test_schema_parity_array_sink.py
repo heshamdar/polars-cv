@@ -293,7 +293,7 @@ def test_multi_output_struct_fields_match_field_by_field() -> None:
 
     ``test_multi_output.py`` asserts only ``isinstance(dtype, pl.Struct)``, so
     a wrong *field* dtype passed. The field order is also pinned: Rust sorts
-    outputs by alias (``compiled.rs``), which nothing tested.
+    outputs by alias (``graph/compiled/run.rs``), which nothing tested.
     """
     df = _df("null_first")
     expr = (

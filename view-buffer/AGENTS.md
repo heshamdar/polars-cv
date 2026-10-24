@@ -124,6 +124,16 @@ pub enum ViewDto {
 `tests/it/apply_op_coverage.rs` executes one probe per variant against its own
 contract and fails to compile when a variant is added without a probe.
 
+The family is `ViewDto`'s business alone. `ExprNode` is `Source` or
+`Op(ViewDto, child)`, and `ExecutionPlan`'s steps are `PlanStep::Op(ViewDto)`
+beside `MaterializeContiguous`/`MaterializeDenseRows`. `ViewDto::execute`
+dispatches to the family runners, `ViewExpr::op_node` builds a node's shape,
+strides and dtype from the op's contract (`as_op()`), and `ViewDto::lowered`
+turns a compute op that is another op in disguise into that op. Code that needs
+one family (the cast/flip/transpose rewrites in `optimize_with`, view-ness in
+`plan_ends_in_view`) is a pattern on `Op(ViewDto::Family(..))`; do not add a
+`match` that enumerates the families, and no `_ =>` arm on `ViewDto`.
+
 ### Kernels and CPU dispatch
 
 Published wheels target the x86-64 baseline (SSE2). A kernel that should use
@@ -283,7 +293,7 @@ Key implementation points:
 
 ## Implementation Notes
 
-- **Filter** (`ops/filter.rs`): `ConvolveOp` runs as `ViewExpr::Filter` / `PlanStep::Filter` (`apply_convolve2d`).
+- **Filter** (`ops/filter.rs`): `ConvolveOp` runs as `ViewDto::Filter` (`apply_convolve2d`, through `ViewDto::execute`).
 - **Canny** (`execution/runner.rs`): `cv2.Canny(img, low, high)` exactly (3x3 Sobel with replicated border, L1 magnitude, no pre-blur → OpenCV's fixed-point NMS → 8-connected hysteresis; colour takes the strongest channel per pixel, alpha ignored). `polars-cv/tests/reference/test_canny_ref.py` holds it to OpenCV pixel for pixel. Outputs U8 binary mask (0/255). `SpatialDependency::Global`.
 - **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `SpatialDependency::Global`.
 - **Affine** (`execution/warp.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix, `apply_affine_warp()`) and `ComputeOp::RotateAffine` (deferred rotation, `warp::rotate()`: `AffineParams::from_rotation()` at execution time, and at exactly 0° — the identity lowering — the packed input itself). A `SimdKernel` per channel count; loads/stores through M5. Its tests keep the pre-Phase-7 kernel as a bit-parity oracle: any change must keep them byte-identical or say why. `MemoryEffect::RequiresContiguous`.

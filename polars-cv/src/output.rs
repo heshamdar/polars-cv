@@ -160,7 +160,7 @@ pub fn build_numpy_series(
 
     // A null row is a null *struct*, like every other sink's null row, so
     // `is_null()`/`drop_nulls()` see it; the fields under it are null too.
-    // Field-level nulls alone read as a present row of nulls (CR-39).
+    // Field-level nulls alone read as a present row of nulls.
     let validity: Option<polars_arrow::bitmap::Bitmap> = encoded
         .iter()
         .any(Option::is_none)

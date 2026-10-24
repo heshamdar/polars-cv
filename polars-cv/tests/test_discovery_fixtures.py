@@ -138,6 +138,33 @@ class TestRustSrcDirFailsRatherThanSkips:
         with pytest.raises(EmptyDiscovery, match="no Rust crate sources"):
             discovery.rust_src_dir()
 
+    def test_rust_sources_skips_nested_checkouts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Another checkout inside this one (a git worktree, whose ``.git`` is
+        a file; a vendored clone, whose ``.git`` is a directory) is a second
+        copy of every source: scanning it reports each authority as declared
+        twice. Agent worktrees under ``.claude/worktrees/`` did exactly that.
+        The repository's own ``.git`` must not exclude everything."""
+        import tests._discovery as discovery
+
+        (tmp_path / ".git").mkdir()
+        owned = tmp_path / "crate" / "src" / "lib.rs"
+        worktree = tmp_path / ".claude" / "worktrees" / "agent" / "crate" / "src"
+        clone = tmp_path / "vendor" / "clone" / "src"
+        for directory in (owned.parent, worktree, clone):
+            directory.mkdir(parents=True)
+        owned.write_text("")
+        (worktree / "lib.rs").write_text("")
+        (tmp_path / ".claude" / "worktrees" / "agent" / ".git").write_text(
+            "gitdir: elsewhere\n"
+        )
+        (clone / "lib.rs").write_text("")
+        (tmp_path / "vendor" / "clone" / ".git").mkdir()
+
+        monkeypatch.setattr(discovery, "REPO_ROOT", tmp_path)
+        assert discovery.rust_sources() == [owned]
+
     def test_an_empty_tree_makes_rust_sources_raise(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

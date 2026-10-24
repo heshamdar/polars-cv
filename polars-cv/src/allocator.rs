@@ -1,4 +1,4 @@
-//! The plugin's global allocator: polars' own (CR-60).
+//! The plugin's global allocator: polars' own.
 //!
 //! Every allocation goes to the allocator polars exports as the
 //! `polars.polars._allocator` capsule. Row buffers cross into polars and back,

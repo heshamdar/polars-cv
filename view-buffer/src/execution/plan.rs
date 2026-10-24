@@ -1,21 +1,13 @@
 //! Execution plan types and the executor.
 
 use crate::core::buffer::ViewBuffer;
-use crate::execution::runner::{apply_compute_inner, apply_image_inner, apply_view};
-use crate::ops::color::{apply_color_convert, ColorConvertOp};
-use crate::ops::filter::{apply_convolve2d, ConvolveOp};
-use crate::ops::{ComputeOp, ImageOp, ViewOp};
+use crate::ops::ViewDto;
 
 /// A single step in a flat execution plan.
 #[derive(Debug, Clone)]
 pub enum PlanStep {
-    View(ViewOp),
-    Compute(ComputeOp),
-    Image(ImageOp),
-    /// Color space conversion.
-    Color(ColorConvertOp),
-    /// 2D convolution.
-    Filter(ConvolveOp),
+    /// An engine op of any family, run by [`ViewDto::execute`].
+    Op(ViewDto),
     /// Ensure the buffer is contiguous before passing to the next op.
     MaterializeContiguous,
     /// Ensure each row of the buffer is packed (any row stride) before
@@ -55,11 +47,7 @@ impl ExecutionPlan {
 /// Applies a single plan step to the full buffer.
 pub(crate) fn apply_step(buf: ViewBuffer, step: PlanStep) -> ViewBuffer {
     match step {
-        PlanStep::View(op) => apply_view(buf, op),
-        PlanStep::Compute(op) => apply_compute_inner(buf, op),
-        PlanStep::Image(op) => apply_image_inner(buf, op),
-        PlanStep::Color(op) => apply_color_convert(&buf, &op),
-        PlanStep::Filter(op) => apply_convolve2d(&buf, &op),
+        PlanStep::Op(op) => op.execute(buf),
         PlanStep::MaterializeContiguous => buf.to_contiguous(),
         PlanStep::MaterializeDenseRows => buf.to_dense_rows(),
     }

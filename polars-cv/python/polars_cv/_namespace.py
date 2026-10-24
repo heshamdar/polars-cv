@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 
 import polars as pl
 
-from polars_cv import _plugin
+import polars_cv._plugin as _plugin
 from polars_cv._types import NullParamPolicy, RowErrorPolicy, _literal
 
 #: Accepted ``on_null(...)`` values, read from ``NullParamPolicy`` — a class
@@ -74,7 +74,7 @@ class _GeomNamespace(_PluginNamespace):
 
     Every ``.contour``/``.point``/``.bbox`` method is generated
     (``_ops_generated``) as one :meth:`_call` of its Rust definition
-    (``src/geom_fns.rs``), with that definition's signature, defaults and
+    (``src/geometry/fns.rs``), with that definition's signature, defaults and
     docstring.
 
     ``on_null`` is here, not on ``_PluginNamespace``.

@@ -340,7 +340,7 @@ pub struct UnifiedGraph {
 }
 
 /// The graph wire-format version this build reads. Version 2 gave each node
-/// one `input` (CR-117); a version-1 graph's node fields are not read.
+/// one `input`; a version-1 graph's node fields are not read.
 pub(crate) const GRAPH_VERSION: u32 = 2;
 
 impl UnifiedGraph {
@@ -430,13 +430,13 @@ impl UnifiedGraph {
     pub(crate) fn column_facts_pending(
         &self,
         node_id: &str,
-    ) -> Option<crate::graph::decode::ColumnFacts> {
+    ) -> Option<crate::graph::sink::ColumnFacts> {
         match &self.nodes.get(node_id)?.input {
             NodeInput::Node(up) => self.column_facts_pending(up),
             NodeInput::Decode { source, .. } => {
                 source
                     .resolves_from_column()
-                    .then(|| crate::graph::decode::ColumnFacts::Pending {
+                    .then(|| crate::graph::sink::ColumnFacts::Pending {
                         sizes: source.column_may_fix_sizes(),
                     })
             }
@@ -541,7 +541,7 @@ pub struct GraphNode {
 /// top-level `column_bindings` map saying which nodes were roots, and a
 /// positional `upstream` list whose first entry was the input and whose rest
 /// restated the nodes the ops read — and needed three checks to reconcile
-/// them (CR-117). A node's dependencies are now its input and its ops'
+/// them. A node's dependencies are now its input and its ops'
 /// [`operands`](crate::graph::step::GraphStep::operands).
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -588,7 +588,7 @@ impl GraphNode {
 mod node_wire_tests {
     //! The node wire form (version 2): a node's input is one declaration,
     //! `{"decode": {"column", "source"}}` or `{"node": id}`, and a node's
-    //! dependencies are that input plus the nodes its ops read (CR-117).
+    //! dependencies are that input plus the nodes its ops read.
     use super::UnifiedGraph;
     use crate::graph::compiled::CompiledGraph;
     use polars::prelude::*;
@@ -688,5 +688,76 @@ mod node_wire_tests {
             .unwrap();
         let sum = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
         assert_eq!(sum.as_slice::<f32>(), &[11.0, 22.0]);
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::UnifiedGraph;
+
+    #[test]
+    fn test_parse_unified_single_output() {
+        let json = r#"{
+            "version": 2,
+            "nodes": {
+                "_node_0": {
+                    "input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}},
+                    "ops": []
+                }
+            },
+            "outputs": {
+                "_output": {"node": "_node_0", "sink": {"format": "numpy"}}
+            }
+        }"#;
+        let graph = UnifiedGraph::from_json(json).unwrap();
+        assert_eq!(graph.nodes.len(), 1);
+        assert!(graph.is_single_output());
+        assert!(graph.outputs.contains_key("_output"));
+    }
+    #[test]
+    fn test_parse_unified_multi_output() {
+        let json = r#"{
+            "version": 2,
+            "nodes": {
+                "_node_0": {
+                    "input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}},
+                    "ops": []
+                },
+                "_node_1": {
+                    "ops": [],
+                    "input": {"node": "_node_0"}
+                }
+            },
+            "outputs": {
+                "original": {"node": "_node_0", "sink": {"format": "png"}},
+                "processed": {"node": "_node_1", "sink": {"format": "numpy"}}
+            }
+        }"#;
+        let graph = UnifiedGraph::from_json(json).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        assert!(!graph.is_single_output());
+        assert!(graph.outputs.contains_key("original"));
+        assert!(graph.outputs.contains_key("processed"));
+    }
+    #[test]
+    fn test_unified_topological_order() {
+        let json = r#"{
+            "version": 2,
+            "nodes": {
+                "a": {"input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}}, "ops": []},
+                "b": {"ops": [], "input": {"node": "a"}}
+            },
+            "outputs": {
+                "out_a": {"node": "a", "sink": {"format": "numpy"}},
+                "out_b": {"node": "b", "sink": {"format": "png"}}
+            }
+        }"#;
+        let graph = UnifiedGraph::from_json(json).unwrap();
+        let order = graph.topological_order();
+        assert!(order.contains(&"a".to_string()));
+        assert!(order.contains(&"b".to_string()));
+        let b_pos = order.iter().position(|x| x == "b").unwrap();
+        let a_pos = order.iter().position(|x| x == "a").unwrap();
+        assert!(b_pos > a_pos);
     }
 }

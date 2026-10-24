@@ -2,11 +2,10 @@
 
 The AUC integrals themselves are lazy, per-group functions in
 :mod:`polars_cv.metrics._auc_expr` (``trapz_auc`` / ``partial_auc`` /
-``mann_whitney_auc``), the single authority every caller reduces through. The eager, Series-based
-``trapz_auc`` / ``partial_auc`` that once lived here were removed once every
-consumer routed through the lazy path; only the shared ``correction`` vocabulary
-remains (with the ``extrapolate`` off-curve vocabulary), so a value nothing
-recognises still fails loudly in one place.
+``mann_whitney_auc``), the single authority every caller reduces through.
+This module holds only the shared ``correction`` vocabulary (with the
+``extrapolate`` off-curve vocabulary), so a value nothing recognises fails
+loudly in one place.
 """
 
 from __future__ import annotations
@@ -42,7 +41,7 @@ def validate_correction(correction: CorrectionMethod) -> None:
     value fails loudly at the entry point rather than being silently treated as
     the raw area (the ``if correction == "normalize": ...; return raw`` shape
     would otherwise swallow it). ``"mcclish"`` -- McClish's standardized ROC
-    partial-AUC correction -- was removed here: it standardizes against the ROC
+    partial-AUC correction -- is not offered: it standardizes against the ROC
     chance diagonal ``y = x`` on the unit square, which is only meaningful when
     the x-axis is a probability bounded to ``[0, 1]``. FROC's x-axis (false
     positives per image) is unbounded, LROC's chance line is not the diagonal,

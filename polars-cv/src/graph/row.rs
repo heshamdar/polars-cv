@@ -14,21 +14,22 @@
 //!   (`input_domains` for the input, `operand_domains` for the operands) and
 //!   validated against their concrete shapes and dtypes in one call.
 //!
-//! The executor's arms used to repeat flush → buffer read → operand lookup by
-//! id → validation → execute per step, each with its own error strings, and
-//! `rasterize(shape=<node>)` had a resolver of its own (CR-117).
+//! The executor's arms do not repeat flush → buffer read → operand lookup by
+//! id → validation → execute per step with their own error strings, and
+//! `rasterize(shape=<node>)` has no resolver of its own: this is the one path.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use crate::graph::node_output::NodeOutput;
 use smallvec::SmallVec;
 use view_buffer::geometry::label::{label_plane, reduce_regions, region_pixels, LabelRegionMode};
-use view_buffer::ops::{Domain, NodeOutput};
+use view_buffer::ops::Domain;
 use view_buffer::ViewBuffer;
 
-use super::encode::{execute_geometry_op, execute_region_op};
 use super::step::GraphStep;
+use crate::geometry::exec::{execute_geometry_op, execute_region_op};
 use crate::ops::graph::Role;
 use crate::params::ParamCtx;
 
@@ -303,7 +304,7 @@ pub(crate) fn run_step(
                 let contours_col = contours.0;
                 let column = ctx.col(contours_col).map_err(|e| e.to_string())?;
                 let (series, row) = column.at(row_idx);
-                let contours = crate::geom_columns::ContourColumn::new(series)
+                let contours = crate::geometry::columns::ContourColumn::new(series)
                     .row(row)
                     .map_err(|e| named(format!("contour parsing failed: {e}")))?;
                 let Some(contours) = contours else {
@@ -376,7 +377,7 @@ fn operand_buffer(
 /// Whether a runtime `NodeOutput::Vector` may be read as a 1-D buffer here.
 ///
 /// The planner's `vector` *domain* and the runtime `Vector` *representation*
-/// are not the same set (CR-116). `perceptual_hash` and the histogram vector
+/// are not the same set. `perceptual_hash` and the histogram vector
 /// modes plan as `vector` but execute as `Buffer`, so the only steps that
 /// ever receive a runtime `Vector` are those fed by `ExtractShape`,
 /// `LabelReduce` or a contour measure.

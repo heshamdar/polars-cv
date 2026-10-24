@@ -6,10 +6,10 @@
 //! - Source decoding and output encoding utilities
 
 // Internal modules with descriptive names
+pub(crate) mod node_output;
 #[path = "types.rs"]
 pub(crate) mod types;
 
-#[path = "compiled.rs"]
 pub(crate) mod compiled;
 pub(crate) mod row;
 pub(crate) mod step;
@@ -19,13 +19,10 @@ pub(crate) mod sink_kind;
 #[cfg(test)]
 mod copy_census;
 
-#[path = "decode.rs"]
-pub(crate) mod decode;
-
-#[path = "encode.rs"]
-pub(crate) mod encode;
+pub(crate) mod sink;
+pub(crate) mod source;
 
 // Re-exports for crate-level access
 pub(crate) use compiled::{get_or_compile, resolved_output_specs};
-pub(crate) use decode::dtype_for_output;
+pub(crate) use sink::dtype_for_output;
 pub(crate) use types::RowErrorPolicy;

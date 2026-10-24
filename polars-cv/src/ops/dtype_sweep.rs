@@ -10,7 +10,7 @@
 //! dtype must be the tracked one.
 //!
 //! This is the plan == exec dtype property checked *per op*, where the
-//! plugin's output guard (`compiled.rs`) only sees a graph's final output
+//! plugin's output guard (`graph/compiled/run.rs`) only sees a graph's final output
 //! and the engine's `debug_assert` only image ops. A kernel that converts
 //! through f32 and forgets to convert back (`channel_swap` on u16) fails
 //! here, as does one that panics against its contract.

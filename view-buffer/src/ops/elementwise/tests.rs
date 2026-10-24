@@ -294,7 +294,7 @@ fn complement(buf: &ViewBuffer) -> Option<ViewBuffer> {
 
 /// The expected result where the engine deliberately departs from the legacy
 /// code:
-/// - CR-53: `invert` on an integer dtype other than u8/u16 used to return
+/// - `invert` on an integer dtype other than u8/u16 used to return
 ///   f32 `1 - x`; it now keeps the dtype as `MAX + MIN - x`, which is `!x`.
 /// - D3: the float-promoting ops on the 32/64-bit integers used to read each
 ///   pixel as f32 and return f32; they now promote to f64, as NumPy does —

@@ -1,4 +1,4 @@
-//! The exact Euclidean distance transform (`distance_transform`, CR-93).
+//! The exact Euclidean distance transform (`distance_transform`).
 //!
 //! Felzenszwalb & Huttenlocher's separable algorithm ("Distance Transforms of
 //! Sampled Functions", 2012): the squared distance to the nearest site along

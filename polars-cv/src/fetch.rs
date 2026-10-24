@@ -26,8 +26,8 @@
 //! path is fetched once per call; its body is freed when the last row naming
 //! it has read it. Local paths are read inline per row, one at a time.
 //!
-//! It used to fetch every remote path of the call before the first row
-//! decoded (`tests/test_fetch_window.py`).
+//! It does not fetch every remote path of the call before the first row
+//! decodes (`tests/test_fetch_window.py`).
 //!
 //! # Security
 //!

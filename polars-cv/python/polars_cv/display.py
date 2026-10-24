@@ -150,7 +150,7 @@ def _numpy_struct_to_png(row: dict[str, Any]) -> bytes | None:
     if raw is None or dtype_str is None or shape_list is None:
         return None
 
-    from polars_cv import numpy_from_struct
+    from polars_cv.numpy_io import numpy_from_struct
 
     # Delegate to numpy_from_struct so the byte strides/offset are honored:
     # transposed/flipped struct outputs render in their true (permuted) layout

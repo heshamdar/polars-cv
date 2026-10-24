@@ -8,7 +8,7 @@
 //! and the AVX2 build runs when the CPU has it.
 //!
 //! The whole body, not an inner loop: dispatching per row-sized loop measured
-//! *slower* than baseline (CR-35), and a closure is a separate function that
+//! *slower* than baseline, and a closure is a separate function that
 //! does not inherit its caller's target features. So a kernel's
 //! [`run`](SimdKernel::run) must be `#[inline(always)]` and must not hand its
 //! loops to a non-inlined callee (a `thread_local!` `with` closure, say).

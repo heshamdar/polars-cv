@@ -7,6 +7,7 @@
 
 | File | Scope |
 |------|-------|
+| [`GLOSSARY.md`](GLOSSARY.md) | One meaning per overloaded word (view, plan, node, step, graph, …) and the type names that use a word another way |
 | [`polars-cv/python/polars_cv/AGENTS.md`](polars-cv/python/polars_cv/AGENTS.md) | Python API — pipeline builder, lazy composition, graph serialization, schema inference |
 | [`polars-cv/python/polars_cv/geometry/AGENTS.md`](polars-cv/python/polars_cv/geometry/AGENTS.md) | Geometry subsystem — point/contour/bbox schemas and namespaces |
 | [`polars-cv/python/polars_cv/metrics/AGENTS.md`](polars-cv/python/polars_cv/metrics/AGENTS.md) | Detection metrics — matchers, FROC/LROC/PR curves, bootstrap |
@@ -48,16 +49,20 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 
 ## Architecture
 
+The project has three layers:
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Python: polars_cv                                      │
-│  Pipeline builder, expression namespaces, graph         │
-│  construction, schema inference, validation             │
-├─────────────────────────────────────────────────────────┤
+│  Pipeline builder, expression namespaces, DAG           │
+│  construction, schema inference, validation, lazy       │
+│  composition, geometry/metrics APIs                     │
+├────────────── JSON graph serialization ─────────────────┤
 │  Rust: polars-cv (the plugin)                           │
-│  Graph execution, source decoding, sink encoding,       │
-│  parameter resolution, cloud I/O                        │
-├─────────────────────────────────────────────────────────┤
+│  vb_graph expression entry point, graph execution,      │
+│  source decoding, sink encoding, per-row parameter      │
+│  resolution, cloud I/O                                  │
+├────────────── Rust crate dependency ────────────────────┤
 │  Rust: view-buffer (the engine)                         │
 │  ViewBuffer, ViewExpr, stride-aware ops, kernel fusion, │
 │  zero-copy interop (Arrow, ndarray, image)              │
@@ -66,37 +71,11 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 
 ### Data Flow
 
-```
-Python Pipeline spec
-  → JSON graph serialization (PipelineGraph)
-  → _plugin.call("vb_graph", graph_json, input columns)   # the one route to register_plugin_function
-  → Polars calls Rust vb_graph(inputs, kwargs)
-  → UnifiedGraph::from_json() → topological execution
-  → Per-row: decode source → apply ops (ViewExpr/ViewBuffer) → encode sink
-  → Returns Series (Binary, Float64, Struct, List, Array)
-```
-
-### Domain System
-
-Pipelines track data domain through operations:
-
-| Domain | Description | Example |
-|--------|-------------|---------|
-| `buffer` | Multi-dimensional arrays (images) | After `source()` (defaults to `"auto"`; also `"image_bytes"`, `"file_path"`, …) |
-| `contour` | Geometry (vectors of points) | After `extract_contours()` |
-| `scalar` | Single numeric values | After `reduce_sum()` |
-| `vector` | Fixed-length numeric arrays, incl. histogram buckets | After `perceptual_hash()`, `bounding_box()`, `histogram()` |
-
-### Alpha Channel Handling
-
-Alpha channels are **always preserved** during image decoding (RGBA → 4ch, GrayA → 2ch). How each operation treats channels (and therefore alpha) is its `OpShape` (`view-buffer/src/ops/shape_rule.rs`); the planner reads the channel count as the shape's axis 2 and the rank as its length:
-
-- **`Preserve`** and the H/W-only shapes — all channels processed uniformly (resize, normalize, flip, etc.)
-- **`ColorChannels { channels, .. }`** — alpha separated, op applied to color channels, alpha restored (cvt_color)
-- **`SingleChannel`** — alpha discarded, one output channel (grayscale, canny)
-- **`Dynamic`**, or an unknown input channel count — not knowable at plan time
-
-Image sources have unknown channel count at planning time. Users can assert known channels with `.assert_shape(channels=4)`.
+1. The user builds a `Pipeline` in Python, which internally creates a `PipelineGraph` (a DAG of `GraphNode`s).
+2. `.sink(...)` on a `LazyPipelineExpr` serializes the graph to JSON and calls `_plugin.call("vb_graph", graph_json, input columns)`. That is the only route to `register_plugin_function`: it pins the exact `.so` and hands the plugin storage rather than extension types.
+3. Polars calls the Rust `vb_graph` expression function with the JSON and any per-row expression parameters.
+4. Rust deserializes the JSON into a `UnifiedGraph` and compiles it once into a process-wide cache (`graph/compiled/`: parsed spec, topological order, slot-bound params). Repeat calls (e.g. per streaming morsel) pay only a hash lookup. It then executes topologically, per row: decode source → apply ops (`ViewExpr`/`ViewBuffer`) → encode sink.
+5. It returns a Polars `Series` (dtype depends on the sink: Binary, Float64, Struct, List, Array).
 
 ### Expression Namespaces
 
@@ -115,7 +94,7 @@ what a null in a per-row expression parameter means. `.cv` deliberately has no
 ## Directory Structure
 
 ```
-polars-cv/                          # Workspace root
+./                                  # Repository root (the Cargo workspace)
 ├── AGENTS.md                       # ← You are here
 ├── Cargo.toml                      # Workspace Cargo.toml
 ├── CONTRIBUTING.md                 # Release process, CI
@@ -133,16 +112,20 @@ polars-cv/                          # Workspace root
 │   │   └── metrics/AGENTS.md
 │   ├── tests/                      # Python tests (pytest)
 │   │   └── AGENTS.md
-│   ├── benchmarks/                 # Benchmark suite
+│   ├── benchmarks/                 # Regression suite over the checkout
 │   │   └── AGENTS.md
 │   ├── examples/                   # Runnable demos (13 numbered 01–13 + detection_data.py)
 │   ├── docs/                       # MkDocs user-guide documentation
 │   └── scripts/                    # Generators (gen_ops.py, ...) and utilities
+├── scripts/                        # Repo tooling: verify.sh (CI checks), with-pyo3-env.sh (PyO3 env for cargo), dev-clean.sh (reclaim disk)
+├── benchmarks/                     # Published-wheel comparison against PIL, OpenCV and others
 └── CHANGELOG.md                    # Keep-a-Changelog release history
 ```
 
 See root [`CONTRIBUTING.md`](CONTRIBUTING.md) for the release process and CI, and
-[`README.docker.md`](README.docker.md) for the Docker build environment.
+[`README.docker.md`](README.docker.md) for the Docker build environment. The two
+`benchmarks/` directories (repository root and `polars-cv/`) are explained in
+[`benchmarks/README.md`](benchmarks/README.md).
 
 ## Task Routing
 
@@ -179,7 +162,9 @@ CI and wheel jobs clear it with `RUSTFLAGS=""`.
 
 ## Known Issues
 
-- **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers (`view-buffer/src/ops/elementwise/mod.rs::lower_to_scalars`).
+- **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers. They execute correctly (in f64) but are excluded from kernel fusion (`view-buffer/src/ops/elementwise/mod.rs::lower_to_scalars`).
+
+Deferred work and verified defects are tracked in the root `ISSUES.md`, not here.
 
 ## Release History
 
@@ -211,7 +196,7 @@ changes; they explain *why* the code is shaped the way it is.
   a kernel panic is an engine bug), so such an op is its own family whose
   `execute` returns `Result`, as `HistogramOp`'s does.
 - **Compiled-graph cache.** The `vb_graph` plugin compiles each graph once into a
-  process-wide cache (`graph/compiled.rs`: parsed spec, topo order, slot-bound
+  process-wide cache (`graph/compiled/`: parsed spec, topo order, slot-bound
   params, pre-resolved static ops). The streaming engine invokes the plugin per
   morsel, so repeat calls pay only a hash lookup, and graph structure is validated
   at compile time instead of failing late.
@@ -297,8 +282,8 @@ side channel.
 | A `Pipeline`'s state, when copied | `Pipeline._clone` — copies every field (lists copied, the immutable plan shared); `to_graph` and CSE derive through it, then replace the plan | `test_a_derived_pipeline_keeps_every_setting_and_shares_no_list` |
 | Whether the compiled extension matches the sources | `POLARS_CV_SOURCE_HASH` from `build.rs`, recomputed by `build_info()` | `test_compiled_plugin_matches_the_rust_sources` — the version comparison cannot fire within a release cycle |
 | Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
-| Which plan-time optimizations exist | Rust: `LogicalPass` (`polars-cv/src/passes.rs`, the node-scope passes run there) and `engine_passes!` (view-buffer, which also declares `OptConfig`), via `tests/golden/pass_catalog.json` → generated `PASS_CATALOG` / `OptFlags` fields → `OPTIMIZATION_PASSES` | `pass_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `OptConfig` refuses an unknown engine key (`an_unknown_engine_toggle_is_refused`), and `Plan.run_pass` an unknown or graph-scope pass. Optimization is one explicit phase (`PipelineGraph.optimize`); construction and serialization never optimize (`TestStaging`), and toggling a pass changes only the physical graph, never the output (`test_optimize_equivalence.py`) |
-| A polars-cv extension type's name and storage | Rust `ext_types::ExtType` (storage read from `geom_schema` / `output::numpy_output_dtype`), mirrored by `polars_cv.extension_types.EXTENSION_TYPES` so `import polars_cv` can register without the `.so` | `test_python_types_match_the_rust_declaration` (names, order and full storage dtype over the `extension_types` FFI, both directions); `all_lists_every_variant_once` holds `ExtType::ALL` to the enum; `ext_from_params` returns polars' generic `Extension` for our name over any other storage, so an instance of our class *is* the canonical layout |
+| Which plan-time optimizations exist | Each where it runs: the graph-scope passes (CSE, which compares the expression identities only Python holds) in `polars_cv/_graph_passes.py`; the node-scope passes in Rust `LogicalPass` (`polars-cv/src/passes.rs`) and the engine's in `engine_passes!` (view-buffer, which also declares `OptConfig`), via `tests/golden/pass_catalog.json`. `scripts/gen_ops.py` concatenates them → generated `PASS_CATALOG` / `OptFlags` fields → `OPTIMIZATION_PASSES` | `pass_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_the_graph_tier_is_declared_by_python_alone` (Rust never also names a graph pass); `_graph.py` refuses to import with a declared graph pass it does not implement (`test_a_graph_pass_without_an_implementation_refuses_the_import`); `OptConfig` refuses an unknown engine key (`an_unknown_engine_toggle_is_refused`), and `Plan.run_pass` an unknown pass. Optimization is one explicit phase (`PipelineGraph.optimize`); construction and serialization never optimize (`TestStaging`), and toggling a pass changes only the physical graph, never the output (`test_optimize_equivalence.py`) |
+| A polars-cv extension type's name and storage | Rust `ext_types::ExtType` (storage read from `geometry::schema` / `output::numpy_output_dtype`), mirrored by `polars_cv.extension_types.EXTENSION_TYPES` so `import polars_cv` can register without the `.so` | `test_python_types_match_the_rust_declaration` (names, order and full storage dtype over the `extension_types` FFI, both directions); `all_lists_every_variant_once` holds `ExtType::ALL` to the enum; `ext_from_params` returns polars' generic `Extension` for our name over any other storage, so an instance of our class *is* the canonical layout |
 | How Python reaches the compiled plugin | `polars_cv._plugin.call` — pins polars to the file the import system loads and passes every argument as `.ext.storage()`, so Rust never receives an extension dtype and only builds tagged outputs (`ExtType::tag`) | `test_only_the_plugin_module_registers_plugin_functions` (AST scan of the package, fixtures in `test_plugin_entry_point.py`); `test_accessors_accept_tagged_inputs` sweeps every accessor case table with tagged inputs; `test_plugin_path_is_the_file_python_imports` |
 | A detection metric's estimator (one value per group, per bootstrap replicate) | `metrics/_statistics.py`: a `Statistic` (`by_group(table, keys)`); the function form (`average_precision`, `froc_auc`, …) is its ungrouped reading and `bootstrap_ci` its per-replicate one | `tests/test_statistics.py::test_every_public_metric_is_classified` (a public function taking a `DetectionTable` must be a `Statistic`'s reading or declared otherwise, and agrees with it); grouped-equals-filtered for every statistic |
 | A per-group ordered scan (running sum/max, lag, row index, first/last) or a reproducible sum in the metrics | `metrics/_grouped_scan.py`: `grouped_scan` (one sort, then `.over(keys)` windows on it), `bracket` (the nearest knot at or below / above, per group: the as-of join) and `exact_sums` / `exact_mean` (Int128 fixed point) | `tests/test_streaming_plans.py`: every public metrics plan, and every plan an eager metric collects, is read from its physical streaming graph, and any node polars marks as an in-memory engine fallback not in `KNOWN_FALLBACKS` fails; a window is accepted only straight after the sort on its keys, so a `.over()` scan elsewhere or a sort inside `agg` fails |
@@ -319,8 +304,9 @@ generates its Python class; there is no FFI arm or Python mirror to add.
 
 This is written down because it was not. The phased plan behind the
 single-authority work existed only in the agent session that produced it, so
-recovering it meant reading commit messages and the assessment markers still
-embedded in `tests/test_sanitation.py` (findings A1/A2/A3, A4, A10, B1/B2).
+recovering it meant reading commit messages and the sections of
+`tests/test_sanitation.py`, each named by the invariant it checks (Plan == Exec,
+registry parity, enum parity).
 A plan that lives in a session is a plan that ends with it — keep this section
 current instead.
 
