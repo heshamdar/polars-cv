@@ -7,6 +7,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Removed
+
+- **`view_buffer::ops::validation::require_spatial`** (view-buffer, a public
+  item). It had no caller in any commit of this history: the rank rules live in
+  `ops/shape_rule.rs`, and every image op checks `[H, W]` or `[H, W, C]` through
+  `require_hw_or_hwc`. Found by a reference check, not by the compiler, since
+  `pub` items in a library crate are never reported as unused.
+
 ## [0.41.0] — 2026-10-23
 
 Reductions, filters and windows for image analytics. One `reduce` takes any

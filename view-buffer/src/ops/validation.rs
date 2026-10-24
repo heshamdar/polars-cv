@@ -100,18 +100,6 @@ pub fn require_hw_or_hwc(shape: &[Dim]) -> Result<(), ValidationError> {
     }
 }
 
-/// At least `[H, W]`: kernels that read the first two axes as height and width.
-pub fn require_spatial(shape: &[Dim]) -> Result<(), ValidationError> {
-    if shape.len() >= 2 {
-        Ok(())
-    } else {
-        Err(ValidationError::ShapeRequirement {
-            requirement: "at least two dimensions [H, W, ...]",
-            got: shape.to_vec(),
-        })
-    }
-}
-
 /// `[H, W]` or `[H, W, 1]`: kernels defined on one channel. An unknown
 /// channel count is not refused.
 pub fn require_single_channel(shape: &[Dim]) -> Result<(), ValidationError> {
