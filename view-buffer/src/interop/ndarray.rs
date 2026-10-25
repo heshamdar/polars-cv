@@ -85,8 +85,27 @@ impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
         }
 
         // 5. Construct View with positive strides
+        //
+        // SAFETY: `from_shape_ptr` needs the pointer and every element reached
+        // by `shape` and the (non-negative, element) `strides` to lie in one
+        // allocation, valid for `T` and not written while the view lives.
+        // `validate_layout(NdArray)` and the stride check above give whole-element
+        // strides and a layout whose extent is inside the storage; `ptr_offset`
+        // moves the base to the lowest-addressed element of each flipped axis, so
+        // its elements (reached by |stride|) are exactly the layout's, in order.
+        // The dtype is `T` (checked above). Every element is read through
+        // `buf`, which `'a` borrows, so nothing writes it. The pointer's alignment
+        // for `T` is asserted just below (as `ViewBuffer::as_ptr` does for every
+        // other typed read), since storage handed over as bytes
+        // (`from_raw_bytes`) can be less aligned than its dtype.
         let mut view = unsafe {
             let base_ptr = buf.as_ptr::<u8>();
+            assert!(
+                buf.layout.num_elements() == 0
+                    || (base_ptr as usize).is_multiple_of(std::mem::align_of::<T>()),
+                "ndarray view: buffer pointer is not aligned for {:?}",
+                T::DTYPE
+            );
             // Offset the pointer for negative strides
             let adjusted_ptr = base_ptr.offset(ptr_offset) as *const T;
             ArrayView::from_shape_ptr(shape.strides(strides), adjusted_ptr)

@@ -40,6 +40,7 @@ fn from_slice_aligned_keeps_custom_alignment() {
     let buf = ViewBuffer::from_slice_aligned(&data, 64);
     assert_eq!(buf.shape(), &[64]);
     // The allocation really is 64-byte aligned (SIMD contract).
+    // SAFETY: only the address is read, never the pointee; `buf` is an F32 buffer.
     assert_eq!(unsafe { buf.as_ptr::<f32>() } as usize % 64, 0);
     assert_eq!(buf.to_contiguous().as_slice::<f32>(), &data[..]);
 }

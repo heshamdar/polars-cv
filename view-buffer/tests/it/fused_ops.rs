@@ -30,6 +30,7 @@ fn test_fused_execution_f32() {
     // we use a little unsafe helper or cast.
     // For this test, let's use the raw pointer since we know it's contiguous F32.
     let (ptr, _, _, _) = result.as_raw_parts();
+    // SAFETY: `result` is a contiguous F32 buffer of 4 elements starting at `ptr`.
     let result_slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, 4) };
 
     assert_eq!(result_slice, &[3.0, 0.0, 7.0, 9.0]);
@@ -62,6 +63,7 @@ fn test_fused_on_strided_input() {
     assert_eq!(result.shape(), &[2, 2]);
 
     let (ptr, _, _, _) = result.as_raw_parts();
+    // SAFETY: `result` is contiguous F32 with 4 elements starting at `ptr` (asserted above).
     let result_slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, 4) };
 
     // Row-major output of the transposed input
@@ -117,7 +119,10 @@ fn assert_buffers_equal(fused: &ViewBuffer, stepwise: &ViewBuffer) {
     let elem = a.dtype().size_of();
     let (pa, _, _, _) = a.as_raw_parts();
     let (pb, _, _, _) = b.as_raw_parts();
+    // SAFETY: `a` and `b` are contiguous (`to_contiguous`), so `n * elem`
+    // bytes lie behind `pa` and `pb`; both buffers outlive the slices.
     let ba = unsafe { std::slice::from_raw_parts(pa, n * elem) };
+    // SAFETY: as above.
     let bb = unsafe { std::slice::from_raw_parts(pb, n * elem) };
     assert_eq!(ba, bb, "fused values differ from unfused values");
 }

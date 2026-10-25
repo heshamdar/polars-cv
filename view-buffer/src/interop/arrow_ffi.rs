@@ -61,28 +61,27 @@ pub trait ToArrowFFI {
 impl ToArrowFFI for ViewBuffer {
     fn to_arrow_ffi(&self) -> Result<(FFI_ArrowSchema, FFI_ArrowArray), ArrowFFIError> {
         let contig = self.to_contiguous();
-        let count = contig.layout.num_elements();
 
         // Create Arrow array based on dtype
         let arrow_array: Arc<dyn Array> = match contig.dtype() {
             DType::U8 => {
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), count) };
+                let slice = contig.as_slice::<u8>();
                 Arc::new(UInt8Array::from(slice.to_vec()))
             }
             DType::I32 => {
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<i32>(), count) };
+                let slice = contig.as_slice::<i32>();
                 Arc::new(Int32Array::from(slice.to_vec()))
             }
             DType::I64 => {
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<i64>(), count) };
+                let slice = contig.as_slice::<i64>();
                 Arc::new(Int64Array::from(slice.to_vec()))
             }
             DType::F32 => {
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+                let slice = contig.as_slice::<f32>();
                 Arc::new(Float32Array::from(slice.to_vec()))
             }
             DType::F64 => {
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+                let slice = contig.as_slice::<f64>();
                 Arc::new(Float64Array::from(slice.to_vec()))
             }
             other => return Err(ArrowFFIError::UnsupportedDType(other)),
@@ -126,6 +125,9 @@ impl FromArrowFFI for ViewBuffer {
         schema: &FFI_ArrowSchema,
     ) -> Result<ViewBuffer, ArrowFFIError> {
         // Import from FFI to Arrow ArrayData
+        // SAFETY: the caller's contract (`# Safety` above): `array` and `schema`
+        // are valid, initialised Arrow C Data Interface structs whose release
+        // callbacks `from_ffi` takes over.
         let data = arrow::ffi::from_ffi(array, schema)
             .map_err(|e| ArrowFFIError::ExportFailed(format!("Arrow FFI import failed: {e}")))?;
 
@@ -184,6 +186,9 @@ impl FromArrowFFI for ViewBuffer {
         }
 
         // Copy to owned buffer
+        // SAFETY: the check above shows `start_byte + byte_len <= buffer.len()`,
+        // so the range lies inside the Arrow buffer, which `data` owns and keeps
+        // alive; `u8` needs no alignment.
         let slice = std::slice::from_raw_parts(buffer.as_ptr().add(start_byte), byte_len);
         let vec_data = slice.to_vec();
 
@@ -259,6 +264,8 @@ mod tests {
         let (schema, array) = buf.to_arrow_ffi().expect("FFI export failed");
 
         // Import back (takes ownership of array)
+        // SAFETY: `array` and `schema` are the pair `arrow::ffi::to_ffi` (or
+        // `to_arrow_ffi`) just produced, so they are valid and initialised.
         let recovered =
             unsafe { ViewBuffer::from_arrow_ffi(array, &schema).expect("FFI import failed") };
 
@@ -266,7 +273,9 @@ mod tests {
         assert_eq!(recovered.dtype(), DType::F32);
 
         // Verify data
+        // SAFETY: `recovered` is a contiguous F32 buffer of 4 elements.
         let ptr = unsafe { recovered.as_ptr::<f32>() };
+        // SAFETY: as above: 4 initialised f32 behind `ptr`, borrowed from `recovered`.
         let slice = unsafe { std::slice::from_raw_parts(ptr, 4) };
         assert_eq!(slice, &data[..]);
     }
@@ -278,6 +287,8 @@ mod tests {
 
         let (schema, array) = buf.to_arrow_ffi().expect("FFI export failed");
         // Import back (takes ownership of array)
+        // SAFETY: `array` and `schema` are the pair `arrow::ffi::to_ffi` (or
+        // `to_arrow_ffi`) just produced, so they are valid and initialised.
         let recovered =
             unsafe { ViewBuffer::from_arrow_ffi(array, &schema).expect("FFI import failed") };
 
@@ -297,6 +308,8 @@ mod tests {
         assert_eq!(data.offset(), 2, "test requires a non-zero offset");
 
         let (array, schema) = arrow::ffi::to_ffi(&data).expect("FFI export failed");
+        // SAFETY: `array` and `schema` are the pair `arrow::ffi::to_ffi` (or
+        // `to_arrow_ffi`) just produced, so they are valid and initialised.
         let recovered =
             unsafe { ViewBuffer::from_arrow_ffi(array, &schema).expect("FFI import failed") };
 
@@ -312,6 +325,7 @@ mod tests {
         let arr = Int32Array::from(vec![Some(1), None, Some(3)]);
         let data = arr.to_data();
         let (array, schema) = arrow::ffi::to_ffi(&data).expect("FFI export failed");
+        // SAFETY: the pair was just produced by `arrow::ffi::to_ffi`.
         let res = unsafe { ViewBuffer::from_arrow_ffi(array, &schema) };
         assert!(res.is_err(), "arrays with nulls must be rejected: {res:?}");
     }

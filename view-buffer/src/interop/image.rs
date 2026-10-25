@@ -292,9 +292,23 @@ where
         let elem_size = std::mem::size_of::<P::Subpixel>() as isize;
         let row_stride_elems = (stride_bytes / elem_size) as usize;
 
-        let total_elems = row_stride_elems * h;
+        // The last row is not followed by a stride's padding: for a crop the
+        // storage ends with it, and `row_stride * h` would run past the end.
+        let row_len = w * shape.get(2).copied().unwrap_or(1);
+        let total_elems = if h == 0 {
+            0
+        } else {
+            row_stride_elems * (h - 1) + row_len
+        };
+        // SAFETY: `validate_layout(ImageCrate)` above guarantees dense rows with
+        // a positive row stride, so rows `0..h` start `row_stride` elements
+        // apart and each holds `row_len` packed elements inside the storage;
+        // `total_elems` ends exactly at the last row's last element. The dtype is
+        // `P::Subpixel` (checked above) and `as_ptr` panics if misaligned.
         let ptr = unsafe { buf.as_ptr::<P::Subpixel>() };
 
+        // SAFETY: `total_elems` elements from `ptr` are in bounds and initialised
+        // (above); the slice borrows `buf` for `'a`, which nothing writes.
         let data = unsafe { std::slice::from_raw_parts(ptr, total_elems) };
 
         Ok(ImageView {
@@ -904,6 +918,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cropped image view ends at its last row's last pixel. The slice
+    /// spanned `row_stride * height` elements, so a crop that stops short of
+    /// the full width ran its slice past the end of the storage.
+    #[test]
+    fn a_cropped_view_does_not_reach_past_its_last_row() {
+        use image::Luma;
+        let full = ViewBuffer::from_vec_with_shape((0..24u8).collect::<Vec<_>>(), vec![4, 6]);
+        // Rows 0..3, columns 0..4 of a 4 x 6 image: the stride stays 6.
+        let crop = full.slice(&[0, 0], &[3, 4]);
+        let view = crop
+            .as_image_view::<Luma<u8>>()
+            .expect("a crop has dense rows");
+        assert_eq!((view.width, view.height, view.row_stride), (4, 3, 6));
+        assert_eq!(view.data.len(), 6 * 2 + 4, "stride * (h - 1) + row length");
+        assert_eq!(view.get_pixel(3, 2), &[(2 * 6 + 3) as u8]);
+    }
 
     /// A gray + alpha image round-trips through TIFF as its two channels,
     /// stored as two samples per pixel (a BlackIsZero image with one extra,

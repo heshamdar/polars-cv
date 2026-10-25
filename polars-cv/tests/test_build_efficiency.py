@@ -391,3 +391,50 @@ def test_session_start_hook_cleans_target_when_the_toolchain_changes() -> None:
     )
     check = hook[stamp:sync]
     assert "cargo clean" in check, "a changed toolchain must clean target/"
+
+
+def _members_without_workspace_lints(root: dict, members: dict[str, dict]) -> list[str]:
+    """The members that do not inherit the workspace's ``[lints]``.
+
+    A member without ``[lints] workspace = true`` never sees the root's
+    ``[workspace.lints]``, so the lint silently covers nothing there. Also
+    empty when the root declares no lints, which the caller asserts separately.
+    """
+    if not root.get("workspace", {}).get("lints"):
+        return []
+    return sorted(
+        name
+        for name, manifest in members.items()
+        if manifest.get("lints", {}).get("workspace") is not True
+    )
+
+
+def test_lint_inheritance_rule_fixtures() -> None:
+    """The rule rejects a member that opts out and accepts one that inherits."""
+    root = {"workspace": {"lints": {"clippy": {"x": "deny"}}}}
+    assert _members_without_workspace_lints(root, {"a": {}, "b": {"lints": {}}}) == [
+        "a",
+        "b",
+    ]
+    assert (
+        _members_without_workspace_lints(root, {"a": {"lints": {"workspace": True}}})
+        == []
+    )
+    assert _members_without_workspace_lints({"workspace": {}}, {"a": {}}) == []
+
+
+def test_every_unsafe_block_needs_a_safety_comment_in_every_member() -> None:
+    """``undocumented_unsafe_blocks`` is denied for the workspace, in every member.
+
+    The comment itself is checked by clippy (``-D warnings`` in CI and
+    ``scripts/verify.sh``); this holds the configuration that makes clippy
+    check it: the deny level at the root and the inheritance in each member.
+    """
+    root = tomllib.loads((_ROOT / "Cargo.toml").read_text())
+    clippy = root["workspace"]["lints"]["clippy"]
+    assert clippy.get("undocumented_unsafe_blocks") == "deny"
+    missing = _members_without_workspace_lints(root, _workspace())
+    assert not missing, (
+        f"workspace members {missing} lack `[lints] workspace = true`, so the "
+        "workspace lints (`undocumented_unsafe_blocks`) do not apply to them"
+    )

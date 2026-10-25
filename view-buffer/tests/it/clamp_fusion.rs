@@ -12,6 +12,8 @@ use view_buffer::{DType, ViewBuffer};
 fn extract_f32_slice(buf: &ViewBuffer) -> Vec<f32> {
     let (ptr, _, _, _) = buf.as_raw_parts();
     let len = buf.shape().iter().product::<usize>();
+    // SAFETY: callers pass a contiguous F32 buffer of `len` elements; `ptr` is
+    // its first element (`as_raw_parts`) and `buf` outlives the copy.
     let slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, len) };
     slice.to_vec()
 }

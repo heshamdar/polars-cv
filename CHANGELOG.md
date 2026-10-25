@@ -49,6 +49,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Every `unsafe` block states why it is sound, and clippy enforces it.**
+  `clippy::undocumented_unsafe_blocks` is `deny` for the whole workspace
+  (`[workspace.lints.clippy]`, inherited by view-buffer, polars-cv and
+  polars-cv-macros), so `-D warnings` in CI and `scripts/verify.sh` reject a
+  block without a `// SAFETY:` comment. 67 blocks and impls had none; each now
+  names its invariant and the code that establishes it (the SIMD dispatch cites
+  `is_x86_feature_detected!`, the allocator the layout polars exports in its
+  capsule, the FFI import Arrow's C Data Interface contract). Where a comment
+  could not be honest the code changed: `ImageViewAdapter` no longer slices
+  `row_stride * height` elements (a crop ran past its storage) and the ndarray
+  view asserts its pointer is aligned for `T`. `clippy::missing_safety_doc`
+  (for a public `unsafe fn`) is on by default and was already clean (#173).
 - **One home per kernel in view-buffer.** `ops/<family>.rs` owns an op's
   contract, parameters and `execute` entry; the kernel bodies live in
   `view-buffer/src/kernels/<kind>.rs`, one module per kind of computation

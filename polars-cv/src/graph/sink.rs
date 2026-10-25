@@ -572,8 +572,12 @@ fn fill_rows<T: view_buffer::core::ViewType + Default + Send>(
     /// `out`, shared by the row ranges. Each writes only its own rows'
     /// slots, which do not overlap.
     struct Slots<T>(*mut MaybeUninit<T>);
-    // SAFETY: ranges write disjoint slots (below); `T: Send`.
+    // SAFETY: ranges write disjoint slots (below), so no slot is accessed by
+    // two threads; the values written are moved to the owner of `out`, which
+    // needs `T: Send`.
     unsafe impl<T: Send> Send for Slots<T> {}
+    // SAFETY: as `Send`: sharing `&Slots` only lets threads form the pointer
+    // of slots the `starts` partition gives each of them alone.
     unsafe impl<T: Send> Sync for Slots<T> {}
     impl<T> Slots<T> {
         /// Slot `start` of `out`. A method, so a closure captures the whole

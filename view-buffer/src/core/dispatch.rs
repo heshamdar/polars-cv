@@ -92,7 +92,13 @@ pub(crate) fn dispatch<K: SimdKernel>(kernel: K) -> K::Output {
         if std::arch::is_x86_feature_detected!("avx2") {
             #[cfg(debug_assertions)]
             let check = kernel.clone();
-            // SAFETY: the CPU supports AVX2, checked just above.
+            // SAFETY: calling a `#[target_feature(enable = "avx2")]` function is
+            // sound only on a CPU with AVX2 (the instructions would otherwise
+            // be illegal). `std::arch::is_x86_feature_detected!("avx2")` is
+            // std's runtime check of exactly that (CPUID, plus the OS having
+            // enabled the AVX register state), and it returned true just above
+            // on this thread's CPU. The function's other obligations are the
+            // kernel's own, as in the portable build.
             let out = unsafe { run_avx2(kernel) };
             #[cfg(debug_assertions)]
             {
@@ -168,7 +174,13 @@ pub(crate) fn dispatch_mut<T: ViewType, K: SimdKernelMut<T>>(kernel: &K, data: &
                 })
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
             };
-            // SAFETY: the CPU supports AVX2, checked just above.
+            // SAFETY: calling a `#[target_feature(enable = "avx2")]` function is
+            // sound only on a CPU with AVX2 (the instructions would otherwise
+            // be illegal). `std::arch::is_x86_feature_detected!("avx2")` is
+            // std's runtime check of exactly that (CPUID, plus the OS having
+            // enabled the AVX register state), and it returned true just above
+            // on this thread's CPU. The function's other obligations are the
+            // kernel's own, as in the portable build.
             unsafe { run_mut_avx2(kernel, data) };
             #[cfg(debug_assertions)]
             {

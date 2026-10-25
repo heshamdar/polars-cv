@@ -512,6 +512,8 @@ impl ViewBuffer {
     /// Returns raw parts of the buffer for low-level access.
     pub fn as_raw_parts(&self) -> (*const u8, &[usize], &[isize], DType) {
         (
+            // SAFETY: `layout.offset` lies within the backing storage (layouts
+            // are validated when built), so `add` stays inside the allocation.
             unsafe { self.data.as_ptr().add(self.layout.offset) },
             &self.layout.shape,
             &self.layout.strides,
@@ -545,6 +547,11 @@ impl ViewBuffer {
             // bytes only (an empty `Vec<u8>`), which no `&[T]` may point at.
             return &[];
         }
+        // SAFETY: the buffer is contiguous and `T` is its dtype (both asserted
+        // above), so the `len` elements from `layout.offset` are `len *
+        // size_of::<T>()` initialised bytes inside the storage; `as_ptr` panics
+        // on a pointer misaligned for `T`; the slice borrows `self`, which keeps
+        // the storage alive and unwritten (writes need `&mut`).
         unsafe {
             let ptr = self.as_ptr::<T>();
             std::slice::from_raw_parts(ptr, len)
@@ -1115,6 +1122,7 @@ impl ViewBuffer {
         let base = unsafe { self.data.as_ptr().add(self.layout.offset) };
         Some(
             (0..shape[0])
+                // SAFETY: row `y < H`, as argued for `base` above.
                 .map(|y| unsafe {
                     std::slice::from_raw_parts(
                         base.offset(y as isize * row_stride).cast::<T>(),
@@ -1184,6 +1192,10 @@ impl ViewBuffer {
         // 3. Write Parts
         // Header
         // Use unsafe copy to bytes for the #[repr(C)] struct
+        // SAFETY: `ViewHeader` is `#[repr(C)]` with no padding (its size is
+        // `HEADER_SIZE`, the sum of its fields: asserted in `protocol.rs`), so all
+        // `HEADER_SIZE` bytes of the local `header` are initialised and live as
+        // long as it does; `u8` has alignment 1.
         let header_slice = unsafe {
             std::slice::from_raw_parts(&header as *const ViewHeader as *const u8, HEADER_SIZE)
         };
@@ -1202,7 +1214,13 @@ impl ViewBuffer {
         // Data
         // Since we called to_contiguous, the data is just the raw buffer content.
         // We use the pointer to copy the bytes.
+        // SAFETY: `buffer` is contiguous (`to_contiguous` above) and
+        // `data_len = logical_len_bytes()` is the byte length of its elements,
+        // all of which lie in its storage from `layout.offset`; `u8` needs no
+        // alignment.
         let raw_ptr = unsafe { buffer.as_ptr::<u8>() };
+        // SAFETY: as above: `data_len` initialised bytes from `raw_ptr`, borrowed
+        // from `buffer`, which outlives the slice.
         let raw_slice = unsafe { std::slice::from_raw_parts(raw_ptr, data_len) };
         out.extend_from_slice(raw_slice);
     }

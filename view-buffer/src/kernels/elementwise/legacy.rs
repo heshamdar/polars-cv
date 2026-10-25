@@ -463,9 +463,17 @@ where
         if let BufferStorage::Rust(ref mut arc) = buf.data {
             if let Some(vec) = Arc::get_mut(arc) {
                 let count = buf.layout.num_elements();
+                // SAFETY: test-only
+                // oracle. `Arc::get_mut` gave the sole reference, so no other
+                // access aliases the `&mut`; the buffer is contiguous, so its
+                // `count` elements of `dtype` (F32 or F64, the guard above) lie
+                // in the storage from `layout.offset`; the oracle is fed buffers
+                // built by `from_vec*`, whose allocation is aligned for the
+                // dtype.
                 let base = unsafe { vec.as_mut_ptr().add(buf.layout.offset) };
                 match dtype {
                     DType::F32 => {
+                        // SAFETY: as above, `dtype` is F32.
                         let data =
                             unsafe { std::slice::from_raw_parts_mut(base as *mut f32, count) };
                         for x in data.iter_mut() {
@@ -473,6 +481,7 @@ where
                         }
                     }
                     _ => {
+                        // SAFETY: as above, `dtype` is F64.
                         let data =
                             unsafe { std::slice::from_raw_parts_mut(base as *mut f64, count) };
                         for x in data.iter_mut() {
@@ -510,6 +519,11 @@ pub(super) fn try_apply_fused_kernel_inplace(this: &mut ViewBuffer, kernel: &Fus
     };
 
     let total_elems: usize = this.layout.shape.iter().product();
+    // SAFETY: test-only oracle. The dtype is F32 and the buffer contiguous
+    // (guard above), so its `total_elems` f32 lie in the storage from
+    // `layout.offset`; `Arc::get_mut` gave the sole reference, so nothing
+    // aliases the `&mut`; the oracle is fed `from_vec*` buffers, allocated
+    // aligned for f32.
     let data = unsafe {
         std::slice::from_raw_parts_mut(
             vec.as_mut_ptr().add(this.layout.offset) as *mut f32,
@@ -579,14 +593,21 @@ fn gather_to_f32(this: &ViewBuffer, total_elems: usize) -> Vec<f32> {
     if this.layout.is_contiguous() {
         macro_rules! convert_contig {
             ($t:ty) => {{
+                // SAFETY: test-only oracle; `this` is contiguous with dtype
+                // `$t` (the arm that expands this), so its `total_elems` elements
+                // lie in the storage from `layout.offset`, allocated aligned for
+                // the dtype (`from_vec*`), and borrowed from `this`.
                 let src_ptr = unsafe { this.data.as_ptr().add(this.layout.offset) as *const $t };
+                // SAFETY: as above.
                 let src = unsafe { std::slice::from_raw_parts(src_ptr, total_elems) };
                 src.iter().map(|&x| x as f32).collect()
             }};
         }
         return match this.dtype() {
             DType::F32 => {
+                // SAFETY: as `convert_contig!`, with `$t = f32`.
                 let src_ptr = unsafe { this.data.as_ptr().add(this.layout.offset) as *const f32 };
+                // SAFETY: as above.
                 let src = unsafe { std::slice::from_raw_parts(src_ptr, total_elems) };
                 src.to_vec()
             }
@@ -623,6 +644,11 @@ fn gather_to_f32(this: &ViewBuffer, total_elems: usize) -> Vec<f32> {
                     offset >= 0 && (offset as usize) + std::mem::size_of::<$t>() <= data_len,
                     "Fused kernel read OOB"
                 );
+                // SAFETY: test-only oracle. `offset` is the element's byte offset
+                // from the storage start; the layout keeps every element inside
+                // the storage (the `debug_assert` above restates it) at a
+                // whole-element offset, and the storage is allocated aligned for
+                // the dtype (`from_vec*`).
                 let value = unsafe { *(ptr.offset(offset) as *const $t) };
                 out.push(value as f32);
                 for dim in (0..shape.len()).rev() {

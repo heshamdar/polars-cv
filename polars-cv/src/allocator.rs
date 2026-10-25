@@ -32,7 +32,9 @@ struct AllocatorCapsule {
 }
 
 unsafe extern "C" fn system_alloc(size: usize, align: usize) -> *mut u8 {
-    // SAFETY: the size and alignment come from a valid `Layout`.
+    // SAFETY: the caller (the global allocator, or polars through the capsule
+    // ABI) passes the size and alignment of a valid `Layout` (non-zero size,
+    // power-of-two alignment), which `from_size_align_unchecked` requires.
     unsafe { System.alloc(Layout::from_size_align_unchecked(size, align)) }
 }
 
@@ -122,8 +124,13 @@ impl PolarsAllocator {
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            // SAFETY: both arms hold a `&'static AllocatorCapsule`.
+            // SAFETY: `pick` is `&SYSTEM` or the `&'static AllocatorCapsule`
+            // `polars_capsule` returned, so it is non-null, aligned and valid
+            // for the life of the process.
             Ok(_) => unsafe { &*pick },
+            // SAFETY: `winner` is what another thread's successful
+            // `compare_exchange` stored: the same kind of pointer as `pick`
+            // (`CHOSEN` is only ever null or stored by this call).
             Err(winner) => unsafe { &*winner },
         }
     }
@@ -151,7 +158,14 @@ fn polars_capsule() -> Option<&'static AllocatorCapsule> {
         ffi::PyGILState_Release(gil);
         capsule
     };
-    // SAFETY: polars' capsule points at a static `AllocatorCapsule`.
+    // SAFETY: the contract is polars' own: `polars.polars._allocator` is a
+    // capsule over a static, `#[repr(C)]` struct of four allocator function
+    // pointers (`alloc`, `dealloc`, `alloc_zeroed`, `realloc`, in that order),
+    // which is `AllocatorCapsule` above and the struct pyo3-polars 0.28's
+    // `PolarsAllocator` reads the same capsule as (`pyo3-polars/src/alloc.rs`).
+    // It lives as long as the polars module, i.e. the process (the module is
+    // never unloaded), so the `'static` reference does not dangle. `as_ref`
+    // maps a null import to `None`.
     unsafe { capsule.cast::<AllocatorCapsule>().as_ref() }
 }
 

@@ -3,6 +3,12 @@
 members = ["view-buffer", "polars-cv", "polars-cv-macros"]
 resolver = "2"
 
+# Every `unsafe` block states, in a `// SAFETY:` comment, the invariant it
+# relies on and the code that establishes it. `deny`, so `-D warnings` is not
+# the only thing standing between a bare block and the tree.
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 # Workspace-level profile settings
 [profile.release]
 opt-level = 3

@@ -25,6 +25,8 @@ fn all_off() -> OptConfig {
 fn run(expr: &Arc<ViewExpr>, cfg: &OptConfig, n: usize) -> Vec<f32> {
     let out = expr.plan_with(cfg).execute();
     let (ptr, _, _, _) = out.as_raw_parts();
+    // SAFETY: every caller's plan ends in a contiguous F32 buffer of at least
+    // `n` elements starting at `ptr`; `out` outlives the copy.
     unsafe { std::slice::from_raw_parts(ptr as *const f32, n) }.to_vec()
 }
 
@@ -32,6 +34,8 @@ fn run(expr: &Arc<ViewExpr>, cfg: &OptConfig, n: usize) -> Vec<f32> {
 fn run_u8(expr: &Arc<ViewExpr>, cfg: &OptConfig, n: usize) -> Vec<u8> {
     let out = expr.plan_with(cfg).execute();
     let (ptr, _, _, _) = out.as_raw_parts();
+    // SAFETY: every caller's plan ends in a contiguous U8 buffer of at least
+    // `n` elements starting at `ptr`; `out` outlives the copy.
     unsafe { std::slice::from_raw_parts(ptr, n) }.to_vec()
 }
 
