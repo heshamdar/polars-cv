@@ -8,6 +8,9 @@ rust-version = "1.96"
 description = "Image processing as Polars expressions, powered by view-buffer"
 license = "MIT OR Apache-2.0"
 
+[lints]
+workspace = true
+
 [lib]
 name = "polars_cv"
 crate-type = ["cdylib"]

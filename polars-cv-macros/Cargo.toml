@@ -7,6 +7,9 @@ description = "Derive for polars-cv's typed op catalogue (internal)"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [lib]
 proc-macro = true
 

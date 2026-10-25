@@ -255,7 +255,9 @@ mod tests {
 
         // Access the data
         let data = mask.to_contiguous();
+        // SAFETY: `rasterize` returns a contiguous U8 `[100, 100, 1]` mask, so 100 * 100 bytes lie behind the pointer; `data` outlives the slice.
         let ptr = unsafe { data.as_ptr::<u8>() };
+        // SAFETY: as above.
         let slice = unsafe { std::slice::from_raw_parts(ptr, 100 * 100) };
 
         // Check corner (should be background = 0)
@@ -283,7 +285,9 @@ mod tests {
 
         let mask = rasterize(&one(&contour), 100, 100, 255, 0, 1);
         let data = mask.to_contiguous();
+        // SAFETY: `rasterize` returns a contiguous U8 `[100, 100, 1]` mask, so 100 * 100 bytes lie behind the pointer; `data` outlives the slice.
         let ptr = unsafe { data.as_ptr::<u8>() };
+        // SAFETY: as above.
         let slice = unsafe { std::slice::from_raw_parts(ptr, 100 * 100) };
 
         // Center (inside hole) should be background
@@ -295,7 +299,10 @@ mod tests {
 
     fn mask_pixels(mask: &ViewBuffer, len: usize) -> Vec<u8> {
         let data = mask.to_contiguous();
+        // SAFETY: the callers pass a contiguous U8 mask of `len` pixels (the
+        // canvas `rasterize` was given); `data` outlives the copy.
         let ptr = unsafe { data.as_ptr::<u8>() };
+        // SAFETY: as above.
         unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
     }
 

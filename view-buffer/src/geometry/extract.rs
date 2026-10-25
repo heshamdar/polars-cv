@@ -53,6 +53,13 @@ pub fn extract_contours(
 
     // Get the image data as contiguous bytes
     let contiguous = buffer.to_contiguous();
+    // SAFETY: `contiguous` is contiguous (`to_contiguous`) with shape `[H, W]` or
+    // `[H, W, C]` (rank >= 2 checked above), so it holds at least `height *
+    // width` elements of at least one byte each, i.e. at least `height * width`
+    // initialised bytes from its data pointer; `u8` needs no alignment; the
+    // slice borrows `contiguous`, which outlives it. (Soundness only: the bytes
+    // are read as U8 pixels whatever the dtype, which the op's contract allows
+    // as `Any`; for a U8 mask, the documented input, that is exactly the pixels.)
     let data = unsafe { std::slice::from_raw_parts(contiguous.as_ptr::<u8>(), height * width) };
 
     let keep_holes = !matches!(mode, ExtractMode::External);

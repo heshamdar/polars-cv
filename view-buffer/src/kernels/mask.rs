@@ -27,7 +27,7 @@ where
 /// A mask inverted: `255 - m` for a u8 mask, `1 - m` for an f32 one.
 pub(crate) struct InvertMask;
 
-// SAFETY (both): `map_into` writes every slot of `dst`.
+// SAFETY: `map_into` writes every slot of `dst` (one `write` per `src` element).
 unsafe impl ElementMap<u8, u8> for InvertMask {
     #[inline(always)]
     fn map_into(&self, src: &[u8], dst: &mut [MaybeUninit<u8>], _at: usize) {
@@ -37,6 +37,7 @@ unsafe impl ElementMap<u8, u8> for InvertMask {
     }
 }
 
+// SAFETY: as above, for f32.
 unsafe impl ElementMap<f32, f32> for InvertMask {
     #[inline(always)]
     fn map_into(&self, src: &[f32], dst: &mut [MaybeUninit<f32>], _at: usize) {

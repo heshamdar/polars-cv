@@ -20,9 +20,18 @@ pub struct ViewHeader {
     pub reserved: [u8; 40], // Padding to reach 64 bytes
 }
 
+// `Pod` requires no padding: the fields sum to `HEADER_SIZE`, and this fails to
+// compile if a field is added or resized without the header staying 64 bytes.
+const _: () = assert!(std::mem::size_of::<ViewHeader>() == HEADER_SIZE);
+
+// SAFETY: `#[repr(C)]`, every field is an integer or a byte array (all-zero is
+// valid), and the size assertion above shows there is no padding.
 #[cfg(feature = "serde")]
 unsafe impl Zeroable for ViewHeader {}
 
+// SAFETY: as `Zeroable`, and every bit pattern of integers and byte arrays is a
+// valid `ViewHeader`; the type is `Copy` and has no pointers or interior
+// mutability.
 #[cfg(feature = "serde")]
 unsafe impl Pod for ViewHeader {}
 

@@ -29,6 +29,8 @@ pub struct AlignedBytes {
 // SAFETY: AlignedBytes uniquely owns its allocation and exposes no
 // interior mutability, so it can be sent and shared across threads.
 unsafe impl Send for AlignedBytes {}
+// SAFETY: as `Send`: shared access is read-only (`&self` methods only read the
+// bytes), so concurrent reads race with nothing.
 unsafe impl Sync for AlignedBytes {}
 
 impl AlignedBytes {

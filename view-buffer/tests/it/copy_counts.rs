@@ -34,20 +34,26 @@ fn note(size: usize) {
     });
 }
 
+// SAFETY: every method counts, then forwards its arguments unchanged to
+// `System`, so the caller's `GlobalAlloc` obligations pass straight through.
 unsafe impl GlobalAlloc for Tracking {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         note(layout.size());
+        // SAFETY: the caller upholds `GlobalAlloc`'s contract for these arguments.
         unsafe { System.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         note(layout.size());
+        // SAFETY: the caller upholds `GlobalAlloc`'s contract for these arguments.
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         note(new_size);
+        // SAFETY: the caller upholds `GlobalAlloc`'s contract for these arguments.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: the caller upholds `GlobalAlloc`'s contract for these arguments.
         unsafe { System.dealloc(ptr, layout) }
     }
 }

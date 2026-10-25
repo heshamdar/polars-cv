@@ -557,7 +557,8 @@ unsafe fn copy_units<const N: usize>(src: *const u8, dst: *mut u8, n: usize, ste
 /// As [`copy_units`], with `unit` in place of `N`.
 #[inline(always)]
 unsafe fn copy_any(src: *const u8, dst: *mut u8, n: usize, step: isize, unit: usize) {
-    // SAFETY (every arm): the caller's contract.
+    // SAFETY: every arm is `copy_units`/`copy_nonoverlapping` under the caller's
+    // contract (the `# Safety` of this function, with `unit` for `N`).
     unsafe {
         match unit {
             1 => copy_units::<1>(src, dst, n, step),

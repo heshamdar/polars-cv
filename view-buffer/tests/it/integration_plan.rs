@@ -36,6 +36,7 @@ fn test_blob_roundtrip() {
     assert_eq!(recovered.dtype(), DType::F32);
 
     let (ptr, _, _, _) = recovered.as_raw_parts();
+    // SAFETY: `recovered` is a contiguous F32 `[4, 1]` buffer starting at `ptr`.
     let result_slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, 4) };
     assert_eq!(result_slice, &[0.0, 10.0, 20.0, 30.0]);
 }
@@ -54,6 +55,7 @@ fn test_plan_execution() {
     let result = view_buffer::execute_plan(source, ops);
 
     let (ptr, _, _, _) = result.as_raw_parts();
+    // SAFETY: `result` is a contiguous F32 buffer of 4 elements starting at `ptr`.
     let res_slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, 4) };
     assert_eq!(res_slice, &[2.0, 4.0, 6.0, 8.0]);
 }

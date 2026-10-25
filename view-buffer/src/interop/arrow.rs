@@ -130,6 +130,9 @@ impl ToArrow for ViewBuffer {
         let total_bytes = contig.layout.num_elements() * contig.dtype().size_of();
 
         // 2. Get Raw Slice
+        // SAFETY: `contig` is contiguous, so its `total_bytes` (elements times
+        // element size) lie in its storage from the view's offset; `u8` needs no
+        // alignment; `contig` outlives the slice (copied into `values` below).
         let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), total_bytes) };
 
         // 3. Wrap in BinaryArray (1 element containing all bytes)
@@ -153,8 +156,7 @@ impl ToArrow for ViewBuffer {
         match contig.dtype() {
             DType::F32 => {
                 // Flatten to PrimitiveArray
-                let count = contig.layout.num_elements();
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+                let slice = contig.as_slice::<f32>();
                 let primitive = Arc::new(Float32Array::from(slice.to_vec()));
 
                 // Recursively wrap in FixedSizeList based on shape
@@ -180,8 +182,7 @@ impl ToArrow for ViewBuffer {
                 current_array
             }
             DType::U8 => {
-                let count = contig.layout.num_elements();
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), count) };
+                let slice = contig.as_slice::<u8>();
                 let primitive = Arc::new(arrow::array::UInt8Array::from(slice.to_vec()));
 
                 let mut current_array: Arc<dyn Array> = primitive;
