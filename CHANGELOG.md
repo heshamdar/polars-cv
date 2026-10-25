@@ -38,6 +38,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   (`Any`/`None` for the zero-copy view ops, `None` for the colour conversions,
   whose kernel works in the input dtype). Both values are the old ones, so no
   behaviour changes (#168).
+- **The source hash has one definition per language, held to one fixture.**
+  The Python recomputation moves out of the package root into
+  `polars_cv/_build_info.py`, and `build.rs`'s walk and FNV-1a move into
+  `polars-cv/source_hash.rs`, which `build.rs` and a crate unit test both
+  include. A committed miniature workspace, `tests/fixtures/source_hash/`,
+  has a recorded digest asserted from Python and from Rust, so drift in
+  either fails without a built extension. The checkout is now found by
+  searching upward for the workspace root rather than `parents[3]`, and
+  `build.rs` reads `CARGO_MANIFEST_DIR` at run time, so a build script reused
+  from a shared target directory no longer hashes the checkout it was
+  compiled in (#175).
 - **`GLOSSARY.md`** fixes one meaning for each overloaded word (*view*,
   *plan*, *node*, *step*, *graph*, *op*, *domain*) and lists the type names
   that use one another way (`ViewBuffer`, `ViewDto`, `ExecutionPlan`,

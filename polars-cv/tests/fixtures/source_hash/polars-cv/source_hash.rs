@@ -1,0 +1,1 @@
+// the hash definition
