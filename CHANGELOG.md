@@ -9,6 +9,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **`extract_contours` reads only a single-channel `u8` mask.** It used to
+  read the first H×W *bytes* of whatever reached it as `u8` pixels, so an
+  `f32`/`u16` mask traced a byte pattern (a mask of `1.0f32` came out as one
+  foreground pixel in four) and an `[H, W, 3]` image traced its interleaved
+  R,G,B of the first third of the rows, with no error. Now
+  `extract::check_mask_input` is its contract: `GeometryOp::validate` raises it
+  when the pipeline is built for a known dtype or channel count (an `f32` mask
+  after `cast("f32")`), and the kernel raises the same refusal per row
+  otherwise (a PNG's channel count is known only once it decodes). The error
+  names the fix: `.threshold()` or `.cast("u8")`, `.grayscale()` or
+  `.channel_select()` first. The raw-byte read and its `unsafe` block are gone;
+  the pixels are read through `as_slice::<u8>()`. Only inputs that were already
+  producing wrong contours are refused (#179).
 - **`CloudOptions.token_command` is an argument vector, run without a shell.**
   It takes a non-empty `list[str]` (`["gcloud", "auth",
   "print-access-token"]`) and runs `argv[0]` with the rest as its arguments,

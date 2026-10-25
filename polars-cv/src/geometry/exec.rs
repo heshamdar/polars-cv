@@ -62,7 +62,8 @@ fn run_geometry_op(input: NodeOutput, op: &GeometryOp) -> Result<NodeOutput, Str
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
             };
-            let contours = extract_contours(buffer, *mode, *method, threshold);
+            let contours =
+                extract_contours(buffer, *mode, *method, threshold).map_err(|e| e.to_string())?;
             Ok(NodeOutput::from_contours(
                 contours.into_iter().map(Outline::Closed).collect(),
             ))

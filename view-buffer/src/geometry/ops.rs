@@ -585,10 +585,21 @@ impl<M: Mode> Op for GeometryOp<M> {
 
     fn validate(
         &self,
-        _input_shapes: &[&[crate::ops::Dim]],
-        _input_dtypes: &[crate::PlannedDType],
+        input_shapes: &[&[crate::ops::Dim]],
+        input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
         match self {
+            GeometryOp::ExtractContours { .. } => match input_shapes.first() {
+                Some(shape) => super::extract::check_mask_input(
+                    shape,
+                    input_dtypes
+                        .first()
+                        .copied()
+                        .unwrap_or(crate::PlannedDType::Unknown),
+                ),
+                None => Ok(()),
+            },
+
             // A canvas another node sets is known only once that node has
             // run (the executor sets it, and refuses a rasterize without
             // one); a per-row size is checked per row.
@@ -621,7 +632,11 @@ impl<M: Mode> Op for GeometryOp<M> {
     }
 
     fn accepted_input_dtypes(&self) -> DTypeCategory {
-        DTypeCategory::Any
+        match self {
+            // A mask's pixels, one u8 each (`extract::check_mask_input`).
+            GeometryOp::ExtractContours { .. } => DTypeCategory::Specific(vec![DType::U8]),
+            _ => DTypeCategory::Any,
+        }
     }
 
     fn working_dtype(&self) -> Option<DType> {

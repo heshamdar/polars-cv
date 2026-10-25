@@ -3,9 +3,30 @@
 //! Finds the borders of a binary image's regions, traced along pixel edges.
 
 use crate::core::buffer::ViewBuffer;
+use crate::core::dtype::{DType, PlannedDType};
+use crate::ops::shape_rule::{known_dims, Dim};
+use crate::ops::validation::{require_single_channel, ValidationError};
 
 use super::contour::{Contour, Point};
 use super::ops::{ApproxMethod, ExtractMode};
+
+/// The input [`extract_contours`] reads: a single-channel (`[H, W]` or
+/// `[H, W, 1]`) `u8` mask, nonzero pixels foreground. Any other dtype or
+/// channel count is refused, never read as mask bytes. An unknown size or
+/// dtype is not refused; it is checked when its row runs.
+pub fn check_mask_input(shape: &[Dim], dtype: PlannedDType) -> Result<(), ValidationError> {
+    require_single_channel(shape)?;
+    let got = match dtype {
+        PlannedDType::Known(DType::U8) | PlannedDType::Unknown => return Ok(()),
+        PlannedDType::Known(other) => other.short_name(),
+        PlannedDType::SomeFloat => "a float",
+    };
+    Err(ValidationError::Generic {
+        message: format!(
+            "extract_contours reads a u8 mask, got {got}; use .threshold() or .cast(\"u8\") first"
+        ),
+    })
+}
 
 /// Extracts contours from a binary image.
 ///
@@ -30,37 +51,29 @@ use super::ops::{ApproxMethod, ExtractMode};
 /// come in raster order of their first pixel.
 ///
 /// # Arguments
-/// * `buffer` - The binary image (should be U8 with values 0 or 255)
+/// * `buffer` - The binary image: a single-channel `u8` mask
+///   ([`check_mask_input`], which refuses anything else)
 /// * `mode` - Which contours to extract
 /// * `method` - How to approximate the contour
 /// * `min_area` - Minimum area threshold (optional)
 ///
 /// # Returns
-/// Vector of extracted contours
+/// The extracted contours, or the reason the buffer is not a mask
 pub fn extract_contours(
     buffer: &ViewBuffer,
     mode: ExtractMode,
     method: ApproxMethod,
     min_area: Option<f64>,
-) -> Vec<Contour> {
+) -> Result<Vec<Contour>, ValidationError> {
     let shape = buffer.shape();
-    if shape.len() < 2 {
-        return Vec::new();
-    }
+    check_mask_input(&known_dims(shape), PlannedDType::Known(buffer.dtype()))?;
 
     let height = shape[0];
     let width = shape[1];
 
-    // Get the image data as contiguous bytes
+    // One u8 per pixel: a single-channel u8 buffer, checked above.
     let contiguous = buffer.to_contiguous();
-    // SAFETY: `contiguous` is contiguous (`to_contiguous`) with shape `[H, W]` or
-    // `[H, W, C]` (rank >= 2 checked above), so it holds at least `height *
-    // width` elements of at least one byte each, i.e. at least `height * width`
-    // initialised bytes from its data pointer; `u8` needs no alignment; the
-    // slice borrows `contiguous`, which outlives it. (Soundness only: the bytes
-    // are read as U8 pixels whatever the dtype, which the op's contract allows
-    // as `Any`; for a U8 mask, the documented input, that is exactly the pixels.)
-    let data = unsafe { std::slice::from_raw_parts(contiguous.as_ptr::<u8>(), height * width) };
+    let data = contiguous.as_slice::<u8>();
 
     let keep_holes = !matches!(mode, ExtractMode::External);
     let contours: Vec<Contour> = border_starts(data, width, height, keep_holes)
@@ -75,13 +88,13 @@ pub fn extract_contours(
         .collect();
 
     // Filter by area
-    match min_area {
+    Ok(match min_area {
         Some(min) => contours
             .into_iter()
             .filter(|c| super::measures::area(c, false) >= min)
             .collect(),
         None => contours,
-    }
+    })
 }
 
 /// Where each border's walk starts, and its first heading, in raster order
@@ -551,6 +564,22 @@ mod tests {
         ViewBuffer::from_vec_with_shape(data, vec![height, width, 1])
     }
 
+    /// Only a single-channel u8 mask is read: another dtype's or a
+    /// multi-channel image's bytes are refused, not traced as pixels.
+    #[test]
+    fn only_a_single_channel_u8_mask_is_read() {
+        let extract = |b: &ViewBuffer| {
+            extract_contours(b, ExtractMode::External, ApproxMethod::None, None)
+                .map_err(|e| e.to_string())
+        };
+        let floats = ViewBuffer::from_vec_with_shape(vec![1.0f32; 16], vec![4, 4]);
+        assert!(extract(&floats).unwrap_err().contains("u8 mask, got f32"));
+        let rgb = ViewBuffer::from_vec_with_shape(vec![255u8; 48], vec![4, 4, 3]);
+        assert!(extract(&rgb).unwrap_err().contains("single-channel"));
+        let gray = ViewBuffer::from_vec_with_shape(vec![255u8; 16], vec![4, 4]);
+        assert_eq!(extract(&gray).unwrap().len(), 1);
+    }
+
     /// Run-based labelling finds exactly the borders, in exactly the order,
     /// the per-pixel flood fill does: random masks from sparse specks to
     /// near-solid (so holes, islands in holes, diagonal pinches and regions
@@ -683,7 +712,8 @@ mod tests {
             ExtractMode::External,
             ApproxMethod::None,
             None,
-        );
+        )
+        .unwrap();
 
         // One filled square is one contour. Before the tracer was fixed this
         // returned 59 — one degenerate 2x2 walk per row of the square.
@@ -713,7 +743,8 @@ mod tests {
             ExtractMode::External,
             ApproxMethod::Simple,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(
             corners(&contours[0]),
             vec![(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0)]
@@ -724,7 +755,8 @@ mod tests {
     #[test]
     fn test_extract_isolated_pixel() {
         let image = mask_from(20, 20, |x, y| x == 5 && y == 5);
-        let contours = extract_contours(&image, ExtractMode::External, ApproxMethod::None, None);
+        let contours =
+            extract_contours(&image, ExtractMode::External, ApproxMethod::None, None).unwrap();
 
         assert_eq!(contours.len(), 1);
         assert_eq!(
@@ -741,7 +773,8 @@ mod tests {
         for (name, mask) in solid_shapes() {
             let count = pixels(&mask).iter().filter(|&&v| v > 0).count() as f64;
             for method in [ApproxMethod::None, ApproxMethod::Simple] {
-                let contours = extract_contours(&mask, ExtractMode::External, method, None);
+                let contours =
+                    extract_contours(&mask, ExtractMode::External, method, None).unwrap();
                 assert_eq!(contours.len(), 1, "{name}: one region, one contour");
                 assert_eq!(
                     measures::area(&contours[0], false),
@@ -759,7 +792,7 @@ mod tests {
     fn test_round_trip_through_rasterize_is_exact() {
         for (name, mask) in solid_shapes() {
             let contours =
-                extract_contours(&mask, ExtractMode::External, ApproxMethod::Simple, None);
+                extract_contours(&mask, ExtractMode::External, ApproxMethod::Simple, None).unwrap();
             let back = rasterize(&contours, 40, 40, 255, 0, 1);
             assert_eq!(pixels(&back), pixels(&mask), "{name}");
         }
@@ -770,7 +803,8 @@ mod tests {
     #[test]
     fn test_diagonal_neighbours_are_one_region() {
         let image = mask_from(10, 10, |x, y| (x, y) == (5, 5) || (x, y) == (6, 6));
-        let contours = extract_contours(&image, ExtractMode::All, ApproxMethod::Simple, None);
+        let contours =
+            extract_contours(&image, ExtractMode::All, ApproxMethod::Simple, None).unwrap();
         assert_eq!(contours.len(), 1);
         assert_eq!(
             corners(&contours[0]),
@@ -793,7 +827,8 @@ mod tests {
             (10..30).contains(&x) && (10..30).contains(&y)
                 || (60..90).contains(&x) && (60..90).contains(&y)
         });
-        let contours = extract_contours(&image, ExtractMode::External, ApproxMethod::None, None);
+        let contours =
+            extract_contours(&image, ExtractMode::External, ApproxMethod::None, None).unwrap();
 
         assert_eq!(contours.len(), 2);
     }
@@ -807,7 +842,8 @@ mod tests {
                 || (x == 19 && y == 19)
                 || (x == 19 && y == 20)
         });
-        let contours = extract_contours(&image, ExtractMode::External, ApproxMethod::None, None);
+        let contours =
+            extract_contours(&image, ExtractMode::External, ApproxMethod::None, None).unwrap();
 
         assert_eq!(contours.len(), 1);
         assert_eq!(measures::area(&contours[0], false), (20 * 9 * 2 + 2) as f64);
@@ -824,11 +860,12 @@ mod tests {
                 && !((15..21).contains(&x) && (12..16).contains(&y))
         });
 
-        let external = extract_contours(&image, ExtractMode::External, ApproxMethod::Simple, None);
+        let external =
+            extract_contours(&image, ExtractMode::External, ApproxMethod::Simple, None).unwrap();
         assert_eq!(external.len(), 1);
         assert_eq!(measures::area(&external[0], false), 400.0);
 
-        let all = extract_contours(&image, ExtractMode::All, ApproxMethod::Simple, None);
+        let all = extract_contours(&image, ExtractMode::All, ApproxMethod::Simple, None).unwrap();
         assert_eq!(all.len(), 2);
         let hole = all.iter().find(|c| measures::area(c, false) == 24.0);
         assert_eq!(
@@ -847,11 +884,12 @@ mod tests {
             let island = (15..25).contains(&x) && (15..25).contains(&y);
             ring || island
         });
-        let external = extract_contours(&image, ExtractMode::External, ApproxMethod::Simple, None);
+        let external =
+            extract_contours(&image, ExtractMode::External, ApproxMethod::Simple, None).unwrap();
         assert_eq!(external.len(), 1);
         assert_eq!(measures::area(&external[0], false), 900.0);
 
-        let all = extract_contours(&image, ExtractMode::All, ApproxMethod::Simple, None);
+        let all = extract_contours(&image, ExtractMode::All, ApproxMethod::Simple, None).unwrap();
         let mut areas: Vec<f64> = all.iter().map(|c| measures::area(c, false)).collect();
         areas.sort_by(f64::total_cmp);
         assert_eq!(areas, vec![100.0, 400.0, 900.0]);
@@ -868,6 +906,7 @@ mod tests {
                 ApproxMethod::None,
                 Some(min),
             )
+            .unwrap()
         };
         assert_eq!(at(3600.0).len(), 1);
         assert!(at(3600.5).is_empty());

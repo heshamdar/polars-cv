@@ -226,6 +226,7 @@ SINGLE_CHANNEL_OPS: frozenset[str] = frozenset(
         "morphology_open",
         "morphology_close",
         "morphology_gradient",
+        "extract_contours",
     }
 )
 
