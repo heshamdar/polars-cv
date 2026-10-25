@@ -900,8 +900,9 @@ mod tests {
         let ca = column(&[Some("s3://bucket/key.png")]);
         let options = CloudOptions::from_map(&HashMap::from([(
             "token_command".to_string(),
-            "printf tok".to_string(),
-        )]));
+            r#"["printf", "tok"]"#.to_string(),
+        )]))
+        .unwrap();
         let p = PathPolicy::default();
         let fetcher = Fetcher::new(&ca, Some(&options), &p);
         let err = fetcher.bytes(0).err().unwrap();

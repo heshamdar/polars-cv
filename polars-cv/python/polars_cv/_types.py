@@ -6,6 +6,7 @@ This module contains the core type definitions used throughout the package.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, TypeAlias, Union
@@ -180,6 +181,43 @@ def _literal(value: Any) -> Any:
     return value
 
 
+def _argv(value: Any) -> list[str]:
+    """A ``token_command`` as a validated argument vector.
+
+    The only spelling is a non-empty list of strings whose first element names
+    the program. A string is refused with the list form: the shell that used
+    to evaluate it was removed, so a string has no meaning left to give it.
+    """
+    example = 'token_command=["gcloud", "auth", "print-access-token"]'
+    if isinstance(value, (str, bytes)):
+        msg = (
+            f"token_command must be a list of strings, got {type(value).__name__} "
+            f"{value!r}. Shell evaluation of token_command was removed: the "
+            f"command runs as a program with arguments, never through a shell. "
+            f"Write {example}; for shell syntax, say so explicitly with "
+            f'token_command=["sh", "-c", "..."].'
+        )
+        raise TypeError(msg)
+    if not isinstance(value, (list, tuple)):
+        msg = f"token_command must be a list of strings such as {example}, got {type(value).__name__}"
+        raise TypeError(msg)
+    argv = list(value)
+    if not argv:
+        msg = f"token_command must name a program; got an empty list. Write {example}"
+        raise ValueError(msg)
+    for i, arg in enumerate(argv):
+        if not isinstance(arg, str):
+            msg = (
+                f"token_command[{i}] must be a string, got {type(arg).__name__}. "
+                f"Write {example}"
+            )
+            raise TypeError(msg)
+    if not argv[0].strip():
+        msg = f"token_command[0] must name a program, got {argv[0]!r}. Write {example}"
+        raise ValueError(msg)
+    return argv
+
+
 @dataclass
 class CloudOptions:
     """
@@ -213,16 +251,27 @@ class CloudOptions:
     variable ``POLARS_CV_DISABLE_GCS_FEDERATION=1`` to turn that off.
 
     To obtain a bearer token some other way — a custom broker, a wrapper script,
-    or a different CLI — set ``token_command`` to any shell command that prints
-    an access token to stdout. This is provider-agnostic and applies to the
-    OAuth-bearer backends, **GCS and Azure**::
+    or a different CLI — set ``token_command`` to the argument vector of a
+    program that prints an access token to stdout. This is provider-agnostic
+    and applies to the OAuth-bearer backends, **GCS and Azure**::
 
         opts = CloudOptions(
-            token_command="gcloud auth application-default print-access-token"
+            token_command=["gcloud", "auth", "application-default", "print-access-token"]
         )
         # Azure, equivalently:
-        CloudOptions(token_command="az account get-access-token "
-                     "--resource https://storage.azure.com/ --query accessToken -o tsv")
+        CloudOptions(token_command=[
+            "az", "account", "get-access-token",
+            "--resource", "https://storage.azure.com/",
+            "--query", "accessToken", "-o", "tsv",
+        ])
+
+    The program is run directly (``argv[0]`` with the rest as its arguments),
+    never through a shell, on every platform: an argument holding ``;`` or
+    ``$(...)`` reaches the program as that literal text. A string is refused.
+    If you need a pipeline or shell syntax, say so explicitly with
+    ``["sh", "-c", "..."]`` (``["cmd", "/C", "..."]`` on Windows). On Windows
+    name a batch wrapper with its extension (``"gcloud.cmd"``): the program is
+    looked up as written.
 
     ``token_command`` does not apply to S3, which authenticates with SigV4 rather
     than a bearer token; passing it with an ``s3://`` source raises. Or pass a
@@ -243,8 +292,9 @@ class CloudOptions:
         azure_storage_access_key: Azure storage access key.
         gcs_bearer_token: Pre-obtained GCS OAuth access token (bearer). Escape
             hatch for credential types object_store cannot load natively.
-        token_command: Shell command whose stdout is an OAuth access token, run
-            to obtain a bearer credential for federated/brokered setups. Applies
+        token_command: Argument vector (``list[str]``, non-empty) of a program
+            whose stdout is an OAuth access token, run without a shell to
+            obtain a bearer credential for federated/brokered setups. Applies
             to GCS and Azure (not S3); takes precedence over the automatic
             ``gcloud`` delegation.
         storage_options: Extra options forwarded verbatim to the object_store
@@ -264,7 +314,23 @@ class CloudOptions:
     # New fields appended after `anonymous` to preserve positional construction.
     gcs_bearer_token: str | None = None
     storage_options: dict[str, str] | None = None
-    token_command: str | None = None
+    token_command: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a ``token_command`` that is not an argument vector.
+
+        Raised here, at construction, so a string never reaches a query: the
+        shell evaluation that once ran it was removed, and a string would
+        otherwise be taken for the program's name.
+        """
+        if self.token_command is not None:
+            self.token_command = _argv(self.token_command)
+        if self.storage_options and "token_command" in self.storage_options:
+            msg = (
+                "storage_options cannot carry token_command; "
+                "pass CloudOptions(token_command=[...]) with its arguments as a list"
+            )
+            raise ValueError(msg)
 
     # Fields that contain sensitive credential data and should be masked
     _SENSITIVE_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -316,7 +382,10 @@ class CloudOptions:
             Dictionary with non-None credential fields.
         """
         result = {
-            self._WIRE_KEYS.get(name, name): value for name, value in self._named()
+            self._WIRE_KEYS.get(name, name): (
+                json.dumps(value) if name == "token_command" else value
+            )
+            for name, value in self._named()
         }
         if self.anonymous is not None:
             result["anonymous"] = str(self.anonymous).lower()

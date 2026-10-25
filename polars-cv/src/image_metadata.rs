@@ -178,7 +178,9 @@ fn metas(
             let options = kwargs
                 .cloud_options
                 .as_ref()
-                .map(crate::cloud::CloudOptions::from_map);
+                .map(crate::cloud::CloudOptions::from_map)
+                .transpose()
+                .map_err(|e| polars_err!(ComputeError: "{}: {}", name, e))?;
             let policy = kwargs
                 .allowed_roots
                 .as_deref()

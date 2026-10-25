@@ -132,7 +132,9 @@ class TestCheckCloudAccess:
         result = _run(
             """
             import polars_cv
-            opts = polars_cv.CloudOptions(token_command="echo nope >&2; exit 3")
+            opts = polars_cv.CloudOptions(
+                token_command=["sh", "-c", "echo nope >&2; exit 3"]
+            )
             try:
                 polars_cv.check_cloud_access("gs://bucket/x.png", cloud_options=opts)
             except polars_cv.CloudCredentialError as e:
@@ -142,8 +144,57 @@ class TestCheckCloudAccess:
         )
         assert result.returncode == 0, result.stderr
         assert "RAISED:" in result.stdout
-        assert "token_command `echo nope >&2; exit 3`" in result.stdout
+        assert 'token_command ["sh", "-c", "echo nope >&2; exit 3"]' in result.stdout
         assert "nope" in result.stdout
+
+    def test_token_command_arguments_reach_the_program_literally(
+        self, tmp_path: Path
+    ) -> None:
+        # A value built from data may hold shell syntax. Run as an argument
+        # vector it is text: the program sees it verbatim and nothing else runs.
+        env, _ = _federated_env(tmp_path)
+        seen = tmp_path / "seen"
+        pwned = tmp_path / "pwned"
+        broker = tmp_path / "broker"
+        broker.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{seen}"\nexit 3\n')
+        broker.chmod(0o755)
+        argv = [str(broker), "a;b", f"$(touch {pwned})", f"`touch {pwned}`"]
+        result = _run(
+            f"""
+            import polars_cv
+            opts = polars_cv.CloudOptions(token_command={argv!r})
+            try:
+                polars_cv.check_cloud_access("gs://bucket/x.png", cloud_options=opts)
+            except polars_cv.CloudCredentialError as e:
+                print("RAISED:", e)
+            """,
+            env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "RAISED:" in result.stdout
+        assert seen.read_text().splitlines() == argv[1:]
+        assert not pwned.exists()
+
+    def test_the_wire_refuses_the_old_shell_string(self, tmp_path: Path) -> None:
+        # Python refuses a string first; a caller that goes around it (the
+        # plugin function directly) meets the same refusal in Rust.
+        env, marker = _federated_env(tmp_path)
+        result = _run(
+            """
+            from polars_cv import _lib
+            try:
+                _lib._check_cloud_access(
+                    "gs://bucket/x.png", {"token_command": "echo tok"}
+                )
+            except ValueError as e:
+                print("RAISED:", e)
+            """,
+            env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "RAISED:" in result.stdout
+        assert "argument vector" in result.stdout
+        assert "Shell evaluation" in result.stdout
 
     def test_a_non_remote_path_is_refused(self) -> None:
         import polars_cv

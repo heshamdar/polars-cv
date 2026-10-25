@@ -109,12 +109,39 @@ class TestCloudOptionsRoundTrip:
         assert spec["source"]["cloud_options"] == {"bearer_token": "ya29.token"}
 
     def test_token_command_maps_to_reserved_key(self) -> None:
-        opts = CloudOptions(token_command="my-broker get-token")
+        # The wire map carries strings only, so the argument vector rides as
+        # its JSON encoding (which Rust parses back and refuses anything else).
+        opts = CloudOptions(token_command=["my-broker", "get-token", "a;b $(x)"])
         pipe = Pipeline().source("file_path", cloud_options=opts).grayscale()
         spec = json.loads(pipe._to_json())
         assert spec["source"]["cloud_options"] == {
-            "token_command": "my-broker get-token"
+            "token_command": '["my-broker", "get-token", "a;b $(x)"]'
         }
+
+    @pytest.mark.parametrize(
+        "value",
+        ["my-broker get-token", "", b"my-broker", 3, ["a", 1], [], [""], ["  ", "x"]],
+    )
+    def test_token_command_must_be_a_nonempty_argument_vector(
+        self, value: object
+    ) -> None:
+        with pytest.raises((TypeError, ValueError), match="token_command"):
+            CloudOptions(token_command=value)  # type: ignore[arg-type]
+
+    def test_a_shell_string_is_refused_with_the_list_form(self) -> None:
+        with pytest.raises(TypeError) as err:
+            CloudOptions(token_command="gcloud auth print-access-token")
+        message = str(err.value)
+        assert '["gcloud", "auth", "print-access-token"]' in message
+        assert "Shell evaluation" in message and "removed" in message
+
+    def test_a_shell_string_in_a_dict_is_refused_too(self) -> None:
+        with pytest.raises(TypeError, match="Shell evaluation"):
+            Pipeline().source("file_path", cloud_options={"token_command": "a b"})
+
+    def test_storage_options_cannot_smuggle_a_token_command(self) -> None:
+        with pytest.raises(ValueError, match="token_command"):
+            CloudOptions(storage_options={"token_command": "a b"})
 
     def test_storage_options_override_named_fields(self) -> None:
         # storage_options wins over a colliding named field.
