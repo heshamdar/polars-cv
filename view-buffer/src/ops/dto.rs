@@ -1,13 +1,12 @@
 use crate::core::buffer::ViewBuffer;
-use crate::execution::runner::{apply_compute_inner, apply_image_inner, apply_view};
 use crate::mode::{Exec, Mode};
 use crate::ops::color::apply_color_convert;
 use crate::ops::color::ColorConvertOp;
-use crate::ops::compute::ComputeOp;
+use crate::ops::compute::{apply_compute_inner, ComputeOp};
 use crate::ops::filter::{apply_convolve2d, ConvolveOp};
-use crate::ops::image::ImageOp;
+use crate::ops::image::{apply_image_inner, ImageOp};
 use crate::ops::traits::{IdentityRule, Op};
-use crate::ops::view::ViewOp;
+use crate::ops::view::{apply_view, ViewOp};
 use polars_cv_macros::Resolve;
 
 /// A pure Data Transfer Object (DTO) for single-buffer operation plans.
@@ -114,7 +113,7 @@ family_into_dto! {
 
 impl ViewDto {
     /// Run this op on `buf`: the one dispatch from a plan step to its family's
-    /// runner. Adding a variant without a runner fails to compile here.
+    /// entry. Adding a variant without an entry fails to compile here.
     pub(crate) fn execute(self, buf: ViewBuffer) -> ViewBuffer {
         match self {
             ViewDto::View(op) => apply_view(buf, op),

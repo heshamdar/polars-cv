@@ -10,6 +10,7 @@
 //! - [`geometry`] - Geometry operations (Contour, Point, rasterization)
 //! - [`expr`] - Expression graph for lazy evaluation
 //! - [`execution`] - Execution planning and running
+//! - `kernels` - The kernel bodies the ops call, one module per kind of computation
 //! - [`protocol`] - Binary serialization format
 //! - [`interop`] - External library integrations (optional)
 //! - [`naming`] - Canonical name tables for user-facing enums
@@ -22,6 +23,7 @@ pub mod execution;
 pub mod expr;
 pub mod geometry;
 pub mod interop;
+pub(crate) mod kernels;
 pub mod mode;
 pub mod naming;
 pub mod ops;
@@ -33,15 +35,14 @@ pub use core::dtype::{DType, OutputDTypeRule, PlannedDType};
 pub use core::layout::{ExternalLayout, LayoutFacts};
 
 // Re-exports - Execution
-pub use execution::{
-    apply_channel_merge, apply_channel_swap, execute_plan, validate_channel_merge, ExecutionPlan,
-    PlanStep,
-};
+pub use execution::{execute_plan, ExecutionPlan, PlanStep};
+pub use kernels::channel::{apply_channel_merge, apply_channel_swap};
 
 // Re-exports - Expression
 pub use expr::{OptConfig, ViewExpr, ENGINE_PASSES};
 
 // Re-exports - Ops
+pub use ops::validation::validate_channel_merge;
 pub use ops::{
     apply_mask, validate_mask, BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType,
     Footprint, GeometricEffect, IdentityRule, ImageOp, ImageOpKind, NeighborhoodSupport,

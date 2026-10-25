@@ -49,6 +49,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **One home per kernel in view-buffer.** `ops/<family>.rs` owns an op's
+  contract, parameters and `execute` entry; the kernel bodies live in
+  `view-buffer/src/kernels/<kind>.rs`, one module per kind of computation
+  (`blur`, `canny`, `channel`, `color`, `distance`, `elementwise`, `equalize`,
+  `filter`, `grid`, `mask`, `morph`, `phash`, `pixel`, `rank`, `resample`,
+  `resize`, `warp`); `execution/runner.rs` runs plans (`execute_plan`) and
+  `ViewDto::execute` stays the one dispatch. `runner.rs` goes from 2,646 lines
+  to 20. The code moved verbatim (paths and visibility only; the engine's
+  669 tests are unchanged). Public paths that moved: `apply_perceptual_hash`
+  is `view_buffer::ops::phash::apply_perceptual_hash` (it was
+  `execution::runner::`), `validate_channel_merge` lives in `ops::validation`
+  and `apply_channel_swap`/`apply_channel_merge` in `kernels::channel`
+  (all three still re-exported at the crate root), and
+  `split_alpha`/`merge_alpha` are crate-private. The rule is stated once, in
+  `view-buffer/AGENTS.md` ("Where code goes") (#170).
 - **view-buffer's `image_interop` and `perceptual_hash` features are gone; image
   codecs, resize and perceptual hashing are always built.** The crate is
   unpublished and the plugin always enabled both, so the feature-off branches

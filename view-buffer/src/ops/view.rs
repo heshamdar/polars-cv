@@ -1,5 +1,6 @@
 //! View operations that perform zero-copy transformations.
 
+use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::mode::{known, size, Exec, Mode};
 use crate::ops::shape_rule::{place_axis, resolve_axis, OpShape, Sym};
@@ -771,6 +772,90 @@ impl<M: Mode> Op for ViewOp<M> {
                     Some(input_strides.to_vec())
                 }
             }
+        }
+    }
+}
+
+/// Applies a view operation to a buffer.
+pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
+    if let Some((start, end)) = op.window() {
+        return buf.slice(&start, &end);
+    }
+    match op {
+        ViewOp::Transpose { .. } => buf.permute(&op.axes()),
+        // The planner packs a reshape's input (`MemoryEffect::ViewOfContiguous`);
+        // `ViewBuffer::reshape` refuses a strided one in every build.
+        ViewOp::Reshape { shape } => buf.reshape(
+            shape
+                .iter()
+                .map(|&d| d as usize)
+                .collect::<crate::core::layout::Dims>(),
+        ),
+        ViewOp::Flip { when: false, .. } => buf,
+        ViewOp::Flip { .. } => buf.flip(&op.axes()),
+        // A crop and a slice are their window (above). `ViewExpr::apply_op`
+        // places a clipped or padded crop in its input as a slice (and a
+        // padded one's `pad`), so neither reaches here.
+        ViewOp::Crop { .. } | ViewOp::Slice { .. } => {
+            unreachable!("a crop or slice runs as its window above")
+        }
+        ViewOp::CropClip { .. } | ViewOp::CropPad { .. } => {
+            unreachable!("clipped and padded crops are placed as slices by ViewExpr::apply_op")
+        }
+        ViewOp::Rotate90 => {
+            // Rotate90: transpose [1,0] then flip axis 1 (width)
+            // For HWC layout: transpose swaps H and W, then flip W
+            let shape = buf.shape();
+            if shape.len() < 2 {
+                return buf; // Can't rotate 1D or 0D
+            }
+            let perm = if shape.len() == 2 {
+                vec![1, 0] // [H, W] -> [W, H]
+            } else {
+                vec![1, 0, 2] // [H, W, C] -> [W, H, C]
+            };
+            let transposed = buf.permute(&perm);
+            transposed.flip(&[1]) // Flip width axis
+        }
+        ViewOp::Rotate180 => {
+            // Rotate180: flip both height (axis 0) and width (axis 1)
+            buf.flip(&[0, 1])
+        }
+        ViewOp::Rotate270 => {
+            // Rotate270: transpose [1,0] then flip axis 0 (height)
+            // For HWC layout: transpose swaps H and W, then flip H
+            let shape = buf.shape();
+            if shape.len() < 2 {
+                return buf; // Can't rotate 1D or 0D
+            }
+            let perm = if shape.len() == 2 {
+                vec![1, 0] // [H, W] -> [W, H]
+            } else {
+                vec![1, 0, 2] // [H, W, C] -> [W, H, C]
+            };
+            let transposed = buf.permute(&perm);
+            transposed.flip(&[0]) // Flip height axis
+        }
+        ViewOp::Squeeze { .. } => {
+            let at = op.axis_position(buf.shape().len());
+            buf.remove_axis(at.expect("a validated squeeze names an axis"))
+        }
+        ViewOp::ExpandDims { .. } => {
+            let at = op.axis_position(buf.shape().len());
+            buf.insert_axis(at.expect("a validated expand_dims names a position"))
+        }
+        ViewOp::ChannelSelect { index, keepdims } => {
+            let index = index as usize;
+            let shape = buf.shape();
+            if shape.len() != 3 {
+                return buf;
+            }
+            let h = shape[0];
+            let w = shape[1];
+            // Slice to [H, W, 1] then materialize (slice is non-contiguous in HWC)
+            let sliced = buf.slice(&[0, 0, index], &[h, w, index + 1]);
+            let shape = if keepdims { vec![h, w, 1] } else { vec![h, w] };
+            sliced.to_contiguous().reshape(shape)
         }
     }
 }

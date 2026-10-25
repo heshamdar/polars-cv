@@ -152,7 +152,7 @@ mod tests {
     //! by the first consumer's differential-equivalence tests (the
     //! spatial-window pushdown pass). The blur radius, the one non-trivial
     //! `Neighborhood` value, is additionally cross-checked against the executed
-    //! kernel in `execution::runner`'s `blur_radius_tests`.
+    //! kernel in `kernels::blur`'s `blur_radius_tests`.
 
     use super::*;
     use crate::mode::Exec;
@@ -283,7 +283,7 @@ mod tests {
             .spatial_dependency(),
             SpatialDependency::neighborhood(1)
         );
-        // Blur: radius = ceil(3σ) (matches gaussian_kernel_1d in the runner).
+        // Blur: radius = ceil(3σ) (matches gaussian_kernel_1d in `kernels::blur`).
         assert_eq!(
             img(ImageOpKind::Blur { sigma: 1.0 }).spatial_dependency(),
             SpatialDependency::neighborhood(3)

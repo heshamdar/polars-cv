@@ -198,7 +198,7 @@ pub(crate) fn run_step(
             // Converts to u8 image format and returns a 1-D u8 buffer: the
             // planned `vector` domain selects the List encoding at sink time.
             Ok(NodeOutput::from_buffer(
-                view_buffer::execution::runner::apply_perceptual_hash((*buf).clone(), op.clone()),
+                view_buffer::ops::phash::apply_perceptual_hash((*buf).clone(), op.clone()),
             ))
         }
         GraphStep::Graph(graph) => match graph.role() {

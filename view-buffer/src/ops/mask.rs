@@ -3,11 +3,10 @@
 //! Moved from the polars-cv plugin's graph executor so all buffer math lives
 //! in the engine; the graph layer only resolves which node provides the mask.
 
-use std::mem::MaybeUninit;
-
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::{DType, PlannedDType, ViewType};
-use crate::core::map::{map_new, ElementMap};
+use crate::core::dtype::{DType, PlannedDType};
+use crate::core::map::map_new;
+use crate::kernels::mask::{expand, InvertMask};
 use crate::ops::binary::BinaryOp;
 
 /// Whether [`apply_mask`] can combine a buffer of `buffer_shape` with a mask of
@@ -111,46 +110,6 @@ pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewB
         })
     };
     weighed.cast_to(buffer.dtype())
-}
-
-/// A `[h, w]` mask broadcast to `[h, w, c]` and packed (inverted on the way
-/// when `invert`): a stride-0 channel axis, read through its walk.
-fn expand<T: ViewType>(
-    mask: &ViewBuffer,
-    (h, w, c): (usize, usize, usize),
-    invert: bool,
-) -> ViewBuffer
-where
-    InvertMask: ElementMap<T, T>,
-{
-    let broadcast = mask.broadcast_to(&[c, h, w]).permute(&[1, 2, 0]);
-    if invert {
-        map_new::<T, T, _>(&broadcast, &InvertMask)
-    } else {
-        broadcast.to_contiguous()
-    }
-}
-
-/// A mask inverted: `255 - m` for a u8 mask, `1 - m` for an f32 one.
-struct InvertMask;
-
-// SAFETY (both): `map_into` writes every slot of `dst`.
-unsafe impl ElementMap<u8, u8> for InvertMask {
-    #[inline(always)]
-    fn map_into(&self, src: &[u8], dst: &mut [MaybeUninit<u8>], _at: usize) {
-        for (d, &m) in dst.iter_mut().zip(src) {
-            d.write(255 - m);
-        }
-    }
-}
-
-unsafe impl ElementMap<f32, f32> for InvertMask {
-    #[inline(always)]
-    fn map_into(&self, src: &[f32], dst: &mut [MaybeUninit<f32>], _at: usize) {
-        for (d, &m) in dst.iter_mut().zip(src) {
-            d.write(1.0 - m);
-        }
-    }
 }
 
 #[cfg(test)]

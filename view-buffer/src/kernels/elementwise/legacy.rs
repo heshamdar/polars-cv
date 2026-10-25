@@ -521,7 +521,7 @@ pub(super) fn try_apply_fused_kernel_inplace(this: &mut ViewBuffer, kernel: &Fus
     // operation that LLVM can auto-vectorize with SIMD (the closure is
     // known at compile time within each match arm, unlike the old
     // chunk-then-ops order which blocked auto-vectorization).
-    crate::ops::elementwise::apply_fused_op_passes(data, &kernel.ops);
+    crate::kernels::elementwise::apply_fused_op_passes(data, &kernel.ops);
     true
 }
 
@@ -541,7 +541,7 @@ pub(super) fn apply_fused_kernel(this: &ViewBuffer, kernel: &FusedKernel) -> Vie
     let mut acc: Vec<f32> = gather_to_f32(this, total_elems);
 
     // One full-array pass per op (auto-vectorized; see inplace docs).
-    crate::ops::elementwise::apply_fused_op_passes(&mut acc, &kernel.ops);
+    crate::kernels::elementwise::apply_fused_op_passes(&mut acc, &kernel.ops);
 
     // Convert to the kernel's output dtype while writing the result.
     finish_fused_output(acc, this.layout.shape.clone(), kernel.out_dtype)

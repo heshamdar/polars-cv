@@ -4,7 +4,7 @@
 //! table is a *data* error, which an engine op cannot report: it surfaces as
 //! the row's `Err` from [`LutOp::execute`], as the histogram's does. A table
 //! of single entries reads through the element-wise engine's table map
-//! (`ops::elementwise::lookup_column`), the one per-value table read; a
+//! (`kernels::elementwise::lookup_column`), the one per-value table read; a
 //! palette, one input to `K` outputs, writes its pixels in one pass.
 
 use polars_cv_macros::{Ops, Resolve};
@@ -139,7 +139,7 @@ impl LutOp {
         }
         if self.width() == 1 {
             let entries: Vec<f64> = self.table.iter().map(|row| row[0]).collect();
-            return Ok(crate::ops::elementwise::lookup_column(
+            return Ok(crate::kernels::elementwise::lookup_column(
                 buf.clone(),
                 &entries,
                 self.out_dtype,
