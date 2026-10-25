@@ -121,6 +121,24 @@ def test_an_absent_allowed_roots_is_refused_naming_the_option(tree, surface) -> 
 
 
 @plugin_required
+@pytest.mark.parametrize("surface", sorted(_SURFACES))
+@pytest.mark.parametrize(
+    "url", ["s3://bucket/a.png", "gs://bucket/a.png", "https://example.com/a.png"]
+)
+def test_an_absent_allowed_roots_refuses_remote_urls_too(surface, url) -> None:
+    """Absent `allowed_roots` denies remote URLs as it does local paths (#180):
+    credentials are rarely scoped to one prefix, and http(s) has no credential
+    boundary at all. The refusal comes before any fetch, and says how to allow
+    the scheme."""
+    with pytest.raises(pl.exceptions.ComputeError) as excinfo:
+        _SURFACES[surface]([url])
+    message = str(excinfo.value)
+    assert "remote URLs" in message
+    assert "s3://bucket/public/" in message, "the message must show a remote root"
+    assert '["*"]' in message
+
+
+@plugin_required
 def test_an_absent_allowed_roots_is_refused_under_on_error_raise(tree) -> None:
     """The default `on_error="raise"` fails the same way."""
     df = pl.DataFrame({"p": [str(tree["image"])]})

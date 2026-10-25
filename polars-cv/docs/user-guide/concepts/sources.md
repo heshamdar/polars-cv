@@ -144,9 +144,11 @@ A path column is data, and data can come from somewhere you do not control, so
 path reading is **default-deny**. A `file_path` source (or an `auto` source over
 a `String` column), `.cv.read_bytes()` and the header-metadata methods
 (`.cv.width()`, `.cv.image_info()`, ...) read nothing until `allowed_roots` says
-where they may. With it missing, the query fails with an error that names the
-option, whatever `on_error` is: a missing sandbox is never turned into a column
-of nulls.
+where they may. That covers remote URLs as well as local paths: credentials are
+rarely scoped to one prefix, and `http(s)://` has no credential boundary at all,
+so a cloud pipeline names its buckets too (`allowed_roots=["s3://bucket/"]`).
+With it missing, the query fails with an error that names the option, whatever
+`on_error` is: a missing sandbox is never turned into a column of nulls.
 
 ```python
 # Specific locations: local directories and/or remote URI prefixes.

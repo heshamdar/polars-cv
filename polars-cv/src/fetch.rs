@@ -177,7 +177,8 @@ impl PathPolicy {
         let Some(roots) = allowed_roots else {
             return Err(format!(
                 "no path is readable because allowed_roots is not set. A path column \
-                 is data, so nothing is allowed by default. Allow the locations it \
+                 is data, so nothing is allowed by default, local paths and remote \
+                 URLs (s3://, gs://, az://, http(s)://) alike. Allow the locations it \
                  may name, e.g. allowed_roots=[\"/srv/images\", \"s3://bucket/public/\"], \
                  or opt in to reading any path the process can with \
                  allowed_roots=[\"{ALLOW_ANY}\"]."
