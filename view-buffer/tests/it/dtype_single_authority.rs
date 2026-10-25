@@ -114,3 +114,30 @@ fn unknown_encodings_are_rejected_not_guessed() {
     assert_eq!(DType::from_numpy_name("float16"), None);
     assert_eq!(DType::from_short_name("f16"), None);
 }
+
+#[test]
+fn cast_only_names_are_not_spellings_of_any_dtype() {
+    // A cast-only name (`"boolean"`) reaches a buffer through a cast; it is not
+    // a name of the dtype. One that equalled a short or numpy name would be a
+    // second spelling the Python lookup could not tell from the first.
+    assert!(
+        !DType::CAST_ONLY.is_empty(),
+        "the table declares no cast-only name"
+    );
+    let mut seen = HashSet::new();
+    for &(name, dt) in DType::CAST_ONLY {
+        assert!(seen.insert(name), "duplicate cast-only name {name:?}");
+        assert_eq!(
+            DType::from_short_name(name),
+            None,
+            "{name:?} is a short name"
+        );
+        assert_eq!(
+            DType::from_numpy_name(name),
+            None,
+            "{name:?} is a numpy name"
+        );
+        assert!(DType::ALL.contains(&dt));
+    }
+    assert!(DType::CAST_ONLY.contains(&("boolean", DType::U8)));
+}

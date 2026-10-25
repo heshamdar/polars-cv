@@ -18,7 +18,7 @@ import polars as pl
 from polars_cv._ops_generated import *  # noqa: F403
 from polars_cv._this import ThisExpr
 
-from ._dtype_names import NUMPY_TO_SHORT
+from ._dtype_names import CAST_ONLY_TO_SHORT, NUMPY_TO_SHORT
 
 if TYPE_CHECKING:
     pass
@@ -33,17 +33,6 @@ FloatOrThisOrExpr: TypeAlias = Union[float, pl.Expr, ThisExpr]
 # For non-structural flags only. A flag that changes the output shape — such as
 # ``rotate(expand)`` — stays a plain ``bool``.
 BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
-
-
-#: Polars types that reach a buffer through a *cast* rather than a numpy name.
-#:
-#: A boolean mask is the documented shape for a ground-truth mask column and
-#: the natural output of ``np_mask.astype(bool).tolist()``. It is not a buffer
-#: element type, but the source decoder casts rather than reinterprets
-#: (``convert_row_values`` in ``graph/source.rs``), so ``u8`` gives the 0/1 a mask
-#: means. This is the one correspondence not derivable from ``dtype_table!``,
-#: so it is written out here and nowhere else.
-_CAST_ONLY_NAMES: dict[str, str] = {"boolean": "u8"}
 
 
 def dtype_name_for(dtype: pl.DataType) -> str:
@@ -62,7 +51,7 @@ def dtype_name_for(dtype: pl.DataType) -> str:
             unwrapped; pass the element type.
 
     Returns:
-        The engine's short name, e.g. ``"f32"``.
+        The engine's short name, e.g. ``f32``.
 
     Raises:
         ValueError: If *dtype* has no meaningful buffer representation. It does
@@ -71,17 +60,19 @@ def dtype_name_for(dtype: pl.DataType) -> str:
     """
     name = getattr(dtype, "__name__", None) or str(dtype)
     key = name.lower()
-    if key in _CAST_ONLY_NAMES:
-        return _CAST_ONLY_NAMES[key]
+    # A boolean mask is the documented shape for a ground-truth mask column. It
+    # is not a buffer element type, but the source decoder casts rather than
+    # reinterprets (``convert_row_values`` in ``graph/source.rs``), so
+    # ``CAST_ONLY_TO_SHORT`` (from ``dtype_table!``) names the dtype it becomes.
     try:
-        return NUMPY_TO_SHORT[key]
+        return {**NUMPY_TO_SHORT, **CAST_ONLY_TO_SHORT}[key]
     except KeyError:
         # Name the *Polars* types, which is what the caller supplied and can
         # change. Listing the engine's names instead says nothing actionable,
-        # and repeats "u8" twice since two Polars types map onto it. The
+        # and repeats u8 twice since two Polars types map onto it. The
         # spellings are read back off Polars rather than written out here, so
         # this stays a lookup and not a fourth copy of the dtype vocabulary.
-        known = {*NUMPY_TO_SHORT, *_CAST_ONLY_NAMES}
+        known = {*NUMPY_TO_SHORT, *CAST_ONLY_TO_SHORT}
         accepted = ", ".join(sorted(n for n in dir(pl) if n.lower() in known))
         raise ValueError(
             f"{dtype} has no meaningful buffer representation. "

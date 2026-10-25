@@ -16,6 +16,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   with fixtures for the comparison in `test_stub_parity_fixtures.py`. It found
   two drifts, now fixed: `Plan.with_source` was stubbed with a `refs`
   parameter Rust lacks, and `__allocator__` was undeclared (#167).
+- **The `boolean` -> `u8` cast correspondence lives in `dtype_table!`.** Each row
+  now ends in a list of cast-only source names (`(U8, "u8", 1, "uint8",
+  ["boolean"])`), exposed as `DType::CAST_ONLY` and generated into
+  `_dtype_names.py` as `CAST_ONLY_TO_SHORT`, which `dtype_name_for` reads. The
+  `_CAST_ONLY_NAMES` literal in `_types.py` is gone, so that module holds no
+  dtype-name literal. A cast-only name equal to a dtype spelling fails the
+  generator and a view-buffer test. Behaviour is unchanged (#177).
 - **`GLOSSARY.md`** fixes one meaning for each overloaded word (*view*,
   *plan*, *node*, *step*, *graph*, *op*, *domain*) and lists the type names
   that use one another way (`ViewBuffer`, `ViewDto`, `ExecutionPlan`,
