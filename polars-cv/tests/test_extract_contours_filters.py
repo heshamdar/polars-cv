@@ -123,3 +123,26 @@ class TestLargest:
     def test_k_zero_is_refused(self) -> None:
         with pytest.raises(ValueError, match="k"):
             _BASE.extract_contours().largest(k=0)
+
+
+@plugin_required
+class TestTheInputIsASingleChannelU8Mask:
+    """``extract_contours`` reads a single-channel ``u8`` mask and refuses any
+    other input — never reading another dtype's or layout's bytes as pixels."""
+
+    def test_a_float_mask_is_refused_when_the_pipeline_is_built(self) -> None:
+        with pytest.raises(ValueError, match=r"(?s)extract_contours.*u8"):
+            _BASE.cast("f32").extract_contours()
+
+    def test_a_multi_channel_image_is_refused_as_its_row_runs(self) -> None:
+        # A PNG's channel count is known only once it decodes.
+        rgb = np.zeros((16, 16, 3), np.uint8)
+        rgb[4:12, 4:12] = 255
+        df = pl.DataFrame({"img": [_png(rgb)]})
+        pipe = Pipeline().source("image_bytes").extract_contours()
+        with pytest.raises(pl.exceptions.ComputeError, match="single-channel"):
+            df.select(pl.col("img").cv.pipe(pipe).sink("native"))
+
+    def test_a_single_channel_u8_mask_still_extracts(self) -> None:
+        df = pl.DataFrame({"img": [_blobs(40)]})
+        assert _areas(df, _BASE.extract_contours()) == [[4.0, 16.0, 100.0]]
