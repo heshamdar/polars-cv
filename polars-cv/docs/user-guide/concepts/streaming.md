@@ -173,7 +173,11 @@ NumPy tensor of shape `(rows, *shape)` that views the batch's memory rather
 than copying it:
 
 ```python
-pipe = Pipeline().source("file_path", dtype="u8").resize(height=224, width=224)
+pipe = (
+    Pipeline()
+    .source("file_path", dtype="u8", allowed_roots=["/srv/images"])
+    .resize(height=224, width=224)
+)
 batches = (
     pl.scan_parquet("images.parquet")
     .select(x=pl.col("path").cv.pipe(pipe).sink("array", shape=[224, 224, 3]))
@@ -206,7 +210,7 @@ header-only metadata methods, and decode only what survives:
 ```python
 lf = (
     pl.scan_parquet("images.parquet")
-    .with_columns(raw=pl.col("path").cv.read_bytes())
+    .with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["/srv/images"]))
     .filter(pl.col("raw").cv.width() > 512)
     .with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
     .drop("raw")

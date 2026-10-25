@@ -96,7 +96,11 @@ def server():
 
 
 def _info(url: str) -> dict:
-    return pl.DataFrame({"p": [url]}).select(pl.col("p").cv.image_info()).item()
+    return (
+        pl.DataFrame({"p": [url]})
+        .select(pl.col("p").cv.image_info(allowed_roots=["*"]))
+        .item()
+    )
 
 
 def test_a_remote_header_reads_a_prefix(server) -> None:
@@ -143,7 +147,7 @@ def test_a_whole_body_is_not_fetched_twice(server) -> None:
 def test_a_pipeline_still_reads_the_whole_object(server) -> None:
     base, files, log, _ = server
     log.clear()
-    pipe = polars_cv.Pipeline().source("file_path")
+    pipe = polars_cv.Pipeline().source("file_path", allowed_roots=["*"])
     out = pl.DataFrame({"p": [f"{base}/big.png"]}).select(
         pl.col("p").cv.pipe(pipe).sink("numpy")
     )

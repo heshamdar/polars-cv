@@ -44,7 +44,7 @@ result = df.with_columns(
 |--------|-----------|-------------|
 | `auto` (default) | Varies | Infer the decode path from the column dtype (String → `file_path`, List/Array → `list`/`array`, Binary → `blob` if VIEW-tagged else `image_bytes`) |
 | `image_bytes` | Binary | Decode PNG/JPEG/TIFF bytes (auto format+dtype detect) |
-| `file_path` | String | Local/cloud/HTTP path; decodes like `image_bytes` |
+| `file_path` | String | Local/cloud/HTTP path; decodes like `image_bytes`. Needs `allowed_roots` (default-deny; `["*"]` opts in to any path) |
 | `raw` | Binary | Raw bytes (requires `dtype`) |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |

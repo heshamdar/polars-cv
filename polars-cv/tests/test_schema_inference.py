@@ -212,7 +212,7 @@ class TestNullDataSchemaConsistency:
         df = pl.DataFrame({"path": pl.Series("path", [None], dtype=pl.String)})
         pipe = (
             Pipeline()
-            .source("file_path", dtype="u8")
+            .source("file_path", dtype="u8", allowed_roots=["*"])
             .assert_shape(height=10, width=10, channels=3)
         )
         result = df.select(pl.col("path").cv.pipe(pipe).sink("array"))

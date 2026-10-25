@@ -98,7 +98,7 @@ impl CompiledGraph {
             inputs,
             rows: len,
             resolved_outputs,
-            fetchers: self.fetchers(inputs),
+            fetchers: self.fetchers(inputs)?,
             routed_sources: self.route_auto_sources(inputs),
             output_nodes,
         };
@@ -505,10 +505,14 @@ impl CompiledGraph {
     /// `String` column resolves to `file_path`, and the `series.str()` check
     /// below skips auto nodes bound to any other column type. Aligned with
     /// `plan`.
+    ///
+    /// A path column whose source has no usable `allowed_roots` is the
+    /// call's error, under every `on_error` policy: `"null"` would otherwise
+    /// turn a missing sandbox into a column of nulls.
     pub(super) fn fetchers<'a>(
         &'a self,
         inputs: &'a [Series],
-    ) -> Vec<Option<crate::fetch::Fetcher<'a>>> {
+    ) -> PolarsResult<Vec<Option<crate::fetch::Fetcher<'a>>>> {
         self.plan
             .iter()
             .map(|np| {
@@ -520,14 +524,19 @@ impl CompiledGraph {
                     ..
                 }) = np.input.decode()
                 else {
-                    return None;
+                    return Ok(None);
                 };
-                let ca = inputs.get(*column)?.str().ok()?;
-                Some(crate::fetch::Fetcher::new(
+                let Some(ca) = inputs.get(*column).and_then(|s| s.str().ok()) else {
+                    return Ok(None);
+                };
+                let policy = path_policy
+                    .as_ref()
+                    .map_err(|e| polars_err!(ComputeError: "{}: {}", np.id, e))?;
+                Ok(Some(crate::fetch::Fetcher::new(
                     ca,
                     cloud_options.as_ref(),
-                    path_policy,
-                ))
+                    policy,
+                )))
             })
             .collect()
     }

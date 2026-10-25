@@ -191,7 +191,7 @@ def _pipeline() -> Pipeline:
     """The pipeline every measurement below runs, so only the source differs."""
     return (
         Pipeline()
-        .source("file_path")
+        .source("file_path", allowed_roots=["*"])
         .resize(height=224, width=224)
         .normalize(method="minmax")
     )
@@ -257,7 +257,9 @@ def run_remote_source(
 
             def run_http_bytes() -> Any:
                 return (
-                    http_df.lazy().select(out=pl.col("path").cv.read_bytes()).collect()
+                    http_df.lazy()
+                    .select(out=pl.col("path").cv.read_bytes(allowed_roots=["*"]))
+                    .collect()
                 )
 
             results.append(

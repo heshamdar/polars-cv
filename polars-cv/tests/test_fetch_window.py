@@ -80,12 +80,12 @@ def run(name, query, check):
         "peak": lib._last_fetch_peak_resident(),
     }
 
-run("read_bytes", lambda: df.select(pl.col("p").cv.read_bytes())["p"],
+run("read_bytes", lambda: df.select(pl.col("p").cv.read_bytes(allowed_roots=["*"]))["p"],
     lambda s: s.to_list() == [PNG] * N)
-pipe = polars_cv.Pipeline().source("file_path")
+pipe = polars_cv.Pipeline().source("file_path", allowed_roots=["*"])
 run("file_path", lambda: df.select(pl.col("p").cv.pipe(pipe).sink("numpy"))["p"],
     lambda s: s.null_count() == 0 and s.len() == N)
-run("width", lambda: df.select(pl.col("p").cv.width())["p"],
+run("width", lambda: df.select(pl.col("p").cv.width(allowed_roots=["*"]))["p"],
     lambda s: s.to_list() == [8] * N)
 server.shutdown()
 print(json.dumps(out))

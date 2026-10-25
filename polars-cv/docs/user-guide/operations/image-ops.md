@@ -699,7 +699,7 @@ scaling (1/8, 1/4, 1/2) to skip work — a large CPU and memory win. Non-JPEG fo
 
 ```python
 # Cheap decode for a curation pass
-Pipeline().source("file_path").thumbnail(256).perceptual_hash()
+Pipeline().source("file_path", allowed_roots=["/srv/images"]).thumbnail(256).perceptual_hash()
 ```
 
 Must be called right after `source(...)` on an `image_bytes`/`file_path` source. A

@@ -258,7 +258,7 @@ def benchmark_polars_cv_pipeline(
     # Define preprocessing pipeline
     preprocess_pipe = (
         Pipeline()
-        .source("file_path")  # Load from paths in DataFrame
+        .source("file_path", allowed_roots=["*"])  # Load from paths in DataFrame
         .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)  # Center crop
         .scale(1 / 255.0)  # [0, 255] -> [0, 1]
@@ -408,7 +408,7 @@ def verify_output_equivalence(
     # polars-cv pipeline
     pv_pipe = (
         Pipeline()
-        .source("file_path")
+        .source("file_path", allowed_roots=["*"])
         .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)
         .scale(1 / 255.0)
@@ -580,7 +580,7 @@ def run_inference_serving(
 
     pv_pipe = (
         Pipeline()
-        .source("file_path")
+        .source("file_path", allowed_roots=["*"])
         .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)
         .scale(1 / 255.0)

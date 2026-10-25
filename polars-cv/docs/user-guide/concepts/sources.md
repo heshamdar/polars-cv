@@ -19,13 +19,14 @@ column's Polars dtype:
 from polars_cv import Pipeline
 
 # Reads image bytes from a Binary column, or paths from a String column
-pipe = Pipeline().source().resize(height=224, width=224)
+# (a path column also needs allowed_roots: see "Path sandbox" below)
+pipe = Pipeline().source(allowed_roots=["/srv/images"]).resize(height=224, width=224)
 ```
 
 The column dtype is constant across rows, so the resolution happens once per
 batch — the default path adds no per-row cost. Options that apply to the
-resolved format still apply to `auto`: `cloud_options` and the windowed remote
-fetch (over a `String` URL column), `decode_max_size`, and
+resolved format still apply to `auto`: `cloud_options`, `allowed_roots` and the
+windowed remote fetch (over a `String` URL column), `decode_max_size`, and
 `require_contiguous`.
 
 Pass an explicit format when the dtype cannot be routed — a plain numeric
@@ -47,7 +48,7 @@ Decoded images are treated as 3D buffers (`[H, W, C]`).
 from polars_cv import Pipeline
 
 bytes_pipe = Pipeline().source("image_bytes")
-path_pipe = Pipeline().source("file_path")
+path_pipe = Pipeline().source("file_path", allowed_roots=["/srv/images"])
 ```
 
 ### Scaled Decoding: `decode_max_size`
@@ -58,7 +59,9 @@ most `n` pixels on the decoded long side. JPEG decoding then uses IDCT scaling
 Non-JPEG formats ignore the assertion and decode at full size.
 
 ```python
-pipe = Pipeline().source("file_path", decode_max_size=256)
+pipe = Pipeline().source(
+    "file_path", decode_max_size=256, allowed_roots=["/srv/images"]
+)
 ```
 
 The chainable [`thumbnail(max_size)`](../operations/image-ops.md#thumbnail) method
@@ -100,7 +103,11 @@ For image sources, resolve dtype before these sinks:
 
 ```python
 # Option 1: source dtype
-pipe = Pipeline().source("file_path", dtype="u8").resize(height=224, width=224)
+pipe = (
+    Pipeline()
+    .source("file_path", dtype="u8", allowed_roots=["/srv/images"])
+    .resize(height=224, width=224)
+)
 
 # Option 2: cast in pipeline
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).cast("f32")
@@ -122,12 +129,50 @@ options = CloudOptions(
     aws_secret_access_key="...",
 )
 
-pipe = Pipeline().source("file_path", cloud_options=options)
+pipe = Pipeline().source(
+    "file_path", cloud_options=options, allowed_roots=["s3://my-bucket/images/"]
+)
 ```
 
 `cloud_options` also applies to the default `auto` source, since it can resolve
 to `file_path` from a `String` column. It is ignored (with a warning) for
 sources that never read remotely.
+
+### Path sandbox: `allowed_roots`
+
+A path column is data, and data can come from somewhere you do not control, so
+path reading is **default-deny**. A `file_path` source (or an `auto` source over
+a `String` column), `.cv.read_bytes()` and the header-metadata methods
+(`.cv.width()`, `.cv.image_info()`, ...) read nothing until `allowed_roots` says
+where they may. With it missing, the query fails with an error that names the
+option, whatever `on_error` is: a missing sandbox is never turned into a column
+of nulls.
+
+```python
+# Specific locations: local directories and/or remote URI prefixes.
+Pipeline().source("file_path", allowed_roots=["/srv/images", "s3://bucket/public/"])
+
+# The explicit opt-in: any path the process can read, local or remote.
+Pipeline().source("file_path", allowed_roots=["*"])
+```
+
+- A **local root** is a directory. Paths are canonicalized first, so `..` and
+  symlinks cannot escape, and matching is component-wise (`/srv/images` does not
+  admit `/srv/images-private`). A relative root is relative to the working
+  directory.
+- A **remote root** is a URI prefix (`s3://`, `gs://`, `az://`, `http(s)://`). A
+  remote path is admitted only if it starts with one (so `s3://bucket/public`
+  does not admit `s3://bucket/public-evil/...`) and contains no `..` segment.
+  A denied remote path is never requested. Local roots never admit a remote
+  path, and remote roots never admit a local one.
+- `["*"]` admits every path, local and remote, and only as the whole list:
+  `["*", "/srv"]` is refused, as is `[]`.
+- A path that matches no root is refused with an error naming the path and the
+  roots, and that refusal is an ordinary read failure: it follows `on_error`
+  (`"null"` nulls just that row).
+- `allowed_roots` applies to path columns only. `image_bytes`, `blob` and the
+  other sources reject it, and the metadata methods reject it on a binary
+  column.
 
 Remote requests are **signed by default**. To read from a public bucket without
 credentials, opt into anonymous access explicitly with
@@ -218,14 +263,15 @@ mechanism, same credentials, same concurrency, no decode.
 ```python
 import polars as pl
 
-df.with_columns(raw=pl.col("path").cv.read_bytes())  # -> Binary
+df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["/srv/images"]))  # -> Binary
 ```
 
 Bytes come back **verbatim**, so an encoded file survives the round trip
 unchanged:
 
 ```python
-assert df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"][0] == Path(p).read_bytes()
+raw = df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["/srv/images"]))
+assert raw["raw"][0] == Path(p).read_bytes()
 ```
 
 That matters because decoding is one-way. Re-encoding a decoded JPEG never
@@ -237,7 +283,9 @@ It also gives the [header-only metadata methods](../operations/metadata.md)
 a way to reach remote files, since they take binary columns:
 
 ```python
-df = df.with_columns(raw=pl.col("path").cv.read_bytes(cloud_options=options))
+df = df.with_columns(
+    raw=pl.col("path").cv.read_bytes(cloud_options=options, allowed_roots=["s3://my-bucket/"])
+)
 df = df.filter(pl.col("raw").cv.width() > 512)                  # header-only, no decode
 df = df.with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
 df.select("path", "raw")                                        # originals, untouched
@@ -250,6 +298,7 @@ fetch independently.
 | Argument | Meaning |
 |----------|---------|
 | `cloud_options` | Credentials/settings for remote reads. Same `CloudOptions` (or dict) the `file_path` source takes. |
+| `allowed_roots` | Required: where the column may read from (see [Path sandbox](#path-sandbox-allowed_roots)); `["*"]` opts in to any path. |
 | `on_error` | `"raise"` (default) fails the query on the first unreadable path; `"null"` yields null for that row only. |
 
 ### Memory and streaming
@@ -287,14 +336,12 @@ once. There is also no per-file size cap — whatever the path names is read in
 full. Go through a `LazyFrame` (or slice the frame) when the corpus does not
 fit in memory.
 
-!!! warning "Paths are not sandboxed"
-    `read_bytes` reads whatever the column names, local or remote, with no
-    allowlisting — the same caveat that applies to the `file_path` source, but
-    over any file rather than only decodable images. Two edges are sharper here
-    than for the source: any local file is returned verbatim rather than having
-    to survive an image decode, and an `http://` path is fetched as-is, which
-    reaches link-local addresses such as cloud instance-metadata endpoints. Use
-    it with trusted path columns only.
+!!! warning "`allowed_roots=[\"*\"]` reads anything"
+    `read_bytes` returns any file it is allowed to read verbatim, rather than
+    one that has to survive an image decode, and an `http://` path is fetched
+    as-is, which reaches link-local addresses such as cloud instance-metadata
+    endpoints. Name the roots that apply; reserve `["*"]` for path columns you
+    control.
 
 ## Contour Source and Shape Inference
 

@@ -82,7 +82,7 @@ class TestAmbientFederatedAdc:
             import polars as pl
             import polars_cv  # noqa: F401
             pl.DataFrame({"p": ["gs://bucket/a.png"]}).select(
-                pl.col("p").cv.read_bytes()
+                pl.col("p").cv.read_bytes(allowed_roots=["gs://bucket/"])
             )
             """,
             env,
@@ -99,7 +99,7 @@ class TestAmbientFederatedAdc:
             import polars as pl
             import polars_cv  # noqa: F401
             pl.DataFrame({"p": ["gs://bucket/a.png"]}).select(
-                pl.col("p").cv.read_bytes()
+                pl.col("p").cv.read_bytes(allowed_roots=["gs://bucket/"])
             )
             """,
             env,

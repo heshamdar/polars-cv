@@ -154,6 +154,9 @@ def _polars_cv(workload: str, source: str, m: pl.DataFrame, library: str) -> Job
     items = load_items(m, source)
     df = pl.DataFrame({"id": m["id"], "src": items}).hstack(m.select(PARAMS))
     fmt = "image_bytes" if source == "bytes" else "file_path"
+    # A path column reads nothing without `allowed_roots`; these are the
+    # harness's own files, so they take the spelled-out opt-in.
+    paths = {} if source == "bytes" else {"allowed_roots": ["*"]}
     src = pl.col("src")
 
     def run(build: Callable[[pl.LazyFrame], pl.LazyFrame]) -> pl.DataFrame:
@@ -162,7 +165,7 @@ def _polars_cv(workload: str, source: str, m: pl.DataFrame, library: str) -> Job
     if workload == "w1":
         pipe = (
             Pipeline()
-            .source(fmt, dtype="u8")
+            .source(fmt, dtype="u8", **paths)
             .resize(height=SIZE, width=SIZE, filter="bilinear")
             .grayscale()
         )
@@ -170,27 +173,29 @@ def _polars_cv(workload: str, source: str, m: pl.DataFrame, library: str) -> Job
         return lambda: run(lambda lf: lf.select(x=expr))["x"].to_numpy()
 
     if workload == "w2":
-        long_side = pl.max_horizontal(src.cv.width(), src.cv.height())
+        long_side = pl.max_horizontal(src.cv.width(**paths), src.cv.height(**paths))
         pipe = (
             Pipeline()
             # No .thumbnail(): PIL's thumbnail() calls draft() with
             # reducing_gap=2, which at COCO's sizes (<= 640 px) keeps the full
             # decode, so a scaled decode here would do less work than PIL.
-            .source(fmt)
+            .source(fmt, **paths)
             .resize_max(pl.min_horizontal(THUMB, long_side), filter="bilinear")
         )
         expr = src.cv.pipe(pipe).sink("jpeg", quality=QUALITY)
         return lambda: run(lambda lf: lf.select(thumb=expr))["thumb"]
 
     if workload == "w3":
-        phash = src.cv.pipe(Pipeline().source(fmt).perceptual_hash()).sink("list")
+        phash = src.cv.pipe(Pipeline().source(fmt, **paths).perceptual_hash()).sink(
+            "list"
+        )
 
         def job() -> tuple[pl.DataFrame, pl.DataFrame]:
             meta = df.lazy().select(
                 "id",
-                width=src.cv.width(),
-                height=src.cv.height(),
-                channels=src.cv.channels(),
+                width=src.cv.width(**paths),
+                height=src.cv.height(**paths),
+                channels=src.cv.channels(**paths),
                 hash=phash,
             )
             dupes = (
@@ -205,7 +210,7 @@ def _polars_cv(workload: str, source: str, m: pl.DataFrame, library: str) -> Job
     if workload == "w4":
         pipe = (
             Pipeline()
-            .source(fmt)
+            .source(fmt, **paths)
             .crop(
                 top=pl.col("crop_top"),
                 left=pl.col("crop_left"),

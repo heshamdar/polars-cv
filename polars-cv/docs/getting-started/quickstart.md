@@ -142,9 +142,14 @@ result = df.with_columns(
 ## Reading from Files
 
 ```python
-# Read from local paths or URLs
+# Read from local paths or URLs. A path column is data, so reading it is
+# default-deny: allowed_roots names where it may read (["*"] opts in to anywhere).
 df = pl.DataFrame({"path": ["/path/to/image.png", "https://example.com/img.jpg"]})
-pipe = Pipeline().source("file_path").resize(height=224, width=224)
+pipe = (
+    Pipeline()
+    .source("file_path", allowed_roots=["/path/to/", "https://example.com/"])
+    .resize(height=224, width=224)
+)
 
 result = df.with_columns(
     processed=pl.col("path").cv.pipe(pipe).sink("numpy")
@@ -166,7 +171,12 @@ For `sink("list")` or `sink("array")`, dtype must be known during planning.
 pipe = Pipeline().source("image_bytes", dtype="f32").resize(height=224, width=224)
 
 # Option 2: resolve dtype in the pipeline
-pipe = Pipeline().source("file_path").resize(height=224, width=224).cast("f32")
+pipe = (
+    Pipeline()
+    .source("file_path", allowed_roots=["/srv/images"])
+    .resize(height=224, width=224)
+    .cast("f32")
+)
 
 result = df.with_columns(values=pl.col("image").cv.pipe(pipe).sink("list"))
 ```

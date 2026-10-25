@@ -37,10 +37,13 @@
 //! both consumers share, so a restriction lands for both at once and cannot be
 //! set on one and forgotten on the other.
 //!
-//! It is **opt-in**: the default policy allows everything, which is what every
-//! existing pipeline gets. Pass `allowed_roots=` to `source("file_path", ...)`
-//! or `.cv.read_bytes(...)` to restrict a query whose path column is not
-//! trusted.
+//! It is **default-deny**: a path reader that is not told where it may read
+//! reads nothing. `allowed_roots=` on `source("file_path", ...)`,
+//! `.cv.read_bytes(...)` and the header-metadata functions names the locations,
+//! and `allowed_roots=["*"]` is the explicit opt-in to reading anywhere the
+//! process can. Every reader turns its `allowed_roots` (present or absent) into
+//! a policy through [`PathPolicy::resolve`], the only constructor: there is no
+//! `Default`, so a reader cannot be written that quietly reads everything.
 //!
 //! Both functions take the policy as a required argument rather than reading it
 //! from a field somewhere: a caller that forgets it does not silently get the
@@ -127,46 +130,95 @@ enum AllowedRoot {
 
 /// Where a path column is permitted to read from.
 ///
-/// `PathPolicy::default()` is the unrestricted policy — the only spelling of
-/// it, so there is no second constructor to keep in step — and is what every
-/// pipeline that does not ask for a sandbox gets. A non-empty policy is a *deny by default*
-/// list: a path that matches no entry is refused, rather than being read and
-/// hoped about.
+/// Built only by [`PathPolicy::resolve`] — there is no `Default` and no other
+/// constructor, so "what does an unconfigured reader get" has one answer, an
+/// error. Either a *deny by default* list (a path that matches no entry is
+/// refused, rather than being read and hoped about) or the explicit
+/// [`ALLOW_ANY`] opt-in.
 ///
 /// Local and remote entries live in one list because they are one question —
 /// "may this column read that?" — and splitting them is how a sandbox comes to
 /// cover the filesystem while leaving `s3://` open. An entry is remote if it
 /// parses as a remote URI (`cloud::is_remote_path`), local otherwise.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PathPolicy {
-    roots: Vec<AllowedRoot>,
+    scope: Scope,
 }
 
+/// What a [`PathPolicy`] admits. Never empty: [`PathPolicy::resolve`] refuses
+/// an empty list, which would deny everything while reading as a policy.
+#[derive(Debug, Clone)]
+enum Scope {
+    /// `allowed_roots=["*"]`: any path the process can read, local or remote.
+    Any,
+    /// Only a path inside one of these.
+    Roots(Vec<AllowedRoot>),
+}
+
+/// The `allowed_roots` entry that opts in to reading any path. Alone only.
+pub const ALLOW_ANY: &str = "*";
+
 impl PathPolicy {
-    /// Restrict reads to `roots`, or leave unrestricted if `roots` is empty.
+    /// The policy for a reader's `allowed_roots`, given or absent: the one
+    /// place that decides, so no reader has an open default of its own.
+    ///
+    /// - absent: an error. A path column is data, so reading it unconfigured
+    ///   is a choice the caller has to make out loud.
+    /// - `["*"]`: any path, local or remote ([`ALLOW_ANY`]).
+    /// - otherwise: only the listed roots. An empty list is refused (it would
+    ///   allow nothing, which is a mistake rather than a policy), and so is
+    ///   `"*"` beside real roots (it would silently make them decoration).
     ///
     /// Local roots are canonicalized so the comparison in [`check`](Self::check)
     /// is between two resolved paths; a root that does not exist is kept in
     /// lexical form rather than dropped, so a typo'd root denies everything
-    /// instead of silently widening the policy.
-    pub fn new(roots: &[String]) -> Self {
-        Self {
-            roots: roots
-                .iter()
-                .map(|root| {
-                    if cloud::is_remote_path(root) {
-                        let mut prefix = root.clone();
-                        if !prefix.ends_with('/') {
-                            prefix.push('/');
-                        }
-                        AllowedRoot::Remote(prefix)
-                    } else {
-                        let path = Path::new(root);
-                        AllowedRoot::Local(resolve_best_effort(path))
-                    }
-                })
-                .collect(),
+    /// instead of silently widening the policy. A remote root is a URI prefix.
+    pub fn resolve(allowed_roots: Option<&[String]>) -> Result<Self, String> {
+        let Some(roots) = allowed_roots else {
+            return Err(format!(
+                "no path is readable because allowed_roots is not set. A path column \
+                 is data, so nothing is allowed by default. Allow the locations it \
+                 may name, e.g. allowed_roots=[\"/srv/images\", \"s3://bucket/public/\"], \
+                 or opt in to reading any path the process can with \
+                 allowed_roots=[\"{ALLOW_ANY}\"]."
+            ));
+        };
+        if roots.is_empty() {
+            return Err(format!(
+                "allowed_roots=[] would allow no path at all. List the locations to \
+                 allow, e.g. allowed_roots=[\"/srv/images\"], or opt in to reading any \
+                 path with allowed_roots=[\"{ALLOW_ANY}\"]."
+            ));
         }
+        if roots.iter().any(|root| root == ALLOW_ANY) {
+            return if roots.len() == 1 {
+                Ok(Self { scope: Scope::Any })
+            } else {
+                Err(format!(
+                    "allowed_roots={roots:?} mixes \"{ALLOW_ANY}\" (any path) with \
+                     specific roots, which would make the roots meaningless. Use \
+                     [\"{ALLOW_ANY}\"] alone, or list only the roots."
+                ))
+            };
+        }
+        Ok(Self {
+            scope: Scope::Roots(
+                roots
+                    .iter()
+                    .map(|root| {
+                        if cloud::is_remote_path(root) {
+                            let mut prefix = root.clone();
+                            if !prefix.ends_with('/') {
+                                prefix.push('/');
+                            }
+                            AllowedRoot::Remote(prefix)
+                        } else {
+                            AllowedRoot::Local(resolve_best_effort(Path::new(root)))
+                        }
+                    })
+                    .collect(),
+            ),
+        })
     }
 
     /// Refuse `path` unless it falls inside an allowed root.
@@ -181,18 +233,18 @@ impl PathPolicy {
     /// The comparison is component-wise ([`Path::starts_with`]), so an allowed
     /// root of `/data/images` does not also admit `/data/images-private`.
     pub fn check(&self, path: &str) -> Result<(), String> {
-        if self.roots.is_empty() {
+        let Scope::Roots(roots) = &self.scope else {
             return Ok(());
-        }
+        };
         if cloud::is_remote_path(path) {
             // Object stores treat a key literally, but an HTTP server in front
             // of one may normalize `..` and walk out of the prefix. Under a
             // policy that is not a risk worth carrying for a key shape nobody
             // writes on purpose.
             if path.split('/').any(|segment| segment == "..") {
-                return Err(self.denial(path, "it contains a '..' segment"));
+                return Err(Self::denial(roots, path, "it contains a '..' segment"));
             }
-            let allowed = self.roots.iter().any(|root| match root {
+            let allowed = roots.iter().any(|root| match root {
                 AllowedRoot::Remote(prefix) => {
                     path.starts_with(prefix.as_str())
                         // `s3://bucket/public/` also permits the exact prefix
@@ -204,29 +256,36 @@ impl PathPolicy {
             return if allowed {
                 Ok(())
             } else {
-                Err(self.denial(path, "it is outside every allowed root"))
+                Err(Self::denial(
+                    roots,
+                    path,
+                    "it is outside every allowed root",
+                ))
             };
         }
         // The file the read will open ([`cloud::local_file_path`]), not a
         // second reading of the string: a URL it refuses is refused here too.
         let candidate =
-            cloud::local_file_path(path).map_err(|e| self.denial(path, &e.to_string()))?;
+            cloud::local_file_path(path).map_err(|e| Self::denial(roots, path, &e.to_string()))?;
         let resolved = resolve_best_effort(&candidate);
-        let allowed = self.roots.iter().any(|root| match root {
+        let allowed = roots.iter().any(|root| match root {
             AllowedRoot::Local(dir) => resolved.starts_with(dir),
             AllowedRoot::Remote(_) => false,
         });
         if allowed {
             Ok(())
         } else {
-            Err(self.denial(path, "it is outside every allowed root"))
+            Err(Self::denial(
+                roots,
+                path,
+                "it is outside every allowed root",
+            ))
         }
     }
 
     /// A denial that says what was refused and what would be accepted.
-    fn denial(&self, path: &str, reason: &str) -> String {
-        let roots: Vec<String> = self
-            .roots
+    fn denial(roots: &[AllowedRoot], path: &str, reason: &str) -> String {
+        let roots: Vec<String> = roots
             .iter()
             .map(|root| match root {
                 AllowedRoot::Local(dir) => dir.display().to_string(),
@@ -721,17 +780,60 @@ mod tests {
     }
 
     fn policy(roots: &[&str]) -> PathPolicy {
-        PathPolicy::new(&roots.iter().map(|r| r.to_string()).collect::<Vec<_>>())
+        PathPolicy::resolve(Some(
+            &roots.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+        ))
+        .unwrap()
     }
 
+    /// The explicit opt-in, for tests of the fetch machinery that are not
+    /// about the sandbox.
+    fn open() -> PathPolicy {
+        policy(&[ALLOW_ANY])
+    }
+
+    /// Deliberately replaces `default_policy_allows_everything`: the unrestricted
+    /// default was removed (#171), so what is pinned now is that unrestricted is
+    /// something a caller spells out.
     #[test]
-    fn default_policy_allows_everything() {
-        // The default must stay unrestricted: every pipeline that never asks
-        // for a sandbox depends on it.
-        let p = PathPolicy::default();
+    fn the_opt_in_allows_everything() {
+        let p = open();
         for path in ["/etc/passwd", "relative.png", "s3://bucket/k", "http://h/x"] {
             assert!(p.check(path).is_ok(), "{path}");
         }
+    }
+
+    /// Absent `allowed_roots` is the one input with no policy: it names the
+    /// option and both ways out.
+    #[test]
+    fn an_absent_allowed_roots_is_refused_naming_the_option_and_both_ways_out() {
+        let err = PathPolicy::resolve(None).unwrap_err();
+        assert!(err.contains("allowed_roots is not set"), "{err}");
+        assert!(err.contains(r#"allowed_roots=["/srv/images""#), "{err}");
+        assert!(err.contains(r#"allowed_roots=["*"]"#), "{err}");
+    }
+
+    #[test]
+    fn an_empty_list_and_a_star_beside_roots_are_refused() {
+        let err = PathPolicy::resolve(Some(&[])).unwrap_err();
+        assert!(err.contains("allowed_roots=[]"), "{err}");
+        assert!(err.contains(r#"["*"]"#), "{err}");
+
+        let mixed = ["/srv".to_string(), "*".to_string()];
+        let err = PathPolicy::resolve(Some(&mixed)).unwrap_err();
+        assert!(err.contains("mixes"), "{err}");
+
+        // Two stars are still not "a star alone".
+        let twice = ["*".to_string(), "*".to_string()];
+        assert!(PathPolicy::resolve(Some(&twice)).is_err());
+    }
+
+    /// `*` opts in only as the whole entry: a root that merely contains one is a
+    /// path like any other, and admits only what it names.
+    #[test]
+    fn a_star_inside_a_root_is_not_the_opt_in() {
+        let p = policy(&["/srv/*"]);
+        assert!(p.check("/etc/passwd").is_err());
     }
 
     #[test]
@@ -805,7 +907,7 @@ mod tests {
         let err = read(&escape, &p).unwrap_err();
         assert!(!err.contains("secret"), "{err}");
         // Unrestricted, a host still names no local file: refused, not guessed.
-        assert!(read(&escape, &PathPolicy::default()).is_err());
+        assert!(read(&escape, &open()).is_err());
         std::fs::remove_file(&outside).ok();
 
         // A percent-encoded file URL is the decoded file, for both.
@@ -860,7 +962,7 @@ mod tests {
     #[test]
     fn local_and_null_paths_make_no_fetch() {
         let ca = column(&[Some("/tmp/a.png"), None, Some("relative/b.png")]);
-        let p = PathPolicy::default();
+        let p = open();
         assert!(Fetcher::new(&ca, None, &p).entries.is_empty());
         assert!(Fetcher::new(&column(&[]), None, &p).entries.is_empty());
         assert!(Fetcher::new(&ca, None, &p).bytes(1).unwrap().is_none());
@@ -878,7 +980,7 @@ mod tests {
             .write_all(&payload)
             .unwrap();
 
-        let p = PathPolicy::default();
+        let p = open();
         assert_eq!(read(path.to_str().unwrap(), &p).unwrap().unwrap(), payload);
         // The `file://` form resolves to the same file.
         let uri = format!("file://{}", path.to_str().unwrap());
@@ -889,7 +991,7 @@ mod tests {
 
     #[test]
     fn a_missing_local_file_is_reported() {
-        let err = read("/nonexistent/polars-cv/missing.png", &PathPolicy::default()).unwrap_err();
+        let err = read("/nonexistent/polars-cv/missing.png", &open()).unwrap_err();
         assert!(err.contains("Failed to read local file"), "{err}");
         assert!(err.contains("missing.png"), "{err}");
     }
@@ -903,7 +1005,7 @@ mod tests {
             r#"["printf", "tok"]"#.to_string(),
         )]))
         .unwrap();
-        let p = PathPolicy::default();
+        let p = open();
         let fetcher = Fetcher::new(&ca, Some(&options), &p);
         let err = fetcher.bytes(0).err().unwrap();
         assert!(
@@ -920,7 +1022,7 @@ mod tests {
         let (base, hits) = serve(b"body");
         let (a, b) = (format!("{base}/a.png"), format!("{base}/b.png"));
         let ca = column(&[Some(&a), Some(&b), Some(&a)]);
-        let p = PathPolicy::default();
+        let p = open();
         let fetcher = Fetcher::new(&ca, None, &p);
         assert_eq!(fetcher.entries.len(), 2);
         let first = fetcher.bytes(0).unwrap().unwrap();
@@ -949,7 +1051,7 @@ mod tests {
         let window = polars::io::pl_async::get_concurrency_limit() as usize;
         let urls: Vec<String> = (0..window + 8).map(|i| format!("{base}/{i}.png")).collect();
         let ca = column(&urls.iter().map(|u| Some(u.as_str())).collect::<Vec<_>>());
-        let p = PathPolicy::default();
+        let p = open();
         let fetcher = Fetcher::new(&ca, None, &p);
         drop(fetcher.bytes(0).unwrap());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

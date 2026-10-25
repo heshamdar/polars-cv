@@ -275,6 +275,8 @@ side channel.
 | An output's planned schema | Planned by Rust from the graph itself (`resolved_output_specs`: each node's source state, then `plan::step` per op); the wire output is only `OutputRequest { node, sink }` | `an_output_carries_only_its_node_and_sink` (a `planned`/`expected_*` field is refused), `output_facts_are_planned_from_the_ops` |
 | A shape declaration (`assert_shape`) | The internal `assert_shape` typed op: planned by `plan::declare`, checked per row by `GraphStep::AssertShape` | `a_declaration_the_state_contradicts_is_refused`, the `AssertShape` case of `every_graph_step_variant_executes` |
 | The graph wire format's node fields | `GraphNode` with `#[serde(deny_unknown_fields)]` | Deserialization error — a stale or misspelled key fails the query |
+| What a path reader (`file_path` source, `read_bytes`, header metadata) may read, including what an absent `allowed_roots` means | `fetch::PathPolicy::resolve` (the only constructor; no `Default`), required by `Fetcher::new` / `HeaderFetcher::new`; the three readers resolve before reading any row | Compile error for a reader without a policy; `tests/test_path_sandbox.py` sweeps all three surfaces for absence, `["*"]`, `[]`, the mixed list and the denial (each watched failing against the old open default); `an_absent_allowed_roots_is_refused_naming_the_option_and_both_ways_out` |
+| How `token_command` runs | `cloud_auth::run_token_command`: `Command::new(argv[0]).args(rest)`, no shell on any platform; the wire is a JSON argument vector parsed by `cloud::parse_token_command` | `token_command_arguments_reach_the_program_literally` (`;` and `$(...)` stay text), `token_command_refuses_everything_but_an_argument_vector` (the old string is refused), Python `CloudOptions` raising on a `str` |
 | Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |
 | What a `(domain, sink format)` pair produces | `SinkKind::resolve` in `src/graph/sink_kind.rs` | Compile error: the four halves of the sink contract (`dtype_for_output`, `encode_node_output`, `null_row_result_for_spec`, `build_series_from_spec`) match on the enum, so a new kind is non-exhaustive in all four at once; `every_kind_is_produced_by_some_pair` rejects a kind no pair names |
 | Which files a source-scanning guard reads | `tests/_discovery.py` — every accessor raises rather than returning empty | `test_scans_go_through_discovery` (AST walk: a direct `glob`/`rglob` in `tests/` fails unless the file is in `_DISCOVERY_EXEMPT` with a reason), `test_discovery_fixtures.py` |
@@ -332,11 +334,24 @@ current instead.
 5. *The sink contract.* `encode_node_output` keyed on the planned domain rather
    than the runtime `NodeOutput` variant, so the dtype the planner publishes and
    the value execution produces come from one key. (A1/A2/A3 sink half.)
-6. *Path sandboxing.* `fetch::PathPolicy` and the `allowed_roots` option on
-   `source("file_path", ...)` and `.cv.read_bytes(...)`. Opt-in, so the default
-   is unchanged; once asked for, it denies by default. Both fetch functions
-   take the policy as a *required* argument, so a new caller cannot reach a
-   path by omitting it.
+6. *Path sandboxing (default-deny, #171).* `fetch::PathPolicy` and the
+   `allowed_roots` option on `source("file_path", ...)` (and an `auto` source
+   over a path column), `.cv.read_bytes(...)` and the header-metadata methods.
+   It began as an opt-in whose absence meant "allow everything"
+   (`PathPolicy::default()`, substituted at three readers); that open default is
+   gone, a deliberate breaking change. A path column is data, so a reader that
+   is not told where it may read reads nothing: an absent `allowed_roots` is an
+   error naming the option and both ways out (a list of roots, or
+   `allowed_roots=["*"]`, the explicit unrestricted opt-in), whatever
+   `on_error` says, and it is raised before any row is read. `[]` and `"*"`
+   beside real roots are refused too. Every reader turns its `allowed_roots`
+   into a policy through `PathPolicy::resolve`, the only constructor (no
+   `Default`), and both fetch functions take the policy as a *required*
+   argument, so a new reader cannot reach a path by omitting it, nor
+   reintroduce the open default without the compiler objecting. Remote URLs
+   keep their semantics: a remote root is a URI prefix, a remote path must
+   start with one and contain no `..`, local and remote roots never admit each
+   other's paths, and `["*"]` admits both.
 
 7. *The typed op protocol (0.29.0, CR-45…CR-49).* One typed Rust definition per op, source and sink; a
    generated Python builder, enums and pass flags; a Rust planner

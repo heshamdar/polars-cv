@@ -10,7 +10,12 @@ A `Pipeline` describes the work, `.cv.pipe()` applies it to a column, and
 import polars as pl
 from polars_cv import Pipeline
 
-pipe = Pipeline().source("file_path").resize(height=224, width=224).grayscale()
+pipe = (
+    Pipeline()
+    .source("file_path", allowed_roots=["photos"])
+    .resize(height=224, width=224)
+    .grayscale()
+)
 
 df = pl.DataFrame({"path": ["photos/a.jpg", "photos/b.jpg"]})
 out = df.with_columns(gray=pl.col("path").cv.pipe(pipe).sink("numpy"))

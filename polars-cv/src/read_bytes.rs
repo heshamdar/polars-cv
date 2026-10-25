@@ -36,7 +36,8 @@ pub struct ReadBytesKwargs {
     #[serde(default)]
     pub on_error: Option<String>,
     /// Locations this call may read from, matching
-    /// `source(allowed_roots=...)`. Absent means unrestricted.
+    /// `source(allowed_roots=...)`. Absent is an error and `["*"]` the opt-in to
+    /// any path (`fetch::PathPolicy::resolve`).
     #[serde(default)]
     pub allowed_roots: Option<Vec<String>>,
 }
@@ -57,6 +58,10 @@ fn read_file_bytes(inputs: &[Series], kwargs: ReadBytesKwargs) -> PolarsResult<S
         .map(CloudOptions::from_map)
         .transpose()
         .map_err(|e| polars_err!(ComputeError: "read_bytes(): {e}"))?;
+    // Before the data is looked at, so a missing sandbox is the call's error
+    // whatever the column holds, and under every `on_error`.
+    let policy = fetch::PathPolicy::resolve(kwargs.allowed_roots.as_deref())
+        .map_err(|e| polars_err!(ComputeError: "read_bytes(): {e}"))?;
 
     // An all-null column has no paths to read; keep it null rather than
     // failing the dtype check on a column that carries no paths either way.
@@ -73,11 +78,6 @@ fn read_file_bytes(inputs: &[Series], kwargs: ReadBytesKwargs) -> PolarsResult<S
 
     // The same fetch window as the `file_path` source: remote rows fetch
     // ahead as the column is read, local ones are read per row.
-    let policy = kwargs
-        .allowed_roots
-        .as_deref()
-        .map(fetch::PathPolicy::new)
-        .unwrap_or_default();
     let fetcher = fetch::Fetcher::new(ca, options.as_ref(), &policy);
 
     let mut builder = BinaryChunkedBuilder::new(name, ca.len());

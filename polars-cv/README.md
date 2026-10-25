@@ -45,12 +45,19 @@ from polars_cv import Pipeline
 
 df = pl.DataFrame({"path": sorted(str(p) for p in Path("photos").glob("*.jpg"))})
 
-pipe = Pipeline().source("file_path").resize(height=224, width=224).grayscale()
+pipe = (
+    Pipeline()
+    .source("file_path", allowed_roots=["photos"])
+    .resize(height=224, width=224)
+    .grayscale()
+)
 out = df.with_columns(gray=pl.col("path").cv.pipe(pipe).sink("numpy"))
 ```
 
 Sources include `image_bytes`, local paths and `s3://`/`gs://`/`az://`/`http(s)://`
-URLs. Sinks include `numpy`, `array`, `list`, `png` and `jpeg`. See
+URLs. A path column is data, so reading it is **default-deny**: `allowed_roots`
+names where it may read (`allowed_roots=["*"]` opts in to anywhere). Sinks
+include `numpy`, `array`, `list`, `png` and `jpeg`. See
 [Sources](https://heshamdar.github.io/polars-cv/user-guide/concepts/sources/)
 and [Pipelines](https://heshamdar.github.io/polars-cv/user-guide/concepts/pipelines/).
 
@@ -67,10 +74,12 @@ import polars as pl
 from polars_cv import Pipeline
 
 df = pl.DataFrame({"path": sorted(str(p) for p in Path("photos").glob("*.jpg"))})
-df = df.with_columns(pl.col("path").cv.image_info().struct.unnest())  # header only
+df = df.with_columns(pl.col("path").cv.image_info(allowed_roots=["photos"]).struct.unnest())  # header only
 
 side = pl.min_horizontal("width", "height")  # a per-row value
-img = pl.col("path").cv.pipe(Pipeline().source("file_path", dtype="u8"))
+img = pl.col("path").cv.pipe(
+    Pipeline().source("file_path", dtype="u8", allowed_roots=["photos"])
+)
 x = img.pipe(
     Pipeline()
     .crop(top=(pl.col("height") - side) // 2, left=(pl.col("width") - side) // 2,
@@ -107,7 +116,7 @@ from pathlib import Path
 import polars as pl
 from polars_cv import Pipeline
 
-base = Pipeline().source("file_path").resize_max(512)
+base = Pipeline().source("file_path", allowed_roots=["photos"]).resize_max(512)
 img = pl.col("path").cv
 
 # Two cues, each written as if it stood alone. The threshold is a column.
@@ -255,7 +264,11 @@ from pathlib import Path
 import polars as pl
 from polars_cv import Pipeline
 
-pipe = Pipeline().source("file_path", dtype="u8").resize(height=64, width=64)
+pipe = (
+    Pipeline()
+    .source("file_path", dtype="u8", allowed_roots=["photos"])
+    .resize(height=64, width=64)
+)
 lf = pl.LazyFrame({"path": sorted(str(p) for p in Path("photos").glob("*.jpg"))})
 for batch in (
     lf.select(x=pl.col("path").cv.pipe(pipe).sink("array", shape=[64, 64, 3]))

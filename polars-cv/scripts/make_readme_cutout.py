@@ -63,7 +63,7 @@ def fetch_source(cache: Path) -> bytes:
 
 def cutout() -> LazyPipelineExpr:
     """The README's example, up to the sink."""
-    base = Pipeline().source("file_path").resize_max(512)
+    base = Pipeline().source("file_path", allowed_roots=["*"]).resize_max(512)
     img = pl.col("path").cv
 
     bright = img.pipe(base.grayscale().threshold(190))

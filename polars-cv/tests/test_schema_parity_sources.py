@@ -374,7 +374,7 @@ def test_file_path_source(tmp_path, pattern: str) -> None:
     df = frame(rows_for(pattern, paths), pl.String)
     pipe = (
         Pipeline()
-        .source("file_path")
+        .source("file_path", allowed_roots=[str(tmp_path)])
         .assert_shape(height=H, width=W, channels=3)
         .cast("u8")
     )

@@ -173,7 +173,7 @@ def test_a_read_through_the_same_options_agrees(store) -> None:
     path = f"s3://{BUCKET}/imgs/a.png"
     assert _check(path, options)["status"] == "ok"
     info = pl.DataFrame({"p": [path]}).select(
-        pl.col("p").cv.image_info(cloud_options=options)
+        pl.col("p").cv.image_info(cloud_options=options, allowed_roots=["*"])
     )
     assert info.item()["width"] == 7
 
@@ -183,7 +183,7 @@ def test_a_header_read_takes_a_prefix(store) -> None:
     log.clear()
     path = f"s3://{BUCKET}/imgs/a.png"
     info = pl.DataFrame({"p": [path]}).select(
-        pl.col("p").cv.image_info(cloud_options=options)
+        pl.col("p").cv.image_info(cloud_options=options, allowed_roots=["*"])
     )
     assert info.item()["height"] == 5
     assert log == [f"GET /{BUCKET}/imgs/a.png bytes=0-65535"], log
@@ -197,7 +197,7 @@ def test_an_empty_object_reads_as_no_header(store) -> None:
     log.clear()
     path = f"s3://{BUCKET}/empty/e.png"
     info = pl.DataFrame({"p": [path]}).select(
-        pl.col("p").cv.image_info(cloud_options=options)
+        pl.col("p").cv.image_info(cloud_options=options, allowed_roots=["*"])
     )
     assert info.item() is None
     assert log == [

@@ -32,11 +32,14 @@ the read grows until it is found). A remote object is read the same way: its
 first 64 KiB (an HTTP `Range` / object-store ranged read), and the whole object
 only when the header is not in them. An empty remote object has no first byte
 to range over and is a row error. Path columns take the same `cloud_options`, `on_error` and `allowed_roots` as
-`read_bytes()`. Asking for more than one field? `image_info()` reads each
+`read_bytes()`, and `allowed_roots` is **required** there: path reads are
+default-deny (see [Path sandbox](../concepts/sources.md#path-sandbox-allowed_roots)). Asking for more than one field? `image_info()` reads each
 header once:
 
 ```python
-df.with_columns(info=pl.col("path").cv.image_info()).unnest("info")
+df.with_columns(
+    info=pl.col("path").cv.image_info(allowed_roots=["/srv/images"])
+).unnest("info")
 ```
 
 Sizes are `Int64`, so arithmetic on them can go below zero and be refused as
