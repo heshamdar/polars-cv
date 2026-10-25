@@ -7,6 +7,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`CloudOptions.token_command` is an argument vector, run without a shell.**
+  It takes a non-empty `list[str]` (`["gcloud", "auth",
+  "print-access-token"]`) and runs `argv[0]` with the rest as its arguments,
+  on every platform. It used to be a string handed to `sh -c` (`cmd /C` on
+  Windows), so a value built from data (a bucket or profile name from a column)
+  that held `;` or `$(...)` ran as a command; the feature only ever needed one
+  program with arguments. A string now raises `TypeError` when the
+  `CloudOptions` (or the `cloud_options` dict) is built, showing the list form,
+  and the Rust wire refuses the old string shape too. Migrating: split the
+  command into its words (`token_command="my-broker get-token"` becomes
+  `token_command=["my-broker", "get-token"]`); a command that needs a pipe or
+  other shell syntax says so, `["sh", "-c", "a | b"]`. On Windows a batch
+  wrapper is named with its extension (`"gcloud.cmd"`), and the built-in
+  `gcloud` ADC delegation now does so itself. The credential in an error is
+  named by its vector (`token_command ["sh", "-c", "..."]`). A test pins that
+  `;`, `$(...)` and a backtick reach the program literally (#172).
+
 ### Changed
 
 - **`_lib.pyi` is checked against the built extension.**

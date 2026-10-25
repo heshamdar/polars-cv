@@ -49,8 +49,20 @@ use std::time::Duration;
 
 use crate::cloud::{CloudError, CloudOptions};
 
-/// The delegation command used for a detected federated GCS ADC.
-const GCLOUD_ADC_COMMAND: &str = "gcloud auth application-default print-access-token";
+/// The delegation command used for a detected federated GCS ADC, as the
+/// argument vector it runs; errors name it joined by spaces. Run without a
+/// shell, so on Windows the program is `gcloud`'s batch wrapper, named with its
+/// extension: a program is looked up as written.
+fn gcloud_adc_argv() -> Vec<String> {
+    let program = if cfg!(windows) {
+        "gcloud.cmd"
+    } else {
+        "gcloud"
+    };
+    [program, "auth", "application-default", "print-access-token"]
+        .map(String::from)
+        .to_vec()
+}
 /// Assumed lifetime of a command-sourced token. GCS/Azure access tokens live
 /// ~1h; we cache for a shorter window so a token that is a little shorter-lived
 /// than that is still refreshed before it lapses.
@@ -291,7 +303,7 @@ fn static_provider(kind: Bearer, token: String) -> PlCredentialProvider {
 ///
 /// The lock is held across the command run, which is what collapses a burst of
 /// concurrent first-time reads into a single invocation instead of a stampede.
-fn command_provider(kind: Bearer, command: String, label: String) -> PlCredentialProvider {
+fn command_provider(kind: Bearer, command: Vec<String>, label: String) -> PlCredentialProvider {
     let cached: Arc<Mutex<Option<(String, u64)>>> = Arc::new(Mutex::new(None));
     PlCredentialProvider::from_func(move || {
         let command = command.clone();
@@ -336,7 +348,7 @@ enum Choice {
     /// A pre-obtained GCS bearer token.
     Static(String),
     /// A user-configured `token_command`, minting tokens for this backend.
-    Command(Bearer, String),
+    Command(Bearer, Vec<String>),
     /// A federated ambient ADC, delegated to `gcloud`: its path and `type`.
     FederatedAdc(PathBuf, String),
 }
@@ -380,10 +392,11 @@ impl Choice {
                 format!("object_store default credential chain ({chain})")
             }
             Choice::Static(_) => "gcs_bearer_token".to_string(),
-            Choice::Command(_, command) => format!("token_command `{command}`"),
+            Choice::Command(_, argv) => format!("token_command {argv:?}"),
             Choice::FederatedAdc(path, typ) => format!(
-                "gcloud ADC ({typ}, {}) via `{GCLOUD_ADC_COMMAND}`",
-                path.display()
+                "gcloud ADC ({typ}, {}) via `{}`",
+                path.display(),
+                gcloud_adc_argv().join(" ")
             ),
         }
     }
@@ -412,10 +425,8 @@ fn choose(cloud_type: &CloudType, options: Option<&CloudOptions>, env: Env<'_>) 
         if let Some(token) = opts.bearer_token.as_ref().filter(|_| gcs) {
             return Choice::Static(token.clone());
         }
-        if let Some(command) = opts.token_command.as_deref() {
-            if !command.trim().is_empty() {
-                return Choice::Command(bearer, command.to_string());
-            }
+        if let Some(argv) = opts.token_command.as_ref() {
+            return Choice::Command(bearer, argv.clone());
         }
     }
     if gcs {
@@ -452,19 +463,21 @@ fn provider_for(
         Choice::Static(token) => Some(memoized(format!("gcp:bearer:{token}"), || {
             static_provider(Bearer::Gcs, token.clone())
         })),
-        Choice::Command(bearer, command) => {
+        Choice::Command(bearer, argv) => {
             let prefix = match bearer {
                 Bearer::Gcs => "gcp",
                 Bearer::Azure => "azure",
             };
-            Some(memoized(format!("{prefix}:cmd:{command}"), || {
-                command_provider(bearer, command.clone(), label)
+            // The vector's own Debug form is the key: unlike a space-joined
+            // string it cannot make two different vectors collide.
+            Some(memoized(format!("{prefix}:cmd:{argv:?}"), || {
+                command_provider(bearer, argv.clone(), label)
             }))
         }
         Choice::FederatedAdc(path, _) => {
             let key = format!("gcp:adc:{}", cache_key(&path));
             Some(memoized(key, || {
-                command_provider(Bearer::Gcs, GCLOUD_ADC_COMMAND.to_string(), label)
+                command_provider(Bearer::Gcs, gcloud_adc_argv(), label)
             }))
         }
     })
@@ -476,20 +489,21 @@ pub(crate) fn credential_source(cloud_type: &CloudType, options: Option<&CloudOp
     choose(cloud_type, options, &process_env).label(cloud_type)
 }
 
-/// Run a token command through the platform shell and return its trimmed
-/// stdout. Errors do not repeat the command: the caller's label names it. Using the shell keeps the option flexible (arguments, pipes, env)
-/// and matches how users write such commands.
-fn run_token_command(command: &str) -> Result<String, String> {
-    let output = if cfg!(windows) {
-        std::process::Command::new("cmd")
-            .args(["/C", command])
-            .output()
-    } else {
-        std::process::Command::new("sh")
-            .args(["-c", command])
-            .output()
-    }
-    .map_err(|e| format!("failed to run: {e}"))?;
+/// Run a token command and return its trimmed stdout. Errors do not repeat the
+/// command: the caller's label names it.
+///
+/// `argv[0]` is the program and the rest are its arguments, handed to the
+/// operating system as they are: no shell, on any platform, so a `;` or a
+/// `$(...)` in an argument is that text and not a command. A caller that wants
+/// shell syntax says so by naming the shell as the program (`["sh", "-c", ..]`).
+fn run_token_command(argv: &[String]) -> Result<String, String> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| "failed to run: an empty argument vector".to_string())?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run: {e}"))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -515,7 +529,12 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect::<HashMap<_, _>>();
-        CloudOptions::from_map(&map)
+        CloudOptions::from_map(&map).unwrap()
+    }
+
+    /// Options carrying `argv` as the wire carries it: a JSON array.
+    fn opts_with_argv(argv: &[&str]) -> CloudOptions {
+        opts_with(&[("token_command", &serde_json::to_string(argv).unwrap())])
     }
 
     fn write_adc(name: &str, body: &str) -> (PathBuf, PathBuf) {
@@ -622,13 +641,15 @@ mod tests {
         );
         assert!(label.contains(&path.display().to_string()), "{label}");
 
-        let opts = opts_with(&[("token_command", "echo broker down >&2; exit 3")]);
+        let opts = opts_with_argv(&["sh", "-c", "echo broker down >&2; exit 3"]);
         let provider = credential_provider(&CloudType::Gcp, Some(&opts))
             .unwrap()
             .unwrap();
         let err = fetch(&provider).unwrap_err();
         assert!(
-            err.contains("token_command `echo broker down >&2; exit 3`: exited with"),
+            err.contains(
+                r#"token_command ["sh", "-c", "echo broker down >&2; exit 3"]: exited with"#
+            ),
             "{err}"
         );
         assert!(err.contains("broker down"), "{err}");
@@ -657,11 +678,40 @@ mod tests {
 
     #[test]
     fn test_token_command_is_run_and_used() {
-        let opts = opts_with(&[("token_command", "printf 'ya29.from-command'")]);
+        let opts = opts_with_argv(&["printf", "ya29.from-command"]);
         let provider = credential_provider(&CloudType::Gcp, Some(&opts))
             .unwrap()
             .expect("a token_command must install a provider");
         assert_eq!(fetch(&provider).unwrap(), "ya29.from-command");
+    }
+
+    /// An argument is text, not syntax: `;` and `$(...)` reach the program as
+    /// they are. Held against the shell this option once ran through, which
+    /// split `a;b $(echo x)` into a command named `b` (`sh: b: not found`).
+    #[test]
+    fn token_command_arguments_reach_the_program_literally() {
+        let argv = ["printf", "%s", "a;b $(echo x)"].map(String::from);
+        assert_eq!(run_token_command(&argv).unwrap(), "a;b $(echo x)");
+    }
+
+    /// The same, through the option as the wire carries it and the provider a
+    /// read installs, so the guarantee is the user-facing one.
+    #[test]
+    fn token_command_metacharacters_survive_the_wire() {
+        let opts = opts_with_argv(&["printf", "%s", "tok;$(echo x)`id`"]);
+        let provider = credential_provider(&CloudType::Gcp, Some(&opts))
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetch(&provider).unwrap(), "tok;$(echo x)`id`");
+    }
+
+    /// The program is looked up as written: nothing expands a `~`, a variable
+    /// or a glob in it, and a missing one is an error naming the failure.
+    #[test]
+    fn a_missing_program_is_an_error_not_a_shell_lookup() {
+        let argv = ["/nonexistent/polars-cv/broker".to_string()];
+        let err = run_token_command(&argv).unwrap_err();
+        assert!(err.starts_with("failed to run:"), "{err}");
     }
 
     #[test]
@@ -748,7 +798,7 @@ mod tests {
             m = marker.display(),
             p = std::process::id()
         );
-        let opts = opts_with(&[("token_command", cmd.as_str())]);
+        let opts = opts_with_argv(&["sh", "-c", cmd.as_str()]);
 
         let provider = credential_provider(&CloudType::Gcp, Some(&opts))
             .unwrap()
@@ -780,7 +830,7 @@ mod tests {
         // assumed window must always be ahead of now. Asserted on the value the
         // provider reports rather than on the constant, since it is the sum that
         // has to be in the future.
-        let opts = opts_with(&[("token_command", "printf tok")]);
+        let opts = opts_with_argv(&["printf", "tok"]);
         let provider = credential_provider(&CloudType::Gcp, Some(&opts))
             .unwrap()
             .unwrap();
@@ -794,7 +844,7 @@ mod tests {
         // The failure now surfaces when the credential is *fetched* rather than
         // when the provider is chosen — the provider is a closure, so it cannot
         // report a subprocess failure before being called.
-        let opts = opts_with(&[("token_command", "exit 3")]);
+        let opts = opts_with_argv(&["sh", "-c", "exit 3"]);
         let provider = credential_provider(&CloudType::Gcp, Some(&opts))
             .unwrap()
             .unwrap();

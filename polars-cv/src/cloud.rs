@@ -102,9 +102,11 @@ pub struct CloudOptions {
     pub config: HashMap<String, String>,
     /// Pre-obtained OAuth bearer token, installed as a static GCS credential.
     pub bearer_token: Option<String>,
-    /// Command whose stdout is a GCS OAuth access token. Run to obtain a bearer
-    /// credential for federated/brokered setups object_store can't load itself.
-    pub token_command: Option<String>,
+    /// Argument vector of the program whose stdout is an OAuth access token,
+    /// run (without a shell) to obtain a bearer credential for
+    /// federated/brokered setups object_store can't load itself. Never empty,
+    /// and `[0]` names the program ([`parse_token_command`]).
+    pub token_command: Option<Vec<String>>,
     /// Skip request signing for public buckets (opt-in; default: signed
     /// requests using the credential chain).
     pub anonymous: Option<bool>,
@@ -119,7 +121,11 @@ impl CloudOptions {
     /// translated to their canonical `object_store` equivalents for backwards
     /// compatibility. When a legacy name and its canonical name are both
     /// present, the explicit canonical value wins.
-    pub fn from_map(map: &HashMap<String, String>) -> Self {
+    ///
+    /// Fallible because `token_command` is a JSON-encoded argument vector and
+    /// the shape it had before it (a shell string) is refused here, not read
+    /// as a program's name.
+    pub fn from_map(map: &HashMap<String, String>) -> Result<Self, String> {
         let mut config: HashMap<String, String> = HashMap::new();
 
         // Pass 1: legacy field names -> canonical keys (lower precedence).
@@ -143,7 +149,7 @@ impl CloudOptions {
             match k.as_str() {
                 "anonymous" => anonymous = Some(v == "true"),
                 "bearer_token" => bearer_token = Some(v.clone()),
-                "token_command" => token_command = Some(v.clone()),
+                "token_command" => token_command = Some(parse_token_command(v)?),
                 "gcs_service_account_key"
                 | "azure_storage_account"
                 | "azure_storage_access_key" => {} // already translated in pass 1
@@ -153,12 +159,37 @@ impl CloudOptions {
             }
         }
 
-        CloudOptions {
+        Ok(CloudOptions {
             config,
             bearer_token,
             token_command,
             anonymous,
-        }
+        })
+    }
+}
+
+/// The wire form of `token_command`: a JSON array of strings, the program
+/// first. The wire map carries strings only, so Python encodes the argument
+/// vector into one; anything else is refused, and in particular the shell
+/// string this option used to be (which names no program a shell was ever
+/// asked to evaluate any more).
+fn parse_token_command(raw: &str) -> Result<Vec<String>, String> {
+    const EXAMPLE: &str = r#"["gcloud", "auth", "print-access-token"]"#;
+    let argv: Vec<String> = serde_json::from_str(raw).map_err(|_| {
+        format!(
+            "token_command must be an argument vector such as {EXAMPLE}, got {raw:?}. \
+             Shell evaluation of token_command was removed: the command runs as a \
+             program with arguments, never through a shell"
+        )
+    })?;
+    match argv.first() {
+        None => Err(format!(
+            "token_command must name a program; got an empty argument vector. Write {EXAMPLE}"
+        )),
+        Some(program) if program.trim().is_empty() => Err(format!(
+            "token_command[0] must name a program, got {program:?}. Write {EXAMPLE}"
+        )),
+        Some(_) => Ok(argv),
     }
 }
 
@@ -777,7 +808,7 @@ mod tests {
             (CloudScheme::Gs, "GCS"),
             (CloudScheme::Az, "Azure"),
         ] {
-            let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")]));
+            let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")])).unwrap();
             let err = polars_options(scheme, Some(&opts))
                 .expect_err("expected an error for an unknown key");
             assert!(
@@ -798,7 +829,7 @@ mod tests {
     /// everything, which would be green and useless.
     #[test]
     fn a_known_storage_option_passes_validation() {
-        let opts = CloudOptions::from_map(&map(&[("aws_region", "us-east-1")]));
+        let opts = CloudOptions::from_map(&map(&[("aws_region", "us-east-1")])).unwrap();
         polars_options(CloudScheme::S3, Some(&opts)).expect("aws_region is a real S3 config key");
     }
 
@@ -807,7 +838,7 @@ mod tests {
     /// polars would have honoured.
     #[test]
     fn storage_option_keys_are_case_insensitive() {
-        let opts = CloudOptions::from_map(&map(&[("AWS_REGION", "us-east-1")]));
+        let opts = CloudOptions::from_map(&map(&[("AWS_REGION", "us-east-1")])).unwrap();
         polars_options(CloudScheme::S3, Some(&opts)).expect("keys are lower-cased first");
     }
 
@@ -816,8 +847,8 @@ mod tests {
     #[test]
     fn anonymous_becomes_skip_signature() {
         for scheme in [CloudScheme::S3, CloudScheme::Gs, CloudScheme::Az] {
-            let anon = CloudOptions::from_map(&map(&[("anonymous", "true")]));
-            let signed = CloudOptions::from_map(&map(&[]));
+            let anon = CloudOptions::from_map(&map(&[("anonymous", "true")])).unwrap();
+            let signed = CloudOptions::from_map(&map(&[])).unwrap();
             assert_ne!(
                 polars_options(scheme, Some(&anon)).unwrap(),
                 polars_options(scheme, Some(&signed)).unwrap(),
@@ -826,12 +857,45 @@ mod tests {
         }
     }
 
+    /// `token_command` is an argument vector. The shell string it used to be
+    /// is refused at the wire, naming the form that works, rather than read as
+    /// the name of a program.
+    #[test]
+    fn token_command_refuses_everything_but_an_argument_vector() {
+        for old in [
+            "printf tok",
+            "echo a; echo b",
+            "",
+            "gcloud auth print-access-token",
+        ] {
+            let err = CloudOptions::from_map(&map(&[("token_command", old)])).unwrap_err();
+            assert!(err.contains("argument vector"), "{old:?}: {err}");
+            assert!(err.contains("Shell evaluation"), "{old:?}: {err}");
+        }
+        for bad in ["[]", r#"[""]"#, r#"["  "]"#, "[1]", r#"{"a": "b"}"#, "null"] {
+            let err = CloudOptions::from_map(&map(&[("token_command", bad)])).unwrap_err();
+            assert!(err.contains("token_command"), "{bad}: {err}");
+        }
+        let ok = CloudOptions::from_map(&map(&[(
+            "token_command",
+            r#"["printf", "%s", "a;b $(echo x)"]"#,
+        )]))
+        .unwrap();
+        assert_eq!(
+            ok.token_command.unwrap(),
+            ["printf", "%s", "a;b $(echo x)"].map(String::from)
+        );
+    }
+
     /// Bearer credentials are an OAuth concept; S3 signs with SigV4. Both
     /// inputs must be refused rather than accepted and ignored.
     #[test]
     fn s3_refuses_both_bearer_inputs() {
-        for key in ["token_command", "bearer_token"] {
-            let opts = CloudOptions::from_map(&map(&[(key, "whatever")]));
+        for (key, value) in [
+            ("token_command", r#"["whatever"]"#),
+            ("bearer_token", "whatever"),
+        ] {
+            let opts = CloudOptions::from_map(&map(&[(key, value)])).unwrap();
             let err = polars_options(CloudScheme::S3, Some(&opts))
                 .expect_err("S3 must refuse an OAuth bearer credential");
             assert!(
@@ -842,8 +906,11 @@ mod tests {
 
         // The same inputs are accepted on the schemes that *do* use a bearer
         // token, so the rejection is about S3 and not about the key existing.
-        for key in ["token_command", "bearer_token"] {
-            let opts = CloudOptions::from_map(&map(&[(key, "whatever")]));
+        for (key, value) in [
+            ("token_command", r#"["whatever"]"#),
+            ("bearer_token", "whatever"),
+        ] {
+            let opts = CloudOptions::from_map(&map(&[(key, value)])).unwrap();
             polars_options(CloudScheme::Gs, Some(&opts))
                 .unwrap_or_else(|e| panic!("GCS should accept {key}, got {e}"));
         }
@@ -862,9 +929,9 @@ mod tests {
             ("aws_secret_access_key", "secret"),
             ("aws_endpoint", "https://minio.local:9000"),
         ];
-        let forward = CloudOptions::from_map(&map(pairs));
+        let forward = CloudOptions::from_map(&map(pairs)).unwrap();
         let reversed: Vec<(&str, &str)> = pairs.iter().rev().copied().collect();
-        let backward = CloudOptions::from_map(&map(&reversed));
+        let backward = CloudOptions::from_map(&map(&reversed)).unwrap();
 
         assert_eq!(
             polars_options(CloudScheme::S3, Some(&forward)).unwrap(),
@@ -878,7 +945,8 @@ mod tests {
         let opts = CloudOptions::from_map(&map(&[
             ("aws_region", "eu-west-1"),
             ("google_application_credentials", "/adc.json"),
-        ]));
+        ]))
+        .unwrap();
         assert_eq!(opts.config.get("aws_region").unwrap(), "eu-west-1");
         assert_eq!(
             opts.config.get("google_application_credentials").unwrap(),
@@ -893,7 +961,8 @@ mod tests {
         let opts = CloudOptions::from_map(&map(&[
             ("anonymous", "true"),
             ("bearer_token", "ya29.token"),
-        ]));
+        ]))
+        .unwrap();
         assert_eq!(opts.anonymous, Some(true));
         assert_eq!(opts.bearer_token.as_deref(), Some("ya29.token"));
         // Reserved keys are lifted out, not forwarded to the backend config.
@@ -907,7 +976,8 @@ mod tests {
             ("gcs_service_account_key", "/sa.json"),
             ("azure_storage_account", "acct"),
             ("azure_storage_access_key", "secret"),
-        ]));
+        ]))
+        .unwrap();
         // Legacy names are translated to canonical object_store keys.
         assert_eq!(
             opts.config.get("google_service_account").unwrap(),
@@ -931,7 +1001,8 @@ mod tests {
         let opts = CloudOptions::from_map(&map(&[
             ("gcs_service_account_key", "/legacy.json"),
             ("google_service_account", "/explicit.json"),
-        ]));
+        ]))
+        .unwrap();
         assert_eq!(
             opts.config.get("google_service_account").unwrap(),
             "/explicit.json"
@@ -949,7 +1020,7 @@ mod tests {
         // sitting in front of it. No store is built and no network is touched —
         // validation happens first — which is also what keeps this hermetic in a
         // shared test process.
-        let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")]));
+        let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")])).unwrap();
         let err = ASYNC
             .block_on(read_remote(
                 "gs://bucket/obj.png",
@@ -969,7 +1040,8 @@ mod tests {
         // token_command is an OAuth-bearer concept; S3 uses SigV4. The S3 path
         // must reject it (before any network I/O) rather than silently ignore a
         // credential the user believes is in effect.
-        let opts = CloudOptions::from_map(&map(&[("token_command", "printf tok")]));
+        let opts =
+            CloudOptions::from_map(&map(&[("token_command", r#"["printf", "tok"]"#)])).unwrap();
         let err = ASYNC
             .block_on(read_remote(
                 "s3://bucket/obj.png",
@@ -1008,7 +1080,8 @@ mod tests {
         let opts = CloudOptions::from_map(&map(&[
             ("google_application_credentials", adc.to_str().unwrap()),
             ("bearer_token", "ya29.fake-token"),
-        ]));
+        ]))
+        .unwrap();
 
         // With the bearer token installed, building must succeed despite the
         // unparseable ADC file. (An explicit bearer also short-circuits our own

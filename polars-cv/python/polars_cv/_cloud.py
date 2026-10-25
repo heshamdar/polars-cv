@@ -14,7 +14,7 @@ class CloudCredentialError(RuntimeError):
     """A remote path could not be reached with the credential in effect.
 
     The message names that credential (``gcloud ADC (...)``,
-    ``token_command `...```, ``object_store default credential chain (...)``)
+    ``token_command [...]``, ``object_store default credential chain (...)``)
     and the backend's own error.
     """
 

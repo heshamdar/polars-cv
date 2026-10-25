@@ -248,7 +248,10 @@ fn _check_cloud_access(
     path: &str,
     options: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<std::collections::HashMap<&'static str, Option<String>>> {
-    let options = options.map(|m| cloud::CloudOptions::from_map(&m));
+    let options = options
+        .map(|m| cloud::CloudOptions::from_map(&m))
+        .transpose()
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let report = py
         .detach(|| cloud::check_access(path, options.as_ref()))
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;

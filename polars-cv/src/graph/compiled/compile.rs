@@ -192,7 +192,9 @@ impl CompiledGraph {
                         cloud_options: source
                             .path_settings()
                             .0
-                            .map(crate::cloud::CloudOptions::from_map),
+                            .map(crate::cloud::CloudOptions::from_map)
+                            .transpose()
+                            .map_err(|e| polars_err!(ComputeError: "{e}"))?,
                         path_policy: source
                             .path_settings()
                             .1

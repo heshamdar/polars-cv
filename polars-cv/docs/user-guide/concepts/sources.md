@@ -169,7 +169,7 @@ CloudOptions(storage_options={"google_application_credentials": "/path/adc.json"
 | Inline service-account JSON | `storage_options={"google_service_account_key": inline_json}` |
 | Application Default Credentials file | `storage_options={"google_application_credentials": "/path/adc.json"}` |
 | Federated / workload identity | automatic via `gcloud` (see below) |
-| Token from a custom command | `token_command="my-broker get-token"` |
+| Token from a custom command | `token_command=["my-broker", "get-token"]` |
 | Pre-obtained OAuth access token | `gcs_bearer_token=token` |
 | Public bucket | `anonymous=True` |
 
@@ -181,9 +181,19 @@ an explicit `google_application_credentials` option, or the well-known gcloud
 path — it runs `gcloud auth application-default print-access-token` and uses the
 resulting token, caching it until just before it expires. This needs the
 `gcloud` CLI on `PATH`; set `POLARS_CV_DISABLE_GCS_FEDERATION=1` to disable it.
-To source the token another way, set `token_command` to any shell command that
-prints an access token (it takes precedence over the automatic `gcloud`
-delegation), or pass `gcs_bearer_token` to supply one yourself.
+To source the token another way, set `token_command` to the argument vector of
+a program that prints an access token (it takes precedence over the automatic
+`gcloud` delegation), or pass `gcs_bearer_token` to supply one yourself.
+
+`token_command` is a non-empty `list[str]`: the program first, then its
+arguments. It is run directly, **never through a shell**, on every platform, so
+an argument holding `;`, `$(...)` or a backtick reaches the program as that
+literal text. This is deliberate: a value built from data (a bucket or profile
+name taken from a column) cannot run anything. A string is refused when the
+`CloudOptions` is built, and shell syntax has to be asked for by naming the
+shell (`["sh", "-c", "my-broker get-token | head -1"]`, or
+`["cmd", "/C", "..."]` on Windows). On Windows a batch wrapper is named with its
+extension (`"gcloud.cmd"`): the program is looked up as written.
 
 `polars_cv.check_cloud_access(path, cloud_options=...)` resolves the
 credential a read of `path` would use and exercises it once (a `HEAD`, or a
@@ -194,7 +204,7 @@ credential, when the credential cannot be obtained or is refused.
 
 `token_command` is provider-agnostic across the OAuth-bearer backends: the same
 option works for **Azure** Blob Storage (e.g.
-`az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv`).
+`["az", "account", "get-access-token", "--resource", "https://storage.azure.com/", "--query", "accessToken", "-o", "tsv"]`).
 It does **not** apply to S3, which authenticates with SigV4 rather than a bearer
 token — supplying it, or `gcs_bearer_token`, with an `s3://` source raises; use
 the `aws_*` fields or `storage_options` for AWS credentials instead.

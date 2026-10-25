@@ -51,7 +51,12 @@ fn read_file_bytes(inputs: &[Series], kwargs: ReadBytesKwargs) -> PolarsResult<S
         kwargs.on_error.as_deref().unwrap_or("raise"),
         "read_bytes()",
     )?;
-    let options = kwargs.cloud_options.as_ref().map(CloudOptions::from_map);
+    let options = kwargs
+        .cloud_options
+        .as_ref()
+        .map(CloudOptions::from_map)
+        .transpose()
+        .map_err(|e| polars_err!(ComputeError: "read_bytes(): {e}"))?;
 
     // An all-null column has no paths to read; keep it null rather than
     // failing the dtype check on a column that carries no paths either way.
