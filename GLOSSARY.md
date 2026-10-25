@@ -21,8 +21,8 @@ the other senses, name the type (`ViewDto`, `ExecutionPlan`), not the bare word.
 | **plan** | What the planner knows about a pipeline at every op boundary: domain, dtype and shape (`Plan`, its `PlanState`s, extended by `plan::step`). | How the engine will execute a buffer's ops (that is an `ExecutionPlan`) |
 | **kernel** | The loop that computes an op's output over a buffer, in `view-buffer/src/kernels/<kind>.rs` (an op's `execute` entry in `ops/<family>.rs` calls it). | A convolution kernel's weights, a `FusedKernel` (a lowered chain of scalar ops) or an `ExecutionPlan` step |
 | **domain** | The kind of value at one point of a pipeline: `buffer`, `contour`, `scalar` or `vector` (`Domain`). | A dtype |
-| **sink** | How an output leaves the graph: its format, its planned Polars dtype and its encoding (`Sink`, `SinkKind`, `graph/sink.rs`). | |
-| **source** | How a node's input column becomes its first buffer (`Source`, `graph/source.rs`). | |
+| **sink** | How an output leaves the graph: its format, its planned Polars dtype and its encoding (`Sink` in `formats/sink.rs`; `SinkKind` in `graph/sink_kind.rs`; the dtype and per-row encode in `graph/sink.rs`). | |
+| **source** | How a node's input column becomes its first buffer (`Source` in `formats/source.rs`; the per-row decode in `graph/source.rs`). | |
 
 ## Names that use a word another way
 
@@ -43,8 +43,8 @@ in them.
 
 ## The engine's scope
 
-`view-buffer` describes itself as a tensor engine. It also holds the image and
-CV kernels: codecs, filters, contour extraction, rasterization, histograms and
-perceptual hashing. Read "engine" as "the kernel library the plugin executes
-with". It is not a general tensor framework, and nothing outside this repository
-consumes it (`publish = false`).
+`view-buffer` is the kernel library the plugin executes with: the strided
+buffer and its layout and element-wise ops, and the image and CV kernels
+(codecs, filters, contour extraction, rasterization, histograms and perceptual
+hashing). "Engine" means that library. It is not a general tensor framework, and
+nothing outside this repository consumes it (`publish = false`).

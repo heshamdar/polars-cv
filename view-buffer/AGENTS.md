@@ -5,7 +5,7 @@
 
 ## Purpose
 
-`view-buffer` is a **zero-copy, stride-aware tensor framework** for Rust. It is the computational engine that powers polars-cv. All actual image/array processing happens here.
+`view-buffer` is the **kernel library** the polars-cv plugin executes with: a zero-copy, strided N-D buffer plus the image, codec and geometry kernels. It is not a general tensor framework. All actual image/array processing happens here.
 
 While originally designed as an independent crate, it is currently **tightly coupled** to polars-cv in practice. Agents working on either layer typically need context from both.
 

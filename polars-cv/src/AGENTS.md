@@ -217,7 +217,7 @@ encoding (`encode_sink`), shared by the graph executor.
 
 | Crate | Purpose |
 |-------|---------|
-| `view-buffer` | Core tensor engine (path dependency `../view-buffer`) |
+| `view-buffer` | The kernel library (path dependency `../view-buffer`) |
 | `polars` | DataFrame operations, Series types |
 | `pyo3` / `pyo3-polars` | Python bindings, `#[polars_expr]` derive macro |
 | `image` | Image decoding/encoding |

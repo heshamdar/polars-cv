@@ -1,7 +1,10 @@
-//! view-buffer: A zero-copy, stride-aware tensor orchestration framework for Rust.
+//! view-buffer: the kernel library the polars-cv plugin executes with.
 //!
-//! This crate provides a unified interface for working with multi-dimensional
-//! arrays (tensors) with zero-copy view operations and efficient compute operations.
+//! A strided, zero-copy N-D buffer (`ViewBuffer`) and the ops that run on it —
+//! the generic layout and element-wise ops, and the image and CV kernels:
+//! codecs, filters, resize, contour extraction, rasterization, histograms and
+//! perceptual hashing. It is not a general tensor framework; nothing outside
+//! this repository consumes it (`publish = false`).
 //!
 //! # Modules
 //!

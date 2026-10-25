@@ -338,7 +338,7 @@ it. `shear()` is sugar that passes its coefficients to `warp_affine()`;
 (`AffineParams::rotation_matrix_2d`), so no rotation trig is written in Python.
 `_to_spec_dict()` emits ops verbatim.
 
-### Shape Hints (single authority: view-buffer `OpShape`)
+### Shape (single authority: view-buffer `OpShape`)
 
 No per-dimension geometry is derived in Python. Every op's shape arithmetic is
 one view-buffer `OpShape`, which execution evaluates on known sizes and `plan::step` evaluates symbolically: each typed op builds its `OpShape` from its
