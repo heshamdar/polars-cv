@@ -198,6 +198,21 @@ impl ViewExpr {
         }
     }
 
+    /// The output shape of `op` over this expression's shape: the one place
+    /// an op node's shape is derived. Every `ViewDto` family has a shape that
+    /// is knowable from known input sizes; an op whose shape is not
+    /// (`OpShape::Dynamic`) cannot be a node here, and panics naming the op
+    /// rather than carrying an empty (rank-0) shape forward.
+    fn next_shape(&self, op: &dyn Op) -> Vec<usize> {
+        op.shape().concrete(&[&self.shape]).unwrap_or_else(|| {
+            panic!(
+                "op `{}` has no shape knowable from known input sizes (OpShape::Dynamic); \
+                 ViewExpr nodes need a concrete shape",
+                op.name()
+            )
+        })
+    }
+
     // Helper to calculate next strides
     fn calc_strides(&self, op: &dyn Op, new_shape: &[usize]) -> Option<Vec<isize>> {
         if let Some(current_strides) = &self.strides {
@@ -238,7 +253,7 @@ impl ViewExpr {
     /// first); the generic path expresses neither.
     fn op_node(self: &Arc<Self>, op: ViewDto) -> Arc<Self> {
         let contract = op.as_op();
-        let new_shape = contract.shape().concrete(&[&self.shape]);
+        let new_shape = self.next_shape(contract);
         let new_strides = self.calc_strides(contract, &new_shape);
         let new_dtype = contract.resolve_output_dtype(self.dtype);
         Arc::new(Self {
@@ -289,7 +304,7 @@ impl ViewExpr {
 
     pub fn cast(self: &Arc<Self>, target: DType) -> Arc<Self> {
         let op = ComputeOp::Cast { dtype: target };
-        let new_shape = op.shape().concrete(&[&self.shape]);
+        let new_shape = self.next_shape(&op);
 
         // A same-dtype cast is an identity clone: the buffer (and its
         // strides) pass through untouched. Any real cast materializes a
@@ -1073,5 +1088,22 @@ mod scalar_op_tests {
         for (g, e) in got.iter().zip([1.0, 2.0, 3.0, 4.0]) {
             assert!((g - e).abs() < 1e-6);
         }
+    }
+}
+
+#[cfg(test)]
+mod next_shape_tests {
+    use super::*;
+    use crate::geometry::GeometryOp;
+
+    /// An op whose shape is data-dependent (`OpShape::Dynamic`) cannot become
+    /// a `ViewExpr` node: building its shape fails, naming the op, instead of
+    /// carrying a rank-0 `[]` forward to fail somewhere else.
+    #[test]
+    #[should_panic(expected = "op `Centroid` has no shape knowable from known input sizes")]
+    fn a_dynamic_op_cannot_become_a_node_shape() {
+        let source =
+            ViewExpr::new_source(ViewBuffer::from_vec_with_shape(vec![0u8; 4], vec![2, 2]));
+        let _ = source.next_shape(&GeometryOp::<crate::mode::Exec>::Centroid);
     }
 }

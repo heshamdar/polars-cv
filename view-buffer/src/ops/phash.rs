@@ -521,10 +521,10 @@ mod tests {
     fn test_shape() {
         let op = PerceptualHashOp::new(HashAlgorithm::Perceptual).with_hash_size(64);
         let shape = op.shape().concrete(&[&[256, 256, 3]]);
-        assert_eq!(shape, vec![8]); // 64 bits = 8 bytes
+        assert_eq!(shape, Some(vec![8])); // 64 bits = 8 bytes
 
         let op_large = PerceptualHashOp::new(HashAlgorithm::Perceptual).with_hash_size(256);
         let shape_large = op_large.shape().concrete(&[&[256, 256, 3]]);
-        assert_eq!(shape_large, vec![32]); // 256 bits = 32 bytes
+        assert_eq!(shape_large, Some(vec![32])); // 256 bits = 32 bytes
     }
 }

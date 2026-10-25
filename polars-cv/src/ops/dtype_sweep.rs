@@ -105,6 +105,40 @@ fn every_sample_op_executes_in_its_declared_dtype() {
     );
 }
 
+/// Every engine (`ViewDto`) family's sample has a shape knowable from known
+/// input sizes: `OpShape::concrete` is `Some`, never the unknown `None`, on
+/// every input layout the contract admits. `ViewExpr` builds a node's shape
+/// from it and panics on `None`, so a family declaring `Dynamic` is caught
+/// here, per op, instead of when a pipeline reaches it.
+#[test]
+fn every_engine_sample_has_a_concrete_shape() {
+    let mut checked = 0usize;
+    for sample in TypedOp::samples() {
+        let name = sample.name();
+        let step = sample
+            .resolve(0, &ParamCtx::empty())
+            .expect("a registered sample resolves");
+        let GraphStep::Buffer(dto) = step else {
+            continue;
+        };
+        let mut admitted = false;
+        for shape in shapes() {
+            let source = ViewExpr::new_source(image(&shape, DType::U8));
+            if source.try_apply_op(dto.clone()).is_err() {
+                continue; // the contract does not admit this input
+            }
+            admitted = true;
+            assert!(
+                dto.as_op().shape().concrete(&[&shape]).is_some(),
+                "{name} on {shape:?}: shape is not knowable from known sizes"
+            );
+            checked += 1;
+        }
+        assert!(admitted, "{name} admits no swept layout: nothing checked");
+    }
+    assert!(checked > 50, "only {checked} cases checked");
+}
+
 /// Runs `f`, recording a failure unless it returns a buffer of `declared`.
 fn expect_dtype(
     failures: &mut Vec<String>,

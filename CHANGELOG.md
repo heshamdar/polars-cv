@@ -23,6 +23,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `_CAST_ONLY_NAMES` literal in `_types.py` is gone, so that module holds no
   dtype-name literal. A cast-only name equal to a dtype spelling fails the
   generator and a view-buffer test. Behaviour is unchanged (#177).
+- **`OpShape::concrete` returns `Option<Vec<usize>>`**: `None` for a shape not
+  knowable from known sizes, distinct from `Some(vec![])`, the rank-0 shape.
+  It used to return `[]` for both. `ViewExpr` derives every op node's shape in
+  one place (`next_shape`), which panics naming the op if a `ViewDto` op ever
+  declares `OpShape::Dynamic`, rather than carrying an empty shape forward. No
+  current `ViewDto` family does; a registry-driven test now asserts every
+  engine sample has a concrete shape. The test pinning `Dynamic.concrete(..)`
+  as empty now pins `None` (#169).
 - **`Op::accepted_input_dtypes` and `Op::working_dtype` are required**, like
   the trait's other contract methods: their default bodies (`Any` and `None`)
   are gone, so an `impl Op` that omits either does not compile. `ViewOp` and

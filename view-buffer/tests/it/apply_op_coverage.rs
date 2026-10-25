@@ -113,7 +113,11 @@ fn apply_op_executes_every_view_dto_variant() {
         let name = dto.name();
 
         let source = ViewBuffer::from_vec_with_shape(vec![7u8; 4 * 4 * 3], vec![4, 4, 3]);
-        let expected_shape = dto.as_op().shape().concrete(&[&[4, 4, 3]]);
+        let expected_shape = dto
+            .as_op()
+            .shape()
+            .concrete(&[&[4, 4, 3]])
+            .unwrap_or_else(|| panic!("{name}: shape is not knowable from known sizes"));
         let expected_dtype = dto.output_dtype_rule().resolve(DType::U8);
 
         let expr = ViewExpr::new_source(source).apply_op(dto);

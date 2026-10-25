@@ -734,7 +734,7 @@ mod tests {
             supersample: 1,
         };
         let shape = op.shape().concrete(&[]);
-        assert_eq!(shape, vec![100, 200, 1]);
+        assert_eq!(shape, Some(vec![100, 200, 1]));
     }
 
     #[test]
