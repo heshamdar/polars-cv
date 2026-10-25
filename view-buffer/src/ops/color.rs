@@ -174,6 +174,14 @@ impl<M: Mode> Op for ColorConvertOp<M> {
         DTypeCategory::Numeric
     }
 
+    /// `None`: `apply_color_convert` reads the input in its native dtype and
+    /// does its own f64 arithmetic per dtype's `ColorRange`, so the execution
+    /// layer must not pre-cast (a pre-cast to u8 would corrupt float and wide
+    /// integer ranges).
+    fn working_dtype(&self) -> Option<DType> {
+        None
+    }
+
     /// Truthful dtype contract for `apply_color_convert`: conversions
     /// involving Lab compute in f32 and stay f32 for every input dtype;
     /// every other conversion preserves the element dtype (the math may

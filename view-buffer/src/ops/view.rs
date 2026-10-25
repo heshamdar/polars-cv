@@ -1,6 +1,6 @@
 //! View operations that perform zero-copy transformations.
 
-use crate::core::dtype::OutputDTypeRule;
+use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::mode::{known, size, Exec, Mode};
 use crate::ops::shape_rule::{place_axis, resolve_axis, OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
@@ -358,6 +358,17 @@ impl ViewOp {
 }
 
 impl<M: Mode> Op for ViewOp<M> {
+    /// `Any`: a view only re-strides or re-labels the buffer, so no element is
+    /// read and every dtype passes through.
+    fn accepted_input_dtypes(&self) -> DTypeCategory {
+        DTypeCategory::Any
+    }
+
+    /// `None`: zero-copy, so there is no computation to carry out in another dtype.
+    fn working_dtype(&self) -> Option<DType> {
+        None
+    }
+
     fn validate(
         &self,
         input_shapes: &[&[crate::ops::Dim]],
