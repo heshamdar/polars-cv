@@ -129,7 +129,7 @@ impl LutOp {
             ));
         }
         let n = self.table.len();
-        if let Some(max) = largest(buf).filter(|&max| max >= n) {
+        if let Some(max) = crate::kernels::lut::largest(buf).filter(|&max| max >= n) {
             return Err(format!(
                 "value {max} is past the table's {n} entries; clamp(0, {}, out_dtype=\"{}\") \
                  first sends larger values to the last row",
@@ -171,23 +171,6 @@ impl LutOp {
             ViewBuffer::from_vec_with_shape(out, shape)
         })
     }
-}
-
-/// The largest value of a u8/u16 buffer (`None` when it is empty), read in
-/// place whatever its layout.
-fn largest(buf: &ViewBuffer) -> Option<usize> {
-    let mut max: Option<usize> = None;
-    let mut fold = |m: Option<usize>| max = max.max(m);
-    match buf.dtype() {
-        DType::U8 => crate::core::map::for_each_run::<u8>(buf, |run| {
-            fold(run.iter().max().map(|&v| usize::from(v)))
-        }),
-        DType::U16 => crate::core::map::for_each_run::<u16>(buf, |run| {
-            fold(run.iter().max().map(|&v| usize::from(v)))
-        }),
-        _ => {}
-    }
-    max
 }
 
 impl<M: Mode> Op for LutOp<M> {

@@ -70,8 +70,9 @@ src/
 │   ├── elementwise/    # The engine every per-value compute op runs through: lowering,
 │   │                   # statistics, integer / table / blocked / pass strategy, in-place writes;
 │   │                   # legacy.rs + tests.rs hold the pre-engine code as its test oracle
-│   ├── blur.rs  canny.rs  channel.rs  color.rs  distance.rs  equalize.rs  filter.rs
-│   ├── grid.rs  mask.rs  morph.rs  phash.rs  pixel.rs  rank.rs  resample.rs  resize.rs  warp.rs
+│   ├── binary.rs  blur.rs  canny.rs  channel.rs  color.rs  distance.rs  equalize.rs  filter.rs
+│   ├── grid.rs  histogram.rs  lut.rs  mask.rs  morph.rs  pad.rs  phash.rs  pixel.rs  rank.rs
+│   ├── reduction.rs  resample.rs  resize.rs  warp.rs
 │   └── mod.rs          # the rule, and what the domains share
 ├── execution/          # ExecutionPlan (plan.rs), plan execution (runner.rs: `execute_plan`)
 ├── geometry/           # Contour, Point, BoundingBox, extraction, rasterization, measures, pairwise
