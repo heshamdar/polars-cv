@@ -97,7 +97,7 @@ Applied per module, not per test — a module is either a guard suite or it is n
 pytestmark = pytest.mark.structural
 ```
 
-Two guards keep the lane honest, both in `test_sanitation.py`:
+Two guards keep the lane honest, both in `test_structural_lane.py`:
 
 - `test_every_source_scanning_module_declares_its_lane` — any module importing
   `_discovery` (the mandated way to find files to scan) must declare
@@ -153,7 +153,7 @@ Useful entry points when you need a pattern to copy:
 | `test_integration.py` | End-to-end execution through Polars |
 | `test_schema_inference.py` | Planning-time vs execution-time schema agreement |
 | `test_source_types.py` | Exercising each source format |
-| `test_sanitation.py` | Meta-tests that police the conventions below |
+| `test_suite_conformance.py`, `test_structural_lane.py`, … | Meta-tests that police the conventions below; every guard is indexed by the Canonical Paths table in the root `AGENTS.md` (`test_guard_index.py`) |
 | `test_contour_raster_crosscheck.py` | Differential testing: one quantity, two implementations |
 | `test_expression_op_params.py` | Table-driven sweep with a coverage ratchet |
 
@@ -298,13 +298,13 @@ class TestMyFeature:
 `plugin_required` from `tests.conftest`; inside fixtures use the
 `create_test_png` factory fixture, and for module-level helpers import
 `make_test_png` (`from tests.conftest import make_test_png`). Meta-tests in
-`test_sanitation.py` (`test_no_local_plugin_available_definitions`,
+`test_suite_conformance.py` (`test_no_local_plugin_available_definitions`,
 `test_no_local_png_factories`) fail the suite if a test file redefines
 either.
 
 ## Writing a Sanitation Guard
 
-The guards in `test_sanitation.py` are the enforcement mechanism for the
+The structural guards (indexed by the Canonical Paths table) are the enforcement mechanism for the
 single-authority invariants, so a guard that cannot fail is worse than no
 guard: it reads as coverage. The dtype-dispatch ratchet was wrong **seven**
 times before it settled, and every time it kept passing while covering less

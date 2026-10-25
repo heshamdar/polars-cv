@@ -83,7 +83,7 @@ def test_non_script_exemptions_are_real_and_needed() -> None:
     It is an allowlist that removes files from the sweep, so it is the way this
     runner gets quietly narrowed — add an entry and a broken example stops
     being checked, with nothing to say so. ``_DISCOVERY_EXEMPT`` in
-    ``test_sanitation.py`` carries the same risk and the same guard.
+    ``test_discovery_scope.py`` carries the same risk and the same guard.
 
     Two directions:
 

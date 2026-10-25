@@ -21,7 +21,7 @@ the crate sources exist. A layout change now fails; a wheel install still
 skips.
 
 Callers must not glob for themselves. ``test_scans_go_through_discovery`` in
-``test_sanitation.py`` walks the test suite's AST and fails on a direct
+``test_discovery_scope.py`` walks the test suite's AST and fails on a direct
 ``glob``/``rglob`` outside this module and the files listed in its
 ``_DISCOVERY_EXEMPT``, each of which is a place where finding nothing is a
 meaningful answer rather than a broken scan.
@@ -185,7 +185,7 @@ def suite_files() -> list[Path]:
 #: such guard report itself.
 SUITE_MODULE_EXCLUSIONS: dict[str, str] = {
     "conftest.py": "holds the shared fixtures the conformance guards look for",
-    "test_sanitation.py": "holds the guards, so it names every pattern they ban",
+    "test_suite_conformance.py": "holds the guards, so it names every pattern they ban",
 }
 
 

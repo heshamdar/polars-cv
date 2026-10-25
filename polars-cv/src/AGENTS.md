@@ -165,7 +165,7 @@ Runs at Polars planning time (NOT execution time). Parses the graph JSON, resolv
 
 `namespaces/point.rs` and `namespaces/contour.rs` expose direct plugin expression functions for `.point` / `.contour` / `.bbox` namespaces. These **bypass `vb_graph`** and operate on Struct/List columns directly. `image_metadata.rs` and `read_bytes.rs` bypass it the same way for the `.cv` namespace's non-pipeline methods.
 
-`tests/test_sanitation.py::test_namespace_plugin_symbols_match_registrations` pins both directions of this surface — add any new module carrying a namespace `#[polars_expr]` to the file list it scans, or the symbol silently escapes the check.
+`tests/test_registry_parity.py::test_namespace_plugin_symbols_match_registrations` pins both directions of this surface — add any new module carrying a namespace `#[polars_expr]` to the file list it scans, or the symbol silently escapes the check.
 
 These functions bypass `vb_graph` but use its per-row wire form. Each parses its own typed definition (`namespaces/fns.rs`: a `ContourFn`/`PointFn`/`BBoxFn` variant, or the `GeometryOp` a pipeline op shares) with `GeomParams::parse`, strictly by name: a field is `M::V<T>` — the literal, or `{"$slot": n}` naming the extra input the generated Python `_GeomNamespace._call` appended — or a `ColumnRef` data operand. `GeomParams` resolves them through the same `ParamCol` accessors `params.rs` uses, and rejects an out-of-range slot or an extra input no field reads, so a builder/reader drift fails loudly instead of silently dropping an operand. The Python methods are generated from `tests/golden/geom_catalog.json`.
 

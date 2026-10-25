@@ -1,4 +1,4 @@
-"""Fixtures for the CI/verify.sh parity helpers in :mod:`tests.test_sanitation`.
+"""Fixtures for the CI/verify.sh parity helpers in :mod:`tests.test_verify_script`.
 
 `test_no_ci_check_is_missing_from_the_verify_script` parses two hand-written
 formats — GitHub Actions YAML and a bash script — with regexes. Every branch in
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.test_sanitation import (
+from tests.test_verify_script import (
     _ci_run_commands,
     _matches_command,
     _normalise_command,

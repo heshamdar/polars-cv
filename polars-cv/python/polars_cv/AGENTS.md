@@ -315,7 +315,7 @@ planned schema execution could not produce.) Never build or edit a
    its Rust contract via `Plan.push`, and the optimisation passes read
    its spatial and identity rules in Rust (`passes.rs`), so make sure the op declares the right contract on
    the Rust side (next step). Do not add per-op special cases in Python —
-   `test_op_schema_authority` (`test_sanitation.py`) and the plan-vs-execution
+   `test_op_schema_authority` (`test_plan_push_authority.py`) and the plan-vs-execution
    sweeps in `tests/test_schema_parity_*.py` guard this.
 
 4. **Rust side**: the op is a variant of its typed family — a view-buffer
@@ -424,7 +424,7 @@ outputs, defaults, metadata) is listed under "Extension types" in the root `ISSU
 - **Give new ops a correct Rust contract (`ViewDto` op / `GraphStep`).** Schema inference
   reads dtype/domain/rank/channel from it at planning time; a wrong or missing
   contract makes planned and executed schemas diverge (caught by the
-  plan==exec tests in `test_sanitation.py`).
+  plan==exec tests in `test_plan_equals_exec.py`).
 - **Expression params must be slotted.** An expression reaches Rust only as a slot in the pipeline's table (`_slot()`, which `_encode_field` and `_wire()` call); a typed op's fields get this from their catalogue type.
 - **The `auto` dtype.** Sources like `image_bytes` and `file_path` have dtype `auto` because the actual dtype is only known at execution time (after decoding). Operations that need a known dtype (like `sink("list")` or `sink("array")`) must have it resolved before the sink, either via `source(..., dtype="f32")`, `.cast(...)`, or a dtype-fixing operation. `contour` is *not* one of them — it decodes f64 coordinates and `rasterize` fixes u8, so it rejects a `dtype=` assertion rather than accepting one it never reads.
 - **Continuation nodes must inherit upstream typing context.** In `LazyPipelineExpr.pipe()` for op-only continuation pipelines (a plan with no source), compute node domain/dtype/ndim using upstream state + new ops. Copying op-only pipeline typing state can cause contract drift (planned dtype mismatch at execution).
