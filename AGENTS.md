@@ -276,7 +276,7 @@ side channel.
 | An output's planned schema | Planned by Rust from the graph itself (`resolved_output_specs`: each node's source state, then `plan::step` per op); the wire output is only `OutputRequest { node, sink }` | `an_output_carries_only_its_node_and_sink` (a `planned`/`expected_*` field is refused), `output_facts_are_planned_from_the_ops` |
 | A shape declaration (`assert_shape`) | The internal `assert_shape` typed op: planned by `plan::declare`, checked per row by `GraphStep::AssertShape` | `a_declaration_the_state_contradicts_is_refused`, the `AssertShape` case of `every_graph_step_variant_executes` |
 | The graph wire format's node fields | `GraphNode` with `#[serde(deny_unknown_fields)]` | Deserialization error — a stale or misspelled key fails the query |
-| What a path reader (`file_path` source, `read_bytes`, header metadata) may read, including what an absent `allowed_roots` means | `fetch::PathPolicy::resolve` (the only constructor; no `Default`), required by `Fetcher::new` / `HeaderFetcher::new`; the three readers resolve before reading any row | Compile error for a reader without a policy; `tests/test_path_sandbox.py` sweeps all three surfaces for absence, `["*"]`, `[]`, the mixed list and the denial (each watched failing against the old open default); `an_absent_allowed_roots_is_refused_naming_the_option_and_both_ways_out` |
+| What a path reader (`file_path` source, `read_bytes`, header metadata) may read, including what an absent `allowed_roots` means | `fetch::PathPolicy::resolve` (the only constructor; no `Default`), required by `Fetcher::new` / `HeaderFetcher::new`; the three readers resolve before reading any row. Absent denies local paths and remote URLs alike (#180) | Compile error for a reader without a policy; `tests/test_path_sandbox.py` sweeps all three surfaces for absence (local, and `s3://`/`gs://`/`https://`), `["*"]`, `[]`, the mixed list and the denial (each watched failing against the old open default); `an_absent_allowed_roots_is_refused_naming_the_option_and_both_ways_out` |
 | How `token_command` runs | `cloud_auth::run_token_command`: `Command::new(argv[0]).args(rest)`, no shell on any platform; the wire is a JSON argument vector parsed by `cloud::parse_token_command` | `token_command_arguments_reach_the_program_literally` (`;` and `$(...)` stay text), `token_command_refuses_everything_but_an_argument_vector` (the old string is refused), Python `CloudOptions` raising on a `str` |
 | Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |
 | What a `(domain, sink format)` pair produces | `SinkKind::resolve` in `src/graph/sink_kind.rs` | Compile error: the four halves of the sink contract (`dtype_for_output`, `encode_node_output`, `null_row_result_for_spec`, `build_series_from_spec`) match on the enum, so a new kind is non-exhaustive in all four at once; `every_kind_is_produced_by_some_pair` rejects a kind no pair names |
@@ -353,7 +353,11 @@ current instead.
    reintroduce the open default without the compiler objecting. Remote URLs
    keep their semantics: a remote root is a URI prefix, a remote path must
    start with one and contain no `..`, local and remote roots never admit each
-   other's paths, and `["*"]` admits both.
+   other's paths, and `["*"]` admits both. An absent `allowed_roots` denies
+   remote URLs as it does local paths, decided in #180: ambient credentials
+   are rarely scoped to one prefix, and `http(s)://` has no credential boundary
+   at all, so "the credentials bound it" is not a sandbox. The error names
+   remote URLs and shows a remote root, so a cloud pipeline sees its fix.
 
 7. *The typed op protocol (0.29.0, CR-45…CR-49).* One typed Rust definition per op, source and sink; a
    generated Python builder, enums and pass flags; a Rust planner

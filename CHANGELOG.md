@@ -52,7 +52,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   reader's `allowed_roots` (given or absent) into its policy, and `Default` is
   gone, so a fourth reader cannot reintroduce the open default. Remote roots keep
   their semantics (a URI prefix; a remote path must start with one and contain no
-  `..`); `["*"]` admits remote and local paths alike. Migrating: add
+  `..`); `["*"]` admits remote and local paths alike. An absent `allowed_roots`
+  refuses remote URLs too (`s3://`, `gs://`, `az://`, `http(s)://`), not only
+  local paths: credentials rarely bound a read to one prefix and `http(s)://`
+  has none, so the error names remote URLs and shows a remote root (#180).
+  Migrating: add
   `allowed_roots=[...]` naming the directories and URI prefixes the column may
   hold to each `source("file_path")`, `read_bytes()` and path-column metadata
   call, or `allowed_roots=["*"]` for paths you trust. An `image_bytes` / `blob`
