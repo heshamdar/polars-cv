@@ -14,7 +14,7 @@ These are source scans — the weakest guard kind (`CLAUDE.md`: prefer compiler
 exhaustiveness > runtime assertion > source scanning). They are used here only
 because the properties live in hand-written CI YAML, a shell hook and cargo
 config, which the first two cannot express. The CI scan reuses the
-fixture-backed parser in ``test_sanitation`` rather than a second regex.
+fixture-backed parser in ``test_verify_script`` rather than a second regex.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from tests._discovery import discovered, workflow_files
-from tests.test_sanitation import _ci_run_commands
+from tests.test_verify_script import _ci_run_commands
 
 pytestmark = pytest.mark.structural
 

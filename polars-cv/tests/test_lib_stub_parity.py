@@ -31,15 +31,15 @@ UNSTUBBED: dict[str, str] = {
         "the unpickle target `PlanState.__reduce__` names; Python never calls it"
     ),
     "point_schema": (
-        "read only by test_sanitation's schema parity test, which holds "
+        "read only by test_closed_structs' schema parity test, which holds "
         "POINT_SCHEMA to the Rust field list"
     ),
     "contour_schema": (
-        "read only by test_sanitation's schema parity test, which holds "
+        "read only by test_closed_structs' schema parity test, which holds "
         "CONTOUR_SCHEMA to the Rust field list"
     ),
     "bbox_schema": (
-        "read only by test_sanitation's schema parity test, which holds "
+        "read only by test_closed_structs' schema parity test, which holds "
         "BBOX_SCHEMA to the Rust field list"
     ),
     "extension_types": (

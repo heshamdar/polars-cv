@@ -29,7 +29,14 @@ _PRIVATE = re.compile(r"\._(plan|state|exprs)\b")
 EXEMPT: dict[str, str] = {
     "_plan_view.py": "the seam itself",
     "test_append_contract.py": "tests the plan object and the copy itself",
-    "test_sanitation.py": (
+    "_structural_helpers.py": (
+        "builds the fabricated states single ops are planned against "
+        "(``Plan.continuing``)"
+    ),
+    "test_plan_equals_exec.py": (
+        "plans single ops against fabricated states (``Plan.continuing``)"
+    ),
+    "test_plan_push_authority.py": (
         "plans single ops against fabricated states (``Plan.continuing``)"
     ),
     "test_plan_view_seam.py": "this guard names the fields it bans",

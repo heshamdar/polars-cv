@@ -185,7 +185,7 @@ changes; they explain *why* the code is shaped the way it is.
   state at every op boundary; the node-scope passes run on it in Rust too
   (`Plan.run_pass`, `polars-cv/src/passes.rs`). The planner contains no per-op
   special cases and no parallel contract table. Planning-time schema must equal
-  execution-time schema; guarded by `tests/test_sanitation.py`.
+  execution-time schema; guarded by `tests/test_plan_equals_exec.py`.
 - **Graph steps vs engine ops.** Graph-level steps (`GraphStep` in
   `polars-cv/src/graph/step.rs`: binary ops, masks, geometry, reductions,
   histograms, perceptual hash, lookup tables) are separate from
@@ -290,6 +290,8 @@ side channel.
 | A polars-cv extension type's name and storage | Rust `ext_types::ExtType` (storage read from `namespaces::schema` / `output::numpy_output_dtype`), mirrored by `polars_cv.extension_types.EXTENSION_TYPES` so `import polars_cv` can register without the `.so` | `test_python_types_match_the_rust_declaration` (names, order and full storage dtype over the `extension_types` FFI, both directions); `all_lists_every_variant_once` holds `ExtType::ALL` to the enum; `ext_from_params` returns polars' generic `Extension` for our name over any other storage, so an instance of our class *is* the canonical layout |
 | How Python reaches the compiled plugin | `polars_cv._plugin.call` — pins polars to the file the import system loads and passes every argument as `.ext.storage()`, so Rust never receives an extension dtype and only builds tagged outputs (`ExtType::tag`) | `test_only_the_plugin_module_registers_plugin_functions` (AST scan of the package, fixtures in `test_plugin_entry_point.py`); `test_accessors_accept_tagged_inputs` sweeps every accessor case table with tagged inputs; `test_plugin_path_is_the_file_python_imports` |
 | The compiled module's Python-visible signatures (`polars_cv._lib`) | The `#[pyfunction]`/`#[pyclass]` definitions registered in `polars-cv/src/lib.rs`; `python/polars_cv/_lib.pyi` is a hand-written restatement for `ty`, not an authority | `test_lib_stub_parity.py` (via `tests/_stub_parity.py`, fixtures in `test_stub_parity_fixtures.py`): every stub entry must exist in the built `_lib` with the same signature and every export must be stubbed, bar the reasoned `UNSTUBBED` table; self-skips without the `.so` |
+| Which tests pre-commit runs (`-m structural`) | Each source-scanning module's `pytestmark` (`structural`, or `slow` for a heavy one); `.pre-commit-config.yaml` runs the lane and the CI Python linters | `test_every_source_scanning_module_declares_its_lane`, `test_the_structural_lane_is_not_empty`, `test_the_precommit_hook_runs_the_structural_lane`, `test_the_precommit_hook_runs_the_ci_python_linters` (`test_structural_lane.py`) |
+| Where the suite's shared fixtures live (the plugin probe, PNG factories, image data) | `tests/conftest.py` (`plugin_required`, `create_test_png`, `encode_png`, `sample_image_bytes`) | `test_no_local_plugin_available_definitions`, `test_no_local_png_factories`, `test_no_unguarded_local_image_data_fixtures` (`test_suite_conformance.py`) |
 | Whether a channel count carries alpha (2 = gray + alpha, 4 = RGBA) | `view_buffer::ops::color::has_alpha` / `color_channels`, read by the resamplers' premultiply, the shape rule's carried alpha, grayscale and the colour conversions | Source scan: `test_only_the_declaration_tests_for_alpha` (fixtures in `test_alpha_authority.py`) reports a channel-count comparison restating the rule |
 | The package's import layering (`__init__` re-exports; nothing imports the root) | Named modules hold implementations; `__init__.py` re-exports them | `test_no_import_cycle_and_no_root_import` (scanner `tests/_import_layering.py`, fixtures in `test_import_layering_fixtures.py`); `test_each_module_imports_alone` imports each module in a fresh process |
 | Which engine a query collects on | polars' default (`engine="auto"`) or the user's affinity, forwarded where a caller chose one (`DetectionTable.collect(engine=...)`); the package never passes a literal engine | `test_the_package_never_chooses_an_engine` (`test_engine_choice.py`, with fixtures); in the suite, `test_no_test_pins_the_in_memory_engine` (`test_engine_pin_guard.py`): only the lane's engine, or both side by side |
@@ -319,9 +321,9 @@ generates its Python class; there is no FFI arm or Python mirror to add.
 
 This is written down because it was not. The phased plan behind the
 single-authority work existed only in the agent session that produced it, so
-recovering it meant reading commit messages and the sections of
-`tests/test_sanitation.py`, each named by the invariant it checks (Plan == Exec,
-registry parity, enum parity).
+recovering it meant reading commit messages and the guards named by the
+invariant each checks (`test_plan_equals_exec.py`, `test_registry_parity.py`,
+`test_enum_parity.py`; all indexed by the Canonical Paths table).
 A plan that lives in a session is a plan that ends with it — keep this section
 current instead.
 

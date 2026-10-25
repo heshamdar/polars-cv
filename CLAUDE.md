@@ -169,7 +169,7 @@ and the guard that enforces each one.
   one, read that state back before acting.
 - Clean up scratchpad scripts and temporary test files at the end of a session.
 - Inspect large files surgically. Several test files exceed 1,000 lines
-  (`test_sanitation.py` is ~2,700); reading one whole to find one symbol burns
+  (`test_metric_fixes.py` is ~1,900); reading one whole to find one symbol burns
   tens of thousands of tokens for nothing. Grep for the symbol first, then read
   with `offset`/`limit` around the hit. Read a file whole only when you genuinely
   need the whole file.

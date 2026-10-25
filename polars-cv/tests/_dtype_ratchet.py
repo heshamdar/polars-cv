@@ -300,7 +300,7 @@ def dispatch_offenders(
             f"{label}::{fn_name} maps to DType variants but not all ten "
             f"(missing={sorted(expected_variants - got)}). If the subset is "
             f"deliberate, add {label}::{fn_name!r} to ALLOWED_PARTIAL_VARIANT_MAPS "
-            f"in test_sanitation.py with a reason."
+            f"in test_dtype_spellings.py with a reason."
         )
 
     return offenders
