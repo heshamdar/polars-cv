@@ -52,9 +52,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **One home per kernel in view-buffer.** `ops/<family>.rs` owns an op's
   contract, parameters and `execute` entry; the kernel bodies live in
   `view-buffer/src/kernels/<kind>.rs`, one module per kind of computation
-  (`blur`, `canny`, `channel`, `color`, `distance`, `elementwise`, `equalize`,
-  `filter`, `grid`, `mask`, `morph`, `phash`, `pixel`, `rank`, `resample`,
-  `resize`, `warp`); `execution/runner.rs` runs plans (`execute_plan`) and
+  (`binary`, `blur`, `canny`, `channel`, `color`, `distance`, `elementwise`,
+  `equalize`, `filter`, `grid`, `histogram`, `lut`, `mask`, `morph`, `pad`,
+  `phash`, `pixel`, `rank`, `reduction`, `resample`, `resize`, `warp`); `execution/runner.rs` runs plans (`execute_plan`) and
   `ViewDto::execute` stays the one dispatch. `runner.rs` goes from 2,646 lines
   to 20. The code moved verbatim (paths and visibility only; the engine's
   669 tests are unchanged). Public paths that moved: `apply_perceptual_hash`

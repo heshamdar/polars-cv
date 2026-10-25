@@ -103,9 +103,9 @@ pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewB
     }
     let shape = buffer.shape().to_vec();
     let weighed = if is_float {
-        crate::ops::binary::zip_with::<f64, _>(buffer, &effective_mask, &shape, |a, m| a * m)
+        crate::kernels::binary::zip_with::<f64, _>(buffer, &effective_mask, &shape, |a, m| a * m)
     } else {
-        crate::ops::binary::zip_with::<f64, _>(buffer, &effective_mask, &shape, |a, m| {
+        crate::kernels::binary::zip_with::<f64, _>(buffer, &effective_mask, &shape, |a, m| {
             a * m / 255.0
         })
     };

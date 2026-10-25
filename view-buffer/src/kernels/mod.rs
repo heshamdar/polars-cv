@@ -9,6 +9,7 @@
 #[cfg(test)]
 use crate::core::dtype::DType;
 
+pub(crate) mod binary;
 pub(crate) mod blur;
 pub(crate) mod canny;
 pub(crate) mod channel;
@@ -18,11 +19,15 @@ pub(crate) mod elementwise;
 pub(crate) mod equalize;
 pub(crate) mod filter;
 pub(crate) mod grid;
+pub(crate) mod histogram;
+pub(crate) mod lut;
 pub(crate) mod mask;
 pub(crate) mod morph;
+pub(crate) mod pad;
 pub(crate) mod phash;
 pub(crate) mod pixel;
 pub(crate) mod rank;
+pub(crate) mod reduction;
 pub(crate) mod resample;
 pub(crate) mod resize;
 pub(crate) mod warp;
