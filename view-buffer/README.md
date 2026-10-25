@@ -1,7 +1,8 @@
 # view-buffer
 
-The zero-copy, stride-aware tensor engine behind
-[polars-cv](https://github.com/heshamdar/polars-cv).
+The kernel library behind [polars-cv](https://github.com/heshamdar/polars-cv):
+a zero-copy, strided N-D buffer and the image, codec and geometry kernels the
+plugin's ops execute with. It is not a general tensor framework.
 
 view-buffer is developed and versioned with polars-cv (same version number) and
 is not published to crates.io; depend on it by path or git. Most users want

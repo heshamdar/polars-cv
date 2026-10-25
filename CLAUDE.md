@@ -11,7 +11,7 @@ pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale(
 df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
 ```
 
-The project is a Rust/Python hybrid built with [Maturin](https://github.com/PyO3/maturin) (PyO3). The Python package lives under `polars-cv/`, and `view-buffer/` is a separate Rust crate that is the core tensor engine.
+The project is a Rust/Python hybrid built with [Maturin](https://github.com/PyO3/maturin) (PyO3). The Python package lives under `polars-cv/`, and `view-buffer/` is a separate Rust crate that is the kernel library (the engine) its ops execute with.
 
 ---
 

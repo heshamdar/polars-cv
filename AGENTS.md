@@ -12,7 +12,7 @@
 | [`polars-cv/python/polars_cv/geometry/AGENTS.md`](polars-cv/python/polars_cv/geometry/AGENTS.md) | Geometry subsystem — point/contour/bbox schemas and namespaces |
 | [`polars-cv/python/polars_cv/metrics/AGENTS.md`](polars-cv/python/polars_cv/metrics/AGENTS.md) | Detection metrics — matchers, FROC/LROC/PR curves, bootstrap |
 | [`polars-cv/src/AGENTS.md`](polars-cv/src/AGENTS.md) | Rust plugin — graph execution, source/sink encoding, op dispatch |
-| [`view-buffer/AGENTS.md`](view-buffer/AGENTS.md) | Core tensor engine — ViewBuffer, ViewExpr, operations, execution |
+| [`view-buffer/AGENTS.md`](view-buffer/AGENTS.md) | Kernel library (the engine) — ViewBuffer, ViewExpr, operations, execution |
 | [`polars-cv/tests/AGENTS.md`](polars-cv/tests/AGENTS.md) | Testing conventions and fixtures |
 | [`polars-cv/benchmarks/AGENTS.md`](polars-cv/benchmarks/AGENTS.md) | Benchmark framework |
 
@@ -98,7 +98,7 @@ what a null in a per-row expression parameter means. `.cv` deliberately has no
 ├── AGENTS.md                       # ← You are here
 ├── Cargo.toml                      # Workspace Cargo.toml
 ├── CONTRIBUTING.md                 # Release process, CI
-├── view-buffer/                    # Rust tensor engine
+├── view-buffer/                    # Rust kernel library (the engine)
 │   ├── AGENTS.md
 │   └── src/
 ├── polars-cv/                      # Main package (Rust + Python)
@@ -162,7 +162,7 @@ CI and wheel jobs clear it with `RUSTFLAGS=""`.
 
 ## Known Issues
 
-- **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers. They execute correctly (in f64) but are excluded from kernel fusion (`view-buffer/src/ops/elementwise/mod.rs::lower_to_scalars`).
+- **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers. They execute correctly (in f64) but are excluded from kernel fusion (`view-buffer/src/kernels/elementwise/mod.rs::lower_to_scalars`).
 
 Deferred work and verified defects are tracked in the root `ISSUES.md`, not here.
 
@@ -288,6 +288,7 @@ side channel.
 | Which plan-time optimizations exist | Each where it runs: the graph-scope passes (CSE, which compares the expression identities only Python holds) in `polars_cv/_graph_passes.py`; the node-scope passes in Rust `LogicalPass` (`polars-cv/src/passes.rs`) and the engine's in `engine_passes!` (view-buffer, which also declares `OptConfig`), via `tests/golden/pass_catalog.json`. `scripts/gen_ops.py` concatenates them → generated `PASS_CATALOG` / `OptFlags` fields → `OPTIMIZATION_PASSES` | `pass_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_the_graph_tier_is_declared_by_python_alone` (Rust never also names a graph pass); `_graph.py` refuses to import with a declared graph pass it does not implement (`test_a_graph_pass_without_an_implementation_refuses_the_import`); `OptConfig` refuses an unknown engine key (`an_unknown_engine_toggle_is_refused`), and `Plan.run_pass` an unknown pass. Optimization is one explicit phase (`PipelineGraph.optimize`); construction and serialization never optimize (`TestStaging`), and toggling a pass changes only the physical graph, never the output (`test_optimize_equivalence.py`) |
 | A polars-cv extension type's name and storage | Rust `ext_types::ExtType` (storage read from `geometry::schema` / `output::numpy_output_dtype`), mirrored by `polars_cv.extension_types.EXTENSION_TYPES` so `import polars_cv` can register without the `.so` | `test_python_types_match_the_rust_declaration` (names, order and full storage dtype over the `extension_types` FFI, both directions); `all_lists_every_variant_once` holds `ExtType::ALL` to the enum; `ext_from_params` returns polars' generic `Extension` for our name over any other storage, so an instance of our class *is* the canonical layout |
 | How Python reaches the compiled plugin | `polars_cv._plugin.call` — pins polars to the file the import system loads and passes every argument as `.ext.storage()`, so Rust never receives an extension dtype and only builds tagged outputs (`ExtType::tag`) | `test_only_the_plugin_module_registers_plugin_functions` (AST scan of the package, fixtures in `test_plugin_entry_point.py`); `test_accessors_accept_tagged_inputs` sweeps every accessor case table with tagged inputs; `test_plugin_path_is_the_file_python_imports` |
+| The compiled module's Python-visible signatures (`polars_cv._lib`) | The `#[pyfunction]`/`#[pyclass]` definitions registered in `polars-cv/src/lib.rs`; `python/polars_cv/_lib.pyi` is a hand-written restatement for `ty`, not an authority | `test_lib_stub_parity.py` (via `tests/_stub_parity.py`, fixtures in `test_stub_parity_fixtures.py`): every stub entry must exist in the built `_lib` with the same signature and every export must be stubbed, bar the reasoned `UNSTUBBED` table; self-skips without the `.so` |
 | A detection metric's estimator (one value per group, per bootstrap replicate) | `metrics/_statistics.py`: a `Statistic` (`by_group(table, keys)`); the function form (`average_precision`, `froc_auc`, …) is its ungrouped reading and `bootstrap_ci` its per-replicate one | `tests/test_statistics.py::test_every_public_metric_is_classified` (a public function taking a `DetectionTable` must be a `Statistic`'s reading or declared otherwise, and agrees with it); grouped-equals-filtered for every statistic |
 | A per-group ordered scan (running sum/max, lag, row index, first/last) or a reproducible sum in the metrics | `metrics/_grouped_scan.py`: `grouped_scan` (one sort, then `.over(keys)` windows on it), `bracket` (the nearest knot at or below / above, per group: the as-of join) and `exact_sums` / `exact_mean` (Int128 fixed point) | `tests/test_streaming_plans.py`: every public metrics plan, and every plan an eager metric collects, is read from its physical streaming graph, and any node polars marks as an in-memory engine fallback not in `KNOWN_FALLBACKS` fails; a window is accepted only straight after the sort on its keys, so a `.over()` scan elsewhere or a sort inside `agg` fails |
 | AP integration (all-points step rule, 11/101-point grids) | `metrics/_metrics/_precision_recall.py::ap_from_points`, which the scalar curve AP, the grouped AP and every bootstrap reach | `TestAllPointsAPStepRule`/`TestNPointAP` against independent references (pycocotools' accumulate); `tests/reference/test_coco_parity_ref.py` end to end |
