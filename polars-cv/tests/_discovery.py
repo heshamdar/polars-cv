@@ -276,6 +276,19 @@ def repo_file(relative: str) -> Path:
     return path
 
 
+def script_files() -> list[Path]:
+    """Every ``.py`` under ``polars-cv/scripts/`` and the root ``scripts/``."""
+    return discovered(
+        sorted(
+            [
+                *(REPO_ROOT / "polars-cv" / "scripts").glob("*.py"),
+                *(REPO_ROOT / "scripts").glob("*"),
+            ]
+        ),
+        "scripts",
+    )
+
+
 def workflow_files() -> list[Path]:
     """Every GitHub Actions workflow under ``.github/workflows/``.
 
