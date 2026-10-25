@@ -354,7 +354,7 @@ pub fn normalize_percentile_masked(
     out_dtype: DType,
 ) -> ViewBuffer {
     let selected = masked_select(buffer, mask);
-    let (low, high) = crate::ops::elementwise::percentile_window(&selected, low, high);
+    let (low, high) = crate::kernels::elementwise::percentile_window(&selected, low, high);
     // The window applied as `normalize_range` applies a known one: the same
     // kernels `normalize_percentile` lowers to.
     let apply = crate::ops::compute::ComputeOp::NormalizeRange {
@@ -362,7 +362,7 @@ pub fn normalize_percentile_masked(
         high,
         out_dtype: Some(out_dtype),
     };
-    crate::ops::elementwise::apply(buffer.clone(), &apply)
+    crate::kernels::elementwise::apply(buffer.clone(), &apply)
 }
 
 /// [`masked_select`] over a `T` image and an `M` mask, both read where they

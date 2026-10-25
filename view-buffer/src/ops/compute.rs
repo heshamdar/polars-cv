@@ -1,5 +1,6 @@
 //! Compute operations that transform data.
 
+use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
@@ -567,7 +568,7 @@ impl ComputeOp {
                 // `border_value` apply only to the resampling branch. A
                 // `RotateAffine` of exactly 0° is how the identity is spelled:
                 // it returns its (packed) input, sharing its data, and never
-                // warps (`execution::warp::rotate`).
+                // warps (`kernels::warp::rotate`).
                 Rotation::Identity => ViewDto::Compute(ComputeOp::RotateAffine {
                     angle_deg: 0.0,
                     expand: false,
@@ -882,6 +883,24 @@ impl<M: Mode> Op for ComputeOp<M> {
             | ComputeOp::Rotate { .. } => OutputDTypeRule::PreserveInput,
             _ => OutputDTypeRule::PromoteToFloat,
         }
+    }
+}
+
+/// Applies a compute operation to a buffer.
+#[inline]
+pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
+    match op {
+        ComputeOp::Cast { dtype } => buf.cast(dtype),
+        ComputeOp::Affine(params) => crate::kernels::warp::apply_affine_warp(buf, params),
+        ComputeOp::RotateAffine {
+            angle_deg,
+            expand,
+            interpolation,
+            border_value,
+        } => crate::kernels::warp::rotate(buf, angle_deg, expand, interpolation, border_value),
+        // Every per-value op: the scalar family, scale, relu, clamp, invert,
+        // gamma, contrast, normalize and fused chains.
+        ref per_value => crate::kernels::elementwise::apply(buf, per_value),
     }
 }
 

@@ -1615,9 +1615,9 @@ impl ViewBuffer {
     /// Accepts any numeric input dtype: each element is read as `f32`, the
     /// ops run as `f32` passes, and the result is converted to
     /// `kernel.out_dtype` (the rule `cast` uses). Runs through the
-    /// element-wise engine (`ops::elementwise`); `&self` is never written.
+    /// element-wise engine (`kernels::elementwise`); `&self` is never written.
     pub fn apply_fused_kernel(&self, kernel: &FusedKernel) -> ViewBuffer {
-        crate::ops::elementwise::run_kernel(self.clone(), kernel)
+        crate::kernels::elementwise::run_kernel(self.clone(), kernel)
     }
 
     /// Casts the buffer to a different data type.

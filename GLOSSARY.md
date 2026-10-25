@@ -19,6 +19,7 @@ the other senses, name the type (`ViewDto`, `ExecutionPlan`), not the bare word.
 | **node** | A node of the pipeline graph: one input (a column decode or another node) and a linear run of ops (`GraphNode` in both Python and Rust). | A node of a `ViewExpr` (`ExprNode`) |
 | **graph** | The DAG of nodes and named outputs one `.sink()` serializes (`PipelineGraph` in Python, `UnifiedGraph` once Rust parses it, `CompiledGraph` once cached). | A `ViewExpr` chain |
 | **plan** | What the planner knows about a pipeline at every op boundary: domain, dtype and shape (`Plan`, its `PlanState`s, extended by `plan::step`). | How the engine will execute a buffer's ops (that is an `ExecutionPlan`) |
+| **kernel** | The loop that computes an op's output over a buffer, in `view-buffer/src/kernels/<kind>.rs` (an op's `execute` entry in `ops/<family>.rs` calls it). | A convolution kernel's weights, a `FusedKernel` (a lowered chain of scalar ops) or an `ExecutionPlan` step |
 | **domain** | The kind of value at one point of a pipeline: `buffer`, `contour`, `scalar` or `vector` (`Domain`). | A dtype |
 | **sink** | How an output leaves the graph: its format, its planned Polars dtype and its encoding (`Sink`, `SinkKind`, `graph/sink.rs`). | |
 | **source** | How a node's input column becomes its first buffer (`Source`, `graph/source.rs`). | |

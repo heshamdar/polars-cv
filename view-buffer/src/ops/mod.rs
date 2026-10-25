@@ -25,7 +25,6 @@ pub mod binary;
 pub mod color;
 pub mod compute;
 pub mod dto;
-pub(crate) mod elementwise;
 pub mod filter;
 pub mod histogram;
 pub mod image;

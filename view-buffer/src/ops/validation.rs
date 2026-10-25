@@ -187,6 +187,67 @@ pub fn is_unsigned_dtype(dtype: DType) -> bool {
     matches!(dtype, DType::U8 | DType::U16 | DType::U32 | DType::U64)
 }
 
+/// Whether [`apply_channel_merge`](crate::kernels::channel::apply_channel_merge) can merge buffers of these shapes and dtypes:
+/// at least one input, every input `[H, W]` or `[H, W, C]`
+/// with the same H and W, and all of one dtype (each is read as the first
+/// input's element type).
+///
+/// Over what is known of them (the planner's call; execution passes known
+/// ones): two H (or W) sizes differ only when both are known, and two dtypes
+/// only when both are, so an error is a verdict on a known fact.
+pub fn validate_channel_merge(
+    shapes: &[&[crate::ops::Dim]],
+    dtypes: &[crate::PlannedDType],
+) -> Result<(), crate::ops::validation::ValidationError> {
+    use crate::ops::validation::ValidationError;
+    use crate::PlannedDType;
+    if shapes.is_empty() {
+        return Err(ValidationError::InsufficientInputs {
+            expected: 1,
+            got: 0,
+        });
+    }
+    // The first input that is not [H, W] or [H, W, C], or whose known H or W
+    // differs from one known earlier.
+    let mut hw: [Option<usize>; 2] = [None, None];
+    for shape in shapes {
+        let clash = !matches!(shape.len(), 2 | 3)
+            || shape[..2]
+                .iter()
+                .zip(&mut hw)
+                .any(|(d, seen)| match (d.known(), *seen) {
+                    (Some(n), Some(m)) => n != m,
+                    (Some(n), None) => {
+                        *seen = Some(n);
+                        false
+                    }
+                    (None, _) => false,
+                });
+        if clash {
+            return Err(ValidationError::ShapeRequirement {
+                requirement: "every channel_merge input [H, W] or [H, W, C] with the same H and W",
+                got: shape.to_vec(),
+            });
+        }
+    }
+    let known: Vec<DType> = dtypes
+        .iter()
+        .filter_map(|d| match d {
+            PlannedDType::Known(d) => Some(*d),
+            PlannedDType::SomeFloat | PlannedDType::Unknown => None,
+        })
+        .collect();
+    if known.iter().any(|d| *d != known[0]) {
+        return Err(ValidationError::Generic {
+            message: format!(
+                "channel_merge inputs must share one dtype, got {known:?}: cast them \
+                 to one first (`.cast(...)`)"
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

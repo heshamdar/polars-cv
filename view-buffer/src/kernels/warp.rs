@@ -477,7 +477,7 @@ mod tests {
                             let clamped = if is_float {
                                 v
                             } else {
-                                crate::execution::runner::clamp_for_dtype(v, T::DTYPE)
+                                crate::kernels::clamp_for_dtype(v, T::DTYPE)
                             };
                             dst_data[dst_idx + ch] = NumCast::from(clamped).unwrap_or(T::default());
                         }

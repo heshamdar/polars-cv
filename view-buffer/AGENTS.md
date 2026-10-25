@@ -47,14 +47,11 @@ src/
 │   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum
 │   ├── traits.rs       # Op trait and core op types (MemoryEffect — the materialisation authority)
-│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, distance_transform, etc.)
-│   ├── color.rs        # ColorConvertOp, ColorSpace
-│   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
+│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, distance_transform, etc.); `apply_image_inner` is their entry
+│   ├── color.rs        # ColorConvertOp, ColorSpace; `apply_color_convert` is the entry
+│   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution; `apply_convolve2d` is the entry
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert, affine, rotate_affine)
 │   ├── scalar.rs       # ScalarOp — elementary f32 ops fusable into a single kernel
-│   ├── elementwise/    # The engine every per-value compute op runs through: lowering,
-│   │                   # statistics, integer / table / blocked / pass strategy, in-place writes;
-│   │                   # legacy.rs + tests.rs hold the pre-engine code as its test oracle
 │   ├── affine.rs       # AffineParams, InterpolationType, from_rotation() — affine transform parameters
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
 │   ├── reduction.rs    # Reduction ops (sum, mean, std, min, max, argmin/argmax, percentile)
@@ -69,7 +66,14 @@ src/
 │   ├── validation.rs   # Plan-time shape/dtype constraint checks
 │   └── util.rs         # Shared index/coordinate helpers
 ├── expr.rs             # ViewExpr — lazy expression graph builder
-├── execution/          # ExecutionPlan (plan.rs), runner (runner.rs)
+├── kernels/            # Kernel bodies, one module per kind of computation (see "Where code goes")
+│   ├── elementwise/    # The engine every per-value compute op runs through: lowering,
+│   │                   # statistics, integer / table / blocked / pass strategy, in-place writes;
+│   │                   # legacy.rs + tests.rs hold the pre-engine code as its test oracle
+│   ├── blur.rs  canny.rs  channel.rs  color.rs  distance.rs  equalize.rs  filter.rs
+│   ├── grid.rs  mask.rs  morph.rs  phash.rs  pixel.rs  rank.rs  resample.rs  resize.rs  warp.rs
+│   └── mod.rs          # the rule, and what the domains share
+├── execution/          # ExecutionPlan (plan.rs), plan execution (runner.rs: `execute_plan`)
 ├── geometry/           # Contour, Point, BoundingBox, extraction, rasterization, measures, pairwise
 │                       # Polygon maths is `geo`'s throughout — this layer maps
 │                       # Contour <-> geo types and owns degenerate-input conventions.
@@ -79,6 +83,29 @@ src/
 ├── protocol.rs         # VIEW binary protocol (header + data serialization)
 └── interop/            # Arrow, ndarray, image crate, fast_image_resize, Polars-arrow integration
 ```
+
+### Where code goes
+
+One rule decides where a new kernel lives:
+
+- **`ops/<family>.rs` owns the op**: its contract (`shape`, `output_dtype_rule`,
+  `validate`, …), its parameters, and its `execute` entry, the function
+  `ViewDto::execute` calls (`apply_view`, `apply_compute_inner`,
+  `apply_image_inner`, `apply_color_convert`, `apply_convolve2d`; for the ops
+  outside `ViewDto`, `apply_mask`, `apply_perceptual_hash`, …). An entry
+  prepares the input (the op's working dtype, its layout) and calls the
+  kernel; a zero-copy view op is its own entry.
+- **`kernels/<kind>.rs` holds the kernel bodies**: the loops that compute
+  the output, with their helper types and unit tests, one module per kind of
+  computation (`blur`, `canny`, `color`, `filter`, `morph`, `pixel`, `rank`, `resize`,
+  `warp`, …). A kernel is `pub(crate)` (the narrowest visibility that
+  compiles) and is called from an entry, never from the planner.
+- **`execution/runner.rs` runs plans**, and `ViewDto::execute` (`ops/dto.rs`)
+  is the one dispatch from a plan step to its family's entry. Neither holds a
+  kernel body.
+
+A new kernel that fits no existing module is a new `kernels/<kind>.rs` module,
+not a function in an `ops/` file or in the runner.
 
 ## Core Concepts
 
@@ -127,7 +154,7 @@ contract and fails to compile when a variant is added without a probe.
 The family is `ViewDto`'s business alone. `ExprNode` is `Source` or
 `Op(ViewDto, child)`, and `ExecutionPlan`'s steps are `PlanStep::Op(ViewDto)`
 beside `MaterializeContiguous`/`MaterializeDenseRows`. `ViewDto::execute`
-dispatches to the family runners, `ViewExpr::op_node` builds a node's shape,
+dispatches to each family's `execute` entry, `ViewExpr::op_node` builds a node's shape,
 strides and dtype from the op's contract (`as_op()`), and `ViewDto::lowered`
 turns a compute op that is another op in disguise into that op. Code that needs
 one family (the cast/flip/transpose rewrites in `optimize_with`, view-ness in
@@ -164,7 +191,7 @@ packs it with `to_contiguous()` (or a row of it, as convolve2d's ring does)
 and runs its dense path.
 
 Per-value compute ops (the scalar family, scale, relu, clamp, invert, gamma,
-contrast, normalize, fused chains) run only through `ops::elementwise::apply`:
+contrast, normalize, fused chains) run only through `kernels::elementwise::apply`:
 it lowers the op to a `FusedKernel` (`lower_to_scalars`, shared with fusion),
 picks integer arithmetic for an integer affine kernel over 8/16-bit input into
 the same dtype (`invert`, integer shifts), a lookup table (only for work that
@@ -243,7 +270,7 @@ the plugin's planner evaluates it symbolically (`OpShape::dims`), where a size
 is `Dim::Known(n)`, `Dim::Input(k)` (an unknown input axis carried through) or
 `Dim::Unknown`, and a shape-deciding parameter is `Sym::Known(v)` or
 `Sym::PerRow`. It is total: an unexpected rank yields unknown sizes, never a
-panic. `ImageOpKind::shape` is what the runner sizes a deferred resize with.
+panic. `ImageOpKind::shape` is what `apply_image_dispatch` sizes a deferred resize with.
 
 `identity_rule` answers *under what condition* the op is a removable no-op
 (`Never`, `WhenShapePreserved`, `WhenDtypePreserved`), and never depends on a
@@ -280,9 +307,9 @@ channel rule):
 | **`SingleChannel`** | grayscale, canny | Alpha discarded, one output channel |
 
 Key implementation points:
-- `ops/color.rs` provides `split_alpha()` / `merge_alpha()` helpers used by `apply_color_convert()`
-- `execution/runner.rs`: `grayscale_u8()` handles 4ch (BT.601 on RGB, ignore alpha) and 2ch (take intensity)
-- `execution/runner.rs`: blur dispatches via `ImageBuffer<Rgba<u8>>` and `ImageBuffer<LumaA<u8>>` for 4ch/2ch
+- `kernels/color.rs` provides `split_alpha()` / `merge_alpha()` helpers used by `apply_color_convert()`
+- `kernels/pixel.rs`: `grayscale_strided()` handles 4ch (BT.601 on RGB, ignore alpha) and 2ch (take intensity)
+- `kernels/blur.rs`: blur dispatches via `ImageBuffer<Rgba<u8>>` and `ImageBuffer<LumaA<u8>>` for 4ch/2ch
 - `interop/image.rs`: `to_dynamic_image()` accepts 1–4 channels; `encode_tiff()` supports RGBA/GrayA
 
 ## Rank Preservation Contracts
@@ -294,14 +321,14 @@ Key implementation points:
 ## Implementation Notes
 
 - **Filter** (`ops/filter.rs`): `ConvolveOp` runs as `ViewDto::Filter` (`apply_convolve2d`, through `ViewDto::execute`).
-- **Canny** (`execution/runner.rs`): `cv2.Canny(img, low, high)` exactly (3x3 Sobel with replicated border, L1 magnitude, no pre-blur → OpenCV's fixed-point NMS → 8-connected hysteresis; colour takes the strongest channel per pixel, alpha ignored). `polars-cv/tests/reference/test_canny_ref.py` holds it to OpenCV pixel for pixel. Outputs U8 binary mask (0/255). `SpatialDependency::Global`.
-- **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `SpatialDependency::Global`.
-- **Affine** (`execution/warp.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix, `apply_affine_warp()`) and `ComputeOp::RotateAffine` (deferred rotation, `warp::rotate()`: `AffineParams::from_rotation()` at execution time, and at exactly 0° — the identity lowering — the packed input itself). A `SimdKernel` per channel count; loads/stores through M5. Its tests keep the pre-Phase-7 kernel as a bit-parity oracle: any change must keep them byte-identical or say why. `MemoryEffect::RequiresContiguous`.
-- **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. `iterations=n` is one pass of radius `n * (k / 2)` for integer dtypes (`morph_iterated`; exact), and `n` passes for floats, whose NaN/signed-zero fold depends on the pass structure. `tests/it/morph_ref.rs` holds both to an iterated naive reference. `SpatialDependency::Neighborhood`.
-- **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `SpatialDependency::Neighborhood`.
-- **LutOp** (`ops/lut.rs`, `apply_lut`): not a `ViewDto` op, because a value past the table is a data error only `execute -> Result` can report. One entry per row reads through `ops::elementwise::lookup_column`, an element map over the table's own entries (`Entries`: any layout, in place when the dtype is kept, no table padded to the input domain); a K-entry palette writes its `[H, W, K]` pixels in one pass (one view-sized allocation either way, pinned in `tests/it/copy_counts.rs`). The output dtype is `out_dtype`. Shape `Preserve` for one entry per row, else `OpShape::ExpandChannels(k)`.
+- **Canny** (`kernels/canny.rs`): `cv2.Canny(img, low, high)` exactly (3x3 Sobel with replicated border, L1 magnitude, no pre-blur → OpenCV's fixed-point NMS → 8-connected hysteresis; colour takes the strongest channel per pixel, alpha ignored). `polars-cv/tests/reference/test_canny_ref.py` holds it to OpenCV pixel for pixel. Outputs U8 binary mask (0/255). `SpatialDependency::Global`.
+- **HistogramEqualize** (`kernels/equalize.rs`): 256-bin histogram → CDF remap. U8 output. `SpatialDependency::Global`.
+- **Affine** (`kernels/warp.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix, `apply_affine_warp()`) and `ComputeOp::RotateAffine` (deferred rotation, `warp::rotate()`: `AffineParams::from_rotation()` at execution time, and at exactly 0° — the identity lowering — the packed input itself). A `SimdKernel` per channel count; loads/stores through M5. Its tests keep the pre-Phase-7 kernel as a bit-parity oracle: any change must keep them byte-identical or say why. `MemoryEffect::RequiresContiguous`.
+- **Erode/Dilate** (`kernels/morph.rs`): Separable row+column min/max filter. Single-channel only. `iterations=n` is one pass of radius `n * (k / 2)` for integer dtypes (`morph_iterated`; exact), and `n` passes for floats, whose NaN/signed-zero fold depends on the pass structure. `tests/it/morph_ref.rs` holds both to an iterated naive reference. `SpatialDependency::Neighborhood`.
+- **MorphGradient** (`kernels/morph.rs`): Dilate − Erode (saturating subtract). Single-channel only. `SpatialDependency::Neighborhood`.
+- **LutOp** (`ops/lut.rs`, `apply_lut`): not a `ViewDto` op, because a value past the table is a data error only `execute -> Result` can report. One entry per row reads through `kernels::elementwise::lookup_column`, an element map over the table's own entries (`Entries`: any layout, in place when the dtype is kept, no table padded to the input domain); a K-entry palette writes its `[H, W, K]` pixels in one pass (one view-sized allocation either way, pinned in `tests/it/copy_counts.rs`). The output dtype is `out_dtype`. Shape `Preserve` for one entry per row, else `OpShape::ExpandChannels(k)`.
 - **Footprint** (`ops/image.rs`, on Erode/Dilate/MorphGradient): `Square` or `Disk`. The disk (`morph_disk_typed`) is a stack of row spans, half-width `isqrt(r² − dy²)`, reusing the square's `row_extreme` once per distinct width, then a column fold in the square's order. Iterated disks are separate passes for every dtype (two disks are not one larger disk). `tests/it/morph_ref.rs` holds it to a structure-identical naive fold (bit for bit, NaN and signed zeros) and to the order-free Euclidean-set definition.
-- **DistanceTransform** (`execution/distance.rs`): exact Euclidean distance transform (Felzenszwalb–Huttenlocher lower envelopes, columns then rows), squared distances exact in f64, one `sqrt` and an f32 store. Foreground is non-zero in the input dtype (NaN included); a class with no pixel is `±inf`. Signed is `±(d − 0.5)` to the pixel-edge boundary, negative inside. Single-channel only, `RequiresDenseRows`, `SpatialDependency::Global`, f32 output. Held to scipy and OpenCV in `polars-cv/tests/reference/test_distance_transform_ref.py` and the parity suite.
+- **DistanceTransform** (`kernels/distance.rs`): exact Euclidean distance transform (Felzenszwalb–Huttenlocher lower envelopes, columns then rows), squared distances exact in f64, one `sqrt` and an f32 store. Foreground is non-zero in the input dtype (NaN included); a class with no pixel is `±inf`. Signed is `±(d − 0.5)` to the pixel-edge boundary, negative inside. Single-channel only, `RequiresDenseRows`, `SpatialDependency::Global`, f32 output. Held to scipy and OpenCV in `polars-cv/tests/reference/test_distance_transform_ref.py` and the parity suite.
 - **label_reduce path fallback** (`geometry/label.rs`): A contour with no area (the point or line a one-pixel-thick region traces to) or whose region catches no pixel centre (a sub-pixel contour) is scored on the pixels its outline passes through, in every region mode, so it never scores 0 for want of a region. Zero area means below `pairwise::EPSILON`, the same threshold at which IoU calls a region degenerate. A label reduction is two halves, `region_pixels` (which pixels each region holds) then `reduce_regions` (the shared `Reduction` over them): the `.contour.label_reduce()` accessor runs them through `score_contours_on_buffer`, and the graph's `label_reduce` through the row's `RegionCache` (`polars-cv/src/graph/row.rs`), so every map scored over one row's contours shares one scan. The plugin must not carry a scorer of its own.
 
 ## Adding a New Operation
@@ -312,7 +339,8 @@ Key implementation points:
 2. Answer the `Op` contract: `shape` (an `OpShape`), `validate`, and the other
    required rules
 3. Add to `ViewDto` in `ops/dto.rs` (`tests/it/apply_op_coverage.rs` requires a probe per variant)
-4. Add execution logic in `execution/runner.rs`
+4. Add the op's `execute` entry in its `ops/<family>.rs` and its kernel body in
+   `kernels/<kind>.rs` (see "Where code goes"); `ViewDto::execute` calls the entry
 5. Expose it to Python through the typed catalogue: re-bless, `gen_ops.py`,
    `maturin develop` — the full procedure is "Adding a New Operation" in the
    root `CLAUDE.md`

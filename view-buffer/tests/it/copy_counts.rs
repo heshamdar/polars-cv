@@ -303,7 +303,7 @@ fn resizing_a_view_with_packed_rows_allocates_only_its_output() {
             pattern_u8(3).slice(&[0, 0, 0], &[384, 384, 3]).flip(&[0]),
         ),
     ];
-    // Nearest is the engine's own gather (`execution::resample::nearest`),
+    // Nearest is the engine's own gather (`kernels::resample::nearest`),
     // the others fir's: both read the view where it lies.
     for filter in [FilterType::Triangle, FilterType::Nearest] {
         for (label, view) in views.clone() {

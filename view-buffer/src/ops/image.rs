@@ -1,4 +1,6 @@
-use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
+use crate::core::buffer::ViewBuffer;
+use crate::core::dtype::{with_dtype, DType, DTypeCategory, OutputDTypeRule};
+use crate::kernels::{blur, canny, channel, distance, equalize, grid, morph, pixel, rank, resize};
 use crate::mode::{known, size, Exec, Mode};
 use crate::ops::pad::{PadMode, PadPosition};
 use crate::ops::shape_rule::{OpShape, Sym};
@@ -731,7 +733,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Grayscale { .. }
             | ImageOpKind::ChannelSwap { .. } => SpatialDependency::Pointwise,
             // Separable Gaussian of radius ceil(3σ) — the radius
-            // `gaussian_kernel_1d` builds in the runner.
+            // `gaussian_kernel_1d` builds in `kernels::blur`.
             ImageOpKind::Blur { sigma } => SpatialDependency::neighborhood_of(
                 M::sym(sigma).map(|sigma| (sigma * 3.0).ceil() as usize),
             ),
@@ -876,6 +878,164 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Letterbox { .. }
             | ImageOpKind::ChannelSwap { .. } => OutputDTypeRule::PreserveInput,
+        }
+    }
+}
+
+/// Applies an image operation to a buffer.
+///
+/// The conversion strategy depends on the operation's ``working_dtype()``:
+///
+/// - ``Some(DType::U8)``: the operation requires U8 data (blur).
+///   Float inputs in [0.0, 1.0] are scaled to [0, 255].
+/// - ``None``: the operation works on the input's native dtype
+///   (resize, rotate, grayscale, threshold).
+///   The buffer is passed through unchanged.
+///
+/// Applies an image operation to a buffer.
+///
+/// Handles dtype promotion (converting to the op's working dtype before
+/// dispatch) and validates the output dtype contract in debug builds.
+#[inline]
+pub(crate) fn apply_image_inner(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
+    let input_dtype = buf.dtype();
+
+    // Only convert to U8 when the operation requires it.
+    let work_buf = match op.working_dtype() {
+        Some(DType::U8) => pixel::convert_to_u8_for_image(buf),
+        Some(target) => buf.cast(target),
+        None => buf, // Resize: use the input's native dtype
+    };
+
+    let result = apply_image_dispatch(work_buf, op.clone());
+
+    debug_assert!(
+        op.validate_output_dtype(input_dtype, result.dtype())
+            .is_ok(),
+        "ImageOp contract violation: {}",
+        op.validate_output_dtype(input_dtype, result.dtype())
+            .unwrap_err()
+    );
+
+    result
+}
+
+/// Inner implementation of image operations (the per-op dispatch, without plan sequencing).
+#[inline]
+fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
+    match op.kind {
+        ImageOpKind::Threshold { value } => pixel::threshold_generic(work_buf, value),
+        ImageOpKind::Grayscale { keepdims } => {
+            let gray = pixel::grayscale_strided(work_buf);
+            match (keepdims, gray.shape()) {
+                // `[H, W, 1]`, packed: the same elements as `[H, W]`.
+                (false, &[h, w, 1]) => gray.reshape(crate::core::layout::Dims::from_slice(&[h, w])),
+                _ => gray,
+            }
+        }
+        ImageOpKind::Resize {
+            width,
+            height,
+            filter,
+        } => resize::resize_strided(work_buf, width, height, filter),
+        ImageOpKind::Canny {
+            low_threshold,
+            high_threshold,
+        } => canny::apply_canny(work_buf, low_threshold, high_threshold),
+        ImageOpKind::HistogramEqualize => equalize::apply_histogram_equalize(work_buf),
+        ImageOpKind::RankFilter {
+            height,
+            width,
+            q,
+            border,
+        } => rank::apply_rank_filter(&work_buf, height as usize, width as usize, q.q(), border),
+        ImageOpKind::Erode {
+            ksize,
+            iterations,
+            footprint,
+        } => morph::apply_erode(work_buf, ksize, iterations, footprint),
+        ImageOpKind::Dilate {
+            ksize,
+            iterations,
+            footprint,
+        } => morph::apply_dilate(work_buf, ksize, iterations, footprint),
+        ImageOpKind::MorphGradient { ksize, footprint } => {
+            morph::apply_morph_gradient(work_buf, ksize, footprint)
+        }
+        ImageOpKind::DistanceTransform { signed } => {
+            distance::distance_transform(&work_buf, signed)
+        }
+        ImageOpKind::CoordinateGrid { normalized } => grid::coordinate_grid(&work_buf, normalized),
+        ImageOpKind::Blur { sigma } => {
+            let rows_buf = work_buf.to_dense_rows();
+            // Every dtype in its own element type, accumulating in its
+            // `DType::accumulator`.
+            let dtype = rows_buf.dtype();
+            with_dtype!(dtype, T => match dtype.accumulator() {
+                DType::F64 => blur::separable_gaussian_blur_typed::<T, f64>(&rows_buf, sigma),
+                _ => blur::separable_gaussian_blur_typed::<T, f32>(&rows_buf, sigma),
+            })
+        }
+        // Deferred resizes: dimensions come from the kind's shape — the same
+        // authority the planner reads — then the shared resize kernel runs.
+        ref kind @ (ImageOpKind::ResizeScale { .. }
+        | ImageOpKind::ResizeToHeight { .. }
+        | ImageOpKind::ResizeToWidth { .. }
+        | ImageOpKind::ResizeMax { .. }
+        | ImageOpKind::ResizeMin { .. }) => {
+            let shape = work_buf.shape();
+            let [h, w] = kind
+                .shape()
+                .concrete(&[&shape[..2]])
+                .expect("a resize op's output shape over a known H/W is known")[..]
+            else {
+                unreachable!("an H/W shape over a rank-2 input is rank 2")
+            };
+            let filter = match kind {
+                ImageOpKind::ResizeScale { filter, .. }
+                | ImageOpKind::ResizeToHeight { filter, .. }
+                | ImageOpKind::ResizeToWidth { filter, .. }
+                | ImageOpKind::ResizeMax { filter, .. }
+                | ImageOpKind::ResizeMin { filter, .. } => *filter,
+                _ => unreachable!(),
+            };
+            resize::resize_strided(work_buf, w as u32, h as u32, filter)
+        }
+        ImageOpKind::Pad {
+            top,
+            bottom,
+            left,
+            right,
+            value,
+            mode,
+        } => crate::ops::pad::pad(&work_buf, top, bottom, left, right, value, mode),
+        ImageOpKind::PadToSize {
+            height,
+            width,
+            position,
+            value,
+        } => crate::ops::pad::pad_to_size(&work_buf, height, width, position, value),
+        ImageOpKind::Letterbox {
+            height,
+            width,
+            value,
+            filter,
+        } => {
+            let shape = work_buf.shape();
+            let (fit_h, fit_w) =
+                crate::ops::image::letterbox_fit(shape[0], shape[1], height, width);
+            let resized = resize::resize_strided(work_buf, fit_w as u32, fit_h as u32, filter);
+            crate::ops::pad::pad_to_size(
+                &resized,
+                height,
+                width,
+                crate::ops::pad::PadPosition::Center,
+                value,
+            )
+        }
+        ImageOpKind::ChannelSwap { ref order } => {
+            let order: Vec<usize> = order.iter().map(|&i| i as usize).collect();
+            channel::apply_channel_swap(&work_buf, &order)
         }
     }
 }

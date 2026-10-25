@@ -755,11 +755,11 @@ fn try_fuse(
 
     let mut ops = Vec::new();
 
-    if !crate::ops::elementwise::lower_to_scalars(inner, inner_input_dtype, false, &mut ops) {
+    if !crate::kernels::elementwise::lower_to_scalars(inner, inner_input_dtype, false, &mut ops) {
         return None;
     }
 
-    if !crate::ops::elementwise::lower_to_scalars(outer, outer_input_dtype, true, &mut ops) {
+    if !crate::kernels::elementwise::lower_to_scalars(outer, outer_input_dtype, true, &mut ops) {
         return None;
     }
 

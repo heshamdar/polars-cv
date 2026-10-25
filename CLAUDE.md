@@ -374,7 +374,8 @@ The three-layer overview (Python builder, Rust plugin, view-buffer engine) is in
 - `ops/` — operation definitions by category (`image.rs`, `color.rs`, `compute.rs`, `scalar.rs`, `filter.rs`, `affine.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`, `phash.rs`, `pad.rs`, `mask.rs`), plus `shape_rule.rs` (the rank/channel rules and `OpShape`, the shape authority evaluated on known sizes at execution and symbolically at plan time), `validation.rs`, `traits.rs`, `util.rs`
 - `ops/dto.rs` — `ViewDto` enum: the serializable bridge between JSON and Rust op code
 - `expr.rs` — `ViewExpr` lazy builder with `.plan()` / `.execute()`
-- `execution/` — `ExecutionPlan`, runner, kernel fusion
+- `execution/` — `ExecutionPlan` and plan execution (`runner.rs`); no kernel bodies
+- `kernels/` — the kernel bodies, one module per kind of computation (`blur`, `canny`, `color`, `filter`, `morph`, `pixel`, `resize`, `warp`, …); an op's contract and `execute` entry stay in `ops/<family>.rs`. The rule is stated once, in [`view-buffer/AGENTS.md`](view-buffer/AGENTS.md#where-code-goes)
 - `geometry/` — contour extraction, rasterization, measures, pairwise matching, transforms
 - `interop/` — zero-copy Arrow, ndarray, `image`, and Polars-arrow integration
 - `protocol.rs` — VIEW binary protocol (header + data serialization)
@@ -438,8 +439,10 @@ documented alongside it.
 ### Adding a New Operation
 
 1. Implement in **view-buffer** (`view-buffer/src/ops/`) if it is a buffer→buffer
-   engine op — add to the appropriate module, give it truthful `Op` contracts
-   (shape/dtype/domain/channel rules), and register it in `ViewDto`
+   engine op — its contract and `execute` entry in the appropriate `ops/` module,
+   its kernel body in `kernels/` (the rule is in `view-buffer/AGENTS.md`, "Where
+   code goes"), truthful `Op` contracts (shape/dtype/domain/channel rules), and
+   register it in `ViewDto`
    (`tests/it/apply_op_coverage.rs` requires a probe per variant). Graph-level
    steps (node references, input columns) become `GraphOp` variants in
    `polars-cv/src/ops/graph.rs` instead, each given a `Role`.
