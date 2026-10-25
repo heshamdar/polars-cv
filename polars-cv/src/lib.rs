@@ -4,17 +4,17 @@
 //! processing pipelines to Polars DataFrame columns, powered by view-buffer.
 
 mod allocator;
+mod catalog;
 mod cloud;
 mod cloud_auth;
 mod execute;
 mod ext_types;
 mod fetch;
 mod formats;
-mod geometry;
 mod graph;
 mod image_metadata;
+mod namespaces;
 mod naming;
-mod ops;
 mod output;
 mod params;
 mod passes;
@@ -150,7 +150,7 @@ pub(crate) fn py_value_error(msg: String) -> PyErr {
 /// spelling and the two could drift apart unnoticed.
 #[pyfunction]
 fn point_schema() -> Vec<String> {
-    crate::geometry::schema::POINT_FIELD_NAMES
+    crate::namespaces::schema::POINT_FIELD_NAMES
         .iter()
         .map(|s| (*s).to_string())
         .collect()
@@ -160,11 +160,11 @@ fn point_schema() -> Vec<String> {
 ///
 /// The sibling of [`point_schema`] for contours: read by
 /// `test_contour_schema_matches_the_rust_declaration`, which holds
-/// `geometry.schemas.CONTOUR_SCHEMA` to `geometry::schema::CONTOUR_FIELD_NAMES` in
+/// `geometry.schemas.CONTOUR_SCHEMA` to `namespaces::schema::CONTOUR_FIELD_NAMES` in
 /// both directions.
 #[pyfunction]
 fn contour_schema() -> Vec<String> {
-    crate::geometry::schema::CONTOUR_FIELD_NAMES
+    crate::namespaces::schema::CONTOUR_FIELD_NAMES
         .iter()
         .map(|s| (*s).to_string())
         .collect()
@@ -174,11 +174,11 @@ fn contour_schema() -> Vec<String> {
 ///
 /// The sibling of [`point_schema`] for bounding boxes: read by
 /// `test_bbox_schema_matches_the_rust_declaration`, which holds
-/// `geometry.schemas.BBOX_SCHEMA` to `geometry::schema::BBOX_FIELD_NAMES` in both
+/// `geometry.schemas.BBOX_SCHEMA` to `namespaces::schema::BBOX_FIELD_NAMES` in both
 /// directions.
 #[pyfunction]
 fn bbox_schema() -> Vec<String> {
-    crate::geometry::schema::BBOX_FIELD_NAMES
+    crate::namespaces::schema::BBOX_FIELD_NAMES
         .iter()
         .map(|s| (*s).to_string())
         .collect()
@@ -209,7 +209,7 @@ fn extension_types() -> Vec<(&'static str, pyo3_polars::PySeries)> {
 /// tests compare the two so a stale commit cannot pass against a newer build.
 #[pyfunction]
 fn op_catalog() -> String {
-    crate::ops::catalog_json()
+    crate::catalog::catalog_json()
 }
 
 /// The geometry accessor catalogue as JSON (`tests/golden/geom_catalog.json`):
@@ -217,7 +217,7 @@ fn op_catalog() -> String {
 /// `scripts/gen_ops.py` generates the accessor methods from.
 #[pyfunction]
 fn geom_catalog() -> String {
-    geometry::fns::geom_catalog_json()
+    namespaces::fns::geom_catalog_json()
 }
 
 /// The source/sink catalogue as JSON (`tests/golden/io_catalog.json`): every
@@ -332,12 +332,12 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
 /// are decided when Polars plans the query, by the same code
 /// (`decode::ColumnFacts`); everything else is checked here.
 /// Refuse a geometry accessor call the plugin would refuse, as it is built:
-/// its arguments parsed against the function's definition (`geometry::fns`).
+/// its arguments parsed against the function's definition (`namespaces::fns`).
 #[pyfunction]
 fn check_geom_call(function: &str, args_json: &str) -> PyResult<()> {
     let args: serde_json::Value =
         serde_json::from_str(args_json).map_err(|e| py_value_error(e.to_string()))?;
-    geometry::fns::check_call(function, args).map_err(py_value_error)
+    namespaces::fns::check_call(function, args).map_err(py_value_error)
 }
 
 #[pyfunction]
@@ -347,7 +347,7 @@ fn check_graph(graph_json: &str) -> PyResult<()> {
     let graph = compiled.graph();
     for (alias, spec) in crate::graph::resolved_output_specs(graph, &[]).map_err(fail)? {
         let checked = match graph.column_facts_pending(&spec.node) {
-            Some(facts) => crate::graph::sink::check_output_before_column(&spec, facts),
+            Some(facts) => crate::graph::encode::check_output_before_column(&spec, facts),
             None => crate::graph::dtype_for_output(&spec).map(|_| ()),
         };
         checked.map_err(|e| py_value_error(format!("output '{alias}': {e}")))?;

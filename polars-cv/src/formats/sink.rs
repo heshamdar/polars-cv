@@ -4,7 +4,7 @@ use polars_cv_macros::Ops;
 use view_buffer::ImageCodec;
 
 pub use super::sink_dtype::SinkDType;
-use crate::ops::Literal;
+use crate::catalog::Literal;
 
 /// How an output node is encoded (see the module docs).
 #[derive(Debug, Clone, PartialEq, Ops)]

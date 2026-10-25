@@ -39,24 +39,24 @@ LTO); `--release` is for distributable wheels.
 | `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — graph execution engine, `on_error` handling |
 | `graph/compiled/` | `CompiledGraph`: `compile.rs` (parse, slot-bound params, topo order, output planning, static op resolution), `cache.rs` (the process-wide compiled-graph cache, `get_or_compile`), `run.rs` (the row loop: `ExecState`, fused engine segments and their per-layout plan cache, `Carried`, the output-schema guard); the module docs hold the cache-safety invariants |
 | `graph/row.rs` | `RowOutputs` — one row's node outputs, read for a step only through `RowOutputs::operands` (positions compiled from the step's `operands()`; a null operand nulls the reader), and `run_step`, every non-fusable step's body, given its input and operands already gathered and validated |
-| `graph/source.rs` | Source decoding: a row of an input column to the buffer a node starts from (blob/raw/image bytes, in place where the bytes allow; list/array columns) |
-| `graph/sink.rs` | Sinks: `dtype_for_output` (the planned output dtype), `encode_node_output` (each row's value), `build_series_from_spec` (the Series the rows assemble into) |
-| `geometry/exec.rs` | `execute_geometry_op` / `execute_region_op` — the one geometry-step runner, shared by the pipeline graph and the op-backed `.contour` accessors |
-| `ops/` | The typed op catalogue: `typed_ops!` lists the op families (view-buffer's engine enums, and `ops/graph.rs`'s `GraphOp` for graph-only ops), each generic over `Mode` and deriving `Ops`/`Resolve`; `TypedOp` holds the `Wire` op, resolved per row to the `Exec` op and wrapped as a `GraphStep`; `op_catalog.json` is generated from it |
+| `graph/decode.rs` | Source decoding: a row of an input column to the buffer a node starts from (blob/raw/image bytes, in place where the bytes allow; list/array columns) |
+| `graph/encode.rs` | Sinks: `dtype_for_output` (the planned output dtype), `encode_node_output` (each row's value), `build_series_from_spec` (the Series the rows assemble into) |
+| `namespaces/exec.rs` | `execute_geometry_op` / `execute_region_op` — the one geometry-step runner, shared by the pipeline graph and the op-backed `.contour` accessors |
+| `catalog/` | The typed op catalogue: `typed_ops!` lists the op families (view-buffer's engine enums, and `catalog/graph.rs`'s `GraphOp` for graph-only ops), each generic over `Mode` and deriving `Ops`/`Resolve`; `TypedOp` holds the `Wire` op, resolved per row to the `Exec` op and wrapped as a `GraphStep`; `op_catalog.json` is generated from it |
 | `formats/` | Typed sources and sinks: the `Source`/`Sink` families (`#[derive(Ops)]`, one variant per format), tagged by `"format"` (`io_catalog.json`) |
 | `execute.rs` | Decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep<M>` — a node's operation, generic over the mode: `Buffer(ViewDto)`, the domain-changing engine families (geometry, reduction, histogram, perceptual hash), `Lut(LutOp)` (a buffer op that can fail on a value) and `Graph(GraphOp)`. `GraphStep<Wire>` is the typed op; its rule methods are what the planner and the FFI read |
 | `allocator.rs` | The global allocator: polars' own (its `polars.polars._allocator` capsule), except in the lib's unit tests, where `test_alloc` counts allocations. pyo3-polars' `PolarsAllocator` with an allocation-free capsule lookup (C API only, no `Python::attach`): under pyo3 0.29.3 `PolarsAllocator` re-entered itself on macOS and the extension segfaulted on import (pola-rs/polars#29731); a re-entered lookup now aborts with that reason. `_lib.__allocator__` reports the allocator it chose and `tests/test_allocator.py` requires `"polars"`: without the capsule it falls back to the system `malloc` |
 | `row_split.rs` | `run_split`/`split` — the one row splitter: a call's rows in contiguous ranges, run on the calling thread and on whatever `THREAD_POOL` threads are idle, results in row order. A call first times a few rows on its own thread (`Probe`) and invites one helper per 200 µs of the work that measurement says is left, so the count never depends on how fast the host wakes a thread. One plugin-wide budget (`BUSY`, the pool's size) counts every thread running rows; nothing outlives a call, so how one query ran cannot decide how the next runs. Tests asserting thread counts take `exclusive_pool()`. Geometry functions reach it only through `GeomParams::map_rows`, which adds the per-range null-parameter context |
-| `geometry/columns.rs` | `ContourColumn`, `PointColumn`, `BBoxColumn` — the one reader per geometry type: rows read straight from the column's Arrow arrays, numeric fields by name (`POINT_FIELD_SPELLINGS`, `BBOX_FIELD_NAMES`), a null field an error naming the row. Every geometry consumer reads through them (the `.contour`/`.point`/`.bbox` functions, the `contour` source, `label_reduce`) |
+| `namespaces/columns.rs` | `ContourColumn`, `PointColumn`, `BBoxColumn` — the one reader per geometry type: rows read straight from the column's Arrow arrays, numeric fields by name (`POINT_FIELD_SPELLINGS`, `BBOX_FIELD_NAMES`), a null field an error naming the row. Every geometry consumer reads through them (the `.contour`/`.point`/`.bbox` functions, the `contour` source, `label_reduce`) |
 | `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. The planner never resolves an op: it reads the `Wire` op's rules, where a per-row value is unknown |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `ext_types.rs` | `ExtType`: the polars-cv Arrow extension types. Builds tagged *outputs* only (`ExtType::tag` / `dtype`, e.g. `SinkKind::NdArray`); inputs never arrive tagged because `polars_cv._plugin.call` passes `.ext.storage()`, so nothing registers with polars-core's extension registry |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |
 | `cloud_auth.rs` | Bearer-token sourcing for the OAuth backends (GCS/Azure): federated ADC delegation to `gcloud`, `token_command`, expiry-aware caching |
-| `geometry/contour.rs` | Contour namespace plugin functions (IoU, matching, label_reduce, bbox variants) |
-| `geometry/point.rs` | Point geometry plugin functions |
-| `geometry/params.rs` | `GeomParams` — per-row resolution of those namespace functions' typed kwargs (`Param<T>` fields, `ColumnRef` operands), with the shared null policy and the check that every extra input is read exactly once |
+| `namespaces/contour.rs` | Contour namespace plugin functions (IoU, matching, label_reduce, bbox variants) |
+| `namespaces/point.rs` | Point geometry plugin functions |
+| `namespaces/params.rs` | `GeomParams` — per-row resolution of those namespace functions' typed kwargs (`Param<T>` fields, `ColumnRef` operands), with the shared null policy and the check that every extra input is read exactly once |
 
 **The graph wire format is closed, struct by struct.** `GraphNode`,
 `UnifiedGraph`, `OutputSpec` and `GraphKwargs` carry
@@ -130,7 +130,7 @@ topology (node references, per-row expression columns) are `GraphOp`s
 dispatches on their `Role`. An op with no per-row field resolves once at
 compile time (`OpResolver::Static`); the rest resolve per row.
 
-### Source Decoding (`graph/source.rs`)
+### Source Decoding (`graph/decode.rs`)
 
 | Source Format | Decoding |
 |---------------|----------|
@@ -139,12 +139,12 @@ compile time (`OpResolver::Static`); the rest resolve per row.
 | `blob` | VIEW protocol binary (header + data) → `ViewBuffer` |
 | `raw` | Raw bytes with explicit dtype → `ViewBuffer` |
 | `file_path` | Two stages: `fetch.rs` reads the bytes from local/cloud/HTTP, then they decode as `image_bytes` (alpha channels preserved). The fetch stage is also exposed on its own as `.cv.read_bytes()` (`read_bytes.rs`) — same code, decode omitted |
-| `contour` | Decode geometry into `Outline`s (regions and open lines, `is_closed`), in the contour domain; a mask is the separate `rasterize` op, which fills regions (lines are drawn by `stroke` first, `transforms::stroke`); every region op (`area`, `offset`, `union_all`, …) refuses a line through `Outline::region` (the one rule and message the `.contour` accessors share). `ContourColumn` (`geometry/columns.rs`, the plugin's one contour reader, over the column's Arrow arrays) accepts either shape the column takes — one contour per row (`Struct`) or the whole set (`List(Struct)`, what `extract_contours().sink("native")` emits) — dispatching on the list's *element dtype*, since a `List` of point structs is one contour's ring. `rasterize` paints a set as a union via `geometry::rasterize::rasterize` |
+| `contour` | Decode geometry into `Outline`s (regions and open lines, `is_closed`), in the contour domain; a mask is the separate `rasterize` op, which fills regions (lines are drawn by `stroke` first, `transforms::stroke`); every region op (`area`, `offset`, `union_all`, …) refuses a line through `Outline::region` (the one rule and message the `.contour` accessors share). `ContourColumn` (`namespaces/columns.rs`, the plugin's one contour reader, over the column's Arrow arrays) accepts either shape the column takes — one contour per row (`Struct`) or the whole set (`List(Struct)`, what `extract_contours().sink("native")` emits) — dispatching on the list's *element dtype*, since a `List` of point structs is one contour's ring. `rasterize` paints a set as a union via `geometry::rasterize::rasterize` |
 | `list` / `array` | Zero-copy (when contiguous) or copy from Polars nested types |
 
 Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`. Each op's `OpShape` gives its output channel count (axis 2), which the Rust planner (`plan::step`) reads for planning-time channel inference; Rust implements the corresponding behavior based on the buffer's actual channel count.
 
-### Sink Encoding (`graph/sink.rs`)
+### Sink Encoding (`graph/encode.rs`)
 
 | Sink Format | Output Type | Encoding |
 |-------------|-------------|----------|
@@ -163,20 +163,20 @@ Runs at Polars planning time (NOT execution time). Parses the graph JSON, resolv
 
 ## Contour/Bbox Plugin Functions
 
-`geometry/point.rs` and `geometry/contour.rs` expose direct plugin expression functions for `.point` / `.contour` / `.bbox` namespaces. These **bypass `vb_graph`** and operate on Struct/List columns directly. `image_metadata.rs` and `read_bytes.rs` bypass it the same way for the `.cv` namespace's non-pipeline methods.
+`namespaces/point.rs` and `namespaces/contour.rs` expose direct plugin expression functions for `.point` / `.contour` / `.bbox` namespaces. These **bypass `vb_graph`** and operate on Struct/List columns directly. `image_metadata.rs` and `read_bytes.rs` bypass it the same way for the `.cv` namespace's non-pipeline methods.
 
 `tests/test_sanitation.py::test_namespace_plugin_symbols_match_registrations` pins both directions of this surface — add any new module carrying a namespace `#[polars_expr]` to the file list it scans, or the symbol silently escapes the check.
 
-These functions bypass `vb_graph` but use its per-row wire form. Each parses its own typed definition (`geometry/fns.rs`: a `ContourFn`/`PointFn`/`BBoxFn` variant, or the `GeometryOp` a pipeline op shares) with `GeomParams::parse`, strictly by name: a field is `M::V<T>` — the literal, or `{"$slot": n}` naming the extra input the generated Python `_GeomNamespace._call` appended — or a `ColumnRef` data operand. `GeomParams` resolves them through the same `ParamCol` accessors `params.rs` uses, and rejects an out-of-range slot or an extra input no field reads, so a builder/reader drift fails loudly instead of silently dropping an operand. The Python methods are generated from `tests/golden/geom_catalog.json`.
+These functions bypass `vb_graph` but use its per-row wire form. Each parses its own typed definition (`namespaces/fns.rs`: a `ContourFn`/`PointFn`/`BBoxFn` variant, or the `GeometryOp` a pipeline op shares) with `GeomParams::parse`, strictly by name: a field is `M::V<T>` — the literal, or `{"$slot": n}` naming the extra input the generated Python `_GeomNamespace._call` appended — or a `ColumnRef` data operand. `GeomParams` resolves them through the same `ParamCol` accessors `params.rs` uses, and rejects an out-of-range slot or an extra input no field reads, so a builder/reader drift fails loudly instead of silently dropping an operand. The Python methods are generated from `tests/golden/geom_catalog.json`.
 
-Key functions in `geometry/contour.rs`:
+Key functions in `namespaces/contour.rs`:
 - `contour_pairwise_iou`, `contour_correspond`, `contour_label_reduce`
 - `bbox_pairwise_iou`, `bbox_correspond` — rectangle overlap is a two-interval
   intersection, so these stay analytic (`pairwise::bbox_iou`) rather than going
   through general polygon boolean ops. Both share `pairwise_rows` /
   `correspond_rows` (and `pairwise::greedy_assign`) with the contour matcher,
   so the greedy matching policy lives in one place.
-- Graph-side `label_reduce` (`GraphOp::LabelReduce` in `ops/graph.rs`: buffer + contour column operand → vector)
+- Graph-side `label_reduce` (`GraphOp::LabelReduce` in `catalog/graph.rs`: buffer + contour column operand → vector)
 
 `contour_label_reduce` and the graph-side `label_reduce` are two entry points onto
 **one** implementation: `view_buffer::geometry::label`'s `region_pixels` (which pixels
@@ -199,7 +199,7 @@ encoding (`encode_sink`), shared by the graph executor.
 ## Adding a New Operation (Rust Side)
 
 1. **`view-buffer`**: Implement the op — see [`view-buffer/AGENTS.md`](../../view-buffer/AGENTS.md)
-2. **The family**: add the op as a variant of its family enum (the view-buffer engine enum, or `GraphOp` in `ops/graph.rs` for a graph-level step) with `#[op(name, sample)]` and wire-typed fields (`M::V<T>`/`M::L<T>`); its family's generic `shape()`/`check()` cover it. Then re-bless the catalogue and run `scripts/gen_ops.py`
+2. **The family**: add the op as a variant of its family enum (the view-buffer engine enum, or `GraphOp` in `catalog/graph.rs` for a graph-level step) with `#[op(name, sample)]` and wire-typed fields (`M::V<T>`/`M::L<T>`); its family's generic `shape()`/`check()` cover it. Then re-bless the catalogue and run `scripts/gen_ops.py`
 3. **Test**: Ensure the operation works end-to-end via Python tests
 
 ## Error Handling

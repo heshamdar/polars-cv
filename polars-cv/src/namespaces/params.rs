@@ -3,11 +3,11 @@
 //! The `.contour` / `.point` / `.bbox` accessors are standalone
 //! `#[polars_expr]` functions rather than `vb_graph` graph nodes, but they use
 //! the same per-row mechanism as every typed op: a kwarg is a
-//! [`Param<T>`](crate::ops::Param) — the literal value, or `{"$slot": n}`
+//! [`Param<T>`](crate::catalog::Param) — the literal value, or `{"$slot": n}`
 //! naming the plugin input that holds it per row — and an optional data
 //! operand (`point.rotate`'s `origin`, `correspond`'s `order`) is a
 //! [`ColumnRef`]. Each function's arguments are its typed definition
-//! (`geometry::fns`), parsed strictly by name; the generated Python accessor appends
+//! (`namespaces::fns`), parsed strictly by name; the generated Python accessor appends
 //! each expression as an input and writes its position into its field, so
 //! nothing is looked up by name.
 //!
@@ -18,15 +18,15 @@
 //! `_GeomNamespace.on_null`) and is applied by [`GeomParams::row`], which each
 //! row loop wraps its parameter resolution in.
 
-use crate::ops::ParamExt as _;
+use crate::catalog::ParamExt as _;
 use polars::prelude::*;
 use serde::Deserialize;
 use view_buffer::mode::{RowInput, Wire, WireOps};
 use view_buffer::naming::WireScalar;
 use view_buffer::GeometryOp;
 
+use crate::catalog::{ColumnRef, Literal, Param};
 use crate::graph::RowErrorPolicy;
-use crate::ops::{ColumnRef, Literal, Param};
 use crate::params::{NullParamPolicy, ParamCtx};
 
 /// A geometry plugin call's kwargs: the function's own wire fields, and the
@@ -223,7 +223,7 @@ impl<'a> GeomParams<'a> {
     /// read for `row`, then the op's own check with every value known.
     /// `None` resolves an op with no per-row field, once for the call.
     pub fn step(&self, op: &GeometryOp<Wire>, row: Option<usize>) -> PolarsResult<GeometryOp> {
-        let values = crate::ops::param::RowValues {
+        let values = crate::catalog::param::RowValues {
             row: row.unwrap_or(0),
             ctx: &self.ctx,
             // A geometry has no buffer for a `this` field to read.
@@ -287,7 +287,7 @@ pub fn check_range(name: &str, value: f64, lo: f64, hi: f64) -> PolarsResult<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::fns::PointFn;
+    use crate::namespaces::fns::PointFn;
     use view_buffer::mode::Wire;
 
     fn params<'a>(inputs: &'a [Series], on_error: &str) -> PolarsResult<GeomParams<'a>> {

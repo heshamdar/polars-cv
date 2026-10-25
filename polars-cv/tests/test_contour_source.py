@@ -94,7 +94,7 @@ def test_contour_schema_is_what_rust_emits(encode_png: "Callable") -> None:
     """``CONTOUR_SET_SCHEMA`` must equal the dtype a real extraction produces.
 
     The contour struct layout used to be written out three times: Rust's
-    ``contour_struct_dtype()`` (``src/graph/sink.rs``, the only one execution
+    ``contour_struct_dtype()`` (``src/graph/encode.rs``, the only one execution
     reads), the public ``CONTOUR_SCHEMA``, and a private copy inside
     ``metrics/_matching/_contour.py`` that did not import the public one. The
     two Python copies were kept honest by nothing at all — a field renamed or
@@ -122,7 +122,7 @@ def test_contour_schema_is_what_rust_emits(encode_png: "Callable") -> None:
     assert produced.dtype == CONTOUR_SET_SCHEMA, (
         f"extract_contours().sink('native') produced {produced.dtype}, but "
         f"polars_cv.geometry.CONTOUR_SET_SCHEMA declares {CONTOUR_SET_SCHEMA}. "
-        f"The authority is contour_struct_dtype() in src/graph/sink.rs."
+        f"The authority is contour_struct_dtype() in src/graph/encode.rs."
     )
     # A vacuous pass is possible if nothing was extracted and the dtype came
     # back from an empty list, so pin that the run had something to describe.

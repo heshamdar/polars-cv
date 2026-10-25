@@ -124,7 +124,7 @@ def test_parallel_only_cases_carry_their_own_requirement() -> None:
 
 
 def test_a_geometry_change_selects_the_geometry_cases_only() -> None:
-    sel, unbenchmarked = relevance.select_for(["polars-cv/src/geometry/columns.rs"])
+    sel, unbenchmarked = relevance.select_for(["polars-cv/src/namespaces/columns.rs"])
     assert sel.scenarios() == ("targeted",)
     cases = sel.cases("targeted")
     assert cases is not None
@@ -330,8 +330,8 @@ def test_the_relevance_cli_prints_a_reusable_selection(
     subprocess.run(
         [*git, "commit", "-q", "--allow-empty", "-m", "a"], cwd=tmp_path, check=True
     )
-    (tmp_path / "polars-cv" / "src" / "geometry").mkdir(parents=True)
-    (tmp_path / "polars-cv" / "src" / "geometry" / "contour.rs").write_text("")
+    (tmp_path / "polars-cv" / "src" / "namespaces").mkdir(parents=True)
+    (tmp_path / "polars-cv" / "src" / "namespaces" / "contour.rs").write_text("")
     monkeypatch.chdir(tmp_path)
     assert relevance.main(["main"]) == 0
     printed = capsys.readouterr().out.strip()

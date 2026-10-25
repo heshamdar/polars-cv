@@ -6,7 +6,7 @@
 
 use polars::prelude::*;
 
-use crate::geometry::schema::contour_struct_dtype;
+use crate::namespaces::schema::contour_struct_dtype;
 use pyo3_polars::derive::polars_expr;
 
 // Import geometry operations from view-buffer
@@ -18,14 +18,14 @@ use view_buffer::geometry::{
 
 // `contour_accessor!` is `#[macro_export]`ed, so it lives at the crate root
 // regardless of module order; importing it by name avoids depending on
-// `arity` being declared before `contour` in `geometry/mod.rs`.
+// `arity` being declared before `contour` in `namespaces/mod.rs`.
+use crate::catalog::{ColumnRef, Param};
 use crate::contour_accessor;
-use crate::geometry::accessor::Form;
-use crate::geometry::arity::{elementwise_field, Arity, ContourOutput};
-use crate::geometry::columns::{BBoxColumn, ContourColumn, PointColumn};
-use crate::geometry::fns::{BBoxFn, ContourFn};
-use crate::geometry::params::{check_range, parsed_as_another, GeomKwargs, GeomParams};
-use crate::ops::{ColumnRef, Param};
+use crate::namespaces::accessor::Form;
+use crate::namespaces::arity::{elementwise_field, Arity, ContourOutput};
+use crate::namespaces::columns::{BBoxColumn, ContourColumn, PointColumn};
+use crate::namespaces::fns::{BBoxFn, ContourFn};
+use crate::namespaces::params::{check_range, parsed_as_another, GeomKwargs, GeomParams};
 use view_buffer::mode::Wire;
 
 // ============================================================================
@@ -42,11 +42,11 @@ use view_buffer::mode::Wire;
 ///   open polyline is an `Outline::Open`, written by `contour_array`).
 ///
 /// Test-only: production contour columns are built straight into Arrow by
-/// `geometry::schema::contour_array`. This per-value construction stays as
+/// `namespaces::schema::contour_array`. This per-value construction stays as
 /// the independent oracle the equivalence tests compare that builder against.
 #[cfg(test)]
 pub fn contour_to_anyvalue(contour: &view_buffer::geometry::contour::Contour) -> AnyValue<'static> {
-    use crate::geometry::schema::{point_anyvalue, point_struct_dtype};
+    use crate::namespaces::schema::{point_anyvalue, point_struct_dtype};
     // Build exterior points as list of structs
     let exterior_points: Vec<AnyValue> = contour
         .exterior
@@ -95,14 +95,14 @@ pub fn contour_to_anyvalue(contour: &view_buffer::geometry::contour::Contour) ->
     .unwrap_or_else(|_| Series::new_empty(PlSmallStr::from_static("holes"), &hole_list_schema));
 
     // Create the outer contour struct. The field layout is declared once in
-    // `geometry::schema::contour_fields`; this reads it rather than re-spelling it.
+    // `namespaces::schema::contour_fields`; this reads it rather than re-spelling it.
     AnyValue::StructOwned(Box::new((
         vec![
             AnyValue::List(exterior_series),
             AnyValue::List(holes_series),
             AnyValue::Boolean(true), // a `Contour` is a closed region
         ],
-        crate::geometry::schema::contour_fields(),
+        crate::namespaces::schema::contour_fields(),
     )))
 }
 
@@ -208,7 +208,7 @@ fn correspondence_anyvalue(result: &pairwise::Correspondence) -> AnyValue<'stati
 /// fails here, naming the row.
 fn parse_order_list(value: &AnyValue, n_left: usize) -> PolarsResult<Vec<usize>> {
     let AnyValue::List(series) = value else {
-        return Err(crate::geometry::params::column_error(format!(
+        return Err(crate::namespaces::params::column_error(format!(
             "Expected List[UInt32] for order, got {value:?}"
         )));
     };
@@ -329,7 +329,7 @@ fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 // Contour Plugin Functions - Pipeline ops
 // ============================================================================
 
-// Each runs the pipeline step it is (`geometry::accessor`): resolved and checked
+// Each runs the pipeline step it is (`namespaces::accessor`): resolved and checked
 // per row, executed by the executor's own dispatch, presented per member.
 crate::op_accessors! {
     op fn contour_area / contour_area_output_type => "area", Form::Number;
@@ -598,7 +598,7 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
         // a grid of values, `[H, W]` or `[H, W, 1]`, refused if jagged or
         // holding a null. A null or empty heatmap is a null row.
         let Some(heatmap) =
-            crate::graph::source::decode_list_or_array_source(heatmap_series, i, None, false)
+            crate::graph::decode::decode_list_or_array_source(heatmap_series, i, None, false)
                 .map_err(|e| polars_err!(ComputeError: "label_reduce image: {}", e))?
         else {
             return Ok(None);
@@ -668,7 +668,7 @@ contour_accessor! {
         let order = params.value(order, row)?;
         let pairs: Vec<Option<[f64; 2]>> =
             outline.exterior().iter().map(|p| Some(order.pair(p))).collect();
-        let series = <[f64; 2] as crate::geometry::point::PointOutput>::series(
+        let series = <[f64; 2] as crate::namespaces::point::PointOutput>::series(
             PlSmallStr::from_static("coords"),
             pairs,
         )?;
@@ -813,7 +813,7 @@ fn contour_set_boundary_distances(inputs: &[Series], kwargs: GeomKwargs) -> Pola
 // ============================================================================
 
 // A transform's element type is the canonical contour struct
-// (`geometry::schema::contour_struct_dtype`), whatever layout came in: a result in
+// (`namespaces::schema::contour_struct_dtype`), whatever layout came in: a result in
 // the input's own layout could not hold what that layout lacks (a hole a
 // union makes, a line's `is_closed = false`), and casting to it lost them.
 
@@ -1067,7 +1067,7 @@ mod named_param_tests {
     /// declare different defaults: the one declared is the centroid.
     #[test]
     fn the_accessor_and_the_op_share_one_origin_default() {
-        let scale = crate::geometry::fns::geom_catalog()
+        let scale = crate::namespaces::fns::geom_catalog()
             .into_iter()
             .find(|d| d.namespace == "contour" && d.function.python == "scale")
             .expect("`.contour.scale` is catalogued");

@@ -6,7 +6,7 @@
 //! ([`GraphOp`]): one that reads other nodes' buffers or an input column.
 //!
 //! Generic over the [`Mode`] like every family it holds: `GraphStep<Wire>` is
-//! the typed op ([`TypedOp`](crate::ops::TypedOp)) — what a plan holds and
+//! the typed op ([`TypedOp`](crate::catalog::TypedOp)) — what a plan holds and
 //! reads every rule below from, with a per-row value unknown rather than
 //! stood in for — and resolving it for a row gives the `GraphStep<Exec>` that
 //! runs. The step's math lives in view-buffer (`BinaryOp::execute`,
@@ -20,7 +20,7 @@ use view_buffer::ops::{Domain, OpShape, SpatialDependency};
 use view_buffer::ops::{HistogramOp, LutOp, ReductionOp};
 use view_buffer::{GeometryOp, IdentityRule, Op, ViewDto};
 
-use crate::ops::graph::GraphOp;
+use crate::catalog::graph::GraphOp;
 
 /// One operation of a graph node (see the module docs).
 #[derive(Debug, Clone, PartialEq, Resolve)]

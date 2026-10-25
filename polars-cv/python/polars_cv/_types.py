@@ -63,7 +63,7 @@ def dtype_name_for(dtype: pl.DataType) -> str:
     key = name.lower()
     # A boolean mask is the documented shape for a ground-truth mask column. It
     # is not a buffer element type, but the source decoder casts rather than
-    # reinterprets (``convert_row_values`` in ``graph/source.rs``), so
+    # reinterprets (``convert_row_values`` in ``graph/decode.rs``), so
     # ``CAST_ONLY_TO_SHORT`` (from ``dtype_table!``) names the dtype it becomes.
     try:
         return {**NUMPY_TO_SHORT, **CAST_ONLY_TO_SHORT}[key]

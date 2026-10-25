@@ -8,8 +8,8 @@ use std::ops::Range;
 use view_buffer::geometry::contour::Outline;
 use view_buffer::{DType, PlannedDType, ViewBuffer};
 
+use super::decode::polars_dtype_for;
 use super::sink_kind::SinkKind;
-use super::source::polars_dtype_for;
 use super::types::{LongRow, OutputSpec, OutputValue, RowResult};
 use crate::formats::sink::LongLayout;
 use crate::formats::Format as _;
@@ -184,7 +184,7 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
                     .check_channels(channels)
                     .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
             }
-            Ok(super::sink::long_dtype(&layout, inner("long")?))
+            Ok(super::encode::long_dtype(&layout, inner("long")?))
         }
         SinkKind::Scalar => Ok(DataType::Float64),
         SinkKind::VectorList => {
@@ -230,7 +230,7 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
             }
         }
         SinkKind::Contours => Ok(DataType::List(Box::new(DataType::Struct(
-            crate::geometry::schema::contour_fields(),
+            crate::namespaces::schema::contour_fields(),
         )))),
     }
 }
@@ -437,7 +437,7 @@ pub(crate) fn build_series_from_spec(
                 RowResult::Long(l) => Ok(l),
                 other => Err(other.variant_name()),
             })?;
-            super::sink::long_series(name, &rows, &long_layout(spec), dtype, split)
+            super::encode::long_series(name, &rows, &long_layout(spec), dtype, split)
         }
     }
 }
@@ -905,7 +905,7 @@ pub(crate) fn encode_node_output(
             )),
         },
         SinkKind::Long => {
-            let layout = super::sink::long_layout(spec);
+            let layout = super::encode::long_layout(spec);
             long_row(require_buffer(output, domain, format)?, &layout).map(OutputValue::Long)
         }
         SinkKind::Contours => match output {
@@ -1046,7 +1046,7 @@ pub(super) fn long_series(
 }
 
 /// A `List[Contour]` column, one contour set per row, built straight into Arrow
-/// (see [`crate::geometry::schema::contour_array`]).
+/// (see [`crate::namespaces::schema::contour_array`]).
 ///
 /// A null row (no input, or a failed row) is null; a row whose image simply
 /// contains no contours is the empty set `[]`. The two used to be collapsed
@@ -1061,7 +1061,7 @@ pub(super) fn contour_set_series(
 
     // Each member written with its own `is_closed`: a line stays a line.
     let all: Vec<&Outline> = rows.iter().flatten().flatten().collect();
-    let values = crate::geometry::schema::contour_array(all.iter().copied())?;
+    let values = crate::namespaces::schema::contour_array(all.iter().copied())?;
     let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
     let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
     let validity = rows
@@ -1340,7 +1340,7 @@ mod tensor_sink_tests {
 /// publish exactly what the per-contour `AnyValue` construction published.
 #[cfg(test)]
 mod contour_sink_tests {
-    use crate::graph::sink::build_series_from_spec;
+    use crate::graph::encode::build_series_from_spec;
     use crate::graph::types::{OutputSpec, RowResult};
     use polars::prelude::*;
     use view_buffer::geometry::{Contour, Point};
@@ -1382,14 +1382,14 @@ mod contour_sink_tests {
     /// The per-value construction, kept here as the oracle. An empty set is
     /// `[]` and only a null row is null.
     fn oracle(rows: &[Option<Vec<Contour>>]) -> Series {
-        let element = crate::geometry::schema::contour_struct_dtype();
+        let element = crate::namespaces::schema::contour_struct_dtype();
         let values: Vec<AnyValue<'static>> = rows
             .iter()
             .map(|row| match row {
                 Some(contours) => {
                     let items: Vec<AnyValue<'static>> = contours
                         .iter()
-                        .map(crate::geometry::contour::contour_to_anyvalue)
+                        .map(crate::namespaces::contour::contour_to_anyvalue)
                         .collect();
                     AnyValue::List(
                         Series::from_any_values_and_dtype(

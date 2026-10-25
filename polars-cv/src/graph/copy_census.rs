@@ -27,7 +27,7 @@ use view_buffer::ops::{Domain, MemoryEffect};
 use view_buffer::{DType, ViewBuffer};
 
 use super::compiled::CompiledGraph;
-use crate::ops::TypedOp;
+use crate::catalog::TypedOp;
 
 /// The base image the views are cut from: `[H, W, C]`.
 const H: usize = 64;

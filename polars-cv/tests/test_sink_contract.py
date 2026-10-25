@@ -3,9 +3,9 @@
 Two functions decide what a sink produces, and they are two halves of one
 contract:
 
-* ``dtype_for_output`` (``graph/sink.rs``) — the Polars **dtype**, from
+* ``dtype_for_output`` (``graph/encode.rs``) — the Polars **dtype**, from
   ``(expected_domain, sink format)``;
-* ``encode_node_output`` (``graph/sink.rs``) — the **value**.
+* ``encode_node_output`` (``graph/encode.rs``) — the **value**.
 
 The second used to key on the runtime ``NodeOutput`` *variant* instead, which
 is a different fact: a domain can arrive in more than one representation. A

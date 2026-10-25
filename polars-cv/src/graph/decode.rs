@@ -42,7 +42,7 @@ pub(crate) fn decode_source_row(
     match source {
         // The column's contour set, lines (`is_closed = false`) and regions
         // alike; a mask is the `rasterize` op that follows, if any.
-        Source::Contour { .. } => crate::geometry::columns::ContourColumn::new(series)
+        Source::Contour { .. } => crate::namespaces::columns::ContourColumn::new(series)
             .outlines(row)
             .map(|set| set.map(NodeOutput::from_contours))
             .map_err(|e| format!("Contour decode error: {e}")),

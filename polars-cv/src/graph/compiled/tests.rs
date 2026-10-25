@@ -9,7 +9,7 @@ use crate::graph::node_output::NodeOutput;
 use view_buffer::ops::Domain;
 use view_buffer::{ViewBuffer, ViewDto};
 
-use crate::ops::TypedOp;
+use crate::catalog::TypedOp;
 use crate::params::ParamCtx;
 
 use crate::graph::step::GraphStep;
@@ -83,7 +83,7 @@ fn blob_and_raw_sources_decode_via_zero_copy() {
     assert_eq!(decoded.as_slice::<f32>(), &[1.0, 2.0, 3.0]);
 }
 
-use crate::ops::graph::Role;
+use crate::catalog::graph::Role;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
@@ -96,7 +96,7 @@ use std::collections::BTreeSet;
 /// so nothing checked that the other nine had a graph. Two tests close
 /// that now: `every_graph_step_variant_is_reachable_from_a_known_op`
 /// over the catalogue's samples, the same way `every_graph_geometry_op_executes`
-/// does in `geometry/exec.rs`, and the coverage assertion at the end of
+/// does in `namespaces/exec.rs`, and the coverage assertion at the end of
 /// `every_graph_step_variant_executes`, which records what that test
 /// actually ran.
 fn step_name(step: &GraphStep) -> &'static str {
@@ -166,7 +166,7 @@ fn acknowledged_steps() -> Vec<String> {
 #[test]
 fn every_graph_step_variant_is_reachable_from_a_known_op() {
     let mut reachable: BTreeSet<&'static str> = BTreeSet::new();
-    for op in crate::ops::TypedOp::samples() {
+    for op in crate::catalog::TypedOp::samples() {
         let step = op
             .resolve(0, &ParamCtx::empty())
             .expect("a registered sample resolves");
@@ -459,7 +459,7 @@ fn every_graph_step_variant_executes() {
         (3.0, 3.0),
         (0.0, 3.0),
     ]);
-    let contour_av = crate::geometry::contour::contour_to_anyvalue(&contour);
+    let contour_av = crate::namespaces::contour::contour_to_anyvalue(&contour);
     let inner = Series::from_any_values("".into(), &[contour_av], false).unwrap();
     let row = AnyValue::List(inner);
     let cont_col = Series::from_any_values("cont".into(), &[row], false).unwrap();
@@ -1163,7 +1163,7 @@ fn a_null_operand_nulls_the_node_for_every_reading_op() {
     ]);
     let inner = Series::from_any_values(
         "".into(),
-        &[crate::geometry::contour::contour_to_anyvalue(&contour)],
+        &[crate::namespaces::contour::contour_to_anyvalue(&contour)],
         false,
     )
     .unwrap();

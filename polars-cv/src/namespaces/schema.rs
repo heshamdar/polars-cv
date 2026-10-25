@@ -1,7 +1,7 @@
 //! The one declaration of each geometry struct — point, contour, bbox — the
 //! geometry surfaces publish.
 //!
-//! `geometry/contour.rs`, `geometry/point.rs` and `geometry/schemas.py` read these declarations
+//! `namespaces/contour.rs`, `namespaces/point.rs` and `geometry/schemas.py` read these declarations
 //! rather than spelling out the `{x, y}` point, the contour `{exterior, holes,
 //! is_closed}` layout or a per-row bbox parser themselves. Dtypes, op names and
 //! enum variants all have a named authority and a bidirectional parity guard,
@@ -32,8 +32,8 @@ pub(crate) const POINT_FIELD_NAMES: [&str; 2] = ["x", "y"];
 /// order, the canonical [`POINT_FIELD_NAMES`] first.
 ///
 /// **The single authority for "is this a point?".** Read by the geometry
-/// column readers (`geometry::columns`), which parse by these names, and by
-/// [`is_point_dtype`](crate::geometry::arity::is_point_dtype), which decides from
+/// column readers (`namespaces::columns`), which parse by these names, and by
+/// [`is_point_dtype`](crate::namespaces::arity::is_point_dtype), which decides from
 /// the dtype whether a `List` is one contour's ring or a set of contours.
 pub(crate) const POINT_FIELD_SPELLINGS: [&[&str]; 2] =
     [&[POINT_FIELD_NAMES[0], "X"], &[POINT_FIELD_NAMES[1], "Y"]];
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn a_contour_value_matches_the_published_dtype() {
-        // `contour_to_anyvalue` (in `geometry/contour.rs`) builds its struct from
+        // `contour_to_anyvalue` (in `namespaces/contour.rs`) builds its struct from
         // `contour_fields()`; hold its output to that declaration so a future
         // divergence fails here.
         use view_buffer::geometry::contour::{Contour, Point};
@@ -295,7 +295,7 @@ mod tests {
             Point::new(1.0, 1.0),
         ]);
         let AnyValue::StructOwned(payload) =
-            crate::geometry::contour::contour_to_anyvalue(&contour)
+            crate::namespaces::contour::contour_to_anyvalue(&contour)
         else {
             panic!("contour_to_anyvalue must be an owned struct");
         };
@@ -334,7 +334,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let reader = crate::geometry::columns::BBoxColumn::new(&column);
+        let reader = crate::namespaces::columns::BBoxColumn::new(&column);
         assert_eq!(reader.single(0).unwrap(), Some(source));
         assert_eq!(reader.single(1).unwrap(), None);
     }

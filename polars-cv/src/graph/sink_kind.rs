@@ -5,10 +5,10 @@
 //!
 //! | half | what it decides |
 //! |------|-----------------|
-//! | [`dtype_for_output`](super::sink::dtype_for_output) | the Polars dtype the planner publishes |
-//! | [`encode_node_output`](super::sink::encode_node_output) | the value each row encodes to |
-//! | [`null_row_result_for_spec`](super::sink::null_row_result_for_spec) | the typed null a skipped row pushes |
-//! | [`build_series_from_spec`](super::sink::build_series_from_spec) | the Series the rows assemble into |
+//! | [`dtype_for_output`](super::encode::dtype_for_output) | the Polars dtype the planner publishes |
+//! | [`encode_node_output`](super::encode::encode_node_output) | the value each row encodes to |
+//! | [`null_row_result_for_spec`](super::encode::null_row_result_for_spec) | the typed null a skipped row pushes |
+//! | [`build_series_from_spec`](super::encode::build_series_from_spec) | the Series the rows assemble into |
 //!
 //! Four copies of one table, and only the first two ended in an error. The
 //! other two ended in `_ => Binary`, so a pair added to the first two and
@@ -180,7 +180,7 @@ mod tests {
     fn buildable_spec(domain: &str, format: &str) -> OutputSpec {
         let mut s = spec(domain, format);
         if let Sink::Array { shape } = &mut s.sink {
-            *shape = Some(vec![crate::ops::Literal(1)]);
+            *shape = Some(vec![crate::catalog::Literal(1)]);
         }
         s.expected_ndim = Some(1);
         s
@@ -193,7 +193,7 @@ mod tests {
     /// null through a `_ => None` arm, which reads as data rather than a bug.
     #[test]
     fn a_row_of_another_kind_is_an_error_not_a_null() {
-        use crate::graph::sink::{build_series_from_spec, null_row_result_for_spec};
+        use crate::graph::encode::{build_series_from_spec, null_row_result_for_spec};
         use crate::graph::types::RowResult;
         for &(domain, format, kind) in PAIRS {
             let spec = buildable_spec(domain, format);
