@@ -7,8 +7,8 @@ use polars::prelude::{DataType, Series};
 use polars_cv_macros::Ops;
 use view_buffer::DType;
 
+use crate::catalog::Literal;
 use crate::fetch::FetchErrorPolicy;
-use crate::ops::Literal;
 
 /// Define the input source format.
 ///

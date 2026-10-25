@@ -19,10 +19,10 @@ pub(crate) mod sink_kind;
 #[cfg(test)]
 mod copy_census;
 
-pub(crate) mod sink;
-pub(crate) mod source;
+pub(crate) mod decode;
+pub(crate) mod encode;
 
 // Re-exports for crate-level access
 pub(crate) use compiled::{get_or_compile, resolved_output_specs};
-pub(crate) use sink::dtype_for_output;
+pub(crate) use encode::dtype_for_output;
 pub(crate) use types::RowErrorPolicy;

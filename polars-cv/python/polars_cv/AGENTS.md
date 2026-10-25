@@ -237,10 +237,10 @@ Guarded by `TestStructuralParamsRejectExpressions` in
 
 **The geometry namespaces use the same wire form.** `.contour`/`.point`/`.bbox`
 bypass `vb_graph`, but each accessor method is generated from its Rust
-definition (`src/geometry/fns.rs`) as one `_GeomNamespace._call` (`_namespace.py`),
+definition (`src/namespaces/fns.rs`) as one `_GeomNamespace._call` (`_namespace.py`),
 which appends an expression-valued parameter or data operand as an extra
 argument and writes `{"$slot": n}` into that field. Rust parses the arguments
-as the function's own definition (`GeomParams::parse`, `src/geometry/params.rs`).
+as the function's own definition (`GeomParams::parse`, `src/namespaces/params.rs`).
 Each field names its own position, so the optional data operands (`order`,
 `origin`) cannot be confused with an appended parameter.
 
@@ -282,7 +282,7 @@ the same mixin unless `.cv` genuinely honours it.
 ## Adding a New Operation (Python Side)
 
 1. **Nothing, for an ordinary op.** The builder is generated from the op's Rust
-   definition (`src/ops/`, see the root `CLAUDE.md`): `scripts/gen_ops.py`
+   definition (`src/catalog/`, see the root `CLAUDE.md`): `scripts/gen_ops.py`
    writes it into `_ops_generated.py` — signature (the positional rule is
    derived, `gen_ops.positional`), defaults, docstring — and `Pipeline`
    inherits it from `_OpsMixin`. Every generated method appends through `Pipeline._append_typed` → `_push` →
@@ -319,7 +319,7 @@ planned schema execution could not produce.) Never build or edit a
    sweeps in `tests/test_schema_parity_*.py` guard this.
 
 4. **Rust side**: the op is a variant of its typed family — a view-buffer
-   engine enum for a buffer op, `GraphOp` (`src/ops/graph.rs`) for a
+   engine enum for a buffer op, `GraphOp` (`src/catalog/graph.rs`) for a
    graph-level one — which is what makes it deserializable and resolvable;
    there is no name-keyed dispatch to extend. See
    [`polars-cv/src/AGENTS.md`](../../src/AGENTS.md)

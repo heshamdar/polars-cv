@@ -7,7 +7,7 @@ These pin the behaviour of two encode-path changes:
     as a `BinaryViewArray` backing buffer instead of copying them into a
     `BinaryChunkedBuilder` (`src/output.rs::binary_view_series_from_rows`).
   - Typed list/array sinks move (rather than clone) their per-row buffers
-    while assembling the output (`src/graph/sink.rs::build_series_from_spec`,
+    while assembling the output (`src/graph/encode.rs::build_series_from_spec`,
     which now takes its rows by value).
 
 Both are pure optimisations: outputs must stay byte-identical to a direct

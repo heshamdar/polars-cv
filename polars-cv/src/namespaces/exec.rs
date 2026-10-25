@@ -10,7 +10,7 @@ use view_buffer::{GeometryOp, Op};
 use crate::graph::node_output::NodeOutput;
 
 /// Execute a geometry step: the pipeline's, and every op-backed `.contour`
-/// accessor's (`crate::geometry::accessor`), so the two cannot answer or refuse
+/// accessor's (`crate::namespaces::accessor`), so the two cannot answer or refuse
 /// differently.
 ///
 /// Every refusal is named here, once, by the step (`Offset: ...`), as the
@@ -294,7 +294,7 @@ mod tests {
         };
 
         let mut executed = 0;
-        for op in crate::ops::TypedOp::samples() {
+        for op in crate::catalog::TypedOp::samples() {
             let name = op.name();
             let step = op
                 .resolve(0, &ParamCtx::empty())

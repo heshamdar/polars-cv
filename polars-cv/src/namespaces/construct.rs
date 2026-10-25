@@ -6,7 +6,7 @@
 //! (so integers and `Array(_, 2)` pairs arrive alike); every pair must hold
 //! exactly two non-null, finite numbers, or the row is an error naming it. The results
 //! are built by the same assemblers the geometry functions use
-//! ([`crate::geometry::point::assemble`], [`ContourOutput`]), so the published schema is
+//! ([`crate::namespaces::point::assemble`], [`ContourOutput`]), so the published schema is
 //! the canonical one.
 
 use polars::prelude::*;
@@ -14,8 +14,8 @@ use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
 use view_buffer::geometry::contour::{Contour, CoordOrder, Outline, Point};
 
-use crate::geometry::arity::{Arity, ContourOutput};
-use crate::geometry::schema::{contour_struct_dtype, point_struct_dtype};
+use crate::namespaces::arity::{Arity, ContourOutput};
+use crate::namespaces::schema::{contour_struct_dtype, point_struct_dtype};
 
 /// Static kwargs of the constructors. Closed: an argument Python sends and
 /// Rust does not read is drift.
@@ -126,7 +126,7 @@ fn geom_point_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> PolarsResul
                 .map_err(|e| in_row(e, i, len))
         })
         .collect::<PolarsResult<Vec<_>>>()?;
-    crate::geometry::point::assemble(inputs[0].name().clone(), rows, Arity::Single)
+    crate::namespaces::point::assemble(inputs[0].name().clone(), rows, Arity::Single)
 }
 
 /// A contour per ring of pairs (`List(List(Float64))`).

@@ -32,7 +32,7 @@ metadata) comes back as polars' generic :class:`polars.Extension` instead — so
 ``isinstance(dtype, PointType)`` is a complete check, never a guess.
 
 **Where the facts live.** The storage layouts belong to the Rust plugin
-(``geometry::schema``, ``output::numpy_output_dtype``); ``ExtType`` in
+(``namespaces::schema``, ``output::numpy_output_dtype``); ``ExtType`` in
 ``src/ext_types.rs`` names the four types there and ``_lib.extension_types()``
 publishes them. They are restated here only so ``import polars_cv`` can register
 the types without loading the compiled extension (registering late would let a

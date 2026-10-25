@@ -164,7 +164,7 @@ impl State {
 }
 
 fn wire_domain<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Domain, D::Error> {
-    crate::ops::param::literal_field(d)
+    crate::catalog::param::literal_field(d)
 }
 
 fn wire_dtype<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PlannedDType, D::Error> {
@@ -363,10 +363,10 @@ fn referenced<'a>(refs: &'a Refs, op: &str, node: &str) -> Result<&'a State, Str
 /// size is declared but is no plan-time fact.
 fn declare(
     state: &State,
-    dims: &[Option<crate::ops::Param<u32>>],
+    dims: &[Option<crate::catalog::Param<u32>>],
     exact: bool,
 ) -> Result<State, String> {
-    use crate::ops::Param;
+    use crate::catalog::Param;
 
     let sizes: Vec<Option<usize>> = dims
         .iter()
@@ -418,9 +418,9 @@ fn declare(
 /// another input binds again; execution evaluates whatever is still unbound
 /// per row.
 fn bound<'o>(
-    op: &'o crate::ops::TypedOp,
+    op: &'o crate::catalog::TypedOp,
     state: &State,
-) -> Result<std::borrow::Cow<'o, crate::ops::TypedOp>, String> {
+) -> Result<std::borrow::Cow<'o, crate::catalog::TypedOp>, String> {
     if !op.reads_shape() {
         return Ok(std::borrow::Cow::Borrowed(op));
     }
@@ -443,8 +443,12 @@ fn bound<'o>(
 }
 
 /// The state after appending `op` to `state`. See the module docs.
-pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Result<State, String> {
-    use crate::ops::TypedOp;
+pub(crate) fn step(
+    op: &crate::catalog::TypedOp,
+    state: &State,
+    refs: &Refs,
+) -> Result<State, String> {
+    use crate::catalog::TypedOp;
     use view_buffer::ops::PlannedInput;
 
     // `this` bound wherever the plan knows the sizes it reads, so the rules
@@ -472,7 +476,7 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         ));
     }
     // A declaration's whole effect is on the plan.
-    if let TypedOp::Graph(crate::ops::graph::GraphOp::AssertShape { dims, exact }) = op {
+    if let TypedOp::Graph(crate::catalog::graph::GraphOp::AssertShape { dims, exact }) = op {
         return declare(state, dims, exact.get());
     }
 
@@ -574,7 +578,7 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
 /// an encoding concern, not a schema one: unknown.
 ///
 /// [`OutputDTypeRule::resolve_planned`]: view_buffer::OutputDTypeRule::resolve_planned
-fn single_input_dtype(step: &crate::ops::TypedOp, dtype: PlannedDType) -> PlannedDType {
+fn single_input_dtype(step: &crate::catalog::TypedOp, dtype: PlannedDType) -> PlannedDType {
     match step {
         GraphStep::Histogram(h) if h.output.get() == HistogramOutput::Buckets => {
             PlannedDType::Unknown
@@ -596,7 +600,7 @@ impl State {
     /// only its domain, read off the op's own contract (a buffer when it
     /// reads one, else the domain it reads), and nothing about dtype or shape.
     /// The node it is finally attached to plans it again from the real state.
-    fn entering(op: &crate::ops::TypedOp) -> State {
+    fn entering(op: &crate::catalog::TypedOp) -> State {
         let accepted = op.input_domains();
         let domain = if accepted.contains(&Domain::Buffer) {
             Domain::Buffer
@@ -650,7 +654,7 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> State {
 /// for an unknown one. `None` when the rank is unknown, so there is no shape
 /// to reason about — except for a step that *builds* a buffer from another
 /// domain (`rasterize`), which consumes no buffer at all.
-pub(crate) fn input_dims(step: &crate::ops::TypedOp, state: &State) -> Option<Vec<Dim>> {
+pub(crate) fn input_dims(step: &crate::catalog::TypedOp, state: &State) -> Option<Vec<Dim>> {
     match state.shape.symbolic() {
         Some(dims) if !dims.is_empty() => Some(dims),
         _ if !step.input_domains().contains(&Domain::Buffer)
@@ -682,7 +686,7 @@ fn binary_dtype(
 /// these, so no per-position fact is ever carried across by hand.
 #[derive(Debug, Clone)]
 struct Planned {
-    op: crate::ops::TypedOp,
+    op: crate::catalog::TypedOp,
     entering: State,
     refs: Refs,
 }
@@ -718,7 +722,7 @@ impl Plan {
     fn replanned(
         source: Option<crate::formats::source::Source>,
         start: State,
-        ops: impl IntoIterator<Item = (crate::ops::TypedOp, Refs)>,
+        ops: impl IntoIterator<Item = (crate::catalog::TypedOp, Refs)>,
     ) -> Result<Plan, String> {
         let mut plan = Plan {
             source,
@@ -733,7 +737,7 @@ impl Plan {
         Ok(plan)
     }
 
-    fn pushed(mut self, op: crate::ops::TypedOp, refs: Refs) -> Result<Plan, String> {
+    fn pushed(mut self, op: crate::catalog::TypedOp, refs: Refs) -> Result<Plan, String> {
         if self.open {
             self.start = State::entering(&op);
             self.state = self.start.clone();
@@ -753,7 +757,7 @@ impl Plan {
             .collect()
     }
 
-    fn typed_ops(&self) -> Vec<crate::ops::TypedOp> {
+    fn typed_ops(&self) -> Vec<crate::catalog::TypedOp> {
         self.ops.iter().map(|p| p.op.clone()).collect()
     }
 
@@ -795,7 +799,7 @@ impl Plan {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct WireOp {
-            op: crate::ops::TypedOp,
+            op: crate::catalog::TypedOp,
             refs: Refs,
         }
         #[derive(serde::Deserialize)]
@@ -918,7 +922,7 @@ pub(crate) enum Reads {
 
 /// `value` with every `{"$slot": i}` replaced by `{"$slot": map[i]}`.
 fn remap_slots(value: &mut serde_json::Value, map: &[usize]) -> Result<(), String> {
-    use crate::ops::param::SLOT_KEY;
+    use crate::catalog::param::SLOT_KEY;
     use serde_json::Value;
     match value {
         Value::Object(obj) if obj.len() == 1 && obj.contains_key(SLOT_KEY) => {
@@ -958,7 +962,7 @@ pub(crate) fn wire<T: serde::Serialize>(value: &T) -> serde_json::Value {
     value
 }
 
-fn parse_op(op_json: &str) -> PyResult<crate::ops::TypedOp> {
+fn parse_op(op_json: &str) -> PyResult<crate::catalog::TypedOp> {
     serde_json::from_str(op_json).map_err(|e| py_value_error(e.to_string()))
 }
 
@@ -1367,7 +1371,7 @@ mod tests {
         state("buffer", "u8", Some(3), [Some(100), Some(50), Some(3)])
     }
 
-    fn op(v: serde_json::Value) -> crate::ops::TypedOp {
+    fn op(v: serde_json::Value) -> crate::catalog::TypedOp {
         serde_json::from_value(v).unwrap()
     }
 
@@ -1760,7 +1764,7 @@ mod validation_soundness {
 
     /// Ops whose verdicts turn on sizes, beyond each op's one catalogue
     /// sample.
-    fn size_sensitive() -> Vec<crate::ops::TypedOp> {
+    fn size_sensitive() -> Vec<crate::catalog::TypedOp> {
         [
             serde_json::json!({"op": "channel_select", "index": 2}),
             serde_json::json!({"op": "channel_swap", "order": [1, 0]}),
@@ -1779,7 +1783,7 @@ mod validation_soundness {
     #[test]
     fn a_refusal_over_what_the_plan_knows_holds_for_every_row() {
         let mut unsound = Vec::new();
-        for op in crate::ops::TypedOp::samples()
+        for op in crate::catalog::TypedOp::samples()
             .into_iter()
             .chain(size_sensitive())
         {

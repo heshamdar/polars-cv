@@ -8,14 +8,14 @@ use std::sync::{atomic::AtomicUsize, Mutex};
 
 use view_buffer::PlannedDType;
 
+use crate::catalog::TypedOp;
 use crate::formats::source::Source;
-use crate::ops::TypedOp;
 use crate::params::ParamCtx;
 
 use crate::graph::step::GraphStep;
 use smallvec::SmallVec;
 
-use crate::graph::source::dtype_from_polars_leaf;
+use crate::graph::decode::dtype_from_polars_leaf;
 use crate::graph::types::{NodeInput, OutputSpec, RowErrorPolicy, UnifiedGraph};
 use crate::plan::State;
 

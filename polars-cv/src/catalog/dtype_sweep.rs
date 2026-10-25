@@ -19,8 +19,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use view_buffer::{DType, ViewBuffer, ViewExpr};
 
+use crate::catalog::TypedOp;
 use crate::graph::step::GraphStep;
-use crate::ops::TypedOp;
 use crate::params::ParamCtx;
 
 /// The input layouts swept: rank 2, then rank 3 with 1-4 channels, and a

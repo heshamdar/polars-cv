@@ -10,7 +10,7 @@ The facts pinned here, and why each is load-bearing:
 
 - The Python classes and the Rust ``ExtType`` agree on every name and storage
   (``test_python_types_match_the_rust_declaration``). Rust owns the storage
-  layouts (``geometry::schema``, ``output::numpy_output_dtype``); Python restates
+  layouts (``namespaces::schema``, ``output::numpy_output_dtype``); Python restates
   them only so ``import polars_cv`` can register types without loading the
   compiled extension, and this parity check is what keeps that copy honest.
 - An instance of a polars-cv type *always* has canonical storage. A column

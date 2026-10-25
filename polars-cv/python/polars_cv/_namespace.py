@@ -74,7 +74,7 @@ class _GeomNamespace(_PluginNamespace):
 
     Every ``.contour``/``.point``/``.bbox`` method is generated
     (``_ops_generated``) as one :meth:`_call` of its Rust definition
-    (``src/geometry/fns.rs``), with that definition's signature, defaults and
+    (``src/namespaces/fns.rs``), with that definition's signature, defaults and
     docstring.
 
     ``on_null`` is here, not on ``_PluginNamespace``.

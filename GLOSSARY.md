@@ -21,8 +21,8 @@ the other senses, name the type (`ViewDto`, `ExecutionPlan`), not the bare word.
 | **plan** | What the planner knows about a pipeline at every op boundary: domain, dtype and shape (`Plan`, its `PlanState`s, extended by `plan::step`). | How the engine will execute a buffer's ops (that is an `ExecutionPlan`) |
 | **kernel** | The loop that computes an op's output over a buffer, in `view-buffer/src/kernels/<kind>.rs` (an op's `execute` entry in `ops/<family>.rs` calls it). | A convolution kernel's weights, a `FusedKernel` (a lowered chain of scalar ops) or an `ExecutionPlan` step |
 | **domain** | The kind of value at one point of a pipeline: `buffer`, `contour`, `scalar` or `vector` (`Domain`). | A dtype |
-| **sink** | How an output leaves the graph: its format, its planned Polars dtype and its encoding (`Sink` in `formats/sink.rs`; `SinkKind` in `graph/sink_kind.rs`; the dtype and per-row encode in `graph/sink.rs`). | |
-| **source** | How a node's input column becomes its first buffer (`Source` in `formats/source.rs`; the per-row decode in `graph/source.rs`). | |
+| **sink** | How an output leaves the graph: its format, its planned Polars dtype and its encoding (`Sink` in `formats/sink.rs`; `SinkKind` in `graph/sink_kind.rs`; the dtype and per-row encode in `graph/encode.rs`). | |
+| **source** | How a node's input column becomes its first buffer (`Source` in `formats/source.rs`; the per-row decode in `graph/decode.rs`). | |
 
 ## Names that use a word another way
 
@@ -37,9 +37,24 @@ in them.
 | `ExprNode` | `view-buffer/src/expr.rs` | A link of a `ViewExpr` chain, not a graph node. |
 | `ExecutionPlan`, `PlanStep` | `view-buffer/src/execution/plan.rs` | The engine's lowered op sequence for one buffer, after fusion. Not the planner's plan. |
 | `NodeOutput` | `polars-cv/src/graph/node_output.rs` | A graph node's value for one row, in any domain. |
-| `GraphOp` | `polars-cv/src/ops/graph.rs` | The ops that exist only at graph level (they read other nodes or input columns), one family among the steps. |
+| `GraphOp` | `polars-cv/src/catalog/graph.rs` | The ops that exist only at graph level (they read other nodes or input columns), one family among the steps. |
 | `LazyPipelineExpr` | `polars-cv/python/polars_cv/lazy.py` | A Python handle on a graph under construction (a node plus the graph it belongs to). Not a Polars expression until `.sink()`. |
 | VIEW protocol, VIEW wire code | `view-buffer/src/protocol.rs`, `dtype_table!` | The binary blob format (`MAGIC_BYTES = b"VIEW"`) and its dtype codes. A serialized format: its name and codes are frozen. |
+
+## One name per layer on disk
+
+A directory or file name says which layer it is in. Where two layers once
+shared a name, the plugin's side was renamed (#188):
+
+| Was (plugin, `polars-cv/src/`) | Now | The other layer keeps |
+|---|---|---|
+| `ops/` (the typed op catalogue: `TypedOp`, `GraphOp`, `Param`) | `catalog/` | `view-buffer/src/ops/`: the engine op families |
+| `geometry/` (the `.contour`/`.point`/`.bbox` plugin functions) | `namespaces/` | `view-buffer/src/geometry/`: the geometry kernels |
+| `graph/source.rs` (a row's decode) | `graph/decode.rs` | `formats/source.rs`: the `Source` family |
+| `graph/sink.rs` (a row's encode, the output Series) | `graph/encode.rs` | `formats/sink.rs`: the `Sink` family |
+
+`polars_cv/geometry/` (Python) keeps its name: it is the public module
+`polars_cv.geometry`, and its files are `.py`.
 
 ## The engine's scope
 

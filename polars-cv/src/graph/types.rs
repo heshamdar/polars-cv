@@ -314,13 +314,13 @@ pub struct UnifiedGraph {
     #[serde(rename = "version")]
     _version: u32,
     /// Per-row error policy for the whole graph.
-    #[serde(default, deserialize_with = "crate::ops::param::literal_field")]
+    #[serde(default, deserialize_with = "crate::catalog::param::literal_field")]
     pub on_error: RowErrorPolicy,
     /// What a null in a per-row expression parameter means for the affected
     /// rows. Independent of [`on_error`](Self::on_error): under
     /// [`NullParamPolicy::Null`] a null parameter is not an error at all, so it
     /// yields a null result without weakening error reporting for anything else.
-    #[serde(default, deserialize_with = "crate::ops::param::literal_field")]
+    #[serde(default, deserialize_with = "crate::catalog::param::literal_field")]
     pub on_null_param: NullParamPolicy,
     /// Which engine-tier (Tier-2) optimizations to apply when executing buffer-op
     /// chains. Absent (older specs) or partially specified means all enabled, via
@@ -430,13 +430,13 @@ impl UnifiedGraph {
     pub(crate) fn column_facts_pending(
         &self,
         node_id: &str,
-    ) -> Option<crate::graph::sink::ColumnFacts> {
+    ) -> Option<crate::graph::encode::ColumnFacts> {
         match &self.nodes.get(node_id)?.input {
             NodeInput::Node(up) => self.column_facts_pending(up),
             NodeInput::Decode { source, .. } => {
                 source
                     .resolves_from_column()
-                    .then(|| crate::graph::sink::ColumnFacts::Pending {
+                    .then(|| crate::graph::encode::ColumnFacts::Pending {
                         sizes: source.column_may_fix_sizes(),
                     })
             }
@@ -531,7 +531,7 @@ pub struct GraphNode {
     pub input: NodeInput,
     /// Operations to apply.
     #[serde(default)]
-    pub ops: Vec<crate::ops::TypedOp>,
+    pub ops: Vec<crate::catalog::TypedOp>,
 }
 
 /// A node's input.

@@ -3,7 +3,7 @@
 The `.contour`, `.point` and `.bbox` namespaces bypass the `vb_graph` graph
 engine, so they carry per-row parameters as extra plugin *input series* rather
 than as graph op fields (see `_GeomNamespace._call` in `_namespace.py` and
-`GeomParams` in `src/geometry/params.rs`).
+`GeomParams` in `src/namespaces/params.rs`).
 
 These operations used to raise `TypeError` on a `pl.Expr` — a deliberate guard
 added after a bug where expression arguments were silently *dropped*, i.e.

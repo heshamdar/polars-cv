@@ -27,11 +27,11 @@ use pyo3_polars::derive::polars_expr;
 use view_buffer::geometry::contour::{Contour, Outline, Point};
 use view_buffer::geometry::{measures, predicates};
 
-use crate::geometry::arity::{Arity, ReadContour};
-use crate::geometry::columns::{BBoxColumn, ContourColumn, PointColumn};
-use crate::geometry::fns::PointFn;
-use crate::geometry::params::{parsed_as_another, GeomKwargs, GeomParams};
-use crate::ops::ColumnRef;
+use crate::catalog::ColumnRef;
+use crate::namespaces::arity::{Arity, ReadContour};
+use crate::namespaces::columns::{BBoxColumn, ContourColumn, PointColumn};
+use crate::namespaces::fns::PointFn;
+use crate::namespaces::params::{parsed_as_another, GeomKwargs, GeomParams};
 use view_buffer::mode::Wire;
 
 /// A per-point result of a point function, and the column of them.
@@ -59,13 +59,13 @@ impl PointOutput for bool {
     }
 }
 
-/// A point, as the `{x, y}` struct of [`point_struct_dtype`](crate::geometry::schema::point_struct_dtype).
+/// A point, as the `{x, y}` struct of [`point_struct_dtype`](crate::namespaces::schema::point_struct_dtype).
 impl PointOutput for Point {
     fn dtype() -> DataType {
-        crate::geometry::schema::point_struct_dtype()
+        crate::namespaces::schema::point_struct_dtype()
     }
     fn series(name: PlSmallStr, values: Vec<Option<Self>>) -> PolarsResult<Series> {
-        let [x, y] = crate::geometry::schema::POINT_FIELD_NAMES;
+        let [x, y] = crate::namespaces::schema::POINT_FIELD_NAMES;
         let xs = Float64Chunked::from_iter_options(x.into(), values.iter().map(|p| p.map(|p| p.x)));
         let ys = Float64Chunked::from_iter_options(y.into(), values.iter().map(|p| p.map(|p| p.y)));
         let mut out = StructChunked::from_series(

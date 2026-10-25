@@ -9,7 +9,7 @@
 //! sample. A function that is also a pipeline op (`.contour.area` is
 //! `contour_area`) is not redeclared here: it *is* that [`GeometryOp`]
 //! variant ([`OP_ACCESSORS`]). Each plugin function parses its own definition
-//! strictly by name ([`GeomParams::parse`](crate::geometry::params::GeomParams::parse)),
+//! strictly by name ([`GeomParams::parse`](crate::namespaces::params::GeomParams::parse)),
 //! and the Python accessor methods are generated from [`geom_catalog`].
 
 use serde::Serialize;
@@ -611,7 +611,7 @@ pub enum BBoxFn<M: Mode = Exec> {
 // parameter is always used.
 const _: fn(&ContourFn<Wire>, &PointFn<Wire>, &BBoxFn<Wire>) = |_, _, _| ();
 
-pub use crate::geometry::contour::OP_ACCESSORS;
+pub use crate::namespaces::contour::OP_ACCESSORS;
 
 /// One accessor method: its namespace and its function's description.
 #[derive(Debug, Serialize)]

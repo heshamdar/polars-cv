@@ -1,7 +1,7 @@
 //! The per-call view of expression-parameter columns.
 //!
 //! A per-row parameter arrives as `{"$slot": n}` (a typed
-//! [`Param<T>`](crate::ops::Param)): the absolute index of its column among the
+//! [`Param<T>`](crate::catalog::Param)): the absolute index of its column among the
 //! plugin's input series, assigned by the Python `SlotTable`. Per-row
 //! resolution is a direct indexed read through a typed accessor ([`ParamCol`]);
 //! no names are involved. [`NullParamPolicy`] says what a null in such a column
@@ -257,7 +257,7 @@ fn float_to_i64(v: f64) -> Option<i64> {
 /// Per-call parameter context: typed accessors over the plugin's input series.
 ///
 /// Indexed by the absolute input position a `{"$slot": n}` names (see
-/// [`Param`](crate::ops::Param)). Built once per plugin call (per morsel).
+/// [`Param`](crate::catalog::Param)). Built once per plugin call (per morsel).
 #[derive(Default)]
 pub struct ParamCtx<'a> {
     cols: Vec<ParamCol<'a>>,

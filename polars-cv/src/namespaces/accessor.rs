@@ -9,7 +9,7 @@
 //! presents the step's output, its [`Form`].
 //!
 //! [`op_accessors!`](crate::op_accessors) declares them, and in the same
-//! statement [`OP_ACCESSORS`](crate::geometry::contour::OP_ACCESSORS), the table the
+//! statement [`OP_ACCESSORS`](crate::namespaces::contour::OP_ACCESSORS), the table the
 //! geometry catalogue and the build check read.
 
 use polars::prelude::*;
@@ -20,11 +20,11 @@ use view_buffer::geometry::contour::Outline;
 use view_buffer::mode::Wire;
 use view_buffer::GeometryOp;
 
-use crate::geometry::arity::{Arity, ContourOutput};
-use crate::geometry::columns::ContourColumn;
-use crate::geometry::exec::execute_geometry_op;
-use crate::geometry::params::{GeomKwargs, GeomParams};
-use crate::geometry::schema::{
+use crate::namespaces::arity::{Arity, ContourOutput};
+use crate::namespaces::columns::ContourColumn;
+use crate::namespaces::exec::execute_geometry_op;
+use crate::namespaces::params::{GeomKwargs, GeomParams};
+use crate::namespaces::schema::{
     bbox_anyvalue, bbox_struct_dtype, contour_struct_dtype, point_anyvalue, point_struct_dtype,
 };
 use view_buffer::geometry::contour::BoundingBox;
@@ -93,9 +93,9 @@ impl Form {
 
 /// The form of the op-backed accessor `name`, from [`OP_ACCESSORS`].
 ///
-/// [`OP_ACCESSORS`]: crate::geometry::contour::OP_ACCESSORS
+/// [`OP_ACCESSORS`]: crate::namespaces::contour::OP_ACCESSORS
 fn form_of(name: &str) -> PolarsResult<Form> {
-    crate::geometry::contour::OP_ACCESSORS
+    crate::namespaces::contour::OP_ACCESSORS
         .iter()
         .find(|(op, _, _)| *op == name)
         .map(|(_, _, form)| *form)
@@ -204,7 +204,7 @@ fn produced(name: &str, output: &NodeOutput) -> PolarsError {
 }
 
 /// Declare the op-backed `.contour` accessors and, in the same statement,
-/// [`OP_ACCESSORS`](crate::geometry::contour::OP_ACCESSORS): each line is the plugin
+/// [`OP_ACCESSORS`](crate::namespaces::contour::OP_ACCESSORS): each line is the plugin
 /// function (named for its op), its output-type function, its Python method
 /// and its [`Form`]. A function and its table entry cannot be written apart.
 #[macro_export]
@@ -213,20 +213,20 @@ macro_rules! op_accessors {
         /// The `.contour` accessor methods that are pipeline ops:
         /// `(op, method, form)`. Each is that [`GeometryOp`] variant — its
         /// fields, defaults and doc — run as the pipeline's step
-        /// (`crate::geometry::accessor`).
-        pub const OP_ACCESSORS: &[(&str, &str, $crate::geometry::accessor::Form)] =
+        /// (`crate::namespaces::accessor`).
+        pub const OP_ACCESSORS: &[(&str, &str, $crate::namespaces::accessor::Form)] =
             &[$((stringify!($name), $method, $form)),*];
         $(
             fn $out_ty(input_fields: &[Field]) -> PolarsResult<Field> {
-                $crate::geometry::accessor::field(input_fields, stringify!($name))
+                $crate::namespaces::accessor::field(input_fields, stringify!($name))
             }
             $(#[$meta])*
             #[polars_expr(output_type_func=$out_ty)]
             fn $name(
                 inputs: &[Series],
-                kwargs: $crate::geometry::params::GeomKwargs,
+                kwargs: $crate::namespaces::params::GeomKwargs,
             ) -> PolarsResult<Series> {
-                $crate::geometry::accessor::run(inputs, kwargs, stringify!($name))
+                $crate::namespaces::accessor::run(inputs, kwargs, stringify!($name))
             }
         )*
     };

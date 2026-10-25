@@ -87,7 +87,7 @@ pub(crate) fn pass_catalog() -> String {
 
 /// One node's ops and what the planner knows about them.
 pub(crate) struct Node<'a> {
-    pub ops: &'a [crate::ops::TypedOp],
+    pub ops: &'a [crate::catalog::TypedOp],
     /// `ops.len() + 1` states: entering each op, then the final one.
     pub states: &'a [State],
 }
@@ -154,7 +154,7 @@ fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
 /// tail of the order built so far.
 fn hoist_spatial_windows(node: &Node<'_>) -> Result<Vec<usize>, String> {
     let steps = node.ops;
-    let crossable = |step: &crate::ops::TypedOp| {
+    let crossable = |step: &crate::catalog::TypedOp| {
         !step.reads_other_nodes()
             && !step.reads_shape()
             && step.spatial_dependency() == SpatialDependency::Pointwise
@@ -187,14 +187,14 @@ mod tests {
         )
     }
 
-    fn ops(values: &[serde_json::Value]) -> Vec<crate::ops::TypedOp> {
+    fn ops(values: &[serde_json::Value]) -> Vec<crate::catalog::TypedOp> {
         values
             .iter()
             .map(|v| serde_json::from_value(v.clone()).unwrap())
             .collect()
     }
 
-    fn node<'a>(ops: &'a [crate::ops::TypedOp], states: &'a [State]) -> Node<'a> {
+    fn node<'a>(ops: &'a [crate::catalog::TypedOp], states: &'a [State]) -> Node<'a> {
         Node { ops, states }
     }
 
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn representative_ops_have_their_true_spatial_rule() {
         let rule = |op: serde_json::Value| -> String {
-            match serde_json::from_value::<crate::ops::TypedOp>(op)
+            match serde_json::from_value::<crate::catalog::TypedOp>(op)
                 .unwrap()
                 .spatial_dependency()
             {

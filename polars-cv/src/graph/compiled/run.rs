@@ -18,10 +18,10 @@ use crate::params::ParamCtx;
 use crate::graph::row::{run_step, RowOutputs};
 use crate::graph::step::GraphStep;
 
-use crate::graph::sink::{
+use crate::graph::decode::{decode_source_row, RowFetch};
+use crate::graph::encode::{
     build_series_from_spec, encode_node_output, null_row_result_for_spec, RowParts,
 };
-use crate::graph::source::{decode_source_row, RowFetch};
 use crate::graph::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult};
 
 use super::compile::{
@@ -82,7 +82,7 @@ impl CompiledGraph {
             }) = np.input.decode()
             {
                 if inputs[*col].dtype() != &DataType::Null {
-                    crate::geometry::columns::ContourColumn::new(&inputs[*col]).check_layout()?;
+                    crate::namespaces::columns::ContourColumn::new(&inputs[*col]).check_layout()?;
                 }
             }
         }
