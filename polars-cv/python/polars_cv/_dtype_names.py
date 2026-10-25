@@ -99,3 +99,12 @@ NUMPY_TO_SHORT: dict[str, str] = {
     "uint64": "u64",
     "uint8": "u8",
 }
+
+#: Cast-only name -> engine short name. A Polars type that is not a buffer
+#: element type but reaches one through a cast (``Boolean`` -> ``u8``: the
+#: source decoder casts, so a mask becomes 0/1). Declared per row in
+#: `dtype_table!`, never a spelling of the dtype itself, so no key is also
+#: a key of :data:`NUMPY_TO_SHORT`. ``polars_cv.dtype_name_for`` reads it.
+CAST_ONLY_TO_SHORT: dict[str, str] = {
+    "boolean": "u8",
+}

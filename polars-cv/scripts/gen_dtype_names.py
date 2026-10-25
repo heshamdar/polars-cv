@@ -45,8 +45,8 @@ _OUT_PATH = (
 )
 
 
-def dtype_table_rows() -> list[tuple[str, str, int, str]]:
-    """Parse ``dtype_table!``'s rows: ``(variant, short, wire_code, numpy)``.
+def _parse_table() -> list[tuple[str, str, int, str, list[str]]]:
+    """Parse ``dtype_table!``'s rows: ``(variant, short, wire_code, numpy, cast_only)``.
 
     Read from source rather than the FFI because the wire codes are not
     surfaced across it — the enum catalogue carries names only. Source-scanning
@@ -54,9 +54,6 @@ def dtype_table_rows() -> list[tuple[str, str, int, str]]:
     answer, and the parse asserts it found a plausible table rather than
     silently matching nothing.
 
-    Shared with ``tests/test_sanitation.py``, which needs the same rows for its
-    wire-code and dtype-dispatch guards: a second parser of one table is the
-    shape this whole file exists to remove.
     """
     src = _DTYPE_RS.read_text()
     assert "dtype_table!(" in src, "dtype_table! invocation not found — parse is broken"
@@ -65,7 +62,9 @@ def dtype_table_rows() -> list[tuple[str, str, int, str]]:
     assert end, "could not find the end of the dtype_table! invocation"
     body = body[: end.start()]
     rows = re.findall(
-        r'\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*\)', body
+        r'\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*'
+        r",\s*\[([^\]]*)\]\s*\)",
+        body,
     )
     # Cross-checked against an independent count of the invocation's rows, so a
     # mis-parse that swallows the rest of the file fails, while legitimately
@@ -76,7 +75,29 @@ def dtype_table_rows() -> list[tuple[str, str, int, str]]:
         f"{len(row_lines)} lines starting a row — the scan is out of date"
     )
     assert rows, "dtype_table! parsed to zero rows"
-    return [(v, s, int(c), n) for v, s, c, n in rows]
+    return [
+        (v, s, int(c), n, re.findall(r'"([^"]+)"', cast)) for v, s, c, n, cast in rows
+    ]
+
+
+def dtype_table_rows() -> list[tuple[str, str, int, str]]:
+    """``dtype_table!``'s rows: ``(variant, short, wire_code, numpy)``.
+
+    Shared with ``tests/test_sanitation.py``, which needs the same rows for its
+    wire-code and dtype-dispatch guards: a second parser of one table is the
+    shape this whole file exists to remove.
+    """
+    return [(v, s, c, n) for v, s, c, n, _ in _parse_table()]
+
+
+def dtype_cast_only() -> dict[str, str]:
+    """The cast-only names: ``{source name: short name}`` (``"boolean"`` -> ``"u8"``)."""
+    table = _parse_table()
+    out = {cast: s for _, s, _, _, casts in table for cast in casts}
+    spelled = {x for _, s, _, n, _ in table for x in (s, n)}
+    clash = sorted(set(out) & spelled)
+    assert not clash, f"cast-only names that are also dtype spellings: {clash}"
+    return out
 
 
 _HEADER = '''\
@@ -161,6 +182,17 @@ def generate() -> str:
     lines.append("NUMPY_TO_SHORT: dict[str, str] = {\n")
     for _, short, _, numpy in sorted(rows, key=lambda row: row[3]):
         lines.append(f"    {numpy!r}: {short!r},\n")
+    lines.append("}\n\n")
+    lines.append(
+        "#: Cast-only name -> engine short name. A Polars type that is not a buffer\n"
+        "#: element type but reaches one through a cast (``Boolean`` -> ``u8``: the\n"
+        "#: source decoder casts, so a mask becomes 0/1). Declared per row in\n"
+        "#: `dtype_table!`, never a spelling of the dtype itself, so no key is also\n"
+        "#: a key of :data:`NUMPY_TO_SHORT`. ``polars_cv.dtype_name_for`` reads it.\n"
+    )
+    lines.append("CAST_ONLY_TO_SHORT: dict[str, str] = {\n")
+    for cast, short in sorted(dtype_cast_only().items()):
+        lines.append(f"    {cast!r}: {short!r},\n")
     lines.append("}\n")
     return ruff_format("".join(lines), filename="_dtype_names.py")
 

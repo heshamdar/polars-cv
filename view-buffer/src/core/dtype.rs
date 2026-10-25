@@ -39,6 +39,11 @@ pub enum DType {
 /// exhaustiveness guard `named_variants!` uses, extended to carry the wire
 /// code and numpy name alongside the short name.
 ///
+/// Each row ends in the list of cast-only source names that map onto it (empty
+/// for most). That is the home for a type like Polars `Boolean`, which is not a
+/// buffer element type but is cast to one; Python reads it from the generated
+/// `_dtype_names.py` rather than keeping a literal of its own.
+///
 /// Wire codes are **not** the declaration order: they are fixed by the VIEW
 /// binary format and must never be renumbered (`F32`/`F64` are 7/8, ahead of
 /// `U64`/`I64` at 9/10). They are listed per row for that reason. Row order
@@ -47,7 +52,7 @@ pub enum DType {
 /// {...}` errors, so rows keep their original order rather than being
 /// reshuffled into wire-code order for cosmetics.
 macro_rules! dtype_table {
-    ($(($variant:ident, $short:literal, $code:literal, $numpy:literal)),+ $(,)?) => {
+    ($(($variant:ident, $short:literal, $code:literal, $numpy:literal, [$($cast:literal),* $(,)?])),+ $(,)?) => {
         crate::naming::named_variants!(DType: "Supported data types." { $($short => $variant),+ });
 
         impl DType {
@@ -71,6 +76,14 @@ macro_rules! dtype_table {
                 match self { $(DType::$variant => $numpy),+ }
             }
 
+            /// Every cast-only source name: a name for a type that is *not* a
+            /// buffer element type but reaches a buffer of this dtype through a
+            /// cast (`"boolean"` -> `U8`: a mask is cast to 0/1). Listed per row
+            /// in `dtype_table!`; never a spelling of the dtype itself, so none
+            /// may equal a short or numpy name.
+            pub const CAST_ONLY: &'static [(&'static str, DType)] =
+                &[$($(($cast, DType::$variant),)*)+];
+
             /// Parse a canonical short name back into a dtype.
             pub fn from_short_name(s: &str) -> Option<Self> {
                 crate::naming::lookup(Self::NAMED, s)
@@ -90,16 +103,16 @@ macro_rules! dtype_table {
 }
 
 dtype_table!(
-    (U8, "u8", 1, "uint8"),
-    (I8, "i8", 2, "int8"),
-    (U16, "u16", 3, "uint16"),
-    (I16, "i16", 4, "int16"),
-    (U32, "u32", 5, "uint32"),
-    (I32, "i32", 6, "int32"),
-    (U64, "u64", 9, "uint64"),
-    (I64, "i64", 10, "int64"),
-    (F32, "f32", 7, "float32"),
-    (F64, "f64", 8, "float64"),
+    (U8, "u8", 1, "uint8", ["boolean"]),
+    (I8, "i8", 2, "int8", []),
+    (U16, "u16", 3, "uint16", []),
+    (I16, "i16", 4, "int16", []),
+    (U32, "u32", 5, "uint32", []),
+    (I32, "i32", 6, "int32", []),
+    (U64, "u64", 9, "uint64", []),
+    (I64, "i64", 10, "int64", []),
+    (F32, "f32", 7, "float32", []),
+    (F64, "f64", 8, "float64", []),
 );
 
 /// Evaluate `$body` with `$T` bound to the Rust element type of `$dtype`.
