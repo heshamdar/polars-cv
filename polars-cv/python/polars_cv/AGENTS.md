@@ -23,6 +23,7 @@ The **user-facing Python layer**. Responsible for:
 | `__init__.py` | Public API surface: **re-exports only**, plus `build_info`, `__version__` and the row-parallelism switch. An implementation goes in a named module and is re-exported here; no module in the package may import `polars_cv` itself (`from polars_cv import X`) — import the submodule (`from polars_cv._x import y`). `tests/test_import_layering.py` rejects a cycle or a root import |
 | `numpy_io.py` | `numpy_from_struct`, `numpy_from_column` (zero-copy column reader over `_lib.binary_rows`) — the one way a sink struct becomes an array (`_view`) |
 | `masks.py` | `mask_iou`, `mask_dice`, `region_stats` |
+| `_build_info.py` | The source hash `build_info()` compares with the extension's: `source_hash_from_tree()`, found by searching upward for the workspace root (`WORKSPACE_MARKERS`, shared with the tests' `CHECKOUT_MARKERS`). Its Rust twin is `polars-cv/source_hash.rs` (included by `build.rs` and by a unit test); both are held to the digest of `tests/fixtures/source_hash/` — `test_source_hash_fixture.py` and `src/source_hash_fixture.rs`. Changing the hashed inputs: edit both lists, then `DIGEST` |
 | `hashing.py` | `hamming_distance`, `hash_similarity` |
 | `pipeline.py` | `Pipeline` — inherits the generated ops and `source()`; hand-written sugar declares the ops it lowers to (`_sugar`); the plan is Rust's |
 | `lazy.py` | `LazyPipelineExpr` — composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, the multi-operand ops; inherits the generated chainable methods |

@@ -22,6 +22,13 @@ mod plan;
 mod read_bytes;
 mod row_ref;
 mod row_split;
+// The build script's source hash, included as the same file `build.rs` runs so
+// its unit test checks that function, not a copy.
+#[cfg(test)]
+#[path = "../source_hash.rs"]
+mod source_hash;
+#[cfg(test)]
+mod source_hash_fixture;
 #[cfg(test)]
 mod test_alloc;
 

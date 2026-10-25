@@ -35,6 +35,7 @@ from typing import Iterable, TypeVar
 import pytest
 
 import polars_cv
+from polars_cv._build_info import WORKSPACE_MARKERS
 
 T = TypeVar("T")
 
@@ -46,8 +47,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: compute it separately.
 CHECKOUT_MARKERS: tuple[str, ...] = (
     "polars-cv/pyproject.toml",
-    "polars-cv/Cargo.toml",
-    "view-buffer/Cargo.toml",
+    *WORKSPACE_MARKERS,
 )
 
 #: Directories that hold build output or vendored code rather than sources. A

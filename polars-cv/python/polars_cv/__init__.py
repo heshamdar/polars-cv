@@ -14,8 +14,7 @@ Example:
 
 from __future__ import annotations
 
-from pathlib import Path
-
+from ._build_info import source_hash_from_tree
 from ._cloud import CloudCredentialError, check_cloud_access
 from ._ops_generated import This, this
 from ._optimize import OptFlags
@@ -95,49 +94,6 @@ from .pipeline import Pipeline
 register_extension_types()
 
 __version__ = "0.41.0"
-
-
-def _source_hash_from_tree() -> str | None:
-    """Recompute the extension's source hash from the working tree.
-
-    Mirrors ``polars-cv/build.rs`` exactly — same inputs, same order, same
-    FNV-1a — so the value can be compared against ``_lib.__source_hash__`` to
-    tell whether the compiled extension was built from the sources now on disk.
-
-    Returns ``None`` when the Rust sources are not present (an installed wheel
-    rather than a checkout), where staleness is not a question that arises.
-    """
-    root = Path(__file__).resolve().parents[3]
-    if not (root / "polars-cv" / "Cargo.toml").is_file():
-        return None  # pragma: no cover  # installed wheel, not a source checkout
-
-    contents: dict[str, bytes] = {}
-
-    def _push(path: Path, key: str) -> None:
-        try:
-            contents[key] = path.read_bytes()
-        except OSError:  # pragma: no cover  # unreadable source file; defensive
-            pass
-
-    for crate in ("polars-cv", "polars-cv-macros", "view-buffer"):
-        crate_root = root / crate
-        for rs in sorted((crate_root / "src").rglob("*.rs")):
-            _push(rs, f"{crate}/{rs.relative_to(crate_root).as_posix()}")
-        _push(crate_root / "Cargo.toml", f"{crate}/Cargo.toml")
-    # Must match `build.rs`'s input set exactly, or the guard fires on a
-    # correctly-built extension and gets deleted for crying wolf. The workspace
-    # manifest and the toolchain pin change the artifact without touching a
-    # `.rs` file; `build.rs` decides what the hash covers at all.
-    for name in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml"):
-        _push(root / name, name)
-    _push(root / "polars-cv" / "build.rs", "polars-cv/build.rs")
-
-    digest = 0xCBF29CE484222325  # FNV-1a offset basis
-    for key in sorted(contents):
-        for byte in key.encode() + contents[key]:
-            digest ^= byte
-            digest = (digest * 0x00000100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return f"{digest:016x}"
 
 
 def set_row_parallelism(enabled: bool) -> bool:
@@ -231,7 +187,7 @@ def build_info() -> dict[str, str | None]:
         "plugin_version": plugin_version,
         "dist_version": dist_version,
         "plugin_source_hash": plugin_source_hash,
-        "source_hash": _source_hash_from_tree(),
+        "source_hash": source_hash_from_tree(),
     }
 
 

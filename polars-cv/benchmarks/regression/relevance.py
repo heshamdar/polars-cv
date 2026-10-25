@@ -123,6 +123,7 @@ RULES: tuple[tuple[str, str], ...] = (
     # The global allocator: every allocation any case makes (CR-60).
     ("polars-cv/src/allocator.rs", _ALL),
     ("polars-cv/src/test_alloc.rs", _NONE),  # test-only allocator
+    ("polars-cv/src/source_hash_fixture.rs", _NONE),  # test-only: build-hash fixture
     # --- the Python builder: plan, serialize and dispatch run on every call ---
     ("polars-cv/python/polars_cv/*.py", _OPS),
     ("polars-cv/python/polars_cv/display.py", _NONE),
