@@ -1129,7 +1129,11 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
         | ImageOpKind::ResizeMax { .. }
         | ImageOpKind::ResizeMin { .. }) => {
             let shape = work_buf.shape();
-            let [h, w] = kind.shape().concrete(&[&shape[..2]])[..] else {
+            let [h, w] = kind
+                .shape()
+                .concrete(&[&shape[..2]])
+                .expect("a resize op's output shape over a known H/W is known")[..]
+            else {
                 unreachable!("an H/W shape over a rank-2 input is rank 2")
             };
             let filter = match kind {

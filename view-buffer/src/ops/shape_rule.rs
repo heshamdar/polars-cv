@@ -631,22 +631,23 @@ impl OpShape {
     }
 
     /// The output shape for known input shapes: [`dims`](Self::dims) on known
-    /// sizes, which yields known sizes. Empty when not knowable before
-    /// execution (a data-dependent length).
-    pub fn concrete(&self, inputs: &[&[usize]]) -> Vec<usize> {
+    /// sizes, which yields known sizes. `None` when not knowable before
+    /// execution (a data-dependent length): distinct from `Some(vec![])`, the
+    /// rank-0 shape, so a caller cannot take "unknown" for "scalar".
+    pub fn concrete(&self, inputs: &[&[usize]]) -> Option<Vec<usize>> {
         let known: Vec<Vec<Dim>> = inputs
             .iter()
             .map(|s| s.iter().map(|&n| Dim::Known(n)).collect())
             .collect();
         let refs: Vec<&[Dim]> = known.iter().map(Vec::as_slice).collect();
-        self.dims(&refs)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|d| {
-                d.known()
-                    .expect("an op's shape over known sizes and known parameters is known")
-            })
-            .collect()
+        self.dims(&refs).map(|dims| {
+            dims.into_iter()
+                .map(|d| {
+                    d.known()
+                        .expect("an op's shape over known sizes and known parameters is known")
+                })
+                .collect()
+        })
     }
 
     /// Whether the op provably hands every element through where it was —
@@ -686,7 +687,7 @@ mod derived_size_tests {
     use super::{OpShape, Sym};
 
     fn hw(shape: OpShape, h: usize, w: usize) -> (usize, usize) {
-        let out = shape.concrete(&[&[h, w, 1]]);
+        let out = shape.concrete(&[&[h, w, 1]]).unwrap();
         (out[0], out[1])
     }
 
@@ -837,7 +838,8 @@ mod symbolic_tests {
     #[test]
     fn a_data_dependent_shape_is_not_inferable() {
         assert_eq!(OpShape::Dynamic.dims(&[&IMAGE]), None);
-        assert!(OpShape::Dynamic.concrete(&[&[4, 4]]).is_empty());
+        // Unknown is `None`, never the rank-0 `Some(vec![])`.
+        assert_eq!(OpShape::Dynamic.concrete(&[&[4, 4]]), None);
     }
 
     #[test]
