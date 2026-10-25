@@ -386,7 +386,8 @@ max 3); the installed version decides which bound applies.
   are not comparable with imagehash's.
 - **w2 for polars-cv uses a full decode.** Pillow's `thumbnail()` keeps a full
   JPEG decode at these sizes (`reducing_gap=2`), so polars-cv runs without
-  `.thumbnail()`, which would decode at half scale and do less work. That
+  `decode_max_size=` (then spelled `.thumbnail()`), which would decode at half
+  scale and do less work. That
   makes polars-cv's w2 numbers conservative.
 - **A release, not the checkout.** These numbers measure 0.38.0 (see the
   top of this page). A change on `main` after it is not measured until it is

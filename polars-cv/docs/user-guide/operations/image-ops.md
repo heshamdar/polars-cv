@@ -686,23 +686,26 @@ Pipeline().source("image_bytes").resize_min(min_size=128)
 ```
 
 Every resize variant accepts Polars expressions for per-row dynamic sizes, and
-for the `filter` choice. (`thumbnail`, below, is a decode-time assertion rather
-than a resize — its `max_size` is literal-only.)
+for the `filter` choice. (A scaled decode, below, is a decode-time assertion
+rather than a resize — its `decode_max_size` is literal-only.)
 
-## Thumbnail
+## Scaled decode
 
-Decode only a downscaled *thumbnail* of an image source. This is the explicit,
-chainable form of `source(..., decode_max_size=...)`: it asserts the pipeline needs
-at most `max_size` pixels on the decoded long side, so JPEG decoding uses IDCT
-scaling (1/8, 1/4, 1/2) to skip work — a large CPU and memory win. Non-JPEG formats
-(PNG, …) ignore the assertion and decode at full size.
+Decode only a downscaled version of an image source with
+`source(..., decode_max_size=N)`. It asserts the pipeline needs at most `N`
+pixels on the decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4,
+1/2) to skip work — a large CPU and memory win. The decoded long side never drops
+below `min(N, original)`, so a downstream resize to `N` never upscales. Non-JPEG
+formats (PNG, …) ignore the assertion and decode at full size.
 
 ```python
 # Cheap decode for a curation pass
-Pipeline().source("file_path", allowed_roots=["/srv/images"]).thumbnail(256).perceptual_hash()
+Pipeline().source(
+    "file_path", decode_max_size=256, allowed_roots=["/srv/images"]
+).perceptual_hash()
 ```
 
-Must be called right after `source(...)` on an `image_bytes`/`file_path` source. A
+It applies to the image sources (`image_bytes`, `file_path`, and `auto`). A
 scaled decode followed by a resize is **not** bit-identical to a full decode then
 the same resize (different resampling path), so it is an explicit opt-in. See
 [Streaming & Scaling](../concepts/streaming.md#cheaper-decoding-for-curation-passes)

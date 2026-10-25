@@ -64,9 +64,8 @@ pipe = Pipeline().source(
 )
 ```
 
-The chainable [`thumbnail(max_size)`](../operations/image-ops.md#thumbnail) method
-is the explicit equivalent. Because a scaled decode + resize is not bit-identical
-to a full decode + the same resize, this is an opt-in.
+Because a scaled decode + resize is not bit-identical to a full decode + the same
+resize, this is an opt-in (see [Scaled decode](../operations/image-ops.md#scaled-decode)).
 
 ### Error Handling
 

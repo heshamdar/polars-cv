@@ -18,6 +18,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
+from tests._plan_view import source_of
 from tests.conftest import plugin_required
 
 
@@ -75,6 +76,11 @@ class TestDecodeMaxSizeValidation:
         pipe = Pipeline().source("image_bytes", decode_max_size=256)
         spec = json.loads(pipe._to_json())
         assert spec["source"]["decode_max_size"] == 256
+
+    def test_accepted_by_an_auto_source(self) -> None:
+        """`auto` may resolve to an image source, so the field applies there."""
+        pipe = Pipeline().source("auto", decode_max_size=64)
+        assert source_of(pipe).decode_max_size == 64
 
 
 @plugin_required

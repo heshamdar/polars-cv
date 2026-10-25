@@ -198,8 +198,8 @@ unstable.
 When scaling over large image sets, you often only need a cheap signal (a
 perceptual hash, a mean, a quality score) to *filter* before doing full-resolution
 work. Decode a downscaled thumbnail first with
-[`thumbnail(max_size)`](../operations/image-ops.md#thumbnail) (JPEG IDCT-scaled
-decode), compute the signal, filter, then full-decode only the survivors in a
+[`source(..., decode_max_size=N)`](../operations/image-ops.md#scaled-decode) (JPEG
+IDCT-scaled decode), compute the signal, filter, then full-decode only the survivors in a
 second pass.
 
 When the filter only needs image *dimensions*, you can skip decoding on the

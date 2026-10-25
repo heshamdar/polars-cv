@@ -379,8 +379,8 @@ against that definition (`Plan.with_source`, and `check_graph` for the whole gra
 `.sink()`) — the deserializer the graph itself uses — so an unknown, misspelled or inapplicable keyword is refused while the
 pipeline is built, naming the formats it does apply to. `source()` sends
 exactly the keywords the caller passed (read from its own `locals()`; every
-keyword defaults to `None`, so passed means not `None`), and
-`thumbnail()` validates the spec it writes the same way. Do not add a per-parameter check beside it — that is what
+keyword defaults to `None`, so passed means not `None`), and it is the only
+builder that writes a source spec. Do not add a per-parameter check beside it — that is what
 produced one raise, one warning and five silent drops on the source side, and an
 open keyword surface on the sink side.
 
