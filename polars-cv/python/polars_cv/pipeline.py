@@ -421,67 +421,6 @@ class Pipeline(_OpsMixin):
         new._plan = new._plan.with_source(json.dumps(source))
         return new
 
-    def thumbnail(self, max_size: int) -> "Pipeline":
-        """
-        Decode only a downscaled *thumbnail* of an image source.
-
-        Explicit, chainable form of ``source(..., decode_max_size=...)``: it
-        asserts the pipeline needs at most ``max_size`` pixels on the decoded
-        image's long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or 1/2)
-        to skip work — a large CPU and memory win. The decoded long side never
-        drops below ``min(max_size, original)``, so a downstream resize down to
-        ``max_size`` never upscales. Non-JPEG formats (PNG, …) ignore the
-        assertion and decode at full size.
-
-        This is the cheap front of a *decode-aware curation* pass: decode a
-        thumbnail, compute a cheap signal (perceptual hash, mean, blur/quality
-        score), filter on it, and only full-decode the survivors in a second
-        pass. A scaled decode followed by a resize is not bit-identical to a full
-        decode then the same resize (different resampling path) — hence the
-        explicit opt-in.
-
-        Must be called after ``source(...)`` on an ``image_bytes``/``file_path``
-        source. It appends no op: it sets the source's ``decode_max_size``.
-
-        Args:
-            max_size: Maximum pixels on the decoded long side. Positive int.
-
-        Returns:
-            A new Pipeline whose source carries the decode-scale assertion.
-
-        Raises:
-            ValueError: If there is no source, the source is not an image
-                source, or ``max_size`` is not a positive int.
-
-        Example:
-            ```python
-            >>> # Cheap perceptual-hash over thumbnails for dedup/curation
-            >>> pipe = (
-            ...     Pipeline().source("image_bytes").thumbnail(64).perceptual_hash()
-            ... )
-            ```
-        """
-
-        source_json = self._plan.source_json()
-        if source_json is None:
-            msg = "thumbnail() requires a source; call .source(...) first"
-            raise ValueError(msg)
-        if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
-            msg = f"max_size must be a positive int, got {max_size!r}"
-            raise ValueError(msg)
-
-        # `thumbnail()` writes `decode_max_size`, so it applies exactly where
-        # that field does: the source format's own definition decides, as it
-        # does for `source(decode_max_size=)`.
-        source = {**json.loads(source_json), "decode_max_size": max_size}
-        new = self._clone()
-        try:
-            new._plan = new._plan.with_source(json.dumps(source))
-        except ValueError as e:
-            msg = f"thumbnail() only applies where decode_max_size does: {e}"
-            raise ValueError(msg) from None
-        return new
-
     # --- Shape Assertions (optional, helps planner) ---
 
     @_sugar("assert_shape")

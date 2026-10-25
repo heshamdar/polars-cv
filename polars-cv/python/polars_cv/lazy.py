@@ -739,14 +739,11 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 # takes another node as an operand) is not generated.
 
 #: ``Pipeline`` methods that are intentionally NOT chainable lazy operations:
-#: ``source`` starts a chain rather than continuing one, ``thumbnail`` is a
-#: source-modifier that requires an existing image source (so it only applies
-#: directly after ``source``, never on a sourceless lazy continuation), and the
-#: rest are builder/planner introspection helpers.
+#: ``source`` starts a chain rather than continuing one, and the rest are
+#: builder/planner introspection helpers.
 PIPELINE_ONLY_METHODS = frozenset(
     {
         "source",
-        "thumbnail",
         "validate",
         "has_source",
         "to_graph",

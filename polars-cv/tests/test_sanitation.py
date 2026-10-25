@@ -897,11 +897,11 @@ def test_source_modifiers_are_not_generated_lazy_forwarders():
     ``gen_ops.py`` generates a lazy forwarder for every chainable Pipeline op,
     running it on a *sourceless* continuation
     (``_continuation()`` returns a pipeline whose plan has no source). A
-    source-modifier (``source``, ``thumbnail``) would therefore unconditionally
-    raise "requires a source" as a lazy method — a latent, always-failing
-    forwarder. Such methods must live in ``PIPELINE_ONLY_METHODS`` so no
-    forwarder is generated. This pins the fix for ``thumbnail`` and catches any
-    future source-mutating builder that forgets the exclusion."""
+    source-modifier (``source`` today) would therefore unconditionally raise
+    "requires a source" as a lazy method — a latent, always-failing forwarder.
+    Such methods must live in ``PIPELINE_ONLY_METHODS`` so no forwarder is
+    generated. This catches any future source-mutating builder that forgets the
+    exclusion."""
     import inspect
     import re
 

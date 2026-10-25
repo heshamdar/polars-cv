@@ -9,6 +9,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **`Pipeline.thumbnail(max_size)` is removed.** It was a second spelling of
+  `source(..., decode_max_size=max_size)`, which Python re-encoded by merging
+  the source's JSON by hand. The source keyword is now the only spelling.
+  Migrating: `.source("image_bytes").thumbnail(64)` becomes
+  `.source("image_bytes", decode_max_size=64)` (#182).
 - **`extract_contours` reads only a single-channel `u8` mask.** It used to
   read the first H×W *bytes* of whatever reached it as `u8` pixels, so an
   `f32`/`u16` mask traced a byte pattern (a mask of `1.0f32` came out as one

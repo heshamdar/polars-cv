@@ -4383,18 +4383,6 @@
     ""
    ]
   ],
-  "thumbnail": [
-   [
-    "self",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ],
-   [
-    "max_size",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ]
-  ],
   "to_bgr": [
    [
     "self",
