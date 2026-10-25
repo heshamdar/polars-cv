@@ -1,6 +1,6 @@
 //! Tests for rotation operations.
 
-#![cfg(all(feature = "ndarray_interop", feature = "image_interop"))]
+#![cfg(feature = "ndarray_interop")]
 
 use view_buffer::{ViewBuffer, ViewExpr, ViewOp};
 

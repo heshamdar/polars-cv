@@ -1,7 +1,6 @@
 //! Blur must operate on the input's native dtype (u8/u16/f32) and preserve it,
 //! rather than force-downconverting to u8 (which silently lost precision and
 //! changed the output dtype for f32/u16 images).
-#![cfg(feature = "image_interop")]
 
 use view_buffer::{DType, ViewBuffer, ViewExpr};
 

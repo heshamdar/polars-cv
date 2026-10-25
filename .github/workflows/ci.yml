@@ -88,7 +88,7 @@ jobs:
       - name: Test view-buffer (all features)
         # The main "Build and Test" step runs from the polars-cv crate dir, so it
         # only tests that crate with default features — view-buffer's feature-gated
-        # modules (image_interop/arrow/polars/perceptual_hash/serde) are never
+        # modules (arrow/polars/serde) are never
         # exercised. Run them explicitly. Scoped to -p view-buffer so polars-cv's
         # pyo3-extension feature (which unlinks libpython) is not activated.
         run: cargo test -p view-buffer --all-features

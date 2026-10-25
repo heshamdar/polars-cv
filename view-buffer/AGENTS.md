@@ -319,13 +319,17 @@ Key implementation points:
 
 ## Feature Flags
 
+Image codecs (`image`, `tiff`), resize (`fast_image_resize`) and perceptual
+hashing (`image_hasher`) are unconditional dependencies, not features:
+view-buffer is unpublished and nothing builds without them, so no op is
+`cfg`-gated and there is no feature-off stub. The remaining features gate
+interop modules only.
+
 | Feature | Dependencies | Purpose |
 |---------|-------------|---------|
 | `ndarray_interop` (default) | ndarray | Zero-copy ndarray views |
-| `image_interop` | image, fast_image_resize, tiff | Image decode/encode/resize |
 | `arrow_interop` | arrow | Arrow buffer interop |
 | `polars_interop` | polars-arrow | Polars-specific Arrow interop |
-| `perceptual_hash` | image_hasher + image_interop | Perceptual hashing |
 | `serde` | serde, serde_json, bytemuck | Serialization support |
 
 ## Removed Subsystems

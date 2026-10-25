@@ -6,8 +6,6 @@
 //! arithmetic is what this holds. A horizontal flip and a transpose are packed
 //! by the planner first and are here as the control.
 
-#![cfg(feature = "image_interop")]
-
 use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
 use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 use view_buffer::ops::pad::{PadMode, PadPosition};

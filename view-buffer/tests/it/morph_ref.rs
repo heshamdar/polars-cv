@@ -10,8 +10,6 @@
 //! NaN incumbent but ignored a NaN candidate), numpy's rule, shared with
 //! every op that orders values.
 
-#![cfg(feature = "image_interop")]
-
 use view_buffer::{DType, Footprint, ViewBuffer, ViewExpr};
 
 #[derive(Clone, Copy, PartialEq)]

@@ -36,13 +36,16 @@ geo = { version = "0.33", default-features = false }
 # point). Pinned to geo 0.33's range so the tree holds one copy.
 i_overlay = { version = "4.5.1, < 4.6.0", default-features = false }
 
+# Image codecs, resize and perceptual hashing are unconditional: view-buffer
+# is unpublished and its one consumer always used them.
+image = { version = "0.25" }
+tiff = { version = "0.10" }
+fast_image_resize = { version = "6.1" }
+image_hasher = { version = "3.0" }
+
 # Optional dependencies
 ndarray = { version = "0.17", optional = true }
-image = { version = "0.25", optional = true }
-tiff = { version = "0.10", optional = true }
-fast_image_resize = { version = "6.1", optional = true }
 arrow = { version = "59.0", features = ["ffi"], optional = true }
-image_hasher = { version = "3.0", optional = true }
 polars-arrow = { version = "0.55", optional = true }
 polars-buffer = { version = "0.55", optional = true }
 
@@ -61,9 +64,6 @@ bytemuck = { version = "1.14", features = ["derive"], optional = true }
 [dev-dependencies]
 anyhow = "1.0"
 ndarray = "0.17"
-image = "0.25"
-tiff = "0.10"
-fast_image_resize = "6.1"
 arrow = { version = "59.0", features = ["ffi"] }
 polars-arrow = "0.55"
 polars-buffer = "0.55"
@@ -77,10 +77,9 @@ zune-png = "0.4"
 
 [[bench]]
 # Kernel micro-benchmarks (`benches/kernels.rs`): the base-vs-head gate for a
-# kernel change. Needs the image codecs, hence the feature.
+# kernel change.
 name = "kernels"
 harness = false
-required-features = ["image_interop"]
 
 [features]
 # Enable ndarray by default for strided scalar operations
@@ -88,20 +87,14 @@ default = ["ndarray_interop"]
 
 # External crate interops (require dependencies)
 ndarray_interop = ["dep:ndarray"]
-image_interop = ["dep:image", "dep:fast_image_resize", "dep:tiff"]
 arrow_interop = ["dep:arrow"]
 polars_interop = ["dep:polars-arrow", "dep:polars-buffer"]
-
-# Perceptual hashing support (requires image_interop)
-perceptual_hash = ["dep:image_hasher", "image_interop"]
 
 # Convenience bundles
 all_interops = [
     "ndarray_interop",
-    "image_interop",
     "arrow_interop",
     "polars_interop",
-    "perceptual_hash",
 ]
 
 # Serialization support

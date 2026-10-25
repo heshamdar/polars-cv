@@ -31,21 +31,22 @@ polars-cv itself, which exposes everything here as Polars expressions.
 
 ## Features
 
+Image decoding/encoding (`ImageAdapter`), the resize kernels and perceptual
+hashing are always built in; the features below gate the interop modules.
+
 | Feature | Enables |
 |---------|---------|
 | `ndarray_interop` (default) | Zero-copy `ndarray::ArrayViewD` views (`AsNdarray`, `FromNdarray`) |
-| `image_interop` | Image decoding/encoding (`ImageAdapter`) and the resize kernels |
 | `arrow_interop` | Zero-copy Arrow buffers (`FromArrow`, `ToArrow`) |
 | `polars_interop` | polars-arrow buffers, as the polars-cv plugin uses |
-| `perceptual_hash` | Perceptual hashing (implies `image_interop`) |
 | `serde` | `Serialize`/`Deserialize` for the op types |
-| `all_interops` | Every interop above, plus `perceptual_hash` |
+| `all_interops` | Every interop above |
 
 ## Examples
 
 ```toml
 [dependencies]
-view-buffer = { git = "https://github.com/heshamdar/polars-cv", features = ["image_interop"] }
+view-buffer = { git = "https://github.com/heshamdar/polars-cv", features = ["ndarray_interop"] }
 ```
 
 A lazy graph over a buffer:
@@ -68,7 +69,7 @@ let result = ViewExpr::new_source(buffer)
 assert_eq!(result.shape(), &[10, 10]);
 ```
 
-An image pipeline (`image_interop`):
+An image pipeline:
 
 ```rust
 use view_buffer::{FilterType, ImageAdapter, ViewExpr};

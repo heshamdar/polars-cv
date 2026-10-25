@@ -10,8 +10,6 @@
 //! skipped a NaN channel. The reference here is `is_nan` on the inputs, not a
 //! restatement of the kernel's comparison.
 
-#![cfg(feature = "image_interop")]
-
 use view_buffer::{
     BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, Footprint, ImageOp, ImageOpKind,
     NormalizeMethod, ViewBuffer, ViewDto, ViewExpr,

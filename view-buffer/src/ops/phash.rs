@@ -114,7 +114,6 @@ impl PerceptualHashOp {
     ///
     /// The buffer should be an image in [H, W, C] or [H, W] format.
     /// Returns a 1D u8 buffer containing the hash bytes.
-    #[cfg(feature = "perceptual_hash")]
     pub fn execute(&self, buffer: &ViewBuffer) -> ViewBuffer {
         use crate::interop::image::ImageAdapter;
         use image_hasher::{BitOrder, HashAlg, HasherConfig};
@@ -152,12 +151,6 @@ impl PerceptualHashOp {
         let len = hash_bytes.len();
         ViewBuffer::from_vec(hash_bytes).reshape(vec![len])
     }
-
-    /// Fallback when perceptual_hash feature is not enabled.
-    #[cfg(not(feature = "perceptual_hash"))]
-    pub fn execute(&self, _buffer: &ViewBuffer) -> ViewBuffer {
-        panic!("PerceptualHashOp requires the 'perceptual_hash' feature to be enabled");
-    }
 }
 
 /// Standard pHash, the steps of `imagehash.phash`: BT.601 grayscale, a
@@ -171,7 +164,6 @@ impl PerceptualHashOp {
 /// 16x16-input DCT at its *mean*: the DC coefficient dominates that mean, so
 /// most bits agreed between unrelated images (distinct COCO images ~18 bits
 /// apart instead of ~32).
-#[cfg(feature = "perceptual_hash")]
 fn phash(buffer: &ViewBuffer, side: usize, n_bytes: usize) -> Vec<u8> {
     use crate::execution::runner::{grayscale_strided, resize_strided};
     use crate::ops::FilterType;
@@ -338,7 +330,7 @@ impl<M: Mode> Op for PerceptualHashOp<M> {
     }
 }
 
-#[cfg(all(test, feature = "perceptual_hash"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
