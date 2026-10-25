@@ -25,7 +25,6 @@ fn cropped(buf: ViewBuffer) -> Arc<ViewExpr> {
     ViewExpr::new_source(buf).crop(vec![1, 1], vec![3, 3])
 }
 
-#[cfg(feature = "image_interop")]
 #[test]
 fn threshold_after_crop_then_reshape() {
     let out = cropped(u8_4x4())
@@ -38,7 +37,6 @@ fn threshold_after_crop_then_reshape() {
     assert_eq!(out.to_contiguous().as_slice::<u8>(), &[0, 0, 0, 255]);
 }
 
-#[cfg(feature = "image_interop")]
 #[test]
 fn threshold_on_f32_input_then_reshape() {
     let buf = ViewBuffer::from_vec_with_shape(vec![0.1f32, 0.6, 0.4, 0.9, 0.2, 0.8], vec![2, 3]);
@@ -54,7 +52,6 @@ fn threshold_on_f32_input_then_reshape() {
     );
 }
 
-#[cfg(feature = "image_interop")]
 #[test]
 fn threshold_output_is_contiguous() {
     let out = cropped(u8_4x4()).threshold(9.0).plan().execute();

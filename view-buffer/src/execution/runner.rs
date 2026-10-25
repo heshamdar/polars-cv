@@ -6,31 +6,21 @@
 //! layer share the same implementations.
 
 use crate::core::buffer::ViewBuffer;
-#[cfg(feature = "image_interop")]
 use crate::core::convert::CastFrom;
-#[cfg(feature = "image_interop")]
 use crate::core::cut::{AgainstCut, Cut};
-#[cfg(feature = "image_interop")]
 use crate::core::dispatch::{dispatch, SimdKernel};
 use crate::core::dtype::DType;
-#[cfg(feature = "image_interop")]
 use crate::core::dtype::{with_dtype, ViewType};
-#[cfg(feature = "image_interop")]
 use crate::core::map::{map_new, map_owned, map_pixels, ElementMap, ElementMapInPlace, PixelMap};
 use crate::expr::ViewExpr;
 use crate::ops::dto::ViewDto;
-#[cfg(feature = "image_interop")]
 use crate::ops::traits::Op;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
-#[cfg(feature = "image_interop")]
 use std::marker::PhantomData;
-#[cfg(feature = "image_interop")]
 use std::mem::MaybeUninit;
 
-#[cfg(feature = "image_interop")]
 use crate::ops::{FilterType, Footprint, ImageOpKind};
 
-#[cfg(feature = "image_interop")]
 use fast_image_resize as fir;
 
 /// High-level entry point to execute a plan described by a sequence of ViewDto operations.
@@ -280,7 +270,6 @@ pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
 /// - U16: scale its range (`>> 8`)
 /// - Other integer types: saturate into `[0, 255]`
 /// - U8: pass through
-#[cfg(feature = "image_interop")]
 fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
     if buf.dtype() == DType::U8 {
         return buf;
@@ -292,12 +281,10 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
 /// The u8 an image op working in u8 reads an element of each dtype as:
 /// floats in `[0, 1]` scaled to `[0, 255]` (clamped first), u16 scaled by
 /// its range (`>> 8`), every other integer saturated into `[0, 255]`.
-#[cfg(feature = "image_interop")]
 trait ToImageU8: crate::core::dtype::ViewType {
     fn to_image_u8(self) -> u8;
 }
 
-#[cfg(feature = "image_interop")]
 macro_rules! to_image_u8 {
     ($($t:ty => |$x:ident| $body:expr),+ $(,)?) => {$(
         impl ToImageU8 for $t {
@@ -310,7 +297,6 @@ macro_rules! to_image_u8 {
     )+};
 }
 
-#[cfg(feature = "image_interop")]
 to_image_u8!(
     u8 => |x| x,
     f32 => |x| (x.clamp(0.0, 1.0) * 255.0).round() as u8,
@@ -326,11 +312,9 @@ to_image_u8!(
 
 /// [`ToImageU8`] as an element map (`core::map`): dispatched, reading any
 /// view where it lies.
-#[cfg(feature = "image_interop")]
 struct ImageU8;
 
 // SAFETY: `map_into` writes every slot of `dst`.
-#[cfg(feature = "image_interop")]
 unsafe impl<S: ToImageU8> ElementMap<S, u8> for ImageU8 {
     #[inline(always)]
     fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<u8>], _at: usize) {
@@ -341,7 +325,6 @@ unsafe impl<S: ToImageU8> ElementMap<S, u8> for ImageU8 {
 }
 
 /// Map our filter types to fast_image_resize algorithm types.
-#[cfg(feature = "image_interop")]
 #[inline]
 fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
     match filter {
@@ -367,7 +350,6 @@ fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
 /// and i16 are resized as F32 (which holds them exactly) and cast back; the
 /// 32/64-bit integers and f64 are resampled in f64 by `execution::resample`.
 /// The output keeps the input's dtype and rank.
-#[cfg(feature = "image_interop")]
 pub(crate) fn resize_strided(
     buf: ViewBuffer,
     target_width: u32,
@@ -419,7 +401,6 @@ pub(crate) fn resize_strided(
 /// A view whose pixels are packed within each row (contiguous, a crop, a
 /// vertical flip) is read where it lies ([`FirViewAdapter`]); any other layout
 /// is packed first.
-#[cfg(feature = "image_interop")]
 fn resize_pixels<P>(
     buf: ViewBuffer,
     target_width: u32,
@@ -468,7 +449,6 @@ where
     ViewBuffer::from_vec_with_shape(out, out_shape)
 }
 
-#[cfg(feature = "image_interop")]
 thread_local! {
     /// Reused across resize calls on the same worker thread to avoid
     /// reallocating fast_image_resize's internal scratch buffers on every row.
@@ -495,7 +475,6 @@ thread_local! {
 /// image's gray channel, as a per-pixel map (`core::map`): any view is read
 /// where it lies. More than four channels are read as the first three (BT.601
 /// reads no others), through a view of them.
-#[cfg(feature = "image_interop")]
 pub(crate) fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     use crate::ops::color::Luma;
     let shape = buf.shape();
@@ -522,12 +501,10 @@ pub(crate) fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
 
 /// Grayscale as a pixel map: the luma of a colour pixel (its first three
 /// channels), the gray channel of a gray + alpha one (`color_channels(C) == 1`).
-#[cfg(feature = "image_interop")]
 struct Grayscale;
 
 // SAFETY: `map_into` writes one value per pixel of `src`, into `dst`'s
 // matching slot.
-#[cfg(feature = "image_interop")]
 unsafe impl<T: crate::ops::color::Luma, const C: usize> PixelMap<T, T, C, 1> for Grayscale {
     #[inline(always)]
     fn map_into(&self, src: &[[T; C]], dst: &mut [MaybeUninit<T>]) {
@@ -558,7 +535,6 @@ unsafe impl<T: crate::ops::color::Luma, const C: usize> PixelMap<T, T, C, 1> for
 ///
 /// Handles dtype promotion (converting to the op's working dtype before
 /// dispatch) and validates the output dtype contract in debug builds.
-#[cfg(feature = "image_interop")]
 #[inline]
 pub(crate) fn apply_image_inner(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     let input_dtype = buf.dtype();
@@ -590,7 +566,6 @@ pub(crate) fn apply_image_inner(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 /// A u8 input with the threshold inside the u8 range compares in u8 (`p > t`
 /// for an integer `p` is `p > floor(t)`); any other integer compares exactly
 /// exactly ([`Cut`]), and a float in `f64`.
-#[cfg(feature = "image_interop")]
 fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
     let shape = buf.shape();
 
@@ -610,11 +585,9 @@ fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
 }
 
 /// u8 threshold compared in u8.
-#[cfg(feature = "image_interop")]
 struct ThresholdU8(u8);
 
 // SAFETY: `map_into` writes every element of `dst`.
-#[cfg(feature = "image_interop")]
 unsafe impl ElementMap<u8, u8> for ThresholdU8 {
     #[inline(always)]
     fn map_into(&self, src: &[u8], dst: &mut [MaybeUninit<u8>], _at: usize) {
@@ -625,7 +598,6 @@ unsafe impl ElementMap<u8, u8> for ThresholdU8 {
     }
 }
 
-#[cfg(feature = "image_interop")]
 impl ElementMapInPlace<u8> for ThresholdU8 {
     #[inline(always)]
     fn map_in_place(&self, data: &mut [u8]) {
@@ -638,10 +610,8 @@ impl ElementMapInPlace<u8> for ThresholdU8 {
 
 /// Threshold of any dtype, compared exactly against the threshold
 /// (`core::cut`, the one pixel-against-boundary comparison).
-#[cfg(feature = "image_interop")]
 struct Threshold<T>(Cut, PhantomData<fn(T)>);
 
-#[cfg(feature = "image_interop")]
 impl<T> Threshold<T> {
     fn new(thresh: f64) -> Self {
         Threshold(Cut::of(thresh), PhantomData)
@@ -649,7 +619,6 @@ impl<T> Threshold<T> {
 }
 
 // SAFETY: `map_into` writes every element of `dst`.
-#[cfg(feature = "image_interop")]
 unsafe impl<T: ViewType + AgainstCut> ElementMap<T, u8> for Threshold<T> {
     #[inline(always)]
     fn map_into(&self, src: &[T], dst: &mut [MaybeUninit<u8>], _at: usize) {
@@ -668,7 +637,6 @@ unsafe impl<T: ViewType + AgainstCut> ElementMap<T, u8> for Threshold<T> {
 ///
 /// Invalid (multi-channel):
 /// - `[H, W, C]` where C > 1
-#[cfg(feature = "image_interop")]
 #[inline]
 fn is_single_channel(shape: &[usize]) -> bool {
     match shape.len() {
@@ -679,7 +647,6 @@ fn is_single_channel(shape: &[usize]) -> bool {
 }
 
 /// Get the number of channels from a shape.
-#[cfg(feature = "image_interop")]
 #[inline]
 fn get_channel_count(shape: &[usize]) -> usize {
     match shape.len() {
@@ -694,7 +661,7 @@ fn get_channel_count(shape: &[usize]) -> usize {
 /// a row stride), vertically flipped (negative row stride), horizontally
 /// flipped and transposed (not dense rows, so materialised or walked per
 /// pixel). Odd widths put a remainder after every vector loop.
-#[cfg(all(test, feature = "image_interop"))]
+#[cfg(test)]
 mod grayscale_threshold_parity_tests {
     use super::apply_image_inner;
     use crate::core::buffer::ViewBuffer;
@@ -1044,7 +1011,6 @@ pub(super) fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
 /// height and width, divided by `W` and `H` when `normalized`; no value of
 /// `buf` is read. Each coordinate is computed in f64 and stored rounded to
 /// the nearest f32.
-#[cfg(feature = "image_interop")]
 fn coordinate_grid(buf: &ViewBuffer, normalized: bool) -> ViewBuffer {
     let shape = buf.shape();
     let (h, w) = (shape[0], shape[1]);
@@ -1065,7 +1031,6 @@ fn coordinate_grid(buf: &ViewBuffer, normalized: bool) -> ViewBuffer {
 }
 
 /// Inner implementation of image operations (the per-op dispatch, without plan sequencing).
-#[cfg(feature = "image_interop")]
 #[inline]
 fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
@@ -1189,7 +1154,6 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 /// The radius formula matches the halo declaration in `ops/image.rs`.
 /// σ = 0 is the one-tap identity kernel: the Gaussian formula would divide
 /// 0 by 0 there (`ImageOpKind::check` refuses a negative σ).
-#[cfg(feature = "image_interop")]
 fn gaussian_kernel_1d<F: BlurAcc>(sigma: f32) -> Vec<F> {
     if sigma == 0.0 {
         return vec![F::from_f32(1.0)];
@@ -1212,7 +1176,6 @@ fn gaussian_kernel_1d<F: BlurAcc>(sigma: f32) -> Vec<F> {
 /// The float a blur accumulates in ([`DType::accumulator`]): f32, or f64 for
 /// f64 and the 32/64-bit integers. Each has its own per-thread scratch slab
 /// for the horizontal pass.
-#[cfg(feature = "image_interop")]
 trait BlurAcc:
     Copy
     + Default
@@ -1234,7 +1197,6 @@ trait BlurAcc:
     fn give_slab(slab: Vec<Self>);
 }
 
-#[cfg(feature = "image_interop")]
 impl BlurAcc for f32 {
     fn zero() -> Self {
         0.0
@@ -1256,7 +1218,6 @@ impl BlurAcc for f32 {
     }
 }
 
-#[cfg(feature = "image_interop")]
 impl BlurAcc for f64 {
     fn zero() -> Self {
         0.0
@@ -1298,7 +1259,6 @@ impl BlurAcc for f64 {
 /// The horizontal-pass intermediate is stored in a thread-local f32 slab
 /// (`BLUR_HORIZ_BUF`) that grows to fit the largest image seen per thread and
 /// is never shrunk — zero allocator round-trip on warm paths.
-#[cfg(feature = "image_interop")]
 /// The separable Gaussian blur, run through [`dispatch`] so the whole body
 /// (conversion, both passes, the output clamp) has an AVX2 build
 /// (~1.4x over the wheels' SSE2 baseline; dispatching only the row axpy
@@ -1315,14 +1275,12 @@ where
     })
 }
 
-#[cfg(feature = "image_interop")]
 struct SeparableBlur<'a, T, F> {
     buf: &'a ViewBuffer,
     sigma: f32,
     _elem: std::marker::PhantomData<fn() -> (T, F)>,
 }
 
-#[cfg(feature = "image_interop")]
 // Derived `Clone` would demand `T: Clone` of the marker's parameter.
 impl<T, F> Clone for SeparableBlur<'_, T, F> {
     fn clone(&self) -> Self {
@@ -1334,7 +1292,6 @@ impl<T, F> Clone for SeparableBlur<'_, T, F> {
     }
 }
 
-#[cfg(feature = "image_interop")]
 impl<T, F> SimdKernel for SeparableBlur<'_, T, F>
 where
     T: crate::core::dtype::ViewType + Default + Copy + CastFrom<F>,
@@ -1348,7 +1305,6 @@ where
     }
 }
 
-#[cfg(feature = "image_interop")]
 #[cfg(test)]
 mod blur_dispatch_tests {
     use super::{separable_gaussian_blur_body, separable_gaussian_blur_typed};
@@ -1586,7 +1542,6 @@ mod blur_dispatch_tests {
     }
 }
 
-#[cfg(feature = "image_interop")]
 #[inline(always)]
 fn separable_gaussian_blur_body<T, F>(rows_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
@@ -1694,18 +1649,12 @@ where
     result
 }
 
-#[cfg(not(feature = "image_interop"))]
-pub(crate) fn apply_image_inner(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
-    panic!("Image operations require the 'image_interop' feature");
-}
-
 /// Each pixel's `height` x `width` window `q`-th percentile, per channel
 /// (`reduction::percentile_of`, the one interpolation), outside the image
 /// read by `border` as `convolve2d` reads it; the result in the input's
 /// dtype. `check` keeps both sides odd. A u8 image takes a sliding
 /// histogram ([`rank_filter_u8`]), every other dtype a selection per window
 /// ([`rank_filter_values`]); the two give the same bits.
-#[cfg(feature = "image_interop")]
 fn apply_rank_filter(
     buf: &ViewBuffer,
     height: usize,
@@ -1724,7 +1673,6 @@ fn apply_rank_filter(
 
 /// The in-image index an out-of-image one `i` reads on an axis of `n`, or
 /// `None` for a zero (`BorderMode::Zero`).
-#[cfg(feature = "image_interop")]
 fn rank_border(border: crate::ops::filter::BorderMode, i: isize, n: usize) -> Option<usize> {
     use crate::ops::filter::BorderMode;
     let n_i = n as isize;
@@ -1741,7 +1689,6 @@ fn rank_border(border: crate::ops::filter::BorderMode, i: isize, n: usize) -> Op
 }
 
 /// The rank filter by a selection over each window's values (any dtype).
-#[cfg(feature = "image_interop")]
 fn rank_filter_values(
     buf: &ViewBuffer,
     height: usize,
@@ -1787,7 +1734,6 @@ fn rank_filter_values(
 /// selection over `height * width` values. The percentile reads the two
 /// order statistics it interpolates off the cumulative counts, by
 /// `percentile_of`'s formula: the same bits.
-#[cfg(feature = "image_interop")]
 fn rank_filter_u8(
     buf: &ViewBuffer,
     height: usize,
@@ -1864,7 +1810,7 @@ fn rank_filter_u8(
     out
 }
 
-#[cfg(all(test, feature = "image_interop"))]
+#[cfg(test)]
 mod rank_filter_tests {
     use super::*;
     use crate::ops::filter::BorderMode;
@@ -1919,7 +1865,6 @@ mod rank_filter_tests {
 /// Uses replicate border handling (edge pixels are replicated).
 /// Operates on single-channel data only; panics for multi-channel input.
 /// Dtype-generic: dispatches per element type.
-#[cfg(feature = "image_interop")]
 fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32, footprint: Footprint) -> ViewBuffer {
     let shape = buf.shape();
     if !is_single_channel(shape) {
@@ -1937,7 +1882,6 @@ fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32, footprint: Footprin
 /// Uses replicate border handling (edge pixels are replicated).
 /// Operates on single-channel data only; panics for multi-channel input.
 /// Dtype-generic: dispatches per element type.
-#[cfg(feature = "image_interop")]
 fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32, footprint: Footprint) -> ViewBuffer {
     let shape = buf.shape();
     if !is_single_channel(shape) {
@@ -1970,7 +1914,6 @@ fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32, footprint: Footpri
 /// into one larger disk (the radius-2 disk twice reaches `(4, 0)`, `(3, 1)`
 /// and `(2, 2)` but not the radius-4 disk's `(3, 2)`), so `iterations` means
 /// that many disk passes.
-#[cfg(feature = "image_interop")]
 fn morph_iterated(
     buf: ViewBuffer,
     ksize: u32,
@@ -1993,7 +1936,6 @@ fn morph_iterated(
 ///
 /// Produces an edge outline by computing the difference between dilation and
 /// erosion. Output dtype matches input.
-#[cfg(feature = "image_interop")]
 fn apply_morph_gradient(buf: ViewBuffer, ksize: u32, footprint: Footprint) -> ViewBuffer {
     let shape = buf.shape();
     if !is_single_channel(shape) {
@@ -2010,7 +1952,6 @@ fn apply_morph_gradient(buf: ViewBuffer, ksize: u32, footprint: Footprint) -> Vi
     morph_subtract(&dilated, &eroded)
 }
 
-#[cfg(feature = "image_interop")]
 #[derive(Clone, Copy)]
 enum MorphKind {
     Min,
@@ -2021,7 +1962,6 @@ enum MorphKind {
 /// `(2 * radius + 1)`-square, or the disk of that radius.
 ///
 /// Border handling: replicate edge pixels.
-#[cfg(feature = "image_interop")]
 fn morph_pass(
     buf: &ViewBuffer,
     radius: usize,
@@ -2045,7 +1985,6 @@ fn morph_pass(
 /// The window's running extreme: [`crate::ops::util`]'s NaN rule, so a NaN
 /// anywhere in the window is the result (it used to be kept as the centre
 /// but skipped as a neighbour). A tie keeps the incumbent `val`.
-#[cfg(feature = "image_interop")]
 #[inline(always)]
 fn morph_select<T: PartialOrd + Copy, const IS_MIN: bool>(val: T, candidate: T) -> T {
     if IS_MIN {
@@ -2068,7 +2007,6 @@ fn morph_select<T: PartialOrd + Copy, const IS_MIN: bool>(val: T, candidate: T) 
 ///   row per tap (the index clamp happens once per row, not per element).
 ///
 /// Bit-exact vs the pre-split implementation (see tests/it/morph_ref.rs).
-#[cfg(feature = "image_interop")]
 fn morph_minmax_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, radius: usize) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
@@ -2106,7 +2044,6 @@ where
 /// The row pass of a min/max filter: each row's extreme over `x ± radius`,
 /// edges replicated, folded in ascending tap order from the centre pixel.
 /// The square's first pass.
-#[cfg(feature = "image_interop")]
 fn row_extreme<T, const IS_MIN: bool>(src_rows: &[&[T]], w: usize, radius: usize) -> Vec<T>
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
@@ -2174,7 +2111,6 @@ where
 ///   that half is folded from `dy = r` down to 1 by *prepending* each term,
 ///   which keeps the order while the half-widths grow again;
 /// - the result is the seed, then the upper half, then the lower half.
-#[cfg(feature = "image_interop")]
 fn morph_disk_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, radius: usize) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
@@ -2245,7 +2181,6 @@ where
 /// Every row's spans of one half-width `k`, grown a step at a time:
 /// `window[x]` folds the clamped taps `x − k..=x + k` in ascending order,
 /// and a span is its centre pixel then that window (`row_extreme`'s order).
-#[cfg(feature = "image_interop")]
 struct DiskSpans<'a, T, const IS_MIN: bool> {
     src_rows: &'a [&'a [T]],
     w: usize,
@@ -2253,7 +2188,6 @@ struct DiskSpans<'a, T, const IS_MIN: bool> {
     window: Vec<T>,
 }
 
-#[cfg(feature = "image_interop")]
 impl<'a, T, const IS_MIN: bool> DiskSpans<'a, T, IS_MIN>
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
@@ -2309,7 +2243,6 @@ where
 }
 
 /// Element-wise saturating subtraction: result = a − b, clamped to valid range.
-#[cfg(feature = "image_interop")]
 fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
     let ca = a.to_contiguous();
     let cb = b.to_contiguous();
@@ -2328,12 +2261,10 @@ fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
 /// `max(a - b, 0)`, saturating at the dtype's maximum, in the dtype itself:
 /// the morphological gradient's dilate − erode (never negative, but an i8
 /// 127 − (−128) exceeds i8).
-#[cfg(feature = "image_interop")]
 trait SubFloorZero: Copy {
     fn sub_floor_zero(self, other: Self) -> Self;
 }
 
-#[cfg(feature = "image_interop")]
 macro_rules! sub_floor_zero_int {
     ($($t:ty),+) => {$(
         impl SubFloorZero for $t {
@@ -2344,10 +2275,8 @@ macro_rules! sub_floor_zero_int {
         }
     )+};
 }
-#[cfg(feature = "image_interop")]
 sub_floor_zero_int!(u8, i8, u16, i16, u32, i32, u64, i64);
 
-#[cfg(feature = "image_interop")]
 macro_rules! sub_floor_zero_float {
     ($($t:ty),+) => {$(
         impl SubFloorZero for $t {
@@ -2359,7 +2288,6 @@ macro_rules! sub_floor_zero_float {
         }
     )+};
 }
-#[cfg(feature = "image_interop")]
 sub_floor_zero_float!(f32, f64);
 
 // ============================================================
@@ -2384,7 +2312,6 @@ sub_floor_zero_float!(f32, f64);
 /// A u8 image runs in `i32`, OpenCV's own arithmetic, and so matches it bit
 /// for bit; other dtypes run the same definition in `f64` ([`canny_core`]).
 /// Output is U8 `[H, W, 1]`, 0 or 255.
-#[cfg(feature = "image_interop")]
 fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> ViewBuffer {
     let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let (h, w) = (shape[0], shape[1]);
@@ -2414,7 +2341,6 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
 
 /// The arithmetic Canny needs: `i32` for u8 input (OpenCV's own), `f64` for
 /// every other dtype. Both are exact on integer input.
-#[cfg(feature = "image_interop")]
 trait CannyNum:
     Copy
     + Default
@@ -2431,7 +2357,6 @@ trait CannyNum:
     fn above(self, threshold: f64) -> bool;
 }
 
-#[cfg(feature = "image_interop")]
 impl CannyNum for i32 {
     const TWO: Self = 2;
     const TG22: Self = 13573;
@@ -2444,7 +2369,6 @@ impl CannyNum for i32 {
     }
 }
 
-#[cfg(feature = "image_interop")]
 impl CannyNum for f64 {
     const TWO: Self = 2.0;
     const TG22: Self = 13573.0;
@@ -2461,7 +2385,6 @@ impl CannyNum for f64 {
 /// [`apply_canny`]. Every plane is padded by one pixel — the source by
 /// replication (Sobel's border), the magnitude by zeros and the edge map by
 /// "not an edge" (OpenCV's) — so no inner loop tests a bound.
-#[cfg(feature = "image_interop")]
 fn canny_core<T: CannyNum>(
     h: usize,
     w: usize,
@@ -2580,7 +2503,6 @@ fn canny_core<T: CannyNum>(
 /// Computes the histogram, cumulative distribution, then maps each pixel
 /// through the normalized CDF. Operates per-channel for multi-channel images.
 /// Input must be U8 (enforced by `working_dtype`). Output is U8.
-#[cfg(feature = "image_interop")]
 fn apply_histogram_equalize(buf: ViewBuffer) -> ViewBuffer {
     // Read in place, at the view's own row stride (a crop, a vertical flip).
     let rows_buf = buf.to_dense_rows();
@@ -2639,14 +2561,12 @@ fn apply_histogram_equalize(buf: ViewBuffer) -> ViewBuffer {
 // Perceptual Hash Operations
 // ============================================================
 
-#[cfg(feature = "perceptual_hash")]
 use crate::ops::phash::PerceptualHashOp;
 
 /// Applies a perceptual hash operation to a buffer.
 ///
 /// Perceptual hashing requires the buffer to be in image format.
 /// The output is a 1D u8 buffer containing the hash bytes.
-#[cfg(feature = "perceptual_hash")]
 pub fn apply_perceptual_hash(buf: ViewBuffer, op: PerceptualHashOp) -> ViewBuffer {
     // Convert to U8 if needed (perceptual hash expects image format)
     let work_buf = convert_to_u8_for_image(buf);
@@ -2655,15 +2575,7 @@ pub fn apply_perceptual_hash(buf: ViewBuffer, op: PerceptualHashOp) -> ViewBuffe
     op.execute(&work_buf)
 }
 
-#[cfg(not(feature = "perceptual_hash"))]
-pub fn apply_perceptual_hash(
-    _buf: ViewBuffer,
-    _op: crate::ops::phash::PerceptualHashOp,
-) -> ViewBuffer {
-    panic!("Perceptual hash operations require the 'perceptual_hash' feature");
-}
-
-#[cfg(all(test, feature = "image_interop"))]
+#[cfg(test)]
 mod blur_radius_tests {
     //! The blur op declares a `Neighborhood` radius that a spatial-window
     //! reorder would dilate a crop by; if it understated the true kernel reach
@@ -2705,7 +2617,6 @@ mod blur_radius_tests {
     }
 }
 
-#[cfg(feature = "image_interop")]
 #[cfg(test)]
 mod image_u8_tests {
     use super::convert_to_u8_for_image;

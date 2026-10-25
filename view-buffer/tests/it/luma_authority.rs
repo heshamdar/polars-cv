@@ -6,8 +6,6 @@
 //! once, so the two disagreed on the same input (u16 by one unit, f32 in the
 //! last bit).
 
-#![cfg(feature = "image_interop")]
-
 use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
 use view_buffer::{DType, ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
 

@@ -49,6 +49,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **view-buffer's `image_interop` and `perceptual_hash` features are gone; image
+  codecs, resize and perceptual hashing are always built.** The crate is
+  unpublished and the plugin always enabled both, so the feature-off branches
+  never ran in a shipped build and CI never built them. `image`, `tiff`,
+  `fast_image_resize` and `image_hasher` are now ordinary dependencies, the
+  `cfg(not(feature = ...))` stubs (which `panic!`ed per row) and every positive
+  gate are deleted, the `kernels` bench no longer needs `required-features`,
+  and `all_interops` no longer lists them. Nothing changes for Python (#174).
 - **`_lib.pyi` is checked against the built extension.**
   `tests/test_lib_stub_parity.py` compares the hand-written stub with
   `polars_cv._lib` in both directions (names, parameter names/kinds/order/

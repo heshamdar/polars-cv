@@ -5,10 +5,8 @@
 //! * [`ExecutionPlan`] / [`PlanStep`] — compiled plan returned by
 //!   [`ViewExpr::plan`](crate::expr::ViewExpr::plan).
 
-#[cfg(feature = "image_interop")]
 pub(crate) mod distance;
 pub mod plan;
-#[cfg(feature = "image_interop")]
 mod resample;
 pub mod runner;
 mod warp;

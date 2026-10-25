@@ -9,8 +9,6 @@
 //! `every_view_dto_variant_has_a_probe` reads that match back out of this file
 //! so acknowledging a variant and probing it are the same act.
 
-#![cfg(feature = "image_interop")]
-
 use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
 use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 use view_buffer::{

@@ -1,8 +1,8 @@
 //! Zero-copy verification tests.
 //!
-//! These tests require the `image_interop` and `ndarray_interop` features.
+//! These tests require the `ndarray_interop` feature.
 
-#![cfg(all(feature = "image_interop", feature = "ndarray_interop"))]
+#![cfg(feature = "ndarray_interop")]
 
 use image::Rgb;
 use view_buffer::{ExternalView, ImageViewAdapter, NdArrayViewAdapter, ViewBuffer, ViewExpr};

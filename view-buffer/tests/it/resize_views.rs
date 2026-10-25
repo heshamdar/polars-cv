@@ -11,8 +11,6 @@
 //! the wrong place, in the wrong order or at the wrong length changes the
 //! output.
 
-#![cfg(feature = "image_interop")]
-
 use std::sync::Arc;
 
 use fast_image_resize as fir;

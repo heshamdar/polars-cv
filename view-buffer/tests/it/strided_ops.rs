@@ -3,7 +3,7 @@
 //! These tests verify that operations work correctly on non-contiguous buffers
 //! (e.g., after flip, crop, transpose) without requiring materialization.
 
-#![cfg(all(feature = "ndarray_interop", feature = "image_interop"))]
+#![cfg(feature = "ndarray_interop")]
 
 use view_buffer::{FilterType, NormalizeMethod, ViewBuffer, ViewExpr};
 

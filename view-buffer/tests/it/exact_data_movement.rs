@@ -6,8 +6,6 @@
 //! (2**53 + 1, `u64::MAX`, 0.1 as f64): these ops used to convert every dtype
 //! but u8/u16/f32 through f32 (`u32 16777217 -> 16777216`).
 
-#![cfg(feature = "image_interop")]
-
 use view_buffer::core::dtype::ViewType;
 use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
 use view_buffer::{
