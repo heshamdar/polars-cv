@@ -8,7 +8,6 @@
 //! has changed since, on purpose: `relu`, `clamp_min`, `clamp_max` and the
 //! MinMax normalize extremes propagate NaN (`ops::util::maximum`/`minimum`),
 //! as `clamp` and ZScore always did.
-#![allow(dead_code, clippy::all)]
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};
 use crate::core::dtype::DType;
