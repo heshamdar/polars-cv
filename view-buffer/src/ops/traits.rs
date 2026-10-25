@@ -113,6 +113,12 @@ pub enum IdentityRule {
 ///
 /// This separates semantic operations from dtype mechanics, allowing the
 /// execution layer to handle automatic casting.
+///
+/// Every contract method (`shape`, `output_dtype_rule`, `memory_effect`,
+/// `spatial_dependency`, `identity_rule`, `validate`, `accepted_input_dtypes`,
+/// `working_dtype`) is required, with no default: an impl that omits one does
+/// not compile, so "accepts anything" or "works on the input dtype" is always
+/// a choice an op states, never one it inherits.
 pub trait Op {
     /// Returns the name of this operation for display/debugging.
     fn name(&self) -> &'static str;
@@ -208,10 +214,9 @@ pub trait Op {
     /// The execution layer will automatically cast inputs to the working dtype
     /// if the input dtype is accepted but different from the working dtype.
     ///
-    /// Default: Accept all types.
-    fn accepted_input_dtypes(&self) -> DTypeCategory {
-        DTypeCategory::Any
-    }
+    /// Required, with no default: an op that accepts every dtype says
+    /// `DTypeCategory::Any` and why, so it cannot inherit that by omission.
+    fn accepted_input_dtypes(&self) -> DTypeCategory;
 
     /// Returns the dtype used for internal computation (accumulator).
     ///
@@ -221,10 +226,9 @@ pub trait Op {
     ///
     /// If None, the operation works directly with the input dtype.
     ///
-    /// Default: None (preserve input dtype).
-    fn working_dtype(&self) -> Option<DType> {
-        None
-    }
+    /// Required, with no default: an op that works directly on the input dtype
+    /// says `None` and why, so it cannot inherit that by omission.
+    fn working_dtype(&self) -> Option<DType>;
 
     /// Returns the rule for determining output dtype.
     ///

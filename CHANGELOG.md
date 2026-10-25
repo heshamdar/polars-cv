@@ -23,6 +23,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `_CAST_ONLY_NAMES` literal in `_types.py` is gone, so that module holds no
   dtype-name literal. A cast-only name equal to a dtype spelling fails the
   generator and a view-buffer test. Behaviour is unchanged (#177).
+- **`Op::accepted_input_dtypes` and `Op::working_dtype` are required**, like
+  the trait's other contract methods: their default bodies (`Any` and `None`)
+  are gone, so an `impl Op` that omits either does not compile. `ViewOp` and
+  `ColorConvertOp` had inherited both defaults; each now states its choice
+  (`Any`/`None` for the zero-copy view ops, `None` for the colour conversions,
+  whose kernel works in the input dtype). Both values are the old ones, so no
+  behaviour changes (#168).
 - **`GLOSSARY.md`** fixes one meaning for each overloaded word (*view*,
   *plan*, *node*, *step*, *graph*, *op*, *domain*) and lists the type names
   that use one another way (`ViewBuffer`, `ViewDto`, `ExecutionPlan`,
