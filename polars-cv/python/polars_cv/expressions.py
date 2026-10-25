@@ -96,24 +96,28 @@ class CvNamespace(_PluginNamespace):
         the final projection — which is the point when you want the originals.
 
         Note:
-            Without ``allowed_roots`` paths are not sandboxed: whatever the
-            column names is read in full, including any local file and any
-            ``http://`` address (link-local metadata endpoints among them).
-            That is the right default for your own paths and the wrong one for
-            paths that came from somewhere else. File size is not capped
-            either way.
+            Reading is default-deny: without ``allowed_roots`` nothing is read
+            and the query fails naming the option. ``allowed_roots=["*"]`` is
+            the explicit opt-in to whatever the column names, in full,
+            including any local file and any ``http://`` address (link-local
+            metadata endpoints among them) — right for your own paths and the
+            wrong one for paths that came from somewhere else. File size is not
+            capped either way.
 
         Args:
             cloud_options: Credentials/settings for remote reads, as
                 ``CloudOptions`` or a dict (see ``Pipeline.source``).
             on_error: ``"raise"`` (default) fails the query on the first
                 unreadable path; ``"null"`` yields null for that row only.
-            allowed_roots: Restrict which locations may be read, exactly as
-                ``Pipeline.source(allowed_roots=...)`` does — one list covering
-                local directories and remote URI prefixes, canonicalized and
-                matched component-wise, denying anything that matches no entry.
-                A refusal follows ``on_error``, so ``on_error="null"`` nulls
-                the offending rows rather than failing the query.
+            allowed_roots: Required. The locations that may be read, exactly as
+                ``Pipeline.source(allowed_roots=...)`` takes them — one list
+                covering local directories and remote URI prefixes,
+                canonicalized and matched component-wise, denying anything that
+                matches no entry. ``["*"]`` alone opts in to any path; ``[]``
+                and ``"*"`` beside other roots are refused, and so is leaving
+                it out, under every ``on_error``. A path outside the roots
+                follows ``on_error``, so ``on_error="null"`` nulls the
+                offending rows rather than failing the query.
 
         Returns:
             Binary expression with each path's raw file contents.
@@ -187,8 +191,10 @@ class CvNamespace(_PluginNamespace):
                 as for ``.cv.read_bytes()``.
             on_error: Path columns only: ``"raise"`` (default) or ``"null"``
                 for an unreadable path.
-            allowed_roots: Path columns only: the locations that may be read,
-                as for ``.cv.read_bytes()``.
+            allowed_roots: Path columns only, where it is required: the
+                locations that may be read, as for ``.cv.read_bytes()``
+                (default-deny; ``["*"]`` opts in to any path). Refused on a
+                binary column.
 
         Returns:
             Int64 expression with the width of each image.

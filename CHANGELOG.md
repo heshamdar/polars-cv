@@ -25,6 +25,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `gcloud` ADC delegation now does so itself. The credential in an error is
   named by its vector (`token_command ["sh", "-c", "..."]`). A test pins that
   `;`, `$(...)` and a backtick reach the program literally (#172).
+- **Reading paths is default-deny: `allowed_roots` is required.** A
+  `file_path` source (and an `auto` source over a `String` column),
+  `.cv.read_bytes()` and the header-metadata methods (`.cv.width()`,
+  `.cv.image_info()`, ...) on a path column used to read any path the process
+  could when `allowed_roots` was left out (`PathPolicy::default()`, substituted
+  in `compile.rs`, `read_bytes.rs` and `image_metadata.rs`). A pipeline that
+  builds paths from data was therefore unsandboxed unless its author knew to
+  ask. Now a path read without `allowed_roots` fails, whatever `on_error` is and
+  before any row is read, with an error naming the option and both ways out.
+  `allowed_roots=["*"]` is the explicit opt-in to reading anywhere; `[]` and `"*"`
+  beside real roots are refused. One function, `PathPolicy::resolve`, turns a
+  reader's `allowed_roots` (given or absent) into its policy, and `Default` is
+  gone, so a fourth reader cannot reintroduce the open default. Remote roots keep
+  their semantics (a URI prefix; a remote path must start with one and contain no
+  `..`); `["*"]` admits remote and local paths alike. Migrating: add
+  `allowed_roots=[...]` naming the directories and URI prefixes the column may
+  hold to each `source("file_path")`, `read_bytes()` and path-column metadata
+  call, or `allowed_roots=["*"]` for paths you trust. An `image_bytes` / `blob`
+  source and metadata over a `Binary` column are unaffected (they take no
+  `allowed_roots`). Tests, examples, benchmarks and docs that read local files
+  without it now pass a root or `["*"]` (#171).
 
 ### Changed
 

@@ -637,7 +637,9 @@ def test_read_bytes_declares_binary(tmp_path) -> None:
         paths.append(str(p))
 
     df = pl.DataFrame({"p": [None, *paths]}, schema={"p": pl.String})
-    series = assert_plan_equals_exec(df, pl.col("p").cv.read_bytes())
+    series = assert_plan_equals_exec(
+        df, pl.col("p").cv.read_bytes(allowed_roots=[str(tmp_path)])
+    )
     assert series.dtype == pl.Binary
 
 

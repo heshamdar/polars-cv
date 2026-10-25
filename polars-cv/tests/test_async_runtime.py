@@ -68,7 +68,7 @@ port = server.server_address[1]
 
 before = tokio_threads()
 http_read = pl.DataFrame({"p": [f"http://127.0.0.1:{port}/a.bin"]}).select(
-    pl.col("p").cv.read_bytes()
+    pl.col("p").cv.read_bytes(allowed_roots=["*"])
 )["p"][0]
 s3 = CloudOptions(
     anonymous=True,
@@ -79,7 +79,7 @@ s3 = CloudOptions(
     },
 )
 s3_read = pl.DataFrame({"p": ["s3://bucket/b.bin"]}).select(
-    pl.col("p").cv.read_bytes(cloud_options=s3)
+    pl.col("p").cv.read_bytes(cloud_options=s3, allowed_roots=["*"])
 )["p"][0]
 after = tokio_threads()
 server.shutdown()

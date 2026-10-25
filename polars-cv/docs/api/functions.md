@@ -225,7 +225,9 @@ options = CloudOptions(
 # GCS via a pre-minted OAuth access token (federated / brokered credentials):
 options = CloudOptions(gcs_bearer_token=token)
 
-pipe = Pipeline().source("file_path", cloud_options=options)
+pipe = Pipeline().source(
+    "file_path", cloud_options=options, allowed_roots=["s3://my-bucket/images/"]
+)
 ```
 
 ### dtype_name_for

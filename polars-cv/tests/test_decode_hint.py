@@ -159,6 +159,8 @@ class TestJpegScaledDecode:
         p = tmp_path / "big.jpg"
         p.write_bytes(_jpeg(800, 600))
         df = pl.DataFrame({"paths": [str(p)]})
-        pipe = Pipeline().source("file_path", decode_max_size=100)
+        pipe = Pipeline().source(
+            "file_path", decode_max_size=100, allowed_roots=[str(tmp_path)]
+        )
         out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
         assert numpy_from_struct(out["out"][0]).shape == (75, 100, 3)

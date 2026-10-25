@@ -91,7 +91,7 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 base = f"http://127.0.0.1:{server.server_address[1]}"
 
 df = pl.DataFrame({"path": [f"{base}/img{i}.bin" for i in range(N)]})
-out = df.lazy().select(pl.col("path").cv.read_bytes()).collect()
+out = df.lazy().select(pl.col("path").cv.read_bytes(allowed_roots=["*"])).collect()
 assert out.height == N, out.height
 
 server.shutdown()

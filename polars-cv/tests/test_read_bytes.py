@@ -1,5 +1,5 @@
 """
-Tests for `.cv.read_bytes()` — reading a path column's bytes without decoding.
+Tests for `.cv.read_bytes(allowed_roots=["*"])` — reading a path column's bytes without decoding.
 
 `read_bytes` is the fetch half of the `file_path` source, exposed on its own
 (both go through `crate::fetch`). The tests below pin the two properties that
@@ -90,11 +90,13 @@ class TestByteIdentity:
         path.write_bytes(original)
 
         df = pl.DataFrame({"path": [str(path)]})
-        passthrough = df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"][0]
+        passthrough = df.with_columns(
+            raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
+        )["raw"][0]
         assert passthrough == original
 
         # The contrast: decode -> re-encode cannot reproduce the file.
-        pipe = Pipeline().source("file_path")
+        pipe = Pipeline().source("file_path", allowed_roots=["*"])
         reencoded = df.with_columns(out=pl.col("path").cv.pipe(pipe).sink("jpeg"))[
             "out"
         ][0]
@@ -106,7 +108,9 @@ class TestByteIdentity:
         path.write_bytes(original)
 
         df = pl.DataFrame({"path": [str(path)]})
-        got = df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"][0]
+        got = df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))[
+            "raw"
+        ][0]
         assert got == original
 
     def test_non_image_bytes_are_returned_untouched(self, tmp_path: Path) -> None:
@@ -116,7 +120,12 @@ class TestByteIdentity:
         path.write_bytes(payload)
 
         df = pl.DataFrame({"path": [str(path)]})
-        assert df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"][0] == payload
+        assert (
+            df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))[
+                "raw"
+            ][0]
+            == payload
+        )
 
     def test_file_uri_reads_the_same_file(self, tmp_path: Path) -> None:
         original = _png(8, 8, value=200)
@@ -124,7 +133,12 @@ class TestByteIdentity:
         path.write_bytes(original)
 
         df = pl.DataFrame({"path": [f"file://{path}"]})
-        assert df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"][0] == original
+        assert (
+            df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))[
+                "raw"
+            ][0]
+            == original
+        )
 
 
 # ============================================================
@@ -139,7 +153,9 @@ class TestRemoteReads:
         paths = [f"{base}/img/{i}.png" for i in range(4)]
         df = pl.DataFrame({"path": paths})
 
-        got = df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"].to_list()
+        got = df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))[
+            "raw"
+        ].to_list()
         assert got == [images[f"/img/{i}.png"] for i in range(4)]
 
     def test_repeated_urls_resolve_consistently(self, http_image_server) -> None:
@@ -148,7 +164,9 @@ class TestRemoteReads:
         paths = [f"{base}/img/{i % 2}.png" for i in range(8)]
         df = pl.DataFrame({"path": paths})
 
-        got = df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"].to_list()
+        got = df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))[
+            "raw"
+        ].to_list()
         assert got == [images[f"/img/{i % 2}.png"] for i in range(8)]
 
     def test_mixed_local_and_remote_paths(
@@ -160,7 +178,9 @@ class TestRemoteReads:
         local.write_bytes(local_bytes)
 
         df = pl.DataFrame({"path": [f"{base}/img/3.png", str(local)]})
-        got = df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"].to_list()
+        got = df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))[
+            "raw"
+        ].to_list()
         assert got == [images["/img/3.png"], local_bytes]
 
     def test_cloud_options_are_accepted_as_dataclass_and_dict(
@@ -173,12 +193,14 @@ class TestRemoteReads:
 
         as_obj = df.with_columns(
             raw=pl.col("path").cv.read_bytes(
-                cloud_options=CloudOptions(aws_region="eu-west-1")
+                cloud_options=CloudOptions(aws_region="eu-west-1"),
+                allowed_roots=["*"],
             )
         )["raw"][0]
         as_dict = df.with_columns(
             raw=pl.col("path").cv.read_bytes(
-                cloud_options={"aws_region": "eu-west-1", "aws_endpoint": "http://x"}
+                cloud_options={"aws_region": "eu-west-1", "aws_endpoint": "http://x"},
+                allowed_roots=["*"],
             )
         )["raw"][0]
         assert as_obj == expected
@@ -200,9 +222,11 @@ class TestSharedMechanismWithFilePathSource:
         with pytest.raises(
             pl.exceptions.ComputeError, match="Failed to read local file"
         ) as via_read_bytes:
-            df.with_columns(raw=pl.col("path").cv.read_bytes()).height
+            df.with_columns(
+                raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
+            ).height
 
-        pipe = Pipeline().source("file_path")
+        pipe = Pipeline().source("file_path", allowed_roots=["*"])
         with pytest.raises(
             pl.exceptions.ComputeError, match="Failed to read local file"
         ) as via_source:
@@ -221,9 +245,11 @@ class TestSharedMechanismWithFilePathSource:
         with pytest.raises(
             pl.exceptions.ComputeError, match="Failed to read remote file"
         ) as via_read_bytes:
-            df.with_columns(raw=pl.col("path").cv.read_bytes()).height
+            df.with_columns(
+                raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
+            ).height
 
-        pipe = Pipeline().source("file_path")
+        pipe = Pipeline().source("file_path", allowed_roots=["*"])
         with pytest.raises(
             pl.exceptions.ComputeError, match="Failed to read remote file"
         ) as via_source:
@@ -242,9 +268,13 @@ class TestSharedMechanismWithFilePathSource:
         df = pl.DataFrame({"path": [str(path)]})
 
         via_path = df.with_columns(
-            out=pl.col("path").cv.pipe(Pipeline().source("file_path")).sink("png")
+            out=pl.col("path")
+            .cv.pipe(Pipeline().source("file_path", allowed_roots=["*"]))
+            .sink("png")
         )["out"][0]
-        via_bytes = df.with_columns(raw=pl.col("path").cv.read_bytes()).with_columns(
+        via_bytes = df.with_columns(
+            raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
+        ).with_columns(
             out=pl.col("raw").cv.pipe(Pipeline().source("image_bytes")).sink("png")
         )["out"][0]
         assert via_path == via_bytes
@@ -263,7 +293,9 @@ class TestCompositionWithMetadata:
         path.write_bytes(_png(37, 11, value=5))
         df = pl.DataFrame({"path": [str(path)]})
 
-        out = df.with_columns(raw=pl.col("path").cv.read_bytes()).with_columns(
+        out = df.with_columns(
+            raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
+        ).with_columns(
             w=pl.col("raw").cv.width(),
             h=pl.col("raw").cv.height(),
         )
@@ -281,7 +313,7 @@ class TestCompositionWithMetadata:
         df = pl.DataFrame({"path": paths})
         pipe = Pipeline().source("image_bytes").resize(height=4, width=4)
         result = (
-            df.with_columns(raw=pl.col("path").cv.read_bytes())
+            df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))
             .filter(pl.col("raw").cv.width() > 20)
             .with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
         )
@@ -310,7 +342,7 @@ class TestStreaming:
             paths.append(str(p))
 
         lf = pl.LazyFrame({"path": paths}).with_columns(
-            raw=pl.col("path").cv.read_bytes()
+            raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
         )
         eager = lf.collect()["raw"].to_list()
         streamed = lf.collect(engine="streaming")["raw"].to_list()
@@ -331,7 +363,9 @@ class TestErrorHandling:
         path.write_bytes(_png(6, 6, value=42))
         df = pl.DataFrame({"path": [str(path), None]})
 
-        got = df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"].to_list()
+        got = df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))[
+            "raw"
+        ].to_list()
         assert got == [path.read_bytes(), None]
 
     def test_on_error_null_isolates_the_failing_row(self, tmp_path: Path) -> None:
@@ -340,26 +374,30 @@ class TestErrorHandling:
         missing = str(tmp_path / "gone.png")
         df = pl.DataFrame({"path": [str(good), missing]})
 
-        got = df.with_columns(raw=pl.col("path").cv.read_bytes(on_error="null"))[
-            "raw"
-        ].to_list()
+        got = df.with_columns(
+            raw=pl.col("path").cv.read_bytes(allowed_roots=["*"], on_error="null")
+        )["raw"].to_list()
         assert got == [good.read_bytes(), None]
 
     def test_on_error_raise_is_the_default(self, tmp_path: Path) -> None:
         df = pl.DataFrame({"path": [str(tmp_path / "gone.png")]})
         with pytest.raises(pl.exceptions.ComputeError):
-            df.with_columns(raw=pl.col("path").cv.read_bytes()).height
+            df.with_columns(
+                raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
+            ).height
 
     def test_all_null_column_yields_all_null_binary(self) -> None:
         df = pl.DataFrame({"path": [None, None]}, schema={"path": pl.Null})
-        out = df.with_columns(raw=pl.col("path").cv.read_bytes())
+        out = df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["*"]))
         assert out["raw"].to_list() == [None, None]
         assert out.schema["raw"] == pl.Binary
 
     def test_non_string_column_is_rejected(self) -> None:
         df = pl.DataFrame({"path": [1, 2, 3]})
         with pytest.raises(pl.exceptions.ComputeError, match="String column") as exc:
-            df.with_columns(raw=pl.col("path").cv.read_bytes()).height
+            df.with_columns(
+                raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
+            ).height
         assert "String column" in str(exc.value)
 
 
@@ -368,14 +406,16 @@ class TestPlanTimeValidation:
 
     def test_invalid_on_error_rejected_before_execution(self) -> None:
         with pytest.raises(ValueError, match="Unknown on_error value"):
-            pl.col("path").cv.read_bytes(on_error="skip")
+            pl.col("path").cv.read_bytes(allowed_roots=["*"], on_error="skip")
 
     def test_invalid_cloud_options_type_rejected(self) -> None:
         with pytest.raises(TypeError, match="cloud_options must be"):
-            pl.col("path").cv.read_bytes(cloud_options=["not", "options"])
+            pl.col("path").cv.read_bytes(
+                allowed_roots=["*"], cloud_options=["not", "options"]
+            )
 
     def test_output_dtype_is_binary_at_plan_time(self) -> None:
         lf = pl.LazyFrame({"path": ["a.png"]}).with_columns(
-            raw=pl.col("path").cv.read_bytes()
+            raw=pl.col("path").cv.read_bytes(allowed_roots=["*"])
         )
         assert lf.collect_schema()["raw"] == pl.Binary

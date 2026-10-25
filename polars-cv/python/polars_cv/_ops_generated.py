@@ -1915,13 +1915,17 @@ class _OpsMixin:
         followed by a resize is not bit-identical to a full decode and the same
         resize, hence the explicit opt-in.
 
-        ``allowed_roots`` restricts which locations a path column may read from.
-        An entry that parses as a remote URI (``"s3://bucket/public/"``) is
-        matched as a URI prefix, anything else (``"/srv/images"``) as a local
-        directory. Local paths are canonicalized first, so ``..`` and symlinks
-        cannot escape, and matching is component-wise (``"/srv/images"`` does not
-        admit ``"/srv/images-private"``). A path matching no entry is refused, and
-        the refusal is subject to ``on_error``.
+        ``allowed_roots`` names which locations a path column may read from, and a
+        path column reads nothing without it: reading is default-deny, and the
+        query fails naming this option (under every ``on_error``). An entry that
+        parses as a remote URI (``"s3://bucket/public/"``) is matched as a URI
+        prefix, anything else (``"/srv/images"``) as a local directory. Local
+        paths are canonicalized first, so ``..`` and symlinks cannot escape, and
+        matching is component-wise (``"/srv/images"`` does not admit
+        ``"/srv/images-private"``). A path matching no entry is refused, and the
+        refusal is subject to ``on_error``. ``["*"]`` alone opts in to reading any
+        path, local or remote; ``[]``, and ``"*"`` beside other entries, are
+        refused.
 
         Args:
             format: How to decode the input column. ``array``: A Polars fixed-size
@@ -1937,7 +1941,7 @@ class _OpsMixin:
                 level per axis; its sizes may differ from row to row. ``raw``: Raw
                 bytes, decoded as a flat 1-D buffer of `dtype`.
             allowed_roots: ``auto``, ``file_path``: Locations a path column may read
-                from (unrestricted when absent; see above).
+                from; required to read one (``["*"]`` for any; see above).
             cloud_options: ``auto``, ``file_path``: Cloud-storage credentials: a
                 ``CloudOptions`` or a dict.
             decode_max_size: ``auto``, ``file_path``, ``image_bytes``: Decode only

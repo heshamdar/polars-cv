@@ -207,7 +207,7 @@ class TestRemotePrefetch:
     def test_http_sources_through_prefetch(self, http_image_server: str) -> None:
         urls = [f"{http_image_server}/img/{i}.png" for i in range(8)]
         df = pl.DataFrame({"paths": urls})
-        pipe = Pipeline().source("file_path").grayscale()
+        pipe = Pipeline().source("file_path", allowed_roots=["*"]).grayscale()
         out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
         for i in range(8):
             arr = numpy_from_struct(out["out"][i])
@@ -218,7 +218,7 @@ class TestRemotePrefetch:
     ) -> None:
         url = f"{http_image_server}/img/3.png"
         df = pl.DataFrame({"paths": [url] * 20})
-        pipe = Pipeline().source("file_path")
+        pipe = Pipeline().source("file_path", allowed_roots=["*"])
         out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
         ref = numpy_from_struct(out["out"][0])
         for i in range(20):
@@ -230,7 +230,11 @@ class TestRemotePrefetch:
         good = f"{http_image_server}/img/1.png"
         missing = f"{http_image_server}/img/does-not-exist.png"
         df = pl.DataFrame({"paths": [good, missing, good]})
-        pipe = Pipeline().source("file_path", on_error="null").grayscale()
+        pipe = (
+            Pipeline()
+            .source("file_path", on_error="null", allowed_roots=["*"])
+            .grayscale()
+        )
         out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
@@ -238,7 +242,7 @@ class TestRemotePrefetch:
 
     def test_failing_url_raises_by_default(self, http_image_server: str) -> None:
         df = pl.DataFrame({"paths": [f"{http_image_server}/img/nope.png"]})
-        pipe = Pipeline().source("file_path")
+        pipe = Pipeline().source("file_path", allowed_roots=["*"])
         with pytest.raises(pl.exceptions.ComputeError, match="remote file"):
             df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
 
@@ -248,7 +252,11 @@ class TestRemotePrefetch:
         local = tmp_path / "local.png"
         local.write_bytes(_png(6, 6, 200))
         df = pl.DataFrame({"paths": [str(local), f"{http_image_server}/img/2.png"]})
-        pipe = Pipeline().source("file_path").grayscale()
+        pipe = (
+            Pipeline()
+            .source("file_path", allowed_roots=[str(tmp_path), http_image_server])
+            .grayscale()
+        )
         out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
         assert numpy_from_struct(out["out"][0]).shape == (6, 6, 1)
         assert numpy_from_struct(out["out"][1]).shape == (6, 6, 1)
@@ -258,7 +266,7 @@ class TestRemotePrefetch:
     ) -> None:
         urls = [f"{http_image_server}/img/{i % 8}.png" for i in range(64)]
         df = pl.DataFrame({"paths": urls})
-        pipe = Pipeline().source("file_path").grayscale()
+        pipe = Pipeline().source("file_path", allowed_roots=["*"]).grayscale()
         out = (
             df.lazy()
             .with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
@@ -279,7 +287,7 @@ class TestLocalFileUrls:
         local = tmp_path / "img.png"
         local.write_bytes(_png(6, 4, 77))
         df = pl.DataFrame({"paths": [f"file://{local}"]})
-        pipe = Pipeline().source("file_path").grayscale()
+        pipe = Pipeline().source("file_path", allowed_roots=[str(tmp_path)]).grayscale()
         out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
         assert numpy_from_struct(out["out"][0]).shape == (4, 6, 1)
 
@@ -287,6 +295,6 @@ class TestLocalFileUrls:
         local = tmp_path / "img.png"
         local.write_bytes(_png(6, 4, 77))
         df = pl.DataFrame({"paths": [str(local)]})
-        pipe = Pipeline().source("file_path").grayscale()
+        pipe = Pipeline().source("file_path", allowed_roots=[str(tmp_path)]).grayscale()
         out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
         assert numpy_from_struct(out["out"][0]).shape == (4, 6, 1)

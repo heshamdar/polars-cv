@@ -51,16 +51,19 @@ trip byte-for-byte.
 # Read originals, filter on header metadata, decode only the survivors.
 lf = (
     pl.scan_parquet("images.parquet")
-    .with_columns(raw=pl.col("path").cv.read_bytes())
+    .with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["/srv/images"]))
     .filter(pl.col("raw").cv.width() > 512)
     .with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
 )
 ```
 
-It takes the same `cloud_options` and `on_error` values as
-`Pipeline.source("file_path")`. See
+It takes the same `cloud_options`, `allowed_roots` and `on_error` values as
+`Pipeline.source("file_path")`, and `allowed_roots` is required: path reads are
+default-deny, and `["*"]` is the explicit opt-in to any path. See
 [Reading Bytes Without Decoding](../user-guide/concepts/sources.md#reading-bytes-without-decoding)
-for the memory and streaming behaviour, and for the path-sandboxing caveat.
+for the memory and streaming behaviour, and
+[Path sandbox](../user-guide/concepts/sources.md#path-sandbox-allowed_roots)
+for the rules.
 
 ## Metadata
 
@@ -69,7 +72,10 @@ They take a `Binary` column of encoded images or a `String` column of paths (a
 local file is read only as far as its header needs):
 
 ```python
-df.with_columns(w=pl.col("path").cv.width(), info=pl.col("path").cv.image_info())
+df.with_columns(
+    w=pl.col("path").cv.width(allowed_roots=["/srv/images"]),
+    info=pl.col("path").cv.image_info(allowed_roots=["/srv/images"]),
+)
 ```
 
 See [Metadata & Display](../user-guide/operations/metadata.md) for details.

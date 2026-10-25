@@ -47,16 +47,19 @@ def files(tmp_path) -> dict[str, str]:
 class TestMetadataFromPaths:
     def test_paths_agree_with_bytes(self, files) -> None:
         df = pl.DataFrame({"p": [files["png"], None, files["jpeg"]]})
-        raw = pl.col("p").cv.read_bytes()
+        raw = pl.col("p").cv.read_bytes(allowed_roots=["*"])
         for method in ("width", "height", "channels", "image_dtype"):
-            by_path = df.select(getattr(pl.col("p").cv, method)()).to_series()
+            by_path = df.select(
+                getattr(pl.col("p").cv, method)(allowed_roots=["*"])
+            ).to_series()
             by_bytes = df.select(getattr(raw.cv, method)()).to_series()
             assert by_path.to_list() == by_bytes.to_list(), method
-        assert df.select(pl.col("p").cv.width()).to_series().to_list() == [50, None, 70]
+        widths = df.select(pl.col("p").cv.width(allowed_roots=["*"]))
+        assert widths.to_series().to_list() == [50, None, 70]
 
     def test_image_info_is_every_field_from_one_read(self, files) -> None:
         df = pl.DataFrame({"p": [files["png"], files["jpeg"]]})
-        out = df.select(pl.col("p").cv.image_info())
+        out = df.select(pl.col("p").cv.image_info(allowed_roots=["*"]))
         assert out.schema["p"] == pl.Struct(
             {
                 "width": pl.Int64,
@@ -72,14 +75,19 @@ class TestMetadataFromPaths:
 
     def test_image_info_over_bytes(self, files) -> None:
         df = pl.DataFrame({"p": [files["png"]]})
-        out = df.select(pl.col("p").cv.read_bytes().cv.image_info()).item()
+        out = df.select(
+            pl.col("p").cv.read_bytes(allowed_roots=["*"]).cv.image_info()
+        ).item()
         assert out == {"width": 50, "height": 30, "channels": 4, "dtype": "uint8"}
 
     def test_an_unreadable_path_raises_or_nulls(self, tmp_path) -> None:
         df = pl.DataFrame({"p": [str(tmp_path / "missing.png")]})
         with pytest.raises(pl.exceptions.ComputeError, match="missing.png"):
-            df.select(pl.col("p").cv.width())
-        assert df.select(pl.col("p").cv.width(on_error="null")).item() is None
+            df.select(pl.col("p").cv.width(allowed_roots=[str(tmp_path)]))
+        nulled = df.select(
+            pl.col("p").cv.width(on_error="null", allowed_roots=[str(tmp_path)])
+        )
+        assert nulled.item() is None
 
     def test_allowed_roots_sandbox_the_read(self, files, tmp_path) -> None:
         df = pl.DataFrame({"p": [files["png"]]})

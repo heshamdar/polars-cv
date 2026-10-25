@@ -145,7 +145,11 @@ class TestAutoSource:
         path.write_bytes(png)
         df = pl.DataFrame({"path": [str(path)]})
 
-        pipe = Pipeline().source("auto").resize(height=4, width=4)
+        pipe = (
+            Pipeline()
+            .source("auto", allowed_roots=[str(tmp_path)])
+            .resize(height=4, width=4)
+        )
         result = df.with_columns(out=pl.col("path").cv.pipe(pipe).sink("png"))
         decoded = _decode_png_to_array(result["out"][0])
         assert decoded.shape[:2] == (4, 4)

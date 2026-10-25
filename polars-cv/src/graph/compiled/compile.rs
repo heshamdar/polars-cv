@@ -79,9 +79,12 @@ pub(super) struct PlannedDecode {
     /// Cloud credentials for a `file_path` source, parsed once at the edge
     /// from the source spec's string map.
     pub(super) cloud_options: Option<crate::cloud::CloudOptions>,
-    /// Path allowlist; the unrestricted default when the source declared no
-    /// `allowed_roots`, which is every existing pipeline.
-    pub(super) path_policy: crate::fetch::PathPolicy,
+    /// The path allowlist the source's `allowed_roots` resolve to, or why they
+    /// do not (none given, `[]`, `"*"` beside roots). Kept as the outcome
+    /// rather than raised here: an `auto` source only reads paths when its
+    /// column holds them, and the refusal is made where a path column is
+    /// about to be read ([`CompiledGraph::fetchers`]).
+    pub(super) path_policy: Result<crate::fetch::PathPolicy, String>,
 }
 
 impl PlannedInput {
@@ -195,11 +198,7 @@ impl CompiledGraph {
                             .map(crate::cloud::CloudOptions::from_map)
                             .transpose()
                             .map_err(|e| polars_err!(ComputeError: "{e}"))?,
-                        path_policy: source
-                            .path_settings()
-                            .1
-                            .map(crate::fetch::PathPolicy::new)
-                            .unwrap_or_default(),
+                        path_policy: crate::fetch::PathPolicy::resolve(source.path_settings().1),
                     }))
                 }
                 NodeInput::Node(up) => {

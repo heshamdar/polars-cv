@@ -309,6 +309,9 @@ SOURCES: dict[str, SourceSpec] = {
             carries=_png_carries,
             encode_row=lambda a: _FILES.path_for(encode_codec(a, "png")),
             column_type=lambda _: pl.String,
+            # A path column reads nothing unless told where it may; this one is
+            # the harness's own temp files, so it takes the spelled-out opt-in.
+            extra={"source_kwargs": {"allowed_roots": ["*"]}},
         ),
         SourceSpec(
             name="auto_bytes",

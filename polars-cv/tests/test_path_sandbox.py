@@ -1,7 +1,9 @@
 """`allowed_roots`: what a path column is permitted to read.
 
 A path column is data, and data can come from somewhere you do not control.
-Without `allowed_roots` both path-reading surfaces read whatever the column
+Every path-reading surface is therefore default-deny: without `allowed_roots`
+it reads nothing and says how to allow something, and
+`allowed_roots=["*"]` is the explicit opt-in to reading whatever the column
 names — any local file, any reachable URL — which is right for your own paths
 and wrong for anyone else's.
 
@@ -97,17 +99,79 @@ _SURFACES = {
 }
 
 
+# Replaces `test_unrestricted_by_default`, which pinned the open default as a
+# compatibility promise. That default was removed deliberately (#171): an
+# absent `allowed_roots` is now an error, not an unrestricted read.
 @plugin_required
 @pytest.mark.parametrize("surface", sorted(_SURFACES))
-def test_unrestricted_by_default(tree, surface) -> None:
-    """No `allowed_roots` reads whatever the column names.
+def test_an_absent_allowed_roots_is_refused_naming_the_option(tree, surface) -> None:
+    """No `allowed_roots` reads nothing, and the error names how to read.
 
-    Pinned deliberately: the default cannot change to deny without breaking
-    every existing pipeline, so it is a compatibility promise rather than an
-    oversight.
+    Every surface here passes `on_error="null"`: the refusal is the call's
+    error under that policy too, because a missing sandbox nulling every row
+    would read as a column of unreadable files.
     """
     read = _SURFACES[surface]
-    assert read([str(tree["image"])])[0] is not None
+    with pytest.raises(pl.exceptions.ComputeError) as excinfo:
+        read([str(tree["image"])])
+    message = str(excinfo.value)
+    assert "allowed_roots" in message
+    assert '["*"]' in message, "the message must show the explicit opt-in"
+    assert "/srv/images" in message, "the message must show how to allow a root"
+
+
+@plugin_required
+def test_an_absent_allowed_roots_is_refused_under_on_error_raise(tree) -> None:
+    """The default `on_error="raise"` fails the same way."""
+    df = pl.DataFrame({"p": [str(tree["image"])]})
+    with pytest.raises(pl.exceptions.ComputeError, match="allowed_roots"):
+        df.select(b=pl.col("p").cv.read_bytes())
+    with pytest.raises(pl.exceptions.ComputeError, match="allowed_roots"):
+        df.select(w=pl.col("p").cv.width())
+    pipe = Pipeline().source("file_path")
+    with pytest.raises(pl.exceptions.ComputeError, match="allowed_roots"):
+        df.select(o=pl.col("p").cv.pipe(pipe).sink("png"))
+
+
+@plugin_required
+def test_the_auto_source_denies_a_path_column_but_not_a_binary_one(tree) -> None:
+    """`source()` routes by dtype; only the path route needs a sandbox."""
+    paths = pl.DataFrame({"p": [str(tree["image"])]})
+    pipe = Pipeline().source()
+    with pytest.raises(pl.exceptions.ComputeError, match="allowed_roots"):
+        paths.select(o=pl.col("p").cv.pipe(pipe).sink("png"))
+
+    blobs = pl.DataFrame({"b": [tree["image"].read_bytes()]})
+    assert blobs.select(o=pl.col("b").cv.pipe(pipe).sink("png"))["o"][0] is not None
+
+    allowed = Pipeline().source(allowed_roots=[str(tree["allowed"])])
+    assert paths.select(o=pl.col("p").cv.pipe(allowed).sink("png"))["o"][0] is not None
+
+
+@plugin_required
+@pytest.mark.parametrize("surface", sorted(_SURFACES))
+def test_the_star_opt_in_reads_anywhere(tree, surface) -> None:
+    """`allowed_roots=["*"]` is the spelled-out unrestricted read."""
+    read = _SURFACES[surface]
+    out = read([str(tree["image"]), str(tree["secret_image"])], allowed_roots=["*"])
+    assert out[0] is not None and out[1] is not None
+
+
+@plugin_required
+@pytest.mark.parametrize("surface", sorted(_SURFACES))
+@pytest.mark.parametrize(
+    ("roots", "needle"),
+    [([], "allowed_roots=[]"), (["*", "/srv"], "mixes")],
+    ids=["empty", "star-with-roots"],
+)
+def test_a_list_that_is_not_a_policy_is_refused(tree, surface, roots, needle) -> None:
+    """`[]` would allow nothing and `["*", root]` would make the root decoration:
+    both are mistakes, so both fail instead of degrading to one of the policies
+    they resemble."""
+    read = _SURFACES[surface]
+    with pytest.raises(pl.exceptions.ComputeError, match="allowed_roots") as excinfo:
+        read([str(tree["image"])], allowed_roots=roots)
+    assert needle in str(excinfo.value)
 
 
 @plugin_required
@@ -179,7 +243,7 @@ def test_remote_paths_are_covered_by_the_same_list(tree, surface) -> None:
 @plugin_required
 @pytest.mark.parametrize("surface", sorted(_SURFACES))
 def test_a_file_url_naming_a_host_is_refused(tree, surface, monkeypatch) -> None:
-    """`file://host/abs/path` is no local file, under a policy or without one.
+    """`file://host/abs/path` is no local file, under a policy or the opt-in.
 
     The check once read it as the *relative* path `host/abs/path` while the
     read opened `/abs/path`, so with the working directory inside a root
@@ -189,7 +253,7 @@ def test_a_file_url_naming_a_host_is_refused(tree, surface, monkeypatch) -> None
     monkeypatch.chdir(tree["allowed"])
     escape = f"file://anyhost{tree['secret_image']}"
     assert read([escape], allowed_roots=["."])[0] is None
-    assert read([escape])[0] is None
+    assert read([escape], allowed_roots=["*"])[0] is None
     # The local forms still read, percent-encoding decoded.
     ok = f"file://{tree['image']}".replace("ok.png", "%6Fk.png")
     assert read([ok], allowed_roots=["."])[0] is not None
@@ -231,7 +295,7 @@ def test_refusal_follows_on_error(tree) -> None:
 
 
 def test_unset_allowed_roots_leaves_the_graph_json_unchanged() -> None:
-    """An unrestricted source must serialize exactly as it did before.
+    """A source without `allowed_roots` serializes without the key.
 
     `graph_json` is the compiled-graph cache key, so an always-emitted key —
     even `null` — would split the cache for every existing pipeline and change

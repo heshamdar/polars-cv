@@ -125,7 +125,7 @@ class TestOnErrorNull:
     def test_file_path_bad_path(self) -> None:
         """Bad file path with on_error='null' produces null."""
         df = pl.DataFrame({"path": ["/no/such/file.png"]})
-        pipe = Pipeline().source("file_path", on_error="null")
+        pipe = Pipeline().source("file_path", on_error="null", allowed_roots=["*"])
         expr = pl.col("path").cv.pipe(pipe).sink("png")
         result = df.with_columns(out=expr)
         assert result["out"][0] is None

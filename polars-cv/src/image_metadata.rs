@@ -169,6 +169,10 @@ fn metas(
                 .collect())
         }
         DataType::String | DataType::Null => {
+            // Before the data is looked at, so a missing sandbox is the call's
+            // error whatever the column holds, and under every `on_error`.
+            let policy = crate::fetch::PathPolicy::resolve(kwargs.allowed_roots.as_deref())
+                .map_err(|e| polars_err!(ComputeError: "{}: {}", name, e))?;
             if input.dtype() == &DataType::Null {
                 return Ok((0..input.len()).map(|_| None).collect());
             }
@@ -181,11 +185,6 @@ fn metas(
                 .map(crate::cloud::CloudOptions::from_map)
                 .transpose()
                 .map_err(|e| polars_err!(ComputeError: "{}: {}", name, e))?;
-            let policy = kwargs
-                .allowed_roots
-                .as_deref()
-                .map(crate::fetch::PathPolicy::new)
-                .unwrap_or_default();
             let fetcher = crate::fetch::HeaderFetcher::new(ca, options.as_ref(), &policy);
             (0..ca.len())
                 .map(|row| match fetcher.header(row, extract_metadata) {
