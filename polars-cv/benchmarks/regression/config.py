@@ -74,8 +74,9 @@ class SuiteConfig:
     suite_repeats: int = 3
     selection: Selection = field(default_factory=_default_selection)
     # Pin the thread count so eager/streaming numbers are comparable between
-    # runs and not at the mercy of whatever else the machine is doing.
-    num_threads: int = 1
+    # runs and not at the mercy of whatever else the machine is doing. Four is
+    # the expected mode of operation, so the gate measures that pool.
+    num_threads: int = 4
 
 
 DEFAULT = SuiteConfig()

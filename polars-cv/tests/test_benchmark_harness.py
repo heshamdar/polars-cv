@@ -271,6 +271,16 @@ def test_a_thread_requirement_is_met_or_refused() -> None:
         check_threads(2, selection.parse("pipelines,@threads=4"))
 
 
+def test_the_suite_defaults_to_four_threads_the_expected_mode() -> None:
+    # Four cores is how polars-cv runs in production, so the gate measures
+    # that pool unless a caller asks for another.
+    from benchmarks.regression.config import DEFAULT
+    from benchmarks.regression.run_suite import _parse_args
+
+    assert DEFAULT.num_threads == 4
+    assert _parse_args(["--out", "r.json"]).threads == DEFAULT.num_threads
+
+
 def test_the_cli_refuses_fewer_threads_than_the_selection_needs(
     tmp_path: Path,
 ) -> None:

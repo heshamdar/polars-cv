@@ -27,7 +27,7 @@ they belong to `benchmarks.run_benchmarks` for competitive context.
 
 The default matrix runs the **`pipelines`** scenario at **count=300**, 256×256,
 3 warmup + 10 timed iterations, **3 whole-suite repeats** (best-of), pinned to
-1 thread. Pipelines exercise the full decode → multi-op → encode hot path
+4 threads, the expected mode of operation. Pipelines exercise the full decode → multi-op → encode hot path
 (light / medium / heavy / imagenet / medical) and run in ~3.5 min/run.
 
 These defaults are **empirical**, from same-binary self-checks:
@@ -45,15 +45,15 @@ morsels). The **gate metric is throughput only** — latency is its reciprocal
 
 For broader across-the-board coverage add the other scenarios (slower). The
 `targeted` scenario includes the `split_` cases, which need a parallel pool
-(see `@threads=N` below), so the whole suite runs on 4 threads; for the 1-thread
-view, name its other prefixes:
+(see `@threads=N` below), so the whole suite runs on the 4-thread default:
 
 ```bash
-python -m benchmarks.regression.run_suite --out candidate-t4.json --threads 4 \
+python -m benchmarks.regression.run_suite --out candidate.json \
     --select single_ops,pipelines,e2e,targeted,zero_copy,remote
-python -m benchmarks.regression.run_suite --out candidate-t1.json \
-    --select single_ops,pipelines,e2e,zero_copy,remote,targeted:codec_*,targeted:sink_*,targeted:blob_*,targeted:geom_*
 ```
+
+A single-thread run is still available for comparison, by passing `--threads 1`
+on both sides together with a selection that has no `@threads=N` requirement.
 
 ## Running only what a change can move
 
