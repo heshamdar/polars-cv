@@ -7,6 +7,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Security
+
+- **`zstd-sys` 2.0.16 → 2.1.2**, for RUSTSEC-2026-0410 (the wasm32 allocator
+  shim wrote to address 0 on allocation failure; polars-cv does not target
+  wasm32).
+- **RUSTSEC-2026-0391, -0398 and -0403 are ignored in `deny.toml` until polars
+  moves off zstd 0.13.** Their fixes need `zstd` ≥ 0.14.3 / `zstd-safe` ≥
+  8.2.0, and `polars-arrow` 0.55.2 (the newest published) requires `zstd ^0.13`.
+  None is reachable from the plugin: zstd enters only through polars'
+  parquet/IPC readers, which the plugin never calls; the `seekable` feature
+  (-0398) is not enabled; and polars decodes through `read::Decoder` and the
+  bulk API, which -0403 does not affect. Drop the ignores with the next polars
+  bump.
+
 ### Breaking changes
 
 - **`Pipeline.thumbnail(max_size)` is removed.** It was a second spelling of
