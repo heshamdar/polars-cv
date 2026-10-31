@@ -17,6 +17,12 @@ ignore = [
     # Blocked by a pinned major dependency this workspace does not own the bump for.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41; held by object_store 0.13 — needs an object_store bump" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41; held by object_store 0.13 — needs an object_store bump" },
+    # zstd <0.14.3 / zstd-safe <8.2: held by polars-arrow 0.55 (`zstd = "^0.13"`,
+    # which pins zstd-safe ^7) — needs a polars bump. zstd reaches the plugin only
+    # through polars' parquet/IPC readers, which it never calls.
+    { id = "RUSTSEC-2026-0391", reason = "zstd with_context reuse; held by polars-arrow 0.55 — only caller is polars-parquet's reader, which the plugin never uses" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe Seekable; held by polars-arrow 0.55 — the `seekable` feature is not enabled" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe legacy streaming write::Decoder; held by polars-arrow 0.55 — polars uses read::Decoder/bulk, which are unaffected" },
 ]
 
 [licenses]

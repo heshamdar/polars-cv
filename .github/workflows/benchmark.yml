@@ -19,7 +19,7 @@ on:
         type: string
       threads:
         description: "Pinned thread count"
-        default: "1"
+        default: "4"
         type: string
 
 env:
