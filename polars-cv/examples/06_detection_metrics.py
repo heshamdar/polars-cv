@@ -20,12 +20,17 @@ import matplotlib.pyplot as plt
 import polars as pl
 from detection_data import SyntheticDetectionConfig, generate_detection_dataset
 
-from polars_cv import (
+from polars_cv.metrics import (
     BBoxMatcher,
     ContourMatcher,
+    DetectionTable,
     PreMatchedAdapter,
     average_precision,
+    average_precision_ci_lazy,
     confusion_at_threshold,
+    evaluate_detections,
+    evaluate_heatmaps,
+    evaluate_segmentation,
     f1_at_threshold,
     froc_auc,
     froc_curve_lazy,
@@ -38,13 +43,6 @@ from polars_cv import (
     precision_at_threshold,
     precision_recall_curve,
     recall_at_threshold,
-)
-from polars_cv.metrics import (
-    DetectionTable,
-    average_precision_ci_lazy,
-    evaluate_detections,
-    evaluate_heatmaps,
-    evaluate_segmentation,
 )
 from polars_cv.metrics._types import COL_CLASS_ID, COL_IMAGE_ID
 

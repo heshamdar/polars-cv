@@ -44,6 +44,34 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
   Unit weights recover the standard tie-averaged MW — one implementation, not two,
   cross-checked against the pairwise `ref_weighted_mann_whitney` oracle
 
+## Boundary
+
+Metrics is **downstream** of polars-cv, the way scikit-learn is of NumPy, and
+is headed for a package of its own in which CV metrics are one offering among
+several. `tests/test_metrics_boundary.py` holds the line that move needs
+(scanner and its limits: `tests/_metrics_boundary.py`):
+
+- **Core never imports metrics**, at any level; `import polars_cv` does not
+  load it, and the root does not re-export it. Import from `polars_cv.metrics`.
+- **Generic modules use Polars only**: no polars-cv import (not even under
+  `TYPE_CHECKING`), no CV adapter import, no `.cv`/`.contour`/`.bbox`/`.point`
+  accessor. Every module is generic unless `CV_ADAPTERS` names it.
+- **CV adapters** (`CV_ADAPTERS`: the facade, `_inputs`, `_reports`,
+  `_segmentation`, `_matching` and its `_bbox`/`_contour`) import
+  polars-cv absolutely and only public names: `from polars_cv import X` or
+  `from polars_cv.geometry import X`, `X` in that surface's `__all__`. A
+  private core name an adapter needs is either made public there or
+  defined here (`_contour.FloatOrExpr`).
+
+A helper a generic module needs does not go in an adapter: `_matching/_carry.py`
+(`carry=`, `iou_threshold=`) was split out of `_table.py` so `PreMatchedAdapter`
+and the `Matcher` protocol stay generic. The seam between the tiers is
+`MATCH_SCHEMA` (`_types.py`): metrics' own correspondence contract, which the
+generic `_table.matched_table` reads and checks against each producer's lazy
+schema (a `TypeError` before data moves). polars-cv's `.contour.correspond` /
+`.bbox.correspond` are producers of it; a non-CV matcher produces the same
+struct and gets the same tail (`tests/test_match_schema.py`).
+
 ## Architecture
 
 ```
@@ -58,7 +86,7 @@ estimator, matcher or resampler of its own:
 
 - **L0 inputs** (`_inputs.py`): `group_objects` (long object rows → one row per
   (image, class) with lists, population-complete), `bbox_from_coords`
-  (`geometry/coords.py`).
+  (`polars_cv.geometry`).
 - **L1 matching**: the matchers, `match_detections` (dispatch on the geometry
   dtype). Both matchers end in the one shared tail, `_matching/_table.py`
   (`matched_table` / `explode_matches`): never re-implement the explode or the
@@ -172,7 +200,7 @@ Known traps, each now written another way:
   (`tests/test_join_ratchet.py` refuses one that does not), and `bracket`
   groups null keys.
 - **Per-image measures ride the match (`carry=`)**, resolved once by
-  `_matching._table.carried`: computed in the matcher's own projection over
+  `_matching._carry.carried`: computed in the matcher's own projection over
   the image rows (on the prepared frame before the cache in a sweep), under
   `_carry_<i>` names renamed in the metadata select, so no caller name can
   overwrite a column the match reads.
@@ -322,7 +350,8 @@ metrics/
 ├── _segmentation.py      # segmentation_measures, evaluate_segmentation → SegmentationReport
 ├── _matching/
 │   ├── _protocol.py      # Matcher protocol
-│   ├── _table.py         # the shared tail: thresholds, explode, metadata, sweeps
+│   ├── _carry.py         # carry= and iou_threshold= readers (generic)
+│   ├── _table.py         # the shared tail: explode, metadata, sweeps (checks MATCH_SCHEMA; generic)
 │   ├── _contour.py       # ContourMatcher
 │   ├── _bbox.py          # BBoxMatcher
 │   └── _prematched.py    # PreMatchedAdapter

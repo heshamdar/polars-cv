@@ -23,6 +23,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **The metrics are no longer re-exported from `polars_cv`; import them from
+  `polars_cv.metrics`.** `import polars_cv` loaded the whole metrics layer for
+  every user, and made core and metrics one import graph, so nothing stopped
+  the metrics growing private hooks into core. Metrics is now a downstream
+  layer on polars-cv's public API, the first step towards a package of its
+  own. The 31 names (`evaluate_detections`, `froc_auc`, `ContourMatcher`,
+  `DetectionTable`, …) were already all in `polars_cv.metrics`. There is no
+  shim: a root-level fallback would be the very core-to-metrics import this
+  removes. Migrating: `from polars_cv import froc_auc` becomes
+  `from polars_cv.metrics import froc_auc`.
+  `tests/test_metrics_boundary.py` holds the boundary: core never imports
+  metrics; the metrics' generic modules (statistics, curves, bootstrap, the
+  pre-matched adapter) import nothing from polars-cv and use none of its
+  accessors; and the CV adapters (the contour and bbox matchers, the reports,
+  segmentation) import only names in the `__all__` of `polars_cv` or
+  `polars_cv.geometry`. The matchers' shared tail is generic: it reads
+  metrics' own correspondence contract, `MATCH_SCHEMA`, and refuses a
+  producer whose struct differs before any data moves. It used to read
+  polars-cv's struct by field name, so one with a signed `right_idx` was
+  accepted without error.
 - **`Pipeline.thumbnail(max_size)` is removed.** It was a second spelling of
   `source(..., decode_max_size=max_size)`, which Python re-encoded by merging
   the source's JSON by hand. The source keyword is now the only spelling.

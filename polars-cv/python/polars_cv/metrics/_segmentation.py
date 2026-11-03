@@ -23,7 +23,7 @@ from typing import Literal
 
 import polars as pl
 
-from ..pipeline import Pipeline
+from polars_cv import Pipeline
 
 #: The per-row measures, in output order.
 MEASURES = (

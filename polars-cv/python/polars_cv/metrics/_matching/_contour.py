@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, TypeAlias
 
 import polars as pl
 
-from ..._types import FloatOrExpr, dtype_name_for
-from ...geometry.schemas import CONTOUR_SET_SCHEMA, CORRESPONDENCE_SCHEMA
-from ...lazy import LazyPipelineExpr
-from ...pipeline import Pipeline
+from polars_cv import (
+    CONTOUR_SET_SCHEMA,
+    LazyPipelineExpr,
+    Pipeline,
+    dtype_name_for,
+)
+
 from .._types import (
     COL_IMAGE_ID,
     COL_WEIGHT,
@@ -19,12 +22,11 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-from ._table import Carry, carried, iou_thresholds, matched_table
+from ._carry import Carry, carried, iou_thresholds
+from ._table import matched_table
 
-#: Field names read off the published schema rather than spelled again here.
-#: A private copy of this struct's layout is exactly what the correspondence
-#: refactor removed; re-typing the names would restore it in miniature.
-_RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in CORRESPONDENCE_SCHEMA.fields)
+#: A matcher parameter that is a literal or a per-row Polars expression.
+FloatOrExpr: TypeAlias = float | pl.Expr
 
 # ---------------------------------------------------------------------------
 # Source format detection

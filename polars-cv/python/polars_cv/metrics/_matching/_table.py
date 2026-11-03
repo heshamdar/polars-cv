@@ -15,7 +15,6 @@ from dataclasses import replace
 
 import polars as pl
 
-from ...geometry.schemas import CORRESPONDENCE_SCHEMA
 from .._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -30,85 +29,29 @@ from .._types import (
     COL_SCORE,
     COL_WEIGHT,
     DEFAULT_CLASS,
-    IMAGE_META_SCHEMA,
+    MATCH_SCHEMA,
     DetectionTable,
-    ensure_columns_exist,
 )
 
-_RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in CORRESPONDENCE_SCHEMA.fields)
-
-#: What a matcher's ``carry=`` takes: columns of the frame that defines
-#: ``image_metadata``, or expressions over it, each named by its output name.
-Carry = Sequence[str | pl.Expr]
-
-#: The ``image_metadata`` columns a table defines itself.
-_RESERVED = (*IMAGE_META_SCHEMA, COL_GROUP_ID, COL_IOU_THRESHOLD)
+_RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in MATCH_SCHEMA.fields)
 
 
-def carried(carry: Carry | None, schema_names: Sequence[str]) -> dict[str, pl.Expr]:
-    """``carry`` as ``{name: expression}``, checked against ``schema_names``.
+def _check_match(frame: pl.LazyFrame) -> None:
+    """Refuse a correspondence that is not ``MATCH_SCHEMA``, before data moves.
 
-    The one reading of every matcher's ``carry=``: a string is that column, an
-    expression is named by its output name (so it must have one: a bare
-    literal is refused rather than called ``"literal"``).
+    Read from the lazy schema, so a producer that drifts (a renamed field, a
+    signed index, a missing ``duplicate``) fails here rather than being read
+    by field name into something else.
 
     Raises:
-        ValueError: A named column is missing, an expression has no name of
-            its own or several outputs, a name repeats, or a name is one
-            ``image_metadata`` defines itself.
-        TypeError: An entry is neither a string nor an expression.
+        TypeError: The ``_match`` column is any other dtype.
     """
-    out: dict[str, pl.Expr] = {}
-    for item in carry or ():
-        if isinstance(item, str):
-            name, expr = item, pl.col(item)
-        elif isinstance(item, pl.Expr):
-            if item.meta.has_multiple_outputs():
-                raise ValueError(f"carry: {item} has several outputs; carry each")
-            aliased = not item.meta.undo_aliases().meta.eq(item)
-            if not aliased and not item.meta.root_names():
-                raise ValueError(
-                    f"carry: {item} reads no column, so its name would be "
-                    "'literal'; name it with .alias()"
-                )
-            name, expr = item.meta.output_name(), item
-        else:
-            raise TypeError(f"carry takes column names or expressions, got {item!r}")
-        if name in _RESERVED:
-            raise ValueError(
-                f"carry: {name!r} is reserved: image_metadata defines it itself"
-            )
-        if name in out:
-            raise ValueError(f"carry: {name!r} is carried more than once")
-        if isinstance(item, str):
-            ensure_columns_exist(schema_names, [item])
-        out[name] = expr
-    return out
-
-
-def iou_thresholds(value: float | Sequence[float]) -> tuple[float, ...]:
-    """A matcher's ``iou_threshold`` as a tuple of thresholds.
-
-    One number is one matching; a sequence is a sweep (one matching per
-    threshold, COCO-style). Each must lie in ``(0, 1]``, and a sweep's must be
-    distinct.
-
-    Raises:
-        ValueError: An empty sequence, a repeated threshold, or one outside
-            ``(0, 1]``.
-    """
-    ts = (
-        (float(value),)
-        if isinstance(value, (int, float))
-        else tuple(float(t) for t in value)
-    )
-    if not ts:
-        raise ValueError("`iou_threshold` needs at least one threshold.")
-    if len(set(ts)) != len(ts):
-        raise ValueError(f"`iou_threshold` thresholds must be distinct, got {ts}.")
-    if not all(0.0 < t <= 1.0 for t in ts):
-        raise ValueError(f"`iou_threshold` must be in (0, 1], got {ts}.")
-    return ts
+    got = frame.collect_schema()["_match"]
+    if got != MATCH_SCHEMA:
+        raise TypeError(
+            f"a matcher's correspondence is {got}, but the matched table reads "
+            f"MATCH_SCHEMA {MATCH_SCHEMA} (polars_cv.metrics._types)"
+        )
 
 
 def matched_table(
@@ -129,8 +72,9 @@ def matched_table(
         prepared: One row per (image, class) with ``image_id``, ``weight``,
             the prediction scores (``scores_col``, a list aligned with the
             predictions) and the ground-truth objects (``gt_col``, a list).
-        match: The correspondence expression at a threshold (a
-            ``CORRESPONDENCE_SCHEMA`` struct per row).
+        match: The correspondence expression at a threshold: a
+            ``MATCH_SCHEMA`` struct per row, which is checked (``TypeError``
+            otherwise).
         thresholds: The thresholds (several for a sweep), or one per-row
             expression.
         scores_col: The prediction score list column.
@@ -138,7 +82,7 @@ def matched_table(
         class_col: The row's class column, or ``None`` for one class.
         group_col: An optional grouping column copied to the metadata.
         carry: Columns computed on ``prepared`` and copied to the metadata
-            (see :func:`carried`).
+            (see :func:`._carry.carried`).
         ignore_duplicates: Drop a repeated hit on a claimed target rather than
             count it as a false positive.
     """
@@ -162,8 +106,11 @@ def matched_table(
     else:
         base, alongside = prepared, computed
     gt = pl.col(gt_col)
+    matched = [base.with_columns(*alongside, _match=match(t)) for t in ts]
+    for frame in matched:
+        _check_match(frame)
     levels = [
-        base.with_columns(*alongside, _match=match(t)).select(
+        frame.select(
             COL_IMAGE_ID,
             COL_WEIGHT,
             pl.col(scores_col).alias("_scores"),
@@ -185,7 +132,7 @@ def matched_table(
             *([pl.lit(t, dtype=pl.Float64).alias(COL_IOU_THRESHOLD)] if sweep else []),
             *tmp,
         )
-        for t in ts
+        for t, frame in zip(ts, matched, strict=True)
     ]
     # Cached so the detections and the metadata derived below run the
     # correspond graph once under the caller's single collect.
