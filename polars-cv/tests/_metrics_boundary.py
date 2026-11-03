@@ -74,7 +74,6 @@ CV_ADAPTERS: frozenset[str] = frozenset(
         "polars_cv.metrics._matching",
         "polars_cv.metrics._matching._bbox",
         "polars_cv.metrics._matching._contour",
-        "polars_cv.metrics._matching._table",
     }
 )
 

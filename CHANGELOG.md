@@ -38,7 +38,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   pre-matched adapter) import nothing from polars-cv and use none of its
   accessors; and the CV adapters (the contour and bbox matchers, the reports,
   segmentation) import only names in the `__all__` of `polars_cv` or
-  `polars_cv.geometry`.
+  `polars_cv.geometry`. The matchers' shared tail is generic: it reads
+  metrics' own correspondence contract, `MATCH_SCHEMA`, and refuses a
+  producer whose struct differs before any data moves. It used to read
+  polars-cv's struct by field name, so one with a signed `right_idx` was
+  accepted without error.
 - **`Pipeline.thumbnail(max_size)` is removed.** It was a second spelling of
   `source(..., decode_max_size=max_size)`, which Python re-encoded by merging
   the source's JSON by hand. The source keyword is now the only spelling.

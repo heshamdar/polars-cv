@@ -57,7 +57,7 @@ several. `tests/test_metrics_boundary.py` holds the line that move needs
   `TYPE_CHECKING`), no CV adapter import, no `.cv`/`.contour`/`.bbox`/`.point`
   accessor. Every module is generic unless `CV_ADAPTERS` names it.
 - **CV adapters** (`CV_ADAPTERS`: the facade, `_inputs`, `_reports`,
-  `_segmentation`, `_matching` and its `_bbox`/`_contour`/`_table`) import
+  `_segmentation`, `_matching` and its `_bbox`/`_contour`) import
   polars-cv absolutely and only public names: `from polars_cv import X` or
   `from polars_cv.geometry import X`, `X` in that surface's `__all__`. A
   private core name an adapter needs is either made public there or
@@ -65,8 +65,12 @@ several. `tests/test_metrics_boundary.py` holds the line that move needs
 
 A helper a generic module needs does not go in an adapter: `_matching/_carry.py`
 (`carry=`, `iou_threshold=`) was split out of `_table.py` so `PreMatchedAdapter`
-and the `Matcher` protocol stay generic. `_table.matched_table` reads
-polars-cv's `CORRESPONDENCE_SCHEMA`, which is the seam between the two tiers.
+and the `Matcher` protocol stay generic. The seam between the tiers is
+`MATCH_SCHEMA` (`_types.py`): metrics' own correspondence contract, which the
+generic `_table.matched_table` reads and checks against each producer's lazy
+schema (a `TypeError` before data moves). polars-cv's `.contour.correspond` /
+`.bbox.correspond` are producers of it; a non-CV matcher produces the same
+struct and gets the same tail (`tests/test_match_schema.py`).
 
 ## Architecture
 
@@ -347,7 +351,7 @@ metrics/
 ├── _matching/
 │   ├── _protocol.py      # Matcher protocol
 │   ├── _carry.py         # carry= and iou_threshold= readers (generic)
-│   ├── _table.py         # the shared tail: explode, metadata, sweeps (reads CORRESPONDENCE_SCHEMA)
+│   ├── _table.py         # the shared tail: explode, metadata, sweeps (checks MATCH_SCHEMA; generic)
 │   ├── _contour.py       # ContourMatcher
 │   ├── _bbox.py          # BBoxMatcher
 │   └── _prematched.py    # PreMatchedAdapter

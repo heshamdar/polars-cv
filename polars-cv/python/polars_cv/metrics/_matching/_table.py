@@ -15,8 +15,6 @@ from dataclasses import replace
 
 import polars as pl
 
-from polars_cv import CORRESPONDENCE_SCHEMA
-
 from .._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -31,10 +29,29 @@ from .._types import (
     COL_SCORE,
     COL_WEIGHT,
     DEFAULT_CLASS,
+    MATCH_SCHEMA,
     DetectionTable,
 )
 
-_RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in CORRESPONDENCE_SCHEMA.fields)
+_RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in MATCH_SCHEMA.fields)
+
+
+def _check_match(frame: pl.LazyFrame) -> None:
+    """Refuse a correspondence that is not ``MATCH_SCHEMA``, before data moves.
+
+    Read from the lazy schema, so a producer that drifts (a renamed field, a
+    signed index, a missing ``duplicate``) fails here rather than being read
+    by field name into something else.
+
+    Raises:
+        TypeError: The ``_match`` column is any other dtype.
+    """
+    got = frame.collect_schema()["_match"]
+    if got != MATCH_SCHEMA:
+        raise TypeError(
+            f"a matcher's correspondence is {got}, but the matched table reads "
+            f"MATCH_SCHEMA {MATCH_SCHEMA} (polars_cv.metrics._types)"
+        )
 
 
 def matched_table(
@@ -55,8 +72,9 @@ def matched_table(
         prepared: One row per (image, class) with ``image_id``, ``weight``,
             the prediction scores (``scores_col``, a list aligned with the
             predictions) and the ground-truth objects (``gt_col``, a list).
-        match: The correspondence expression at a threshold (a
-            ``CORRESPONDENCE_SCHEMA`` struct per row).
+        match: The correspondence expression at a threshold: a
+            ``MATCH_SCHEMA`` struct per row, which is checked (``TypeError``
+            otherwise).
         thresholds: The thresholds (several for a sweep), or one per-row
             expression.
         scores_col: The prediction score list column.
@@ -88,8 +106,11 @@ def matched_table(
     else:
         base, alongside = prepared, computed
     gt = pl.col(gt_col)
+    matched = [base.with_columns(*alongside, _match=match(t)) for t in ts]
+    for frame in matched:
+        _check_match(frame)
     levels = [
-        base.with_columns(*alongside, _match=match(t)).select(
+        frame.select(
             COL_IMAGE_ID,
             COL_WEIGHT,
             pl.col(scores_col).alias("_scores"),
@@ -111,7 +132,7 @@ def matched_table(
             *([pl.lit(t, dtype=pl.Float64).alias(COL_IOU_THRESHOLD)] if sweep else []),
             *tmp,
         )
-        for t in ts
+        for t, frame in zip(ts, matched, strict=True)
     ]
     # Cached so the detections and the metadata derived below run the
     # correspond graph once under the caller's single collect.
