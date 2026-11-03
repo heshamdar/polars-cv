@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     import polars as pl
 
     from .._types import DetectionTable
-    from ._table import Carry
+    from ._carry import Carry
 
 
 @runtime_checkable

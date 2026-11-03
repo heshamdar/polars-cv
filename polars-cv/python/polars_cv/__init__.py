@@ -10,6 +10,9 @@ Example:
     >>>
     >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
     >>> df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
+
+Detection and segmentation metrics live in :mod:`polars_cv.metrics`, a layer
+built on this package's public API; importing ``polars_cv`` does not load it.
 """
 
 from __future__ import annotations
@@ -52,39 +55,6 @@ from .geometry.points import PointNamespace
 from .hashing import hamming_distance, hash_similarity
 from .lazy import LazyPipelineExpr
 from .masks import mask_dice, mask_iou, region_stats
-from .metrics import (
-    BBoxMatcher,
-    ConfusionResult,
-    ContourMatcher,
-    DetectionTable,
-    MetricResult,
-    PrecisionRecallResult,
-    PreMatchedAdapter,
-    average_precision,
-    average_precision_ci_lazy,
-    bootstrap_ci,
-    confusion_at_threshold,
-    evaluate_detections,
-    evaluate_heatmaps,
-    evaluate_segmentation,
-    f1_at_threshold,
-    froc_auc,
-    froc_auc_ci_lazy,
-    froc_curve_lazy,
-    froc_operating_range,
-    froc_sensitivity_at_fp,
-    froc_summary_table,
-    lroc_auc,
-    lroc_auc_ci_lazy,
-    lroc_curve_lazy,
-    lroc_sensitivity_at_fpf,
-    match_detections,
-    mean_average_precision,
-    precision_at_threshold,
-    precision_recall_curve,
-    recall_at_threshold,
-    segmentation_measures,
-)
 from .numpy_io import numpy_from_column, numpy_from_struct
 from .pipeline import Pipeline
 
@@ -227,42 +197,6 @@ __all__ = [
     "hash_similarity",
     # Display utilities
     "show_images",
-    # Evaluation — one call from predictions and ground truth to a report
-    "evaluate_detections",
-    "evaluate_heatmaps",
-    "evaluate_segmentation",
-    "segmentation_measures",
-    "match_detections",
-    "bootstrap_ci",
-    # Detection metrics — core types
-    "DetectionTable",
-    "MetricResult",
-    # Detection metrics — matchers
-    "ContourMatcher",
-    "BBoxMatcher",
-    "PreMatchedAdapter",
-    # Detection metrics — functions
-    "froc_auc",
-    "froc_curve_lazy",
-    "froc_sensitivity_at_fp",
-    "froc_operating_range",
-    "froc_summary_table",
-    "lroc_auc",
-    "lroc_curve_lazy",
-    "lroc_sensitivity_at_fpf",
-    "froc_auc_ci_lazy",
-    "lroc_auc_ci_lazy",
-    "average_precision_ci_lazy",
-    "precision_recall_curve",
-    "average_precision",
-    "mean_average_precision",
-    "precision_at_threshold",
-    "recall_at_threshold",
-    "f1_at_threshold",
-    "confusion_at_threshold",
-    # Detection metrics — result types
-    "ConfusionResult",
-    "PrecisionRecallResult",
     # Geometry namespaces (registered automatically via decorators)
     "BBoxNamespace",
     "ContourNamespace",

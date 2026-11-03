@@ -15,7 +15,8 @@ from dataclasses import replace
 
 import polars as pl
 
-from ...geometry.schemas import CORRESPONDENCE_SCHEMA
+from polars_cv import CORRESPONDENCE_SCHEMA
+
 from .._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -30,85 +31,10 @@ from .._types import (
     COL_SCORE,
     COL_WEIGHT,
     DEFAULT_CLASS,
-    IMAGE_META_SCHEMA,
     DetectionTable,
-    ensure_columns_exist,
 )
 
 _RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in CORRESPONDENCE_SCHEMA.fields)
-
-#: What a matcher's ``carry=`` takes: columns of the frame that defines
-#: ``image_metadata``, or expressions over it, each named by its output name.
-Carry = Sequence[str | pl.Expr]
-
-#: The ``image_metadata`` columns a table defines itself.
-_RESERVED = (*IMAGE_META_SCHEMA, COL_GROUP_ID, COL_IOU_THRESHOLD)
-
-
-def carried(carry: Carry | None, schema_names: Sequence[str]) -> dict[str, pl.Expr]:
-    """``carry`` as ``{name: expression}``, checked against ``schema_names``.
-
-    The one reading of every matcher's ``carry=``: a string is that column, an
-    expression is named by its output name (so it must have one: a bare
-    literal is refused rather than called ``"literal"``).
-
-    Raises:
-        ValueError: A named column is missing, an expression has no name of
-            its own or several outputs, a name repeats, or a name is one
-            ``image_metadata`` defines itself.
-        TypeError: An entry is neither a string nor an expression.
-    """
-    out: dict[str, pl.Expr] = {}
-    for item in carry or ():
-        if isinstance(item, str):
-            name, expr = item, pl.col(item)
-        elif isinstance(item, pl.Expr):
-            if item.meta.has_multiple_outputs():
-                raise ValueError(f"carry: {item} has several outputs; carry each")
-            aliased = not item.meta.undo_aliases().meta.eq(item)
-            if not aliased and not item.meta.root_names():
-                raise ValueError(
-                    f"carry: {item} reads no column, so its name would be "
-                    "'literal'; name it with .alias()"
-                )
-            name, expr = item.meta.output_name(), item
-        else:
-            raise TypeError(f"carry takes column names or expressions, got {item!r}")
-        if name in _RESERVED:
-            raise ValueError(
-                f"carry: {name!r} is reserved: image_metadata defines it itself"
-            )
-        if name in out:
-            raise ValueError(f"carry: {name!r} is carried more than once")
-        if isinstance(item, str):
-            ensure_columns_exist(schema_names, [item])
-        out[name] = expr
-    return out
-
-
-def iou_thresholds(value: float | Sequence[float]) -> tuple[float, ...]:
-    """A matcher's ``iou_threshold`` as a tuple of thresholds.
-
-    One number is one matching; a sequence is a sweep (one matching per
-    threshold, COCO-style). Each must lie in ``(0, 1]``, and a sweep's must be
-    distinct.
-
-    Raises:
-        ValueError: An empty sequence, a repeated threshold, or one outside
-            ``(0, 1]``.
-    """
-    ts = (
-        (float(value),)
-        if isinstance(value, (int, float))
-        else tuple(float(t) for t in value)
-    )
-    if not ts:
-        raise ValueError("`iou_threshold` needs at least one threshold.")
-    if len(set(ts)) != len(ts):
-        raise ValueError(f"`iou_threshold` thresholds must be distinct, got {ts}.")
-    if not all(0.0 < t <= 1.0 for t in ts):
-        raise ValueError(f"`iou_threshold` must be in (0, 1], got {ts}.")
-    return ts
 
 
 def matched_table(
@@ -138,7 +64,7 @@ def matched_table(
         class_col: The row's class column, or ``None`` for one class.
         group_col: An optional grouping column copied to the metadata.
         carry: Columns computed on ``prepared`` and copied to the metadata
-            (see :func:`carried`).
+            (see :func:`._carry.carried`).
         ignore_duplicates: Drop a repeated hit on a claimed target rather than
             count it as a false positive.
     """

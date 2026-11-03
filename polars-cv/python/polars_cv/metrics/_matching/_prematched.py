@@ -25,7 +25,7 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-from ._table import Carry, carried
+from ._carry import Carry, carried
 
 if TYPE_CHECKING:
     pass
