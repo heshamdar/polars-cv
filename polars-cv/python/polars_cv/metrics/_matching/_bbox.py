@@ -13,8 +13,9 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
+from ._carry import Carry, carried, iou_thresholds
 from ._contour import _confidence_order
-from ._table import Carry, carried, iou_thresholds, matched_table
+from ._table import matched_table
 
 
 class BBoxMatcher:

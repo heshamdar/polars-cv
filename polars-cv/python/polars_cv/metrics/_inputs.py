@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from ..geometry.coords import BoxFormat, bbox_from_coords
-from ..geometry.schemas import BBOX_SCHEMA, CONTOUR_SCHEMA
-from ._matching._table import Carry, carried
+from polars_cv import BBOX_SCHEMA, CONTOUR_SCHEMA
+from polars_cv.geometry import BoxFormat, bbox_from_coords
+
+from ._matching._carry import Carry, carried
 from ._types import COL_CLASS_ID, COL_IMAGE_ID, DEFAULT_CLASS, to_lazy
 
 if TYPE_CHECKING:

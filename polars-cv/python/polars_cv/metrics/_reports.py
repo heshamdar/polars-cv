@@ -33,7 +33,8 @@ from ._types import COL_CLASS_ID, COL_IMAGE_ID, COL_N_GTS, DetectionTable
 from ._weights import weighted_gt_mass
 
 if TYPE_CHECKING:
-    from ..geometry.coords import BoxFormat
+    from polars_cv.geometry import BoxFormat
+
     from ._auc import Extrapolate
     from ._metrics import ConfusionResult, PrecisionRecallResult
     from ._metrics._precision_recall import APInterpolation

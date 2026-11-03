@@ -56,6 +56,11 @@ BAD = {
         sub_pkg="from .m import f\n",
         sub__m="from polars_cv.a import x\n",
     ),
+    "downstream package importing a root that re-exports it": pkg(
+        root="from .metrics import f\n",
+        metrics_pkg="from .stats import f\n",
+        metrics__stats="from polars_cv import Pipeline\nf = 1\n",
+    ),
     "type-checking else branch still runs": pkg(
         a="from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    pass\nelse:\n    from .b import y\n",
         b="from .a import x\n",
@@ -88,6 +93,12 @@ GOOD = {
     ),
     "subpackage init importing its siblings": pkg(
         sub_pkg="from .m import f\n", sub__m="from polars_cv._t import T\n", _t=""
+    ),
+    "downstream package importing the root's public API": pkg(
+        root="from .pipeline import Pipeline\n",
+        pipeline="class Pipeline: ...\n",
+        metrics_pkg="from .stats import f\n",
+        metrics__stats="from polars_cv import Pipeline\nf = 1\n",
     ),
     "relative import climbing out of a subpackage": pkg(
         sub__m="from .._t import T\n", _t=""
