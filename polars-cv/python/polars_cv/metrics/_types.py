@@ -63,6 +63,27 @@ IMAGE_META_SCHEMA: dict[str, pl.DataType] = {
     COL_GT_LABEL: pl.Boolean,
 }  # ty: ignore[invalid-assignment]
 
+#: The correspondence a matcher hands the shared tail
+#: (:func:`._matching._table.matched_table`): per (image, class) row, one entry
+#: per prediction, positionally aligned with its scores. Metrics owns this
+#: contract; any producer meeting it is matched, and ``matched_table`` refuses
+#: any other struct. polars-cv's ``.contour.correspond`` / ``.bbox.correspond``
+#: (``polars_cv.CORRESPONDENCE_SCHEMA``) are producers of it.
+#:
+#: Fields:
+#:     right_idx: The ground-truth object paired with the prediction, null
+#:         where it was left unpaired.
+#:     overlap: The pair's overlap (IoU, or coverage), ``0.0`` where unpaired.
+#:     duplicate: Unpaired, but cleared the threshold against a ground truth
+#:         another prediction had already claimed (``ignore_duplicates``).
+MATCH_SCHEMA = pl.Struct(
+    {
+        "right_idx": pl.List(pl.UInt32),
+        "overlap": pl.List(pl.Float64),
+        "duplicate": pl.List(pl.Boolean),
+    }
+)
+
 
 def _validate_schema(
     schema: pl.Schema,
