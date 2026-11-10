@@ -122,7 +122,7 @@ class BBoxMatcher:
         # Pair predictions with GT boxes. Confidence decides the visit order,
         # which is this layer's choice to make; `correspond` only sees overlap.
         def match(threshold: float | pl.Expr) -> pl.Expr:
-            return pl.col(pred_col).bbox.correspond(  # ty: ignore[unresolved-attribute]
+            return pl.col(pred_col).bbox.correspond(  # ty: ignore[missing-attribute]
                 pl.col(gt_col),
                 threshold=threshold,
                 order=_confidence_order(score_col),

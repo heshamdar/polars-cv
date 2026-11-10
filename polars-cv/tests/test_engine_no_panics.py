@@ -46,7 +46,7 @@ def _blobs(arrays: list[np.ndarray]) -> pl.Series:
     for arr in arrays:
         col = pl.Series("a", arr[np.newaxis])
         if arr.ndim == 1:
-            col = col.cast(pl.Array(col.dtype.inner, arr.shape[0]))  # ty: ignore[unresolved-attribute]
+            col = col.cast(pl.Array(col.dtype.inner, arr.shape[0]))  # ty: ignore[missing-attribute]
         blob = pl.DataFrame({"a": col}).select(
             b=pl.col("a").cv.pipe(Pipeline().source("array")).sink("blob")
         )["b"][0]

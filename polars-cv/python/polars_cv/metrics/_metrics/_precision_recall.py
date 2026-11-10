@@ -70,7 +70,7 @@ class PrecisionRecallResult(MetricResult):
         method: Literal[
             "all_points", "11_point", "101_point", "trapezoidal"
         ] = "all_points",
-    ) -> float:  # ty: ignore[invalid-method-override]
+    ) -> float:  # ty: ignore[incompatible-method-override]
         """Compute Average Precision (AUC of the PR curve).
 
         Args:

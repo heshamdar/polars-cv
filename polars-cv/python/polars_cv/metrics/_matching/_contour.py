@@ -151,7 +151,7 @@ class _SourceHandle:
         """
         if self._expr is not None:
             return self._expr.pipe(build_ops(Pipeline()))
-        return pl.col(self._column).cv.pipe(  # ty: ignore[invalid-argument-type, unresolved-attribute]
+        return pl.col(self._column).cv.pipe(  # ty: ignore[invalid-argument-type, missing-attribute]
             build_ops(Pipeline().source("auto", **(self._kwargs or {})))
         )
 
@@ -846,7 +846,7 @@ class ContourMatcher:
 
         # Pair predictions with GT contours. The order is ours to choose;
         # `correspond` only knows about overlap.
-        preds = pl.col("_pred_contours").contour  # ty: ignore[unresolved-attribute]
+        preds = pl.col("_pred_contours").contour  # ty: ignore[missing-attribute]
 
         def match(threshold: float | pl.Expr) -> pl.Expr:
             if self._match_by == "iou":
