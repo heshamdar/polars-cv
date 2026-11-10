@@ -62,18 +62,20 @@ together with this phase.
 
 ## Phase 2: guard fixtures assert the reason (before the guard is rewritten)
 
-- [ ] `test_metrics_boundary_fixtures.py`: `BAD` maps each case to the
+- [x] `test_metrics_boundary_fixtures.py`: `BAD` maps each case to the
       message fragment it must produce (`core imports`, `depends on
       polars-cv`, `imports a CV adapter`, `accessor`, `not in … __all__`,
       `not a public surface`, `import polars-cv absolutely`, `CV_ADAPTERS
       names`). `test_scanner_rejects` asserts that fragment is in a reported
       line, and that no *other* rule fired.
-- [ ] Watched failing: swap two cases' expected fragments, see both fail,
+- [x] Watched failing: swap two cases' expected fragments, see both fail,
       swap back.
-- [ ] Same treatment for the two layering fixtures this branch added
+- [x] Same treatment for the two layering fixtures this branch added
       (`test_import_layering_fixtures.py`: downstream BAD/GOOD), if that
       file's existing cases can take it without a wider rewrite; otherwise
-      note it and leave the file's convention alone.
+      note it and leave the file's convention alone. *Done as one targeted
+      test (the re-exporting root is reported as a cycle); the file's other
+      cases keep their convention.*
 
 ## Phase 3: tiers become layout (D1): the main change
 
