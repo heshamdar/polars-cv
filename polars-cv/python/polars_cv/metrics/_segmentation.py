@@ -78,7 +78,7 @@ def segmentation_measures(
 
     def binary(col: str | pl.Expr):
         expr = pl.col(col) if isinstance(col, str) else col
-        return expr.cv.pipe(Pipeline().source("auto").threshold(value=threshold))  # ty: ignore[unresolved-attribute]
+        return expr.cv.pipe(Pipeline().source("auto").threshold(value=threshold))  # ty: ignore[missing-attribute]
 
     p, t = binary(pred), binary(target)
     count = Pipeline().reduce_sum()

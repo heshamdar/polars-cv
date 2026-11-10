@@ -427,6 +427,6 @@ def _instance_outlines(lf: pl.LazyFrame, geometry: str, image_id: str) -> pl.Laz
     )
 
     # The plugin refuses a set of any other size, naming the image.
-    regions = pl.col("_regions").contour  # ty: ignore[unresolved-attribute]
+    regions = pl.col("_regions").contour  # ty: ignore[missing-attribute]
     one = regions.single(label=pl.col(image_id).cast(pl.String))
     return extracted.with_columns(one.alias(geometry)).drop("_regions")
