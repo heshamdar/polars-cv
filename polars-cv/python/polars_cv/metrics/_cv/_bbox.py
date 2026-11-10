@@ -6,6 +6,8 @@ from collections.abc import Sequence
 
 import polars as pl
 
+from .._matching._carry import Carry, carried, iou_thresholds
+from .._matching._table import confidence_order, matched_table
 from .._types import (
     COL_IMAGE_ID,
     COL_WEIGHT,
@@ -13,9 +15,6 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-from ._carry import Carry, carried, iou_thresholds
-from ._contour import _confidence_order
-from ._table import matched_table
 
 
 class BBoxMatcher:
@@ -125,7 +124,7 @@ class BBoxMatcher:
             return pl.col(pred_col).bbox.correspond(  # ty: ignore[missing-attribute]
                 pl.col(gt_col),
                 threshold=threshold,
-                order=_confidence_order(score_col),
+                order=confidence_order(score_col),
             )
 
         return matched_table(

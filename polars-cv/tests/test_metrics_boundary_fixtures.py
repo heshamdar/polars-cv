@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from tests._metrics_boundary import accessor_names, public_names, violations
+from tests._metrics_boundary import (
+    accessor_names,
+    generic_modules,
+    public_names,
+    violations,
+)
 
 pytestmark = pytest.mark.structural
-
-#: The adapters of the synthetic package: one module and the facade.
-ADAPTERS = frozenset({"polars_cv.metrics", "polars_cv.metrics.cv"})
 
 
 def pkg(**sources: str) -> dict[str, tuple[str, bool]]:
@@ -21,8 +23,10 @@ def pkg(**sources: str) -> dict[str, tuple[str, bool]]:
 
     The root exports ``Pipeline``; ``geometry`` exports ``to_box``; a private
     ``_types`` holds ``Alias``; ``expr`` registers the ``contour`` namespace.
-    ``metrics`` is a package whose adapter is ``metrics.cv`` (``ADAPTERS``).
-    Keyword ``m__x`` is ``polars_cv.metrics.x``; ``core__x`` is ``polars_cv.x``.
+    ``metrics`` is a package whose CV tier is the package ``metrics._cv`` and
+    whose one generic module is ``metrics.stats``. Keyword ``m__x`` is
+    ``polars_cv.metrics.x`` and ``core__x`` is ``polars_cv.x``; a further
+    ``__`` is a dot (``m___cv__inner`` is ``polars_cv.metrics._cv.inner``).
     """
     modules: dict[str, tuple[str, bool]] = {
         "polars_cv": (
@@ -38,13 +42,14 @@ def pkg(**sources: str) -> dict[str, tuple[str, bool]]:
             "class C: ...\n",
             False,
         ),
-        "polars_cv.metrics": ("from .cv import f\n", True),
-        "polars_cv.metrics.cv": ("def f(): ...\n", False),
+        "polars_cv.metrics": ("from ._cv import f\n", True),
+        "polars_cv.metrics._cv": ("def f(): ...\n", True),
         "polars_cv.metrics.stats": ("import polars as pl\n", False),
     }
     for key, src in sources.items():
         prefix, _, rest = key.partition("__")
-        full = {"m": "polars_cv.metrics.", "core": "polars_cv."}[prefix] + rest
+        full = {"m": "polars_cv.metrics.", "core": "polars_cv."}[prefix]
+        full += rest.replace("__", ".")
         modules[full] = (src, modules.get(full, ("", False))[1])
     return modules
 
@@ -69,27 +74,30 @@ BAD = {
             "if TYPE_CHECKING:\n    from polars_cv import Pipeline\n"
         )
     ),
-    "generic module imports a CV adapter": pkg(m__stats="from .cv import f\n"),
-    "generic module imports a CV adapter in a function": pkg(
-        m__stats="def g():\n    from polars_cv.metrics.cv import f\n"
+    "generic module imports the CV tier": pkg(m__stats="from ._cv import f\n"),
+    "generic module imports the CV tier in a function": pkg(
+        m__stats="def g():\n    from polars_cv.metrics._cv import f\n"
     ),
+    "generic module imports a module inside the CV tier": pkg(
+        m___cv__inner="g = 1\n", m__stats="from ._cv.inner import g\n"
+    ),
+    "generic module imports the facade": pkg(m__stats="from . import f\n"),
     "generic module uses a registered accessor": pkg(
         m__stats="import polars as pl\nx = pl.col('a').contour.area()\n"
     ),
     "adapter imports a private module": pkg(
-        m__cv="from polars_cv._types import Alias\n"
+        m___cv="from polars_cv._types import Alias\n"
     ),
     "adapter imports a public module that is not a surface": pkg(
-        m__cv="from polars_cv.pipeline import Pipeline\n"
+        m___cv="from polars_cv.pipeline import Pipeline\n"
     ),
     "adapter imports a name missing from __all__": pkg(
-        m__cv="from polars_cv import Hidden\n"
+        m___cv="from polars_cv import Hidden\n"
     ),
     "adapter climbs out relatively, even to the root": pkg(
-        m__cv="from .. import Pipeline\n"
+        m___cv="from ... import Pipeline\n"
     ),
-    "adapter imports the root bare": pkg(m__cv="import polars_cv\n"),
-    "adapter list names a missing module": pkg(),
+    "adapter imports the root bare": pkg(m___cv="import polars_cv\n"),
 }
 
 GOOD = {
@@ -99,15 +107,21 @@ GOOD = {
         m__stats="import polars as pl\nx = pl.col('a').list.len().struct.field('b')\n"
     ),
     "adapter imports the root's public names": pkg(
-        m__cv="from polars_cv import Pipeline\n"
+        m___cv="from polars_cv import Pipeline\n"
     ),
     "adapter imports a public surface's names": pkg(
-        m__cv="from polars_cv.geometry import to_box\n"
+        m___cv="from polars_cv.geometry import to_box\n"
     ),
     "adapter uses a registered accessor": pkg(
-        m__cv="import polars as pl\nx = pl.col('a').contour.area()\n"
+        m___cv="import polars as pl\nx = pl.col('a').contour.area()\n"
     ),
-    "adapter imports a generic module": pkg(m__cv="from .stats import pl\n"),
+    "adapter imports a generic module": pkg(m___cv="from ..stats import pl\n"),
+    "module inside the CV tier imports the public API": pkg(
+        m___cv__inner="from polars_cv import Pipeline\n"
+    ),
+    "generic subpackage with generic modules": pkg(
+        m__sub="from .a import x\n", m__sub__a="x = 1\n"
+    ),
     "core imports a third-party package": pkg(core__other="import numpy\n"),
 }
 
@@ -121,27 +135,22 @@ REASON = {
     "generic module imports the root": "depends on polars-cv",
     "generic module imports a public surface": "depends on polars-cv",
     "generic module imports polars-cv only for type checking": "depends on polars-cv",
-    "generic module imports a CV adapter": "imports a CV adapter",
-    "generic module imports a CV adapter in a function": "imports a CV adapter",
+    "generic module imports the CV tier": "imports the CV tier",
+    "generic module imports the CV tier in a function": "imports the CV tier",
+    "generic module imports a module inside the CV tier": "imports the CV tier",
+    "generic module imports the facade": "imports the CV tier",
     "generic module uses a registered accessor": "accessor",
     "adapter imports a private module": "is not a public surface",
     "adapter imports a public module that is not a surface": "is not a public surface",
     "adapter imports a name missing from __all__": "not in polars_cv.__all__",
     "adapter climbs out relatively, even to the root": "import polars-cv absolutely",
     "adapter imports the root bare": "import polars-cv absolutely",
-    "adapter list names a missing module": "CV_ADAPTERS names",
-}
-
-#: ``violations`` takes the adapter set; this BAD case lists a module the
-#: package does not have.
-_ADAPTERS_FOR = {
-    "adapter list names a missing module": ADAPTERS | {"polars_cv.metrics.nope"}
 }
 
 
 @pytest.mark.parametrize("name", sorted(BAD))
 def test_scanner_rejects(name: str) -> None:
-    found = violations(BAD[name], adapters=_ADAPTERS_FOR.get(name, ADAPTERS))
+    found = violations(BAD[name])
     assert found, f"scanner accepted known-bad layout: {name}"
     other = [line for line in found if REASON[name] not in line]
     assert not other, (
@@ -155,7 +164,7 @@ def test_every_bad_case_names_its_reason() -> None:
 
 @pytest.mark.parametrize("name", sorted(GOOD))
 def test_scanner_accepts(name: str) -> None:
-    found = violations(GOOD[name], adapters=ADAPTERS)
+    found = violations(GOOD[name])
     assert not found, f"scanner rejected known-good layout {name}: {found}"
 
 
@@ -186,3 +195,21 @@ def test_no_registered_accessor_is_an_error() -> None:
     """Rule (b)'s accessor check must not pass by matching nothing."""
     with pytest.raises(AssertionError):
         accessor_names(pkg(core__expr="X = 1\n"))
+
+
+def test_the_tiers_come_from_the_layout() -> None:
+    """Generic is everything under metrics but the facade and the CV package."""
+    modules = pkg(m___cv__inner="g = 1\n", m__sub="", m__sub__a="x = 1\n")
+    modules["polars_cv.metrics.sub"] = ("", True)
+    assert generic_modules(modules) == [
+        "polars_cv.metrics.stats",
+        "polars_cv.metrics.sub",
+        "polars_cv.metrics.sub.a",
+    ]
+
+
+def test_a_missing_cv_package_is_an_error() -> None:
+    """Were ``_cv`` renamed, every module would read as generic, or none."""
+    modules = {k: v for k, v in pkg().items() if k != "polars_cv.metrics._cv"}
+    with pytest.raises(AssertionError, match="CV tier"):
+        violations(modules)

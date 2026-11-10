@@ -278,22 +278,24 @@ class TestPreMatchedAdapterIoU:
 def _matcher_implementations() -> list[type]:
     """Every concrete `Matcher` the package exports.
 
-    Derived from `_matching.__all__` rather than listed here: a hand-written
-    list is correct until the day a fourth matcher lands without an entry, and
-    then the conformance sweep below silently stops covering it. `Matcher`
-    itself is excluded — it is the protocol, not an implementation.
+    Derived from the package's `__all__` rather than listed here (the
+    matchers live in two tiers, `_matching` and `_cv`; the facade exports
+    both): a hand-written list is correct until the day a fourth matcher lands
+    without an entry, and then the conformance sweep below silently stops
+    covering it. `Matcher` itself is excluded — it is the protocol, not an
+    implementation.
     """
-    from polars_cv.metrics import _matching
+    from polars_cv import metrics
 
     found = [
         obj
-        for name in _matching.__all__
+        for name in metrics.__all__
         if name != "Matcher"
-        and isinstance(obj := getattr(_matching, name), type)
+        and isinstance(obj := getattr(metrics, name), type)
         and hasattr(obj, "match")
     ]
     assert len(found) >= 3, (
-        f"only {len(found)} matcher(s) derived from _matching.__all__ -- the "
+        f"only {len(found)} matcher(s) derived from metrics.__all__ -- the "
         f"derivation is broken and the sweep below would cover almost nothing"
     )
     return found
@@ -542,7 +544,7 @@ def test_a_detection_scored_nan_carries_no_evidence() -> None:
     the most confident detection. It carries no evidence, as a 0.0 does not,
     so the zero-score filter drops it with the zeros and keeps the scores
     aligned with their contours."""
-    from polars_cv.metrics._matching._contour import _filter_zero_score_detections
+    from polars_cv.metrics._cv._contour import _filter_zero_score_detections
 
     lf = pl.LazyFrame(
         {

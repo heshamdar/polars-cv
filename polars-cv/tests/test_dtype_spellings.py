@@ -277,7 +277,7 @@ def test_contour_source_accepts_boolean_masks() -> None:
     so the declared dtype was always honest and boolean masks worked; the
     rejection broke them.
     """
-    from polars_cv.metrics._matching._contour import _detect_source_info
+    from polars_cv.metrics._cv._contour import _detect_source_info
 
     info = _detect_source_info({"mask": pl.List(pl.List(pl.Boolean))}, "mask")
     assert info.kwargs["dtype"] == "u8"
@@ -291,7 +291,7 @@ def test_contour_source_accepts_boolean_masks() -> None:
 def test_contour_source_rejects_types_with_no_buffer_meaning() -> None:
     """Types whose cast would fail or lose meaning must still be refused up
     front, rather than becoming an f32 source that fails later and deeper."""
-    from polars_cv.metrics._matching._contour import _detect_source_info
+    from polars_cv.metrics._cv._contour import _detect_source_info
 
     for leaf in (pl.String, pl.Duration):
         with pytest.raises(ValueError, match="no meaningful buffer"):

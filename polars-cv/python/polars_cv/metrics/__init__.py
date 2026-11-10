@@ -20,8 +20,17 @@ from ._bootstrap import (
     froc_auc_ci_lazy,
     lroc_auc_ci_lazy,
 )
-from ._inputs import group_objects, match_detections
-from ._matching import BBoxMatcher, ContourMatcher, Matcher, PreMatchedAdapter
+from ._cv import (
+    BBoxMatcher,
+    ContourMatcher,
+    evaluate_detections,
+    evaluate_heatmaps,
+    evaluate_segmentation,
+    match_detections,
+    segmentation_measures,
+)
+from ._inputs import group_objects
+from ._matching import Matcher, PreMatchedAdapter
 from ._metrics import (
     ConfusionResult,
     PrecisionRecallResult,
@@ -41,19 +50,9 @@ from ._metrics import (
     precision_recall_curve,
     recall_at_threshold,
 )
-from ._reports import (
-    COCO_IOU_THRESHOLDS,
-    DetectionReport,
-    ReportMetric,
-    evaluate_detections,
-    evaluate_heatmaps,
-)
+from ._reports import COCO_IOU_THRESHOLDS, DetectionReport, ReportMetric
 from ._result import MetricResult
-from ._segmentation import (
-    SegmentationReport,
-    evaluate_segmentation,
-    segmentation_measures,
-)
+from ._segmentation import SegmentationReport
 from ._statistics import (
     AP,
     CPM,

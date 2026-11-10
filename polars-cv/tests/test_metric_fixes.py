@@ -42,7 +42,7 @@ from polars_cv.metrics._auc_expr import (
     partial_auc,
 )
 from polars_cv.metrics._bootstrap import _bootstrap_table_with_draws
-from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
+from polars_cv.metrics._cv._contour import ContourMatcher, _detect_source_info
 from polars_cv.metrics._metrics._froc import _froc_curve_grouped
 from polars_cv.metrics._metrics._lroc import _build_lroc_curve_grouped
 from polars_cv.metrics._types import (
