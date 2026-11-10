@@ -82,6 +82,15 @@ lazy schema (a `TypeError` before data moves). polars-cv's
 matcher produces the same struct and gets the same tail
 (`tests/test_match_schema.py`).
 
+polars-cv's matchers are today the only producers in the package:
+`PreMatchedAdapter` takes rows matched elsewhere and builds its table through
+`DetectionTable.from_matched`. The two seams are checked differently on
+purpose: a matcher's correspondence by exact dtype (matcher code can cast,
+and `explode_matches` then takes the dtypes as given), a caller-assembled
+frame by column names only. `test_polars_cv_producers_meet_the_contract`
+holds polars-cv's planned dtypes to `MATCH_SCHEMA`; nothing imports
+`CORRESPONDENCE_SCHEMA` into metrics.
+
 ## Architecture
 
 ```

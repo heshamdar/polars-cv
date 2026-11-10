@@ -33,16 +33,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   shim: a root-level fallback would be the very core-to-metrics import this
   removes. Migrating: `from polars_cv import froc_auc` becomes
   `from polars_cv.metrics import froc_auc`.
-  `tests/test_metrics_boundary.py` holds the boundary: core never imports
-  metrics; the metrics' generic modules (statistics, curves, bootstrap, the
-  pre-matched adapter) import nothing from polars-cv and use none of its
-  accessors; and the CV adapters (the contour and bbox matchers, the reports,
-  segmentation) import only names in the `__all__` of `polars_cv` or
-  `polars_cv.geometry`. The matchers' shared tail is generic: it reads
-  metrics' own correspondence contract, `MATCH_SCHEMA`, and refuses a
-  producer whose struct differs before any data moves. It used to read
-  polars-cv's struct by field name, so one with a signed `right_idx` was
-  accepted without error.
+  The boundary is the layout, held by `tests/test_metrics_boundary.py`:
+  `metrics/_cv/` is the CV tier (the contour and bbox matchers,
+  `match_detections`, `evaluate_detections` / `evaluate_heatmaps`,
+  `segmentation_measures` / `evaluate_segmentation`) and imports only names in
+  the `__all__` of `polars_cv` or `polars_cv.geometry`; every other metrics
+  module (statistics, curves, bootstrap, the reports, the pre-matched adapter,
+  the matchers' shared tail) is generic: it imports nothing from polars-cv and
+  uses none of its accessors. Core never imports metrics. The generic tier is
+  also run on its own: copied into a package of another name, with
+  `polars_cv` unimportable, it evaluates pre-matched detections to the same
+  numbers. The matchers' shared tail reads metrics' own correspondence
+  contract, `MATCH_SCHEMA`, and refuses a producer whose struct differs when
+  the table is built. It used to read polars-cv's struct by field name, so a
+  producer with another dtype (a signed `right_idx`) was only refused, if at
+  all, by a cast when the query ran.
 - **`Pipeline.thumbnail(max_size)` is removed.** It was a second spelling of
   `source(..., decode_max_size=max_size)`, which Python re-encoded by merging
   the source's JSON by hand. The source keyword is now the only spelling.

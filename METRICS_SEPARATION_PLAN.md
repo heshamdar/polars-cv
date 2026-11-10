@@ -165,28 +165,29 @@ together with this phase.
 
 ## Phase 4: `MATCH_SCHEMA` (D2)
 
-- [ ] Docstrings state the two policies and why they differ: `_check_match`
+- [x] Docstrings state the two policies and why they differ: `_check_match`
       / `MATCH_SCHEMA` (exact; producers are matcher code) and
       `_validate_schema` (names only; caller-assembled frames), each
       pointing at the other.
-- [ ] `explode_matches` reads its dtypes from `MATCH_SCHEMA`: the
+- [x] `explode_matches` reads its dtypes from `MATCH_SCHEMA`: the
       `pl.lit(None, dtype=pl.UInt32)` / `0.0` / `False` fill literals take
       the field's inner dtype, and the redundant `.cast(pl.UInt32)` on
       `_gt_idx` is deleted (the check already guarantees it). The
       `COL_GT_IDX` output dtype is still asserted by an existing test; if
       none does, add one.
-- [ ] Tie test at the entry point, in `test_match_schema.py`: for
+- [x] Tie test at the entry point, in `test_match_schema.py`: for
       `.contour.correspond`, `.contour.correspond_by_coverage` and
       `.bbox.correspond`, the *lazy* schema of the expression equals
       `MATCH_SCHEMA`. Watched failing by temporarily changing one field of
       `MATCH_SCHEMA`.
-- [ ] `_check_match` runs once, not once per threshold, if the threshold
+- [x] `_check_match` runs once, not once per threshold, if the threshold
       cannot change the dtype; otherwise leave it and say so in the
-      docstring.
-- [ ] CHANGELOG and the commit claim corrected: a signed `right_idx` gave
+      docstring. *Left per threshold: `match` is the producer's callable, so
+      each expression is checked (7 ms for ten); the docstring says so.*
+- [x] CHANGELOG and the commit claim corrected: a signed `right_idx` gave
       correct results (or a cast error on a negative), so the entry says the
       check moves the refusal to plan time, not that it fixes a misread.
-- [ ] `metrics/AGENTS.md`: say plainly that polars-cv's matchers are today's
+- [x] `metrics/AGENTS.md`: say plainly that polars-cv's matchers are today's
       only in-package producers and `PreMatchedAdapter` builds its table
       through `DetectionTable.from_matched`.
 

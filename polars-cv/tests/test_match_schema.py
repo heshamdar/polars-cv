@@ -11,8 +11,10 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from polars_cv import BBOX_SCHEMA, CONTOUR_SET_SCHEMA
 from polars_cv.metrics._matching._table import matched_table
 from polars_cv.metrics._types import MATCH_SCHEMA
+from tests.conftest import plugin_required
 
 
 def _prepared(match_dtype: pl.DataType, match_value: dict) -> pl.LazyFrame:
@@ -100,3 +102,34 @@ def test_a_producer_off_the_contract_is_refused(
 ) -> None:
     with pytest.raises(TypeError, match="MATCH_SCHEMA"):
         _table(_prepared(dtype, value))
+
+
+_CONTOURS = pl.LazyFrame(schema={"a": CONTOUR_SET_SCHEMA, "b": CONTOUR_SET_SCHEMA})
+_BOXES = pl.LazyFrame(schema={"a": pl.List(BBOX_SCHEMA), "b": pl.List(BBOX_SCHEMA)})
+
+
+@plugin_required
+@pytest.mark.parametrize(
+    "frame, producer",
+    [
+        (_CONTOURS, lambda: pl.col("a").contour.correspond(pl.col("b"))),
+        (
+            _CONTOURS,
+            lambda: pl.col("a").contour.correspond_by_coverage(
+                pl.col("b"), tolerance=1.0
+            ),
+        ),
+        (_BOXES, lambda: pl.col("a").bbox.correspond(pl.col("b"))),
+    ],
+    ids=["contour.correspond", "contour.correspond_by_coverage", "bbox.correspond"],
+)
+def test_polars_cv_producers_meet_the_contract(frame: pl.LazyFrame, producer) -> None:
+    """What polars-cv plans for each correspondence is ``MATCH_SCHEMA``.
+
+    The contract is declared once, here in metrics, and polars-cv declares
+    its own ``CORRESPONDENCE_SCHEMA``; nothing imports one into the other.
+    This is where the two are held together, on the lazy schema
+    ``matched_table`` itself checks, so a change to either side fails here by
+    name rather than as a ``TypeError`` in every matcher test.
+    """
+    assert frame.select(m=producer()).collect_schema()["m"] == MATCH_SCHEMA
