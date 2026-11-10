@@ -210,23 +210,25 @@ together with this phase.
 
 ## Phase 6: leftovers
 
-- [ ] `FloatOrExpr` (D3): added to `polars_cv.__all__` and the API docs (and
+- [x] `FloatOrExpr` (D3): added to `polars_cv.__all__` and the API docs (and
       whatever test requires every exported name to be documented);
       `_cv/_contour.py` imports it; the local alias and its `TypeAlias`
-      import are deleted.
-- [ ] `_matching/_prematched.py`: dead `if TYPE_CHECKING: pass` and the
+      import are deleted. *`IntOrExpr` and `BoolOrExpr` exported with it:
+      the user guide already names the three as what a signature shows.*
+- [x] `_matching/_prematched.py`: dead `if TYPE_CHECKING: pass` and the
       then-unused `TYPE_CHECKING` import deleted.
-- [ ] `geometry/AGENTS.md:163`: the sentence justifying
+- [x] `geometry/AGENTS.md:163`: the sentence justifying
       `CORRESPONDENCE_SCHEMA`'s top-level export by the metrics matchers
       reading it is rewritten; they do not import it.
-- [ ] `examples/06_detection_metrics.py`: `COL_CLASS_ID` / `COL_IMAGE_ID`
+- [x] `examples/06_detection_metrics.py`: `COL_CLASS_ID` / `COL_IMAGE_ID`
       come from `polars_cv.metrics._types` (private). Either export them
       from `polars_cv.metrics` or use the literal column names; no private
-      import in an example.
+      import in an example. *Literal column names (`"image_id"`,
+      `"class_id"`), which are the documented ones.*
 
 ## Phase 7: close out
 
-- [ ] CHANGELOG (Unreleased): the layout change, the corrected
+- [x] CHANGELOG (Unreleased): the layout change, the corrected
       `MATCH_SCHEMA` wording, `FloatOrExpr` exported, `ty` pinned.
 - [ ] Review findings re-read one by one against the tree; each is either
       fixed or has a written reason here.

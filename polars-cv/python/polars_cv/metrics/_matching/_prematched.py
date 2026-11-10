@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -26,9 +25,6 @@ from .._types import (
     to_lazy,
 )
 from ._carry import Carry, carried
-
-if TYPE_CHECKING:
-    pass
 
 
 class PreMatchedAdapter:

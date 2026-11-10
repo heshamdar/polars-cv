@@ -44,7 +44,6 @@ from polars_cv.metrics import (
     precision_recall_curve,
     recall_at_threshold,
 )
-from polars_cv.metrics._types import COL_CLASS_ID, COL_IMAGE_ID
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 
@@ -93,14 +92,14 @@ def build_prematched_input_from_table(
     """
     detections_df, meta_df = table.collect()
     detections = detections_df.select(
-        image_id=pl.col(COL_IMAGE_ID),
-        class_id=pl.col(COL_CLASS_ID),
+        image_id=pl.col("image_id"),
+        class_id=pl.col("class_id"),
         score=pl.col("score"),
         is_tp=pl.col("is_tp"),
     )
     population = meta_df.select(
-        image_id=pl.col(COL_IMAGE_ID),
-        class_id=pl.col(COL_CLASS_ID),
+        image_id=pl.col("image_id"),
+        class_id=pl.col("class_id"),
         n_gts=pl.col("n_gts"),
         gt_label=pl.col("gt_label"),
     )

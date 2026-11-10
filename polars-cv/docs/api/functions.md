@@ -242,6 +242,19 @@ from polars_cv import Pipeline, dtype_name_for
 pipe = Pipeline().source("list", dtype=dtype_name_for(df.schema["values"].inner))
 ```
 
+### IntOrExpr / FloatOrExpr / BoolOrExpr
+
+The annotations of a parameter that takes a literal or a per-row Polars
+expression (`int | pl.Expr`, `float | pl.Expr`, `bool | pl.Expr`), exported for
+code that wraps such a parameter in a signature of its own:
+
+```python
+from polars_cv import FloatOrExpr, Pipeline
+
+def binarise(threshold: FloatOrExpr = 0.5) -> Pipeline:
+    return Pipeline().source("auto").threshold(value=threshold)
+```
+
 ### IMAGENET_MEAN / IMAGENET_STD
 
 The ImageNet per-channel RGB mean `[0.485, 0.456, 0.406]` and standard

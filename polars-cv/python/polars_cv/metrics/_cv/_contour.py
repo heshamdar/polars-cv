@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, TypeAlias
+from typing import Any, Callable
 
 import polars as pl
 
 from polars_cv import (
     CONTOUR_SET_SCHEMA,
+    FloatOrExpr,
     LazyPipelineExpr,
     Pipeline,
     dtype_name_for,
@@ -24,9 +25,6 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-
-#: A matcher parameter that is a literal or a per-row Polars expression.
-FloatOrExpr: TypeAlias = float | pl.Expr
 
 # ---------------------------------------------------------------------------
 # Source format detection

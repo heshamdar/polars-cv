@@ -160,7 +160,7 @@ names the offending row — see the `threshold` range check in
 
 ## Schema export policy
 
-- `ANNOTATED_POINT_SCHEMA` is a deliberately geometry-only export (`polars_cv.geometry.ANNOTATED_POINT_SCHEMA`): it describes an internal structure, unlike the user-facing geometry schemas re-exported at the package top level. Import it from `polars_cv.geometry` when needed. `CORRESPONDENCE_SCHEMA` is *not* in that category and is exported at the top level: keeping the old match-result schema geometry-only is why the metrics matchers read its fields by string literal instead of from the declaration.
+- `ANNOTATED_POINT_SCHEMA` is a deliberately geometry-only export (`polars_cv.geometry.ANNOTATED_POINT_SCHEMA`): it describes an internal structure, unlike the user-facing geometry schemas re-exported at the package top level. Import it from `polars_cv.geometry` when needed. `CORRESPONDENCE_SCHEMA` is *not* in that category and is exported at the top level: it is what `.contour.correspond()` / `.bbox.correspond()` return, a result users read. (`polars_cv.metrics` does not import it: it declares the correspondence it accepts as its own `MATCH_SCHEMA`, and `tests/test_match_schema.py` holds the two together.)
 
 ## Arity: one contour or a set of them
 
