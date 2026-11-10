@@ -43,8 +43,8 @@ repos:
       # deps synced but no compiled extension.
       - id: ty-check
         name: ty check
-        description: Type-check the package (matches CI's `uvx ty check`)
-        entry: uvx ty check --project polars-cv
+        description: Type-check the package (the pinned ty CI's typing job runs)
+        entry: uvx ty@0.0.100 check --project polars-cv
         language: system
         files: \.pyi?$
         pass_filenames: false

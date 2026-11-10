@@ -163,7 +163,7 @@ run_check "ruff format" uvx ruff format --check polars-cv/python polars-cv/tests
 # Static type check of the shipped package (config in polars-cv/pyproject.toml
 # under [tool.ty]). Reads the source and the committed .pyi stubs; needs the dev
 # deps synced so polars/numpy imports resolve, but no compiled extension.
-run_check "ty check" uvx ty check --project polars-cv
+run_check "ty check" uvx ty@0.0.100 check --project polars-cv
 
 # `--strict` matches the `docs` job in ci.yml: a warning fails the build instead
 # of scrolling past.

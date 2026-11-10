@@ -37,7 +37,7 @@ Rules for every phase:
       `uv sync --no-install-project` uninstalls the editable package, and the
       subprocess-import tests then fail with `No module named 'polars_cv'`
       (seen once already: 56 failures in the pre-commit structural lane).
-- [ ] Baseline recorded: default pytest lane count (was 7716 passed, 34
+- [x] Baseline recorded: default pytest lane count (was 7716 passed, 34
       skipped, 4 xfailed), `ruff`, `mkdocs build --strict`.
 
 ## Phase 1: `ty` (D4), own commit, **first**
@@ -53,12 +53,12 @@ together with this phase.
       `invalid-method-override` → `incompatible-method-override`
       (`_metrics/_precision_recall.py:73`). Grep the whole repo for other
       uses of both old names.
-- [ ] Pin `ty` to the version that passes, identically in
+- [x] Pin `ty` to the version that passes, identically in
       `scripts/verify.sh:166`, `.github/workflows/ci.yml:313` and
       `.pre-commit-config.yaml:47`. Check whether an existing guard
       (`test_structural_lane.py`, `test_build_efficiency.py`) pins these
       command strings and update it rather than leave it stale.
-- [ ] `uvx ty@<pin> check --project polars-cv` exits 0 with 0 diagnostics.
+- [x] `uvx ty@<pin> check --project polars-cv` exits 0 with 0 diagnostics.
 
 ## Phase 2: guard fixtures assert the reason (before the guard is rewritten)
 
