@@ -53,24 +53,34 @@ several. `tests/test_metrics_boundary.py` holds the line that move needs
 
 - **Core never imports metrics**, at any level; `import polars_cv` does not
   load it, and the root does not re-export it. Import from `polars_cv.metrics`.
+- **The tiers are the layout.** `_cv/` is the CV tier; `__init__.py` is the
+  facade that re-exports both; every other module is generic. A new module is
+  generic unless it is created inside `_cv/`: there is no list to add it to.
 - **Generic modules use Polars only**: no polars-cv import (not even under
-  `TYPE_CHECKING`), no CV adapter import, no `.cv`/`.contour`/`.bbox`/`.point`
-  accessor. Every module is generic unless `CV_ADAPTERS` names it.
-- **CV adapters** (`CV_ADAPTERS`: the facade, `_inputs`, `_reports`,
-  `_segmentation`, `_matching` and its `_bbox`/`_contour`) import
-  polars-cv absolutely and only public names: `from polars_cv import X` or
-  `from polars_cv.geometry import X`, `X` in that surface's `__all__`. A
-  private core name an adapter needs is either made public there or
-  defined here (`_contour.FloatOrExpr`).
+  `TYPE_CHECKING`), no import of `_cv` or the facade, no
+  `.cv`/`.contour`/`.bbox`/`.point` accessor.
+  `test_the_generic_tier_runs_without_polars_cv` copies the generic modules
+  into a package of another name, makes `polars_cv` unimportable and runs a
+  pre-matched evaluation through them, so the move to a separate package is
+  a copy.
+- **The CV tier** (`_cv/`: the contour and bbox matchers, `match_detections`,
+  `evaluate_detections` / `evaluate_heatmaps`, `segmentation_measures` /
+  `evaluate_segmentation`) imports polars-cv absolutely and only public
+  names: `from polars_cv import X` or `from polars_cv.geometry import X`, `X`
+  in that surface's `__all__`. A private core name it needs is either made
+  public there or defined here (`_contour.FloatOrExpr`).
 
-A helper a generic module needs does not go in an adapter: `_matching/_carry.py`
-(`carry=`, `iou_threshold=`) was split out of `_table.py` so `PreMatchedAdapter`
-and the `Matcher` protocol stay generic. The seam between the tiers is
-`MATCH_SCHEMA` (`_types.py`): metrics' own correspondence contract, which the
-generic `_table.matched_table` reads and checks against each producer's lazy
-schema (a `TypeError` before data moves). polars-cv's `.contour.correspond` /
-`.bbox.correspond` are producers of it; a non-CV matcher produces the same
-struct and gets the same tail (`tests/test_match_schema.py`).
+Code that needs no image or geometry does not go in `_cv/`, even when its only
+caller is there: `DetectionReport` (`_reports.py`), `SegmentationReport`
+(`_segmentation.py`), `group_objects` (`_inputs.py`), the `carry=` /
+`iou_threshold=` readers (`_matching/_carry.py`) and the visit order
+(`_matching/_table.confidence_order`) are generic. The seam between the tiers
+is `MATCH_SCHEMA` (`_types.py`): metrics' own correspondence contract, which
+the generic `_table.matched_table` reads and checks against each producer's
+lazy schema (a `TypeError` before data moves). polars-cv's
+`.contour.correspond` / `.bbox.correspond` are producers of it; a non-CV
+matcher produces the same struct and gets the same tail
+(`tests/test_match_schema.py`).
 
 ## Architecture
 
@@ -87,8 +97,9 @@ estimator, matcher or resampler of its own:
 - **L0 inputs** (`_inputs.py`): `group_objects` (long object rows → one row per
   (image, class) with lists, population-complete), `bbox_from_coords`
   (`polars_cv.geometry`).
-- **L1 matching**: the matchers, `match_detections` (dispatch on the geometry
-  dtype). Both matchers end in the one shared tail, `_matching/_table.py`
+- **L1 matching**: the matchers (`_cv/_contour.py`, `_cv/_bbox.py`,
+  `_matching/_prematched.py`), `match_detections` (`_cv/_match.py`: dispatch
+  on the geometry dtype). Both polars-cv matchers end in the one shared tail, `_matching/_table.py`
   (`matched_table` / `explode_matches`): never re-implement the explode or the
   metadata — the class-join duplication fix lives there.
 - **L2 statistics** (`_statistics.py`): every metric is a `Statistic` with
@@ -98,11 +109,12 @@ estimator, matcher or resampler of its own:
   `tests/test_statistics.py::test_every_public_metric_is_classified` fails on a
   public function taking a `DetectionTable` that is neither a `Statistic`'s
   reading nor declared otherwise.
-- **L3 reports** (`_reports.py`, `_segmentation.py`): pick statistics and show
-  them; `report.metrics` maps each shown number to its statistic, which is what
+- **L3 reports** (`_reports.py`, `_segmentation.py`; built from images and
+  geometry by `_cv/_evaluate.py` and `_cv/_segmentation.py`): pick statistics
+  and show them; `report.metrics` maps each shown number to its statistic, which is what
   `report.ci` bootstraps.
 
-1. **Matchers** (`_matching/`) convert raw data into a canonical `DetectionTable` (two lazy frames). All implement the `Matcher` protocol. `ContourMatcher.match` also accepts a pre-decoded `LazyPipelineExpr` (via `_SourceHandle`) so a caller's graph can share the decode.
+1. **Matchers** (`_cv/`, and `_matching/` for the pre-matched one) convert raw data into a canonical `DetectionTable` (two lazy frames). All implement the `Matcher` protocol. `ContourMatcher.match` also accepts a pre-decoded `LazyPipelineExpr` (via `_SourceHandle`) so a caller's graph can share the decode.
 2. **FROC/LROC metric functions** (`_metrics/`) operate on `DetectionTable` and return a `pl.LazyFrame` (`froc_auc`, `froc_curve_lazy`, …) — no result object, no eager `.item()` until the caller collects. The integral is the reusable expression in `_auc_expr.py`.
 3. **PR / Confusion** still return `MetricResult` subclasses (`_result.py`), whose only method is `auc()` (eager PR-curve AUC, with optional partial-AUC range + correction). The FROC/LROC curve helpers do **not** go through `MetricResult`: `froc_sensitivity_at_fp` / `froc_summary_table` / `lroc_sensitivity_at_fpf` build on the lazy `_auc_expr.interpolate_curve_lazy` authority directly and return `LazyFrame`s (the caller collects). Confidence intervals are the free `*_ci_lazy` functions in `_bootstrap.py`, not a result-object method.
 
@@ -345,16 +357,20 @@ metrics/
 ├── _auc_expr.py          # the FROC/LROC integral authority: *_expr + collapse_curve
 ├── _bootstrap.py         # bootstrap_ci (+ the *_ci_lazy delegations) + lazy resampler
 ├── _statistics.py        # Statistic, AP/Recall/…/CPM/FROCAUC/LROCAUC, MeanOver, mean_ap
-├── _inputs.py            # group_objects, match_detections (object tables → DetectionTable)
-├── _reports.py           # evaluate_detections/_heatmaps → DetectionReport
-├── _segmentation.py      # segmentation_measures, evaluate_segmentation → SegmentationReport
-├── _matching/
+├── _inputs.py            # group_objects (object rows → one row per (image, class))
+├── _reports.py           # DetectionReport, ReportMetric
+├── _segmentation.py      # SegmentationReport, MEASURES
+├── _matching/            # generic
 │   ├── _protocol.py      # Matcher protocol
-│   ├── _carry.py         # carry= and iou_threshold= readers (generic)
-│   ├── _table.py         # the shared tail: explode, metadata, sweeps (checks MATCH_SCHEMA; generic)
+│   ├── _carry.py         # carry= and iou_threshold= readers
+│   ├── _table.py         # the shared tail: visit order, explode, metadata, sweeps (checks MATCH_SCHEMA)
+│   └── _prematched.py    # PreMatchedAdapter
+├── _cv/                  # the CV tier: the only part that imports polars-cv
 │   ├── _contour.py       # ContourMatcher
 │   ├── _bbox.py          # BBoxMatcher
-│   └── _prematched.py    # PreMatchedAdapter
+│   ├── _match.py         # match_detections (object tables → DetectionTable)
+│   ├── _evaluate.py      # evaluate_detections/_heatmaps → DetectionReport
+│   └── _segmentation.py  # segmentation_measures, evaluate_segmentation → SegmentationReport
 └── _metrics/
     ├── _froc.py           # froc_auc, froc_curve_lazy, froc_sensitivity_at_fp, froc_summary_table
     ├── _lroc.py           # lroc_auc, lroc_curve_lazy, lroc_sensitivity_at_fpf

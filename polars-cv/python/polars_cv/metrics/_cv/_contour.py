@@ -15,6 +15,8 @@ from polars_cv import (
     dtype_name_for,
 )
 
+from .._matching._carry import Carry, carried, iou_thresholds
+from .._matching._table import confidence_order, matched_table
 from .._types import (
     COL_IMAGE_ID,
     COL_WEIGHT,
@@ -22,8 +24,6 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-from ._carry import Carry, carried, iou_thresholds
-from ._table import matched_table
 
 #: A matcher parameter that is a literal or a per-row Polars expression.
 FloatOrExpr: TypeAlias = float | pl.Expr
@@ -360,25 +360,6 @@ def _score_contours_via(
         )
         .sink("native")
         .alias(output_col)
-    )
-
-
-def _confidence_order(scores_col: str) -> pl.Expr:
-    """Visit order for `correspond`: highest confidence first, ties by index.
-
-    The engine takes a permutation, not scores -- deriving one from confidence
-    is a detection-evaluation choice and belongs here rather than in the CV
-    layer. ``rank(method="ordinal")`` assigns *distinct* ranks in order of
-    appearance, so the ``arg_sort`` that inverts it into a visit order has no
-    ties left to resolve. Sorting the scores directly instead would lean on
-    ``arg_sort`` being stable, which this Polars neither documents nor exposes
-    a ``maintain_order`` flag for -- and the tie-break is exactly what decides
-    which of two equally-confident detections claims a target.
-    """
-    return (
-        pl.col(scores_col)
-        .list.eval(pl.element().rank(method="ordinal", descending=True).arg_sort())
-        .cast(pl.List(pl.UInt32))
     )
 
 
@@ -853,13 +834,13 @@ class ContourMatcher:
                 return preds.correspond(
                     pl.col("_gt_contours"),
                     threshold=threshold,
-                    order=_confidence_order("_pred_scores"),
+                    order=confidence_order("_pred_scores"),
                 )
             return preds.correspond_by_coverage(
                 pl.col("_gt_contours"),
                 tolerance=self._coverage_tolerance,
                 threshold=threshold,
-                order=_confidence_order("_pred_scores"),
+                order=confidence_order("_pred_scores"),
             )
 
         return matched_table(

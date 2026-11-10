@@ -81,83 +81,86 @@ together with this phase.
 
 ### 3a. New run-time guard, written first
 
-- [ ] New test (`test_metrics_boundary.py`):
+- [x] New test (`test_metrics_boundary.py`):
       `test_the_generic_tier_runs_without_polars_cv`. In a subprocess: copy
       every generic module (tier read from the scanner, not a second list)
       into a temp package under another name, make `polars_cv` unimportable
       (`sys.modules["polars_cv"] = None`), import every copied module, then
       run a smoke path (`PreMatchedAdapter().match(...)` → `froc_auc`,
       `average_precision`) and compare against values computed normally.
-- [ ] Watched failing on the current tree for the right reason (a generic
+- [x] Watched failing on the current tree for the right reason (a generic
       module's package `__init__` pulls the CV matchers).
 
 ### 3b. Move generic code out of the CV files
 
-- [ ] `_confidence_order` → `_matching/_table.py` as `confidence_order`
+- [x] `_confidence_order` → `_matching/_table.py` as `confidence_order`
       (it produces the order aligned with the scores the tail reads).
       Deleted from `_contour.py`; `_bbox.py`'s `from ._contour import
       _confidence_order` deleted.
-- [ ] `_reports.py` split: `ReportMetric`, `DetectionReport`,
+- [x] `_reports.py` split: `ReportMetric`, `DetectionReport`,
       `_materialized` stay in generic `_reports.py`;
       `evaluate_detections` / `evaluate_heatmaps` move to `_cv/`. The
       `TYPE_CHECKING` `BoxFormat` import leaves `_reports.py`.
-- [ ] `_inputs.py` split: `group_objects`, `GT_ROW`, `PRED_ROW`,
+- [x] `_inputs.py` split: `group_objects`, `GT_ROW`, `PRED_ROW`,
       `_require`, `_image_ids` stay generic; `match_detections`,
       `_image_columns`, `_geometry_kind`, `_kind_of`, `_instance_outlines`
       and the `polars_cv` imports move to `_cv/`. Confirm each helper's tier
       by what it actually calls, not by this list.
-- [ ] `_segmentation.py` split: `SegmentationReport` (and `MEASURES` if the
+- [x] `_segmentation.py` split: `SegmentationReport` (and `MEASURES` if the
       report reads it) generic; `segmentation_measures`,
       `evaluate_segmentation` to `_cv/`.
 
 ### 3c. Create `metrics/_cv/` and move the CV code
 
-- [ ] `_cv/__init__.py`, `_cv/_contour.py`, `_cv/_bbox.py`, plus modules for
+- [x] `_cv/__init__.py`, `_cv/_contour.py`, `_cv/_bbox.py`, plus modules for
       the detection entry points and segmentation moved in 3b (names chosen
-      when the split is visible; one module per concern).
-- [ ] `_matching/__init__.py` exports only `Matcher` and
+      when the split is visible; one module per concern). *`_match.py`,
+      `_evaluate.py`, `_segmentation.py`.*
+- [x] `_matching/__init__.py` exports only `Matcher` and
       `PreMatchedAdapter`; it imports nothing from `_cv`.
-- [ ] `metrics/__init__.py` (the facade) is the only module outside `_cv/`
+- [x] `metrics/__init__.py` (the facade) is the only module outside `_cv/`
       that imports `_cv`; its `__all__` is unchanged (diff it: same 31+
       names, same objects).
-- [ ] Function-level imports of `ContourMatcher` / `BBoxMatcher` / the
+- [x] Function-level imports of `ContourMatcher` / `BBoxMatcher` / the
       `_contour` helpers hoisted to module level inside `_cv/`
       (`_inputs.py:267`, `_inputs.py:416`, `_reports.py:544` today). If one
       really needs deferring, a comment says which cycle.
-- [ ] **Deleted, not left behind:** `_matching/_contour.py`,
+- [x] **Deleted, not left behind:** `_matching/_contour.py`,
       `_matching/_bbox.py`, the moved functions in `_inputs.py` /
       `_reports.py` / `_segmentation.py`, and any now-unused imports.
       `git grep` for each old dotted path returns nothing.
 
 ### 3d. Rewrite the scanner to read the layout
 
-- [ ] `_metrics_boundary.py`: `CV_ADAPTERS` deleted; `CV_PACKAGE =
+- [x] `_metrics_boundary.py`: `CV_ADAPTERS` deleted; `CV_PACKAGE =
       "polars_cv.metrics._cv"`; generic = downstream, not under
       `CV_PACKAGE`, not the facade (defined as the downstream package's own
       `__init__`, not by name in a set). The "adapter list names a missing
       module" rule and its fixture go with the list.
-- [ ] Rule (b) additionally: a generic module does not import `CV_PACKAGE`
+- [x] Rule (b) additionally: a generic module does not import `CV_PACKAGE`
       (replaces "imports a CV adapter").
-- [ ] `violations()` signature, fixtures (`ADAPTERS` → the synthetic
+- [x] `violations()` signature, fixtures (`ADAPTERS` → the synthetic
       package gets a `metrics._cv`), and the docstring's rules and limits
       updated. The limit about a generic module inside an adapter
       subpackage is deleted: it no longer exists.
-- [ ] Phase-2 reason fragments updated; every BAD still fails for its
+- [x] Phase-2 reason fragments updated; every BAD still fails for its
       stated reason, every GOOD still passes.
 
 ### 3e. Everything that names the old paths
 
-- [ ] Tests: `test_matchers.py:19,545`, `test_metric_fixes.py:45`,
+- [x] Tests: `test_matchers.py:19,545`, `test_metric_fixes.py:45`,
       `test_dtype_spellings.py:280,294`, `test_match_schema.py:14`,
       `test_contour_source.py:99` (prose).
-- [ ] Docs: `AGENTS.md:309` and the boundary row of the canonical-paths
+- [x] Docs: `AGENTS.md:309` and the boundary row of the canonical-paths
       table, `CLAUDE.md` module table, `metrics/AGENTS.md` (Boundary
       section, layer list, file tree), `polars_cv/AGENTS.md`.
-- [ ] Other path-keyed mechanisms, each checked rather than assumed:
+- [x] Other path-keyed mechanisms, each checked rather than assumed (none
+      names a moved path; `test_matchers.py`'s matcher discovery read
+      `_matching.__all__` and now reads the facade's):
       `benchmarks/regression` relevance rules, `tests/_join_ratchet.py`,
       `test_engine_choice.py`, `test_no_python_udfs.py`, `_discovery.py`,
       `mkdocs.yml` / `docs/api/*` `:::` targets, `examples/`.
-- [ ] 3a's test now passes; default pytest lane count is baseline + new
+- [x] 3a's test now passes; default pytest lane count is baseline + new
       tests, with no new skips; `mkdocs build --strict`; `ruff`.
 
 ## Phase 4: `MATCH_SCHEMA` (D2)

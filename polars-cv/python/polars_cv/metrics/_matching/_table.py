@@ -54,6 +54,25 @@ def _check_match(frame: pl.LazyFrame) -> None:
         )
 
 
+def confidence_order(scores_col: str) -> pl.Expr:
+    """Visit order for `correspond`: highest confidence first, ties by index.
+
+    The engine takes a permutation, not scores -- deriving one from confidence
+    is a detection-evaluation choice and belongs here, with the tail that
+    reads the scores, rather than in a matcher or the CV layer. ``rank(method="ordinal")`` assigns *distinct* ranks in order of
+    appearance, so the ``arg_sort`` that inverts it into a visit order has no
+    ties left to resolve. Sorting the scores directly instead would lean on
+    ``arg_sort`` being stable, which this Polars neither documents nor exposes
+    a ``maintain_order`` flag for -- and the tie-break is exactly what decides
+    which of two equally-confident detections claims a target.
+    """
+    return (
+        pl.col(scores_col)
+        .list.eval(pl.element().rank(method="ordinal", descending=True).arg_sort())
+        .cast(pl.List(pl.UInt32))
+    )
+
+
 def matched_table(
     prepared: pl.LazyFrame,
     *,

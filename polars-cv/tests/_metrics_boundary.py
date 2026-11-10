@@ -8,36 +8,43 @@ that move needs, so the move is mechanical when it comes.
 ``test_metrics_boundary_fixtures`` runs it over committed known-bad and
 known-good packages.
 
+The tiers are the layout, not a list. Under the downstream package:
+
+* :data:`CV_PACKAGE` (``polars_cv.metrics._cv``) is the **CV tier**: the
+  matchers and entry points that read images and geometry.
+* the package's own ``__init__`` is the **facade**, which re-exports both.
+* every other module is **generic**: the part that needs Polars only.
+
+So a new module is generic unless it is created inside ``_cv/``, and a
+generic module cannot sit in a package whose ``__init__`` loads polars-cv.
+
 Rules, over **every** import statement (module level, function level and
 ``if TYPE_CHECKING:`` alike — a deferred or type-only import is still a
 dependency the split package would have to satisfy):
 
 (a) **Core never imports metrics.** No module outside :data:`DOWNSTREAM`
     imports one inside it. ``import polars_cv`` must not load the metrics.
-(b) **Generic metrics do not depend on polars-cv.** A metrics module not in
-    :data:`CV_ADAPTERS` imports nothing from polars-cv outside the metrics
-    package, imports no CV adapter, and uses no polars-cv expression
+(b) **Generic metrics do not depend on polars-cv.** A generic module imports
+    nothing from polars-cv outside the metrics package, imports neither the
+    CV tier nor the facade (which loads it), and uses no polars-cv expression
     accessor (``expr.cv.…``, ``expr.contour.…`` — every namespace polars-cv
     registers with ``register_expr_namespace``, read from those calls).
-    This is the part a polars-only metrics package keeps.
-(c) **CV adapters use polars-cv's public API only**: an absolute
+(c) **The CV tier uses polars-cv's public API only**: an absolute
     ``from <surface> import name`` where the surface is in
     :data:`PUBLIC_SURFACES` and ``name`` is in that surface's ``__all__``
     (read from its source). No private module, no relative import climbing
-    out of the metrics package, no bare ``import polars_cv``.
+    out of the metrics package, no bare ``import polars_cv``. The facade is
+    held to the same rule.
 
-A module is generic unless :data:`CV_ADAPTERS` names it, so a new metrics
-module starts under the stricter rule; an adapter entry naming no module is
-itself a violation.
+``test_the_generic_tier_runs_without_polars_cv`` is the run-time form of (b):
+it copies the generic modules out and runs them with ``polars_cv``
+unimportable, which also sees what a scan cannot.
 
 Limits, stated so nobody mistakes this for more than it is:
 
 * It is a source scan. ``importlib.import_module``, ``__import__``,
-  ``getattr(expr, "contour")`` and ``exec`` are invisible to it.
-* Python runs a parent package's ``__init__`` before a submodule, so a generic
-  module inside an adapter subpackage (``_matching/_carry.py``) still loads
-  the adapters at run time. That implicit edge is not modelled; the split
-  will relocate such modules.
+  ``getattr(expr, "contour")`` and ``exec`` are invisible to it (the run-time
+  test above covers the generic tier's).
 * Accessor detection matches the attribute name: a non-polars object with an
   attribute called ``contour`` (or any registered namespace) whose own
   attribute is read would be reported too.
@@ -62,20 +69,9 @@ ROOT = "polars_cv"
 #: ``from polars_cv.geometry import bbox_from_coords``.
 PUBLIC_SURFACES: tuple[str, ...] = ("polars_cv", "polars_cv.geometry")
 
-#: The metrics modules that may use polars-cv: the ones that turn images,
-#: contours and boxes into a ``DetectionTable``, and the package facade that
-#: re-exports them. Everything else in metrics is generic (rule b).
-CV_ADAPTERS: frozenset[str] = frozenset(
-    {
-        "polars_cv.metrics",
-        "polars_cv.metrics._inputs",
-        "polars_cv.metrics._reports",
-        "polars_cv.metrics._segmentation",
-        "polars_cv.metrics._matching",
-        "polars_cv.metrics._matching._bbox",
-        "polars_cv.metrics._matching._contour",
-    }
-)
+#: The CV tier: the one package under :data:`DOWNSTREAM` that may use
+#: polars-cv. Everything else there, bar the facade, is generic (rule b).
+CV_PACKAGE = f"{DOWNSTREAM}._cv"
 
 _REGISTRAR = "register_expr_namespace"
 
@@ -83,6 +79,30 @@ _REGISTRAR = "register_expr_namespace"
 def is_downstream(module: str, downstream: str = DOWNSTREAM) -> bool:
     """Whether ``module`` is the downstream package or inside it."""
     return module == downstream or module.startswith(downstream + ".")
+
+
+def _within(module: str, package: str) -> bool:
+    return module == package or module.startswith(package + ".")
+
+
+def generic_modules(
+    modules: Collection[str],
+    cv: str = CV_PACKAGE,
+    downstream: str = DOWNSTREAM,
+) -> list[str]:
+    """The metrics modules held to rule (b): the part that needs Polars only.
+
+    Raises:
+        AssertionError: ``cv`` is not a package among ``modules`` (renamed or
+            moved): every module would then read as generic, or none.
+    """
+    if cv not in modules or not is_downstream(cv, downstream):
+        raise AssertionError(f"the CV tier {cv} is not a package under {downstream}")
+    return sorted(
+        m
+        for m in modules
+        if is_downstream(m, downstream) and m != downstream and not _within(m, cv)
+    )
 
 
 def _in_core(module: str, root: str, downstream: str) -> bool:
@@ -180,23 +200,20 @@ def _targets(
 
 def violations(
     modules: Mapping[str, tuple[str, bool]],
-    adapters: Collection[str] = CV_ADAPTERS,
+    cv: str = CV_PACKAGE,
     surfaces: Collection[str] = PUBLIC_SURFACES,
     root: str = ROOT,
     downstream: str = DOWNSTREAM,
 ) -> list[str]:
     """Every boundary violation in ``modules``, as printable lines."""
-    out = [
-        f"CV_ADAPTERS names {a}, which is not a metrics module"
-        for a in sorted(adapters)
-        if a not in modules or not is_downstream(a, downstream)
-    ]
+    out: list[str] = []
+    generic_tier = set(generic_modules(modules, cv, downstream))
     public = {s: public_names(modules, s) for s in surfaces}
     accessors = accessor_names(modules, root, downstream)
 
     for name, (source, is_package) in sorted(modules.items()):
         here = is_downstream(name, downstream)
-        generic = here and name not in adapters
+        generic = name in generic_tier
         for node, base in _imports(name, is_package, source):
             if base is None:
                 continue
@@ -207,10 +224,15 @@ def violations(
                     out.append(f"{where} — core imports {downstream}")
                 continue
             if not _in_core(base, root, downstream):
-                inner = [t for t in targets if is_downstream(t, downstream)]
-                if generic and any(t in adapters for t in inner):
+                # An import within metrics: the facade loads the CV tier, so
+                # a generic module may name neither.
+                if generic and any(
+                    t == downstream or _within(t, cv)
+                    for t in targets
+                    if is_downstream(t, downstream)
+                ):
                     out.append(
-                        f"{where} — a generic metrics module imports a CV adapter"
+                        f"{where} — a generic metrics module imports the CV tier"
                     )
                 continue
             if generic:

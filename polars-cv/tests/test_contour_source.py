@@ -96,7 +96,7 @@ def test_contour_schema_is_what_rust_emits(encode_png: "Callable") -> None:
     The contour struct layout used to be written out three times: Rust's
     ``contour_struct_dtype()`` (``src/graph/encode.rs``, the only one execution
     reads), the public ``CONTOUR_SCHEMA``, and a private copy inside
-    ``metrics/_matching/_contour.py`` that did not import the public one. The
+    ``metrics/_cv/_contour.py`` that did not import the public one. The
     two Python copies were kept honest by nothing at all — a field renamed or
     reordered in Rust would have left both still agreeing with each other.
 
