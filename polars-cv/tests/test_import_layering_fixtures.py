@@ -115,3 +115,13 @@ def test_scanner_rejects(name: str) -> None:
 def test_scanner_accepts(name: str) -> None:
     found = violations(GOOD[name])
     assert not found, f"scanner rejected known-good layout {name}: {found}"
+
+
+def test_a_root_reexporting_its_downstream_package_is_a_cycle() -> None:
+    """The downstream exemption covers the root import, never the cycle.
+
+    A downstream module may import the root; if the root imports it back, the
+    report must be the cycle and not the (exempted) root import.
+    """
+    found = violations(BAD["downstream package importing a root that re-exports it"])
+    assert found and all(line.startswith("import cycle") for line in found), found

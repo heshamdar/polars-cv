@@ -111,6 +111,27 @@ GOOD = {
     "core imports a third-party package": pkg(core__other="import numpy\n"),
 }
 
+#: The rule each BAD case must be reported under: a fragment of the message,
+#: required in *every* line reported, so a case cannot pass because some other
+#: rule happened to fire.
+REASON = {
+    "core imports metrics at module level": "core imports",
+    "core imports metrics inside a function": "core imports",
+    "core root imports the metrics subpackage by name": "core imports",
+    "generic module imports the root": "depends on polars-cv",
+    "generic module imports a public surface": "depends on polars-cv",
+    "generic module imports polars-cv only for type checking": "depends on polars-cv",
+    "generic module imports a CV adapter": "imports a CV adapter",
+    "generic module imports a CV adapter in a function": "imports a CV adapter",
+    "generic module uses a registered accessor": "accessor",
+    "adapter imports a private module": "is not a public surface",
+    "adapter imports a public module that is not a surface": "is not a public surface",
+    "adapter imports a name missing from __all__": "not in polars_cv.__all__",
+    "adapter climbs out relatively, even to the root": "import polars-cv absolutely",
+    "adapter imports the root bare": "import polars-cv absolutely",
+    "adapter list names a missing module": "CV_ADAPTERS names",
+}
+
 #: ``violations`` takes the adapter set; this BAD case lists a module the
 #: package does not have.
 _ADAPTERS_FOR = {
@@ -122,6 +143,14 @@ _ADAPTERS_FOR = {
 def test_scanner_rejects(name: str) -> None:
     found = violations(BAD[name], adapters=_ADAPTERS_FOR.get(name, ADAPTERS))
     assert found, f"scanner accepted known-bad layout: {name}"
+    other = [line for line in found if REASON[name] not in line]
+    assert not other, (
+        f"{name}: expected only {REASON[name]!r} violations, also got: {other}"
+    )
+
+
+def test_every_bad_case_names_its_reason() -> None:
+    assert set(REASON) == set(BAD)
 
 
 @pytest.mark.parametrize("name", sorted(GOOD))
