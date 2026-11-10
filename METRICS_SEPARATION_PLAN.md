@@ -193,19 +193,19 @@ together with this phase.
 
 ## Phase 5: remaining guard gaps
 
-- [ ] Accessor rule: in a generic module, *any* attribute named after a
+- [x] Accessor rule: in a generic module, *any* attribute named after a
       registered namespace is reported (catches `ns = expr.contour`).
       Fixtures: bound-to-a-name BAD, Polars' own namespaces GOOD. Limits
       docstring updated (`getattr` still invisible).
-- [ ] Rule (c): a name imported from a public surface must not have a
+- [x] Rule (c): a name imported from a public surface must not have a
       private attribute read off it or off a call of it (`Pipeline._x`,
       `Pipeline()._x`). Fixtures both ways. Stated limit: an instance bound
       to another name is not followed.
-- [ ] `is_downstream` deleted; the scanner uses one predicate exported from
+- [x] `is_downstream` deleted; the scanner uses one predicate exported from
       `_import_layering` (rename `_consumer` to a public name). The
       `(DOWNSTREAM,) = _CONSUMERS` unpacking gets a message if it ever holds
       more than one.
-- [ ] Each new rule watched failing on a mutation of the real tree, as in
+- [x] Each new rule watched failing on a mutation of the real tree, as in
       the review probes.
 
 ## Phase 6: leftovers
