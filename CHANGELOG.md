@@ -110,6 +110,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`IntOrExpr`, `FloatOrExpr` and `BoolOrExpr` are exported from `polars_cv`**:
+  the annotations of a parameter that takes a literal or a per-row expression,
+  for code that wraps one in a signature of its own. The contour matcher kept
+  a private copy of `FloatOrExpr` because core's was not public; that copy is
+  deleted.
+- **`ty` is pinned** (`uvx ty@0.0.100`) in CI, `scripts/verify.sh` and the
+  pre-commit hook, and `test_ty_runs_at_one_pinned_version` holds the three to
+  one version. `ty` renames rules between releases and reports an ignore
+  comment naming an old rule as a warning, which fails the check: unpinned, a
+  new release failed all three gates on `main` with no change to the code and
+  the hook then blocked every commit. Seven ignore comments carry the rules'
+  current names.
+
 - **Every `unsafe` block states why it is sound, and clippy enforces it.**
   `clippy::undocumented_unsafe_blocks` is `deny` for the whole workspace
   (`[workspace.lints.clippy]`, inherited by view-buffer, polars-cv and

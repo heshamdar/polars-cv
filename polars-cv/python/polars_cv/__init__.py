@@ -25,9 +25,12 @@ from ._this import ThisExpr
 from ._types import (
     IMAGENET_MEAN,
     IMAGENET_STD,
+    BoolOrExpr,
     CloudOptions,
     ColorSpace,
+    FloatOrExpr,
     HashAlgorithm,
+    IntOrExpr,
     dtype_name_for,
 )
 from .display import show_images
@@ -177,6 +180,10 @@ __all__ = [
     "ColorSpace",
     "HashAlgorithm",
     "dtype_name_for",
+    # Parameter annotations: a literal or a per-row expression
+    "IntOrExpr",
+    "FloatOrExpr",
+    "BoolOrExpr",
     # ImageNet normalization constants
     "IMAGENET_MEAN",
     "IMAGENET_STD",

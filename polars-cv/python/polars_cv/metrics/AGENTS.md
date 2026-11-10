@@ -67,8 +67,8 @@ several. `tests/test_metrics_boundary.py` holds the line that move needs
   `evaluate_detections` / `evaluate_heatmaps`, `segmentation_measures` /
   `evaluate_segmentation`) imports polars-cv absolutely and only public
   names: `from polars_cv import X` or `from polars_cv.geometry import X`, `X`
-  in that surface's `__all__`. A private core name it needs is either made
-  public there or defined here (`_contour.FloatOrExpr`).
+  in that surface's `__all__`. A private core name it needs is made public
+  there, as `FloatOrExpr` was, never copied here.
 
 Code that needs no image or geometry does not go in `_cv/`, even when its only
 caller is there: `DetectionReport` (`_reports.py`), `SegmentationReport`
