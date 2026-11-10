@@ -131,6 +131,18 @@ def _matches_command(key_words: "list[str]", tokens: "list[str]") -> bool:
     return all(word in remaining for word in key_words[1:])
 
 
+def _command_tokens(command: str) -> "list[str]":
+    """*command* split into tokens, a ``uvx`` tool's version pin dropped.
+
+    ``uvx ty@0.0.100 check`` runs the tool ``ty``; the pin says which release,
+    not which check, so it is classified as ``uvx ty``.
+    """
+    tokens = command.split()
+    if len(tokens) > 1 and tokens[0] == "uvx":
+        tokens[1] = tokens[1].split("@", 1)[0]
+    return tokens
+
+
 def _normalise_command(line: str) -> str:
     """Strip leading ``VAR=value`` assignments from one shell command.
 
@@ -266,7 +278,7 @@ def test_no_ci_check_is_missing_from_the_verify_script() -> None:
     unclassified: list[str] = []
     missing: list[str] = []
     for command in commands:
-        tokens = command.split()
+        tokens = _command_tokens(command)
         matches = [
             key
             for key in _CI_COMMAND_CLASSIFICATION

@@ -310,7 +310,7 @@ jobs:
         # pre-commit hook use (one spelling of the gate, run from the repo root).
         run: |
           uv sync --directory polars-cv --group dev --no-install-project
-          uvx ty check --project polars-cv
+          uvx ty@0.0.100 check --project polars-cv
 
   cargo-deny:
     name: cargo-deny (advisories + licenses)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -238,3 +239,32 @@ def test_the_precommit_hook_runs_the_ci_python_linters() -> None:
         "the ruff hooks must invoke `uvx ruff`, the same resolution CI's lint "
         "job uses, so the hook and CI cannot lint with different ruff versions."
     )
+
+
+def test_ty_runs_at_one_pinned_version() -> None:
+    """CI, ``scripts/verify.sh`` and the pre-commit hook run the same ``ty``.
+
+    ``ty`` is pre-1.0 and renames rules between releases; an ignore comment
+    that names a renamed rule is a warning, and a warning fails the check. Run
+    unpinned (``uvx ty``), a new release failed all three gates at once, on
+    ``main``, with no change to the code — and the pre-commit hook then blocked
+    every commit. So the version is pinned, and the three spellings must agree:
+    two pins that differ are the two-linter skew the ruff hooks were changed to
+    remove. Upgrading is one edit in each file, made together.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    files = {
+        "scripts/verify.sh": repo_root / "scripts" / "verify.sh",
+        ".github/workflows/ci.yml": repo_root / ".github" / "workflows" / "ci.yml",
+        ".pre-commit-config.yaml": repo_root / ".pre-commit-config.yaml",
+    }
+    invocation = re.compile(r"^(?!\s*#).*\buvx\s+ty(?:@(\S+))?\s+check\b", re.M)
+    versions: dict[str, set[str | None]] = {}
+    for name, path in files.items():
+        found = {m.group(1) for m in invocation.finditer(path.read_text())}
+        assert found, f"{name} no longer runs `uvx ty[@version] check`"
+        versions[name] = found
+    unpinned = sorted(name for name, found in versions.items() if None in found)
+    assert not unpinned, f"`uvx ty check` runs unpinned in {unpinned}"
+    distinct = set().union(*versions.values())
+    assert len(distinct) == 1, f"ty is pinned to different versions: {versions}"
