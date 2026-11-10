@@ -120,8 +120,13 @@ def _base(module: str, is_package: bool, node: ast.ImportFrom) -> str | None:
     return ".".join([*package[:keep], *(node.module.split(".") if node.module else [])])
 
 
+def within(module: str, package: str) -> bool:
+    """Whether ``module`` is ``package`` or inside it."""
+    return module == package or module.startswith(package + ".")
+
+
 def _consumer(name: str, downstream: tuple[str, ...]) -> bool:
-    return any(name == d or name.startswith(d + ".") for d in downstream)
+    return any(within(name, d) for d in downstream)
 
 
 def analyse(

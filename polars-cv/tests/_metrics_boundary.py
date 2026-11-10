@@ -26,15 +26,18 @@ dependency the split package would have to satisfy):
     imports one inside it. ``import polars_cv`` must not load the metrics.
 (b) **Generic metrics do not depend on polars-cv.** A generic module imports
     nothing from polars-cv outside the metrics package, imports neither the
-    CV tier nor the facade (which loads it), and uses no polars-cv expression
-    accessor (``expr.cv.…``, ``expr.contour.…`` — every namespace polars-cv
-    registers with ``register_expr_namespace``, read from those calls).
+    CV tier nor the facade (which loads it), and reads no attribute named
+    after a polars-cv expression accessor (``expr.cv``, ``expr.contour`` —
+    every namespace polars-cv registers with ``register_expr_namespace``,
+    read from those calls), whether it is chained on or bound to a name.
 (c) **The CV tier uses polars-cv's public API only**: an absolute
     ``from <surface> import name`` where the surface is in
     :data:`PUBLIC_SURFACES` and ``name`` is in that surface's ``__all__``
     (read from its source). No private module, no relative import climbing
-    out of the metrics package, no bare ``import polars_cv``. The facade is
-    held to the same rule.
+    out of the metrics package, no bare ``import polars_cv``; and no private
+    attribute read off such a name or off a chain that starts from it
+    (``Pipeline._x``, ``Pipeline().source("auto")._x``). The facade is held to
+    the same rule.
 
 ``test_the_generic_tier_runs_without_polars_cv`` is the run-time form of (b):
 it copies the generic modules out and runs them with ``polars_cv``
@@ -45,9 +48,11 @@ Limits, stated so nobody mistakes this for more than it is:
 * It is a source scan. ``importlib.import_module``, ``__import__``,
   ``getattr(expr, "contour")`` and ``exec`` are invisible to it (the run-time
   test above covers the generic tier's).
-* Accessor detection matches the attribute name: a non-polars object with an
-  attribute called ``contour`` (or any registered namespace) whose own
-  attribute is read would be reported too.
+* Accessor detection matches the attribute name: any attribute called
+  ``contour`` (or another registered namespace) in a generic module is
+  reported, whatever object it is read from.
+* The private-attribute rule follows a chain back to an imported name, not
+  values: ``p = Pipeline(); p._x`` is not seen.
 """
 
 from __future__ import annotations
@@ -56,13 +61,18 @@ import ast
 from collections.abc import Collection, Mapping
 
 from tests._import_layering import DOWNSTREAM as _CONSUMERS
-from tests._import_layering import _base
+from tests._import_layering import _base, within
 
 ROOT = "polars_cv"
 
 #: The downstream package: everything under it is metrics, everything else core.
 #: Read from the layering guard, which exempts it from its root-import rule.
-(DOWNSTREAM,) = _CONSUMERS
+if len(_CONSUMERS) != 1:
+    raise AssertionError(
+        "this scanner holds the boundary of one downstream package, but "
+        f"_import_layering.DOWNSTREAM names {_CONSUMERS}: give each its own tiers"
+    )
+DOWNSTREAM = _CONSUMERS[0]
 
 #: polars-cv's public import surfaces: each one's ``__all__`` is what an
 #: adapter may import from it. The root, and the documented
@@ -76,15 +86,6 @@ CV_PACKAGE = f"{DOWNSTREAM}._cv"
 _REGISTRAR = "register_expr_namespace"
 
 
-def is_downstream(module: str, downstream: str = DOWNSTREAM) -> bool:
-    """Whether ``module`` is the downstream package or inside it."""
-    return module == downstream or module.startswith(downstream + ".")
-
-
-def _within(module: str, package: str) -> bool:
-    return module == package or module.startswith(package + ".")
-
-
 def generic_modules(
     modules: Collection[str],
     cv: str = CV_PACKAGE,
@@ -96,19 +97,17 @@ def generic_modules(
         AssertionError: ``cv`` is not a package among ``modules`` (renamed or
             moved): every module would then read as generic, or none.
     """
-    if cv not in modules or not is_downstream(cv, downstream):
+    if cv not in modules or not within(cv, downstream):
         raise AssertionError(f"the CV tier {cv} is not a package under {downstream}")
     return sorted(
         m
         for m in modules
-        if is_downstream(m, downstream) and m != downstream and not _within(m, cv)
+        if within(m, downstream) and m != downstream and not within(m, cv)
     )
 
 
 def _in_core(module: str, root: str, downstream: str) -> bool:
-    return (module == root or module.startswith(root + ".")) and not is_downstream(
-        module, downstream
-    )
+    return within(module, root) and not within(module, downstream)
 
 
 def public_names(modules: Mapping[str, tuple[str, bool]], surface: str) -> set[str]:
@@ -198,6 +197,25 @@ def _targets(
     ]
 
 
+def _public_imports(tree: ast.AST, public: Mapping[str, set[str]]) -> set[str]:
+    """The local names bound by ``from <public surface> import name``."""
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.level == 0
+        and node.module in public
+        for alias in node.names
+    }
+
+
+def _chain_root(node: ast.expr) -> str | None:
+    """The name an attribute/call chain starts from (``A().b(c).d`` -> ``A``)."""
+    while isinstance(node, (ast.Attribute, ast.Call)):
+        node = node.value if isinstance(node, ast.Attribute) else node.func
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def violations(
     modules: Mapping[str, tuple[str, bool]],
     cv: str = CV_PACKAGE,
@@ -212,7 +230,7 @@ def violations(
     accessors = accessor_names(modules, root, downstream)
 
     for name, (source, is_package) in sorted(modules.items()):
-        here = is_downstream(name, downstream)
+        here = within(name, downstream)
         generic = name in generic_tier
         for node, base in _imports(name, is_package, source):
             if base is None:
@@ -220,16 +238,16 @@ def violations(
             where = f"{name}:{node.lineno}: `{ast.unparse(node)}`"
             targets = _targets(node, base, modules)
             if not here:
-                if any(is_downstream(t, downstream) for t in targets):
+                if any(within(t, downstream) for t in targets):
                     out.append(f"{where} — core imports {downstream}")
                 continue
             if not _in_core(base, root, downstream):
                 # An import within metrics: the facade loads the CV tier, so
                 # a generic module may name neither.
                 if generic and any(
-                    t == downstream or _within(t, cv)
+                    t == downstream or within(t, cv)
                     for t in targets
-                    if is_downstream(t, downstream)
+                    if within(t, downstream)
                 ):
                     out.append(
                         f"{where} — a generic metrics module imports the CV tier"
@@ -252,15 +270,25 @@ def violations(
                 )
                 if private:
                     out.append(f"{where} — not in {base}.__all__: {', '.join(private)}")
+        tree = ast.parse(source)
         if generic:
-            for node in ast.walk(ast.parse(source)):
-                if (
-                    isinstance(node, ast.Attribute)
-                    and isinstance(node.value, ast.Attribute)
-                    and node.value.attr in accessors
-                ):
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in accessors:
                     out.append(
                         f"{name}:{node.lineno}: `{ast.unparse(node)}` — a generic "
-                        f"metrics module uses polars-cv's .{node.value.attr} accessor"
+                        f"metrics module uses polars-cv's .{node.attr} accessor"
+                    )
+        elif here:
+            imported = _public_imports(tree, public)
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr.startswith("_")
+                    and not node.attr.endswith("__")
+                    and _chain_root(node.value) in imported
+                ):
+                    out.append(
+                        f"{name}:{node.lineno}: `{ast.unparse(node)}` — reads a "
+                        f"private attribute of polars-cv's {_chain_root(node.value)}"
                     )
     return out

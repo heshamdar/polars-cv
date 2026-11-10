@@ -85,6 +85,15 @@ BAD = {
     "generic module uses a registered accessor": pkg(
         m__stats="import polars as pl\nx = pl.col('a').contour.area()\n"
     ),
+    "generic module binds a registered accessor to a name": pkg(
+        m__stats="import polars as pl\nns = pl.col('a').contour\nx = ns.area()\n"
+    ),
+    "adapter reads a private attribute of a public class": pkg(
+        m___cv="from polars_cv import Pipeline\nx = Pipeline._hidden\n"
+    ),
+    "adapter reads a private attribute through a call chain": pkg(
+        m___cv="from polars_cv import Pipeline as P\nx = P().source('auto')._hidden\n"
+    ),
     "adapter imports a private module": pkg(
         m___cv="from polars_cv._types import Alias\n"
     ),
@@ -111,6 +120,13 @@ GOOD = {
     ),
     "adapter imports a public surface's names": pkg(
         m___cv="from polars_cv.geometry import to_box\n"
+    ),
+    "adapter reads its own private attributes and dunders": pkg(
+        m___cv=(
+            "from polars_cv import Pipeline\n"
+            "class H:\n    _x = 1\n"
+            "y = H()._x\nz = Pipeline.__name__\n"
+        )
     ),
     "adapter uses a registered accessor": pkg(
         m___cv="import polars as pl\nx = pl.col('a').contour.area()\n"
@@ -140,6 +156,9 @@ REASON = {
     "generic module imports a module inside the CV tier": "imports the CV tier",
     "generic module imports the facade": "imports the CV tier",
     "generic module uses a registered accessor": "accessor",
+    "generic module binds a registered accessor to a name": "accessor",
+    "adapter reads a private attribute of a public class": "private attribute",
+    "adapter reads a private attribute through a call chain": "private attribute",
     "adapter imports a private module": "is not a public surface",
     "adapter imports a public module that is not a surface": "is not a public surface",
     "adapter imports a name missing from __all__": "not in polars_cv.__all__",
