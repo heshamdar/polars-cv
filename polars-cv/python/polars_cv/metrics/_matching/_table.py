@@ -34,14 +34,27 @@ from .._types import (
 )
 
 _RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in MATCH_SCHEMA.fields)
+#: Each field's element dtype, for the entries the tail fills in itself.
+_IDX_T, _OVERLAP_T, _DUP_T = (
+    f.dtype.inner  # ty: ignore[missing-attribute]
+    for f in MATCH_SCHEMA.fields
+)
 
 
 def _check_match(frame: pl.LazyFrame) -> None:
     """Refuse a correspondence that is not ``MATCH_SCHEMA``, before data moves.
 
     Read from the lazy schema, so a producer that drifts (a renamed field, a
-    signed index, a missing ``duplicate``) fails here rather than being read
-    by field name into something else.
+    signed index, a missing ``duplicate``) is refused when the table is
+    built, not when it is collected.
+
+    The dtype is compared exactly. A matcher is code, and can cast what it
+    produces; holding it to the declared struct is what lets
+    :func:`explode_matches` take the dtypes as given. That is deliberately
+    stricter than :meth:`DetectionTable.from_matched`, which takes frames a
+    *caller* assembled and checks their names only (see ``_validate_schema``
+    in ``_types.py``). Called for every threshold's expression: ``match`` is
+    the producer's callable, and nothing says its dtype is the same at each.
 
     Raises:
         TypeError: The ``_match`` column is any other dtype.
@@ -185,7 +198,8 @@ def explode_matches(
     """Per-image pairings → one row per detection, keeping the ``carry`` columns.
 
     ``image_level`` holds ``image_id``, the ``_scores`` list and the aligned
-    ``_gt_idx`` / ``_iou`` / ``_dup`` lists. Each detection keeps its own
+    ``_gt_idx`` / ``_iou`` / ``_dup`` lists: the fields of a checked
+    ``MATCH_SCHEMA`` struct, whose dtypes are taken as given. Each detection keeps its own
     row's ``carry`` values (its class, its threshold) — never another row's of
     the same image.
     """
@@ -202,18 +216,18 @@ def explode_matches(
         *carry,
         "_scores",
         _gt_idx=pl.when(unpaired)
-        .then(scores.list.eval(pl.lit(None, dtype=pl.UInt32)))
+        .then(scores.list.eval(pl.lit(None, dtype=_IDX_T)))
         .otherwise(pl.col("_gt_idx")),
         _iou=pl.when(unpaired)
-        .then(scores.list.eval(pl.lit(0.0)))
+        .then(scores.list.eval(pl.lit(0.0, dtype=_OVERLAP_T)))
         .otherwise(pl.col("_iou")),
         _det_ord=pl.int_ranges(0, scores.list.len()),
         _dup=(
             pl.when(unpaired)
-            .then(scores.list.eval(pl.lit(False)))
+            .then(scores.list.eval(pl.lit(False, dtype=_DUP_T)))
             .otherwise(pl.col("_dup"))
             if ignore_duplicates
-            else scores.list.eval(pl.lit(False))
+            else scores.list.eval(pl.lit(False, dtype=_DUP_T))
         ),
     )
     # One explode, no join: the payload is positionally aligned with the
@@ -231,7 +245,7 @@ def explode_matches(
             pl.col(COL_CLASS_ID),
             pl.col("_scores").alias(COL_SCORE),
             pl.col("_gt_idx").is_not_null().alias(COL_IS_TP),
-            pl.col("_gt_idx").cast(pl.UInt32).alias(COL_GT_IDX),
+            pl.col("_gt_idx").alias(COL_GT_IDX),
             pl.col("_iou").fill_null(0.0).alias(COL_IOU),
             pl.col("_det_ord").cast(pl.UInt32).alias(COL_DET_IDX),
             *(pl.col(c) for c in carry if c != COL_CLASS_ID),

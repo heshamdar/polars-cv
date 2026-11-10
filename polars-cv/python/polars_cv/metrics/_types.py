@@ -67,8 +67,12 @@ IMAGE_META_SCHEMA: dict[str, pl.DataType] = {
 #: (:func:`._matching._table.matched_table`): per (image, class) row, one entry
 #: per prediction, positionally aligned with its scores. Metrics owns this
 #: contract; any producer meeting it is matched, and ``matched_table`` refuses
-#: any other struct. polars-cv's ``.contour.correspond`` / ``.bbox.correspond``
-#: (``polars_cv.CORRESPONDENCE_SCHEMA``) are producers of it.
+#: any other struct, by exact dtype. polars-cv's ``.contour.correspond`` /
+#: ``.bbox.correspond`` (``polars_cv.CORRESPONDENCE_SCHEMA``) are producers of
+#: it, and today the only ones in this package: ``PreMatchedAdapter`` takes
+#: rows matched elsewhere and builds its table through
+#: :meth:`DetectionTable.from_matched`. ``tests/test_match_schema.py`` holds
+#: polars-cv's plans to this declaration.
 #:
 #: Fields:
 #:     right_idx: The ground-truth object paired with the prediction, null
@@ -97,6 +101,11 @@ def _validate_schema(
     compare against a ``UInt32`` would turn a working pipeline into an error
     for no benefit. The dtypes in *required* say what the matchers *produce*,
     which is a different claim and is guarded as one.
+
+    The other seam into a table is checked the other way: a matcher's
+    correspondence is compared with :data:`MATCH_SCHEMA` exactly
+    (``_matching._table._check_match``), because its producer is matcher code
+    that can cast, not a frame a caller built.
     """
     missing = set(required) - set(schema.names())
     if missing:
