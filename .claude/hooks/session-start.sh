@@ -14,7 +14,9 @@
 # `.claude/hooks/.session-start.done` is written once the environment is ready.
 echo '{"async": true, "asyncTimeout": 900000}'
 
-# Idempotent and safe to re-run: `uv sync` is a no-op when already current, and `pre-commit install` just rewrites `.git/hooks/pre-commit`.
+# Idempotent and safe to re-run (it runs again on every session resume): the
+# sync leaves an extension the session already built in place, and
+# `pre-commit install` just rewrites `.git/hooks/pre-commit`.
 set -euo pipefail
 
 # Only run in Claude Code on the web / remote containers. Local checkouts are set
@@ -90,8 +92,16 @@ fi
 #    stack, which the session's debug `maturin develop` then overwrites, so the
 #    release build is pure waste. Sync only the dependency groups here and leave
 #    the single (debug) build to the session — the one way this repo builds for
-#    development. (This sync also uninstalls the editable project: build after.)
-uv sync --group dev --group docs --no-install-project --directory polars-cv
+#    development.
+#
+#    `--inexact` is load-bearing too. This hook runs again whenever a session
+#    resumes, and `maturin develop` installs the project as an editable package
+#    the lockfile does not list; an exact sync removes anything the lockfile
+#    does not list, so every resume uninstalled the extension the session had
+#    built (fresh interpreters then failed with "No module named 'polars_cv'").
+#    Inexact leaves it in place. Dependencies the lockfile dropped are not
+#    removed either, which costs nothing in a container that is rebuilt anyway.
+uv sync --group dev --group docs --no-install-project --inexact --directory polars-cv
 
 # 2b. Give every later shell in this session the PyO3 build environment
 #     `maturin develop` sets, so an ad-hoc `cargo test`/`cargo clippy` does not

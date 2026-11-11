@@ -158,6 +158,32 @@ def test_session_start_hook_builds_nothing() -> None:
     assert builds == [], f"the hook must not build the extension: {builds}"
 
 
+def test_session_start_hook_keeps_the_built_extension() -> None:
+    """The hook's dependency sync must not uninstall the session's build.
+
+    The hook runs again whenever a session resumes. ``maturin develop``
+    installs the project as an editable package that the lockfile does not
+    list (``--no-install-project``), and an exact ``uv sync`` removes whatever
+    the lockfile does not list — so every resume silently uninstalled the
+    extension the session had built. Tests run through ``uv run`` still found
+    the sources on ``sys.path``, but anything that starts a fresh interpreter
+    (``test_each_module_imports_alone``, the pre-commit structural lane) then
+    failed with ``No module named 'polars_cv'``. ``--inexact`` leaves packages
+    the lockfile does not name alone.
+    """
+    syncs = [
+        ln
+        for ln in _hook().splitlines()
+        if "uv sync" in ln and not ln.lstrip().startswith("#")
+    ]
+    assert syncs, "the hook no longer runs `uv sync`: this guard checks nothing"
+    exact = [ln.strip() for ln in syncs if "--inexact" not in ln]
+    assert not exact, (
+        f"the hook's sync would uninstall the built extension on every "
+        f"session resume; add `--inexact`: {exact}"
+    )
+
+
 def test_session_start_hook_provisions_every_verify_lane() -> None:
     """The hook installs what ``scripts/verify.sh`` needs beyond dev deps.
 

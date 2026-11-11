@@ -229,9 +229,10 @@ session, installs the pre-commit hook and, if missing, `cargo install`s
 before testing or committing; until then plugin tests self-skip and the
 pre-commit structural lane cannot import the plugin.
 `.claude/hooks/.session-start.done` appears once the hook has finished.
-`test_build_efficiency.py` pins what the hook must do. Note that any `uv sync
---no-install-project` uninstalls the editable project, so re-run `maturin
-develop` after one.
+`test_build_efficiency.py` pins what the hook must do. The hook runs again when
+a session resumes; its sync is `--inexact`, so it leaves an extension the
+session built in place. A `uv sync --no-install-project` *without* `--inexact`
+uninstalls the editable project: re-run `maturin develop` after one.
 
 **Check the Rust toolchain first — it is the common reason a build fails.** Both
 crates set `rust-version = "1.96"` (MSRV) in their `Cargo.toml`, so cargo
