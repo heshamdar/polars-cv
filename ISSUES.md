@@ -47,6 +47,20 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
 | CR-129 | Params | Feature | A parameter from another node's values per row (`mask_node.p1` feeding any op) |
+| CR-136 | Review 2026-11 | Medium | Scalar constants are `f32` on f64-accumulator data (`Float64`, 32/64-bit integers): wrong from the eighth digit, and past 2^24 |
+| CR-137 | Review 2026-11 | Feature | EXIF orientation: no way to apply it or see it (default stays "stored": **decision** whether that ever changes) |
+| CR-138 | Review 2026-11 | Medium | `numpy`/`ndarray`/`torch` sink output cannot be read back by any source |
+| CR-139 | Review 2026-11 | Medium | `decode_max_size` is slower than a full decode at scale 1 (about 30%, and other pixels) and no faster at 1/2 |
+| CR-140 | Review 2026-11 | Feature | No Windows wheel; Python 3.14 untested |
+| CR-141 | Review 2026-11 | Decision | A stability policy: what the stable surface is, and how it deprecates |
+| CR-142 | Review 2026-11 | Low | `sink()` is hand-written with `**kwargs` while `source()` is generated from the same catalogue |
+| CR-143 | Review 2026-11 | Low | User-facing messages leak a Rust `Debug` value, a JSON position and an internal node id |
+| CR-144 | Review 2026-11 | Low | Docs: no sink-choice or augmentation guide; `AGENTS.md` principle 6 and the quickstart have drifted |
+| CR-145 | Review 2026-11 | Low | `image`'s default features compile an AVIF encoder (`ravif`, `rav1e`) no sink reaches |
+| CR-146 | Review 2026-11 | Low | The crop pushdown stops at neighbourhood ops (`blur` then `crop` filters the whole image) |
+| CR-147 | Review 2026-11 | Feature | `.bbox` has two accessors |
+| CR-148 | Review 2026-11 | Low | No text `explain()` on `LazyPipelineExpr`/`PipelineGraph`; engine-level passes are invisible |
+| CR-149 | Review 2026-11 | Low | The published benchmarks report 0.38.0 |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -382,6 +396,41 @@ what remains.
   has run, so it splits fusion where a shape attribute does not. Build it
   when a second op needs a window from another node; until then each such
   op is a graph op like this one.
+
+## External review (2026-11-11)
+
+A review of 0.41.0 at `c0d77d5`: the code, the docs and this ledger were
+read, the fast suite run (7,737 passed) and the claims below measured on a
+`--profile benchmark` build. Each finding was checked a second time against
+the code and against the Decisions section before it was entered. The detail
+(evidence, approach, tests to write first, risks) is in three plans, one per
+phase, and is not repeated here:
+
+- [`plans/review-2026-11/phase-1-first-contact.md`](plans/review-2026-11/phase-1-first-contact.md):
+  CR-136, CR-139, CR-138, CR-137, CR-140, in that order.
+- [`plans/review-2026-11/phase-2-stabilise.md`](plans/review-2026-11/phase-2-stabilise.md):
+  CR-145, CR-143, CR-142, CR-144, then CR-141.
+- [`plans/review-2026-11/phase-3-depth.md`](plans/review-2026-11/phase-3-depth.md):
+  CR-148, CR-149 (with CR-79), CR-147, CR-146, and CR-118 if decided.
+
+Delete a plan's section when its item closes, and the file when it is empty.
+
+None of these is pinned in `test_known_gaps.py` yet. CR-136, CR-138 and
+CR-139 are verified wrong behaviour, and each plan's first step is its
+`xfail(strict=True)`; they were left out of this commit so that the pins
+arrive with an owner's agreement that the behaviour is a defect (CR-136's is
+documented as deliberate in `ScalarOp::apply_f64`).
+
+Changed or dropped on the second check:
+
+- **EXIF applied by default: withdrawn.** PIL, the parity reference, ignores
+  the tag, and a default change breaks bit-identical output. CR-137 is the
+  opt-in and the `image_info()` field.
+- **A faster JPEG encoder: withdrawn, no entry.** Decided 2026-09-28 (below).
+- **"Trimming `image` removes an ignored advisory": unproven.** The trim
+  builds and drops `ravif`/`rav1e` from compilation, but `Cargo.lock` is
+  unchanged; check what `cargo deny` reports before touching `deny.toml`.
+- **CSE in Rust** is CR-118, already a decision here; no second entry.
 
 ## Extension types
 
