@@ -21,6 +21,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   bulk API, which -0403 does not affect. Drop the ignores with the next polars
   bump.
 
+- **RUSTSEC-2026-0441 (`pin-utils` is unmaintained) is ignored in `deny.toml`.**
+  It is not a vulnerability: the crate's repository was archived. It reaches
+  the workspace only through `futures-util` 0.3.31 and `hyper` 1.8.1 (polars,
+  `object_store`, `reqwest`), whose newest releases still depend on it, so
+  there is nothing to bump. Drop the ignore when they move to
+  `core::pin::pin!`.
+
 ### Breaking changes
 
 - **The metrics are no longer re-exported from `polars_cv`; import them from
