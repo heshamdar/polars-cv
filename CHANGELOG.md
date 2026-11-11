@@ -74,7 +74,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   (`on_error`), never a read outside it. Every buffer sink now has a source
   that reads it; the sink table in the pipelines guide says which.
 
+- **`source(orientation="exif")` and `image_info().orientation` (CR-137).**
+  A photo tagged EXIF `Orientation=6` decoded as its stored landscape pixels,
+  with no way to ask for the displayed image and no way to see the tag. The
+  image sources (`image_bytes`, `file_path`, `auto`) take
+  `orientation="stored"` (the default: unchanged output, and what PIL's
+  `Image.open` gives) or `"exif"`, which turns the image by its tag exactly as
+  `PIL.ImageOps.exif_transpose` does, for JPEG, PNG, WebP and TIFF. The turn
+  is flips and a transpose, so it is a view and copies nothing. A missing,
+  out-of-range or unparseable tag decodes as stored. `image_info()` reports
+  the tag as `orientation` (1 to 8, null when absent), read from the header.
+
 ### Breaking changes
+
+- **`image_info()` returns a fifth field, `orientation: Int64` (CR-137).** Its
+  struct is `{width, height, channels, dtype, orientation}`; code that names
+  the struct's full type, or unnests it into a fixed set of columns, gains a
+  column. `width` and `height` are unchanged: the stored size.
 
 - **The metrics are no longer re-exported from `polars_cv`; import them from
   `polars_cv.metrics`.** `import polars_cv` loaded the whole metrics layer for

@@ -69,6 +69,28 @@ pipe = Pipeline().source(
 Because a scaled decode + resize is not bit-identical to a full decode + the same
 resize, this is an opt-in (see [Scaled decode](../operations/image-ops.md#scaled-decode)).
 
+### Orientation
+
+A camera stores the sensor's pixels and tags how to turn them for display
+(EXIF `Orientation`; TIFF has its own tag). The image sources take
+`orientation=`:
+
+| Value | Decodes | Like |
+|---|---|---|
+| `"stored"` (default) | The pixels as the file stores them; the tag is ignored | `PIL.Image.open` |
+| `"exif"` | The image turned for display by its tag | `PIL.ImageOps.exif_transpose`, `cv2.imdecode` |
+
+```python
+pipe = Pipeline().source("image_bytes", orientation="exif")
+```
+
+The turn is flips and a transpose, which are views: nothing is copied. A file
+with no tag, or an EXIF block that does not parse, decodes the same under
+both. With `decode_max_size`, the scale is chosen from the stored size and the
+result is then turned. It applies to JPEG, PNG, WebP and TIFF. To see a file's
+tag without decoding it, read
+[`image_info()`](../operations/metadata.md#orientation).
+
 ### Error Handling
 
 `source(..., on_error="null")` turns a row that fails to decode into a null

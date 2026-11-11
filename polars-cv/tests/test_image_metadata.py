@@ -292,6 +292,7 @@ class TestSignedMetadata:
                 "height": pl.Int64,
                 "channels": pl.Int64,
                 "dtype": pl.String,
+                "orientation": pl.Int64,
             }
         )
         # The lazy schema agrees with what executes.

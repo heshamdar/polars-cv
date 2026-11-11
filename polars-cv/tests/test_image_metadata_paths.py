@@ -66,11 +66,24 @@ class TestMetadataFromPaths:
                 "height": pl.Int64,
                 "channels": pl.Int64,
                 "dtype": pl.String,
+                "orientation": pl.Int64,
             }
         )
         assert out.to_series().to_list() == [
-            {"width": 50, "height": 30, "channels": 4, "dtype": "uint8"},
-            {"width": 70, "height": 40, "channels": 3, "dtype": "uint8"},
+            {
+                "width": 50,
+                "height": 30,
+                "channels": 4,
+                "dtype": "uint8",
+                "orientation": None,
+            },
+            {
+                "width": 70,
+                "height": 40,
+                "channels": 3,
+                "dtype": "uint8",
+                "orientation": None,
+            },
         ]
 
     def test_image_info_over_bytes(self, files) -> None:
@@ -78,7 +91,13 @@ class TestMetadataFromPaths:
         out = df.select(
             pl.col("p").cv.read_bytes(allowed_roots=["*"]).cv.image_info()
         ).item()
-        assert out == {"width": 50, "height": 30, "channels": 4, "dtype": "uint8"}
+        assert out == {
+            "width": 50,
+            "height": 30,
+            "channels": 4,
+            "dtype": "uint8",
+            "orientation": None,
+        }
 
     def test_an_unreadable_path_raises_or_nulls(self, tmp_path) -> None:
         df = pl.DataFrame({"p": [str(tmp_path / "missing.png")]})

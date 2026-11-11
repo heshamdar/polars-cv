@@ -8,8 +8,8 @@ Phases [2](phase-2-stabilise.md) and [3](phase-3-depth.md) follow.
 **Goal:** remove the five things that make a first evaluation fail. Nothing
 here adds an op.
 
-**Order:** CR-137, CR-140. CR-136 and CR-138 are closed (`ISSUES.md`, Closed
-findings). CR-139 and the default of CR-137 each wait on a decision.
+**Order:** CR-140. CR-136, CR-137 and CR-138 are closed (`ISSUES.md`, Closed
+findings). CR-139 waits on a decision.
 
 **Rules that apply to every item** (from `CLAUDE.md` and the ledger):
 
@@ -71,85 +71,6 @@ the pipeline needs, and honouring it at 1/2 costs nothing measurable.
 
 A longer-term option is a decoder with a fast scaled IDCT in place of
 `jpeg-decoder`. Not planned: a new dependency for one option.
-
----
-
-## CR-137 — EXIF orientation is ignored
-
-**Re-verified: confirmed, but the recommended default changed.**
-
-### Evidence
-
-An 80x40 JPEG tagged Orientation=6 decodes as 40x80x3 (stored layout) and
-`image_info()` reports `width: 80, height: 40`. No doc mentions orientation.
-
-What other libraries do with the same file:
-
-| Library | Default | Other mode |
-|---|---|---|
-| `cv2.imdecode` | applies it (80x40) | `IMREAD_IGNORE_ORIENTATION` |
-| PIL `Image.open` | ignores it (40x80) | `ImageOps.exif_transpose` |
-| polars-cv 0.41 | ignores it | none |
-
-The review recommended applying it by default. That is **withdrawn**: the
-project's parity reference is PIL, which ignores it, and applying it by
-default changes pixels for every existing user, against the bit-identical
-decision. The gap is that there is no way to ask for it and no way to see it.
-
-### Decision needed (owner)
-
-Whether the default ever becomes "apply". This plan ships the opt-in and
-leaves the default alone.
-
-### Approach
-
-1. Source parameter `orientation: "stored" | "exif"` on `image_bytes`,
-   `file_path` and `auto`, default `"stored"`. A `named_variants!` enum in
-   the registry, literal-only. It changes height and width per row, which the
-   planner already treats as unknown for a decoded image, so it adds no new
-   plan-time unknown.
-2. Decode: `image` 0.25.9 already exposes it. Replace
-   `image::load_from_memory` in `ImageAdapter::decode`
-   (`view-buffer/src/interop/image.rs:352`) with a reader that takes the
-   decoder, reads `ImageDecoder::orientation()`, decodes, and calls
-   `DynamicImage::apply_orientation` when asked. The custom TIFF path and the
-   scaled JPEG path (`execute.rs`) need the same step; put it in one function
-   both call.
-3. Prefer view ops over `apply_orientation` where the result is a
-   `ViewBuffer`: the eight orientations are flips and a transpose, which are
-   zero-copy here. Measure before choosing.
-4. `image_info()`: add an `orientation` field (1–8, null when absent) read
-   from the header. Do not change `width`/`height`; they stay the stored
-   size, and the docs say how to get the displayed size. Changing the struct
-   is a schema change: migration-guide entry.
-5. Document it in `concepts/sources.md` and `operations/metadata.md`,
-   including that annotations drawn in a viewer usually refer to the
-   displayed orientation.
-
-### Tests first
-
-- All eight orientations against `PIL.ImageOps.exif_transpose`, exact, for
-  JPEG; plus PNG and WebP with an EXIF chunk, and TIFF.
-- `orientation="stored"` is byte-identical to today for the whole golden
-  corpus.
-- `image_info().orientation` for each of the eight, and null for a file
-  without the tag, on bytes and on paths (the header-only read must reach the
-  tag without a full fetch).
-- With `decode_max_size`: orientation applied after scaling gives the same
-  shape rule as before.
-
-### Risks
-
-- The header-only path stops at the frame header today, deliberately skipping
-  "large EXIF or comment segments" (`operations/metadata.md`). Reading the
-  tag means parsing APP1 on the way; keep the bounded read.
-- A malformed EXIF block must not fail a decode that succeeds today: on a
-  parse error, treat the tag as absent.
-
-### Done when
-
-A user can get display-oriented pixels with one keyword and can see the tag
-without decoding.
 
 ---
 

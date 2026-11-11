@@ -20,6 +20,7 @@ registry!(
     crate::graph::RowErrorPolicy,
     crate::params::NullParamPolicy,
     crate::fetch::FetchErrorPolicy,
+    crate::formats::source::Orientation,
     crate::formats::sink_dtype::SinkDType,
     crate::passes::LogicalPass,
 );

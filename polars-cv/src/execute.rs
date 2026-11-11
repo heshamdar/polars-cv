@@ -73,6 +73,16 @@ pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuf
         None => ImageAdapter::decode(bytes)
             .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?,
     };
+    // The file's orientation tag, when the source asks for the displayed
+    // image: one step after either decoder, so a scaled decode (whose scale
+    // was chosen from the stored size) is turned the same way.
+    let buf = match source.applies_orientation() {
+        true => match ImageAdapter::orientation(bytes) {
+            Some(tag) => ImageAdapter::oriented(buf, tag),
+            None => buf,
+        },
+        false => buf,
+    };
     // If source spec declares an expected dtype, cast to it.
     // This is a no-op when the decoded dtype already matches.
     if let Some(target) = source.dtype() {

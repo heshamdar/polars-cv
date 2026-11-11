@@ -213,6 +213,14 @@
     ]
   },
   {
+    "name": "Orientation",
+    "doc": "Which way up an image source decodes.\n\n- STORED: the pixels as the file stores them, ignoring its orientation tag (the default; what ``PIL.Image.open`` gives).\n- EXIF: turned for display by the file's EXIF (or TIFF) orientation tag, as ``PIL.ImageOps.exif_transpose`` does.",
+    "variants": [
+      "stored",
+      "exif"
+    ]
+  },
+  {
     "name": "PadMode",
     "doc": "Padding mode selection.\n\nControls how padding values are determined:\n- CONSTANT: Fill with a constant value (default)\n- EDGE: Replicate edge values\n- REFLECT: Reflect values at edge (not including edge)\n- SYMMETRIC: Reflect values at edge (including edge)",
     "variants": [

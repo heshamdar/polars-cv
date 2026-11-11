@@ -47,7 +47,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
 | CR-129 | Params | Feature | A parameter from another node's values per row (`mask_node.p1` feeding any op) |
-| CR-137 | Review 2026-11 | Feature | EXIF orientation: no way to apply it or see it (default stays "stored": **decision** whether that ever changes) |
 | CR-139 | Review 2026-11 | Decision | `decode_max_size` at scale 1/2 decodes no faster than the full decoder (0.85x to 1.08x); falling through there would return the full size instead of half |
 | CR-140 | Review 2026-11 | Feature | No Windows wheel; Python 3.14 untested |
 | CR-141 | Review 2026-11 | Decision | A stability policy: what the stable surface is, and how it deprecates |
@@ -413,16 +412,17 @@ phase, and is not repeated here:
 
 Delete a plan's section when its item closes, and the file when it is empty.
 
-CR-136 and CR-138 are closed and CR-139's scale-1 half is fixed (below, and
-the CHANGELOG); each went in with its tests, watched failing first, so none
-was pinned in `test_known_gaps.py`. What is left of CR-139 is a decision,
+CR-136, CR-137 and CR-138 are closed and CR-139's scale-1 half is fixed
+(below, and the CHANGELOG); each went in with its tests, watched failing
+first, so none was pinned in `test_known_gaps.py`. What is left of CR-139 is a decision,
 with its measurement in the phase 1 plan.
 
 Changed or dropped on the second check:
 
 - **EXIF applied by default: withdrawn.** PIL, the parity reference, ignores
-  the tag, and a default change breaks bit-identical output. CR-137 is the
-  opt-in and the `image_info()` field.
+  the tag, and a default change breaks bit-identical output. CR-137 shipped
+  as the opt-in and the `image_info()` field; the default stays `"stored"`
+  (decided 2026-11-11).
 - **A faster JPEG encoder: withdrawn, no entry.** Decided 2026-09-28 (below).
 - **"Trimming `image` removes an ignored advisory": unproven.** The trim
   builds and drops `ravif`/`rav1e` from compilation, but `Cargo.lock` is
@@ -624,6 +624,10 @@ Made by the owner; listed so they are not reopened by accident.
   fill stored by the conversion rule (CR-66). Bug fixes that changed wrong
   output (CR-59, CR-61, CR-62, CR-63, CR-66) each got a finding, a CHANGELOG
   "Fixed" entry and a guard.
+- **EXIF orientation: the default is `"stored"`** (2026-11-11). An image
+  source decodes the pixels as the file stores them, as PIL's `Image.open`
+  does and as polars-cv always did; `orientation="exif"` is the opt-in
+  (CR-137).
 - **JPEG encoder: image's stays** (2026-09-28). `jpeg-encoder` passed the
   eval gate (1.62–1.65× geomean, ΔPSNR ≤ 0.04 dB) but writes 5–13% larger
   files on smooth content. IJG stays out of `deny.toml`. The eval is
@@ -661,6 +665,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-137 | EXIF orientation could be neither applied nor seen | Added (unreleased): `source(orientation="stored"\|"exif")` on the image sources, default `"stored"` (owner's decision, 2026-11-11: the default does not change), applied after either decoder as flips and a transpose (views); `image_info().orientation`. One reader, `ImageAdapter::orientation`, for decode and header (`test_exif_orientation.py`: all eight tags against `PIL.ImageOps.exif_transpose` for JPEG, PNG, WebP, TIFF). Limit: a PNG whose `eXIf` chunk follows its image data reads as untagged (the `image` crate reads metadata up to the first `IDAT`) |
 | CR-138 | `numpy`/`ndarray`/`torch` sink output could not be read back by any source | Fixed (unreleased): `source("tensor")`, which `auto` routes the sinks' struct to (the whole schema, `output::numpy_output_dtype`), reads each row at its own strides; a `float16` row reads as f32. The row's layout is untrusted: `ViewBuffer::from_polars_buffer_strided` is the only constructor and refuses a view outside its data (`tests/it/tensor_view.rs`, an exhaustive sweep, both bounds watched failing; `test_tensor_source.py`). Dtype is `auto` and rank unknown at planning unless declared (CR-82's question, not answered here) |
 | CR-136 | Scalar constants were `f32` on f64-accumulator data (`Float64`, 32/64-bit integers): wrong from the eighth digit, and past 2^24 | Fixed (unreleased): `ScalarOp` constants and the wire fields of `scale`, `clamp`, `clamp_min`/`max`, `add_constant`/`subtract_constant`, `adjust_contrast`, `adjust_gamma`, the `convolve2d` coefficients and the pad fill values are f64; the f32 passes narrow at use, so f32 and 8/16-bit output is unchanged; `F64Step` is gone (`tests/reference/test_scalar_f64_ref.py`). Left f32 by contract: the normalize family (computes in f32 for every input), `blur(sigma)`, `canny` thresholds, `rotate(angle)`, `resize_scale`. Of those, `sigma` shapes an f64 kernel on f64 data from an f32 value (weights off by ~1e-8 relative): not converted |
 | CR-131 | Repeated work in the new reductions: `rank_filter` gathered every window, `statistics(mask=)` and `region_stats` repeated their scan per statistic/map, the ADC file was read per remote object | Fixed (0.41.0): u8 `rank_filter` slides a 256-bin histogram (other dtypes keep the selection; a u16 histogram would need a coarse/fine count); `masked_select` gathers once for every masked statistic; a row's contour regions are found once for every `label_reduce` over them (`RegionCache`); the ADC probe is cached per file version |

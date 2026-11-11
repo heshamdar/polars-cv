@@ -23,7 +23,7 @@ result = df.with_columns(
 | `.cv.height()` | `Int64` | Image height in pixels |
 | `.cv.channels()` | `Int64` | Number of channels (1, 3, 4, etc.) |
 | `.cv.image_dtype()` | `String` | Element dtype name (e.g., `"uint8"`, `"float32"`) |
-| `.cv.image_info()` | `Struct` | All four from one header read: `{width, height, channels, dtype}` |
+| `.cv.image_info()` | `Struct` | All four, and the orientation tag, from one header read: `{width, height, channels, dtype, orientation}` |
 
 These methods work on binary columns containing encoded images (PNG, JPEG, TIFF,
 etc.) and on **path** columns. A local file is read only as far as its header
@@ -41,6 +41,30 @@ df.with_columns(
     info=pl.col("path").cv.image_info(allowed_roots=["/srv/images"])
 ).unnest("info")
 ```
+
+### Orientation
+
+`width` and `height` are the **stored** size: what `source()` decodes by
+default. A camera often stores a portrait photo as landscape pixels plus an
+orientation tag (EXIF `Orientation`, or TIFF's own tag) that says how to turn
+them. `image_info()` reports that tag as `orientation`, 1 to 8, null when the
+file has none; the other four functions do not read it.
+
+To get the image as a viewer shows it, decode with
+[`source(orientation="exif")`](../concepts/sources.md#orientation). Tags 5 to
+8 turn the image a quarter, so for those rows the displayed width is the
+stored `height` and the displayed height the stored `width`:
+
+```python
+info = pl.col("img").cv.image_info()
+df.with_columns(
+    turned=info.struct.field("orientation").is_between(5, 8).fill_null(False)
+)
+```
+
+Annotations drawn in a viewer (boxes, contours, masks) usually refer to the
+displayed image. Decode with `orientation="exif"` before applying them, or
+they land on the stored pixels turned the wrong way.
 
 Sizes are `Int64`, so arithmetic on them can go below zero and be refused as
 the negative value it is: `pl.col("path").cv.width() - 32` on a 31-wide image
