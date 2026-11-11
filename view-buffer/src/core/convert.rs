@@ -207,6 +207,25 @@ where
     map_new(view, &HalfBits::<S>(PhantomData))
 }
 
+/// Each binary16 bit pattern as the f32 it is (exact).
+struct HalfValues;
+
+// SAFETY: `map_into` writes every element of `dst`.
+unsafe impl ElementMap<u16, f32> for HalfValues {
+    #[inline(always)]
+    fn map_into(&self, src: &[u16], dst: &mut [MaybeUninit<f32>], _at: usize) {
+        for (d, &bits) in dst.iter_mut().zip(src) {
+            d.write(half::f16::from_bits(bits).to_f32());
+        }
+    }
+}
+
+/// [`ViewBuffer::from_f16_bits`]: `view`'s binary16 bit patterns as f32
+/// values in a new packed buffer of its shape.
+pub(crate) fn f16_values(view: &ViewBuffer) -> ViewBuffer {
+    map_new(view, &HalfValues)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

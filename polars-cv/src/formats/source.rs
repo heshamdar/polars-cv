@@ -26,6 +26,11 @@ use crate::fetch::FetchErrorPolicy;
 /// A ``"contour"`` source decodes to the contour domain; rasterize it with
 /// :meth:`rasterize`.
 ///
+/// A ``"tensor"`` source reads what ``sink("numpy")``, ``sink("ndarray")`` and
+/// ``sink("torch")`` write, so their output can feed another pipeline (after a
+/// Parquet round trip too). Each row carries its own dtype and shape, so the
+/// dtype is ``"auto"`` unless declared and the rank is unknown at planning.
+///
 /// Each keyword applies to some formats and not others, and defaults to
 /// ``None`` (the format's own default). One that does not apply to the chosen
 /// format is **rejected**, naming the formats it applies to.
@@ -84,7 +89,8 @@ pub enum Source {
         on_error: Literal<FetchErrorPolicy>,
     },
     /// Infer the decode path from the column's Polars dtype: String → file_path,
-    /// List/Array → list/array, Binary → blob if VIEW-tagged else image_bytes.
+    /// List/Array → list/array, Binary → blob if VIEW-tagged else image_bytes,
+    /// the numpy/ndarray/torch sink struct → tensor.
     #[op(name = "auto", sample = {"allowed_roots": ["/srv"], "decode_max_size": 64})]
     Auto {
         /// Asserted element dtype (a decoded image is cast to it).
@@ -175,6 +181,18 @@ pub enum Source {
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
     },
+    /// The struct the `numpy`, `ndarray` and `torch` sinks write, read where
+    /// it lies at its own shape, strides and offset. A `float16` row reads
+    /// as f32.
+    #[op(name = "tensor", sample = {})]
+    Tensor {
+        /// Declared element dtype. A row carries its own, so a declaration is
+        /// checked at decode: a row of another dtype is a row error.
+        dtype: Option<Literal<DType>>,
+        /// "raise" or "null": what a row that cannot be decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
 }
 
 impl Source {
@@ -257,6 +275,11 @@ impl Source {
                     }
                 })
             }
+            // The tensor sinks' struct, whole: its fields' names and dtypes
+            // as the one schema states them, not five names.
+            tensor if *tensor == crate::output::numpy_output_dtype() => {
+                Ok(Source::Tensor { dtype, on_error })
+            }
             other => Err(format!(
                 "auto source cannot infer a decode path for column dtype {other:?}; \
                  specify an explicit source format (e.g. source(\"image_bytes\"), \
@@ -275,7 +298,8 @@ impl Source {
             | Source::Contour { .. }
             | Source::FilePath { .. }
             | Source::ImageBytes { .. }
-            | Source::Raw { .. } => false,
+            | Source::Raw { .. }
+            | Source::Tensor { .. } => false,
         }
     }
 
@@ -290,7 +314,8 @@ impl Source {
             | Source::Contour { .. }
             | Source::FilePath { .. }
             | Source::ImageBytes { .. }
-            | Source::Raw { .. } => false,
+            | Source::Raw { .. }
+            | Source::Tensor { .. } => false,
         }
     }
 
@@ -305,7 +330,8 @@ impl Source {
             | Source::FilePath { on_error, .. }
             | Source::ImageBytes { on_error, .. }
             | Source::List { on_error, .. }
-            | Source::Raw { on_error, .. } => on_error.get().nulls_the_row(),
+            | Source::Raw { on_error, .. }
+            | Source::Tensor { on_error, .. } => on_error.get().nulls_the_row(),
         }
     }
 
@@ -317,7 +343,8 @@ impl Source {
             | Source::Blob { dtype, .. }
             | Source::FilePath { dtype, .. }
             | Source::ImageBytes { dtype, .. }
-            | Source::List { dtype, .. } => dtype.map(|d| d.get()),
+            | Source::List { dtype, .. }
+            | Source::Tensor { dtype, .. } => dtype.map(|d| d.get()),
             Source::Raw { dtype, .. } => Some(dtype.get()),
             Source::Contour { .. } => None,
         }
@@ -339,7 +366,8 @@ impl Source {
             | Source::Contour { .. }
             | Source::FilePath { .. }
             | Source::ImageBytes { .. }
-            | Source::Raw { .. } => false,
+            | Source::Raw { .. }
+            | Source::Tensor { .. } => false,
         }
     }
 
@@ -359,7 +387,8 @@ impl Source {
             | Source::Blob { .. }
             | Source::Contour { .. }
             | Source::List { .. }
-            | Source::Raw { .. } => None,
+            | Source::Raw { .. }
+            | Source::Tensor { .. } => None,
         }
     }
 
@@ -381,7 +410,8 @@ impl Source {
             | Source::Contour { .. }
             | Source::ImageBytes { .. }
             | Source::List { .. }
-            | Source::Raw { .. } => (None, None),
+            | Source::Raw { .. }
+            | Source::Tensor { .. } => (None, None),
         }
     }
 }

@@ -163,15 +163,7 @@ pub fn parse_blob(data: &[u8]) -> Result<BlobLayout, String> {
     // the window from data_offset to the end of the blob.
     let window_len = data.len() - data_offset;
     if num_elements > 0 {
-        let (mut min_reach, mut max_reach) = (0i128, 0i128);
-        for (&dim, &stride) in shape.iter().zip(&strides) {
-            let reach = (dim as i128 - 1) * stride as i128;
-            if reach >= 0 {
-                max_reach += reach;
-            } else {
-                min_reach += reach;
-            }
-        }
+        let (min_reach, max_reach) = crate::core::layout::strided_reach(&shape, &strides);
         if min_reach < 0 {
             return Err(format!(
                 "Blob strides reach below the data start: shape={shape:?}, strides={strides:?}"

@@ -8,8 +8,8 @@ Phases [2](phase-2-stabilise.md) and [3](phase-3-depth.md) follow.
 **Goal:** remove the five things that make a first evaluation fail. Nothing
 here adds an op.
 
-**Order:** CR-139 (what is left of it), CR-138, CR-137, CR-140. CR-136 is
-closed (`ISSUES.md`, Closed findings). CR-137 waits on a decision.
+**Order:** CR-137, CR-140. CR-136 and CR-138 are closed (`ISSUES.md`, Closed
+findings). CR-139 and the default of CR-137 each wait on a decision.
 
 **Rules that apply to every item** (from `CLAUDE.md` and the ledger):
 
@@ -27,115 +27,50 @@ Every measurement below was taken on 2026-11-11 on a 4-core container with a
 
 ---
 
-## CR-139 — `decode_max_size` is no faster at scale 1/2
+## CR-139 — `decode_max_size` is no faster at scale 1/2 (**decision**)
 
-**Scale 1 is fixed:** `decode_jpeg_scaled` (`polars-cv/src/execute.rs`)
-returns `None` when the decoder's factor is 1, so the row takes the full
-decoder and is byte-identical to leaving the option out
-(`test_no_reduction_is_the_full_decoders_pixels`). What is left is the 1/2
-factor and the measurement.
-
-### Evidence
-
-The scaled path is the `jpeg-decoder` crate; the full path is the `image`
-crate's decoder (`zune-jpeg`), which has no scaled IDCT, so the two cannot
-share a decoder. Decode only, 300 JPEGs of 620x496, median of 9, two rounds,
-on a 4-core container with a `cargo check` running (absolute times inflated;
-the ordering held in both rounds):
-
-| Source | Scale chosen | Round 1 | Round 2 |
-|---|---|---:|---:|
-| full decode | — | 362 ms | 336 ms |
-| `decode_max_size=320` | 1/2 | 405 ms | 479 ms |
-| `decode_max_size=224` | 1/2 | 357 ms | 350 ms |
-| `decode_max_size=128` | 1/4 | 292 ms | 312 ms |
-| `decode_max_size=64` | 1/8 | 251 ms | 260 ms |
-
-On a 12-megapixel JPEG with a 224 target (scale 1/8) it was 2.2 times
-faster, so the option is worth keeping.
-
-### Approach
-
-1. Measure 1/2 properly (uncontended, the regression suite's `--profile
-   benchmark`, several image sizes). If the scaled path does not win at 1/2,
-   fall through there as well and document the option as "1/4 and smaller".
-2. Add a regression-suite case for each factor
-   (`benchmarks/regression/`), so the crossover is measured, not remembered.
-
-### Risks
-
-- Falling through at 1/2 changes the shape a caller gets (the full size
-  instead of half), not only its pixels. The documented invariant (long side
-  never below `min(decode_max_size, original)`) still holds, and
-  `test_decode_hint.py` pins shapes at 1/4 and 1/8 that must not move.
-- A longer-term option is to drop `jpeg-decoder` for a decoder with a fast
-  scaled IDCT. Not planned: it is a new dependency for one option.
-
-### Done when
-
-No factor is slower than the full decode in the regression suite.
-
----
-
-## CR-138 — The tensor-struct sinks cannot be read back
-
-**Re-verified: confirmed. No decision recorded against it.**
+**Scale 1 is fixed** (`decode_jpeg_scaled` returns `None` when the factor is
+1, so the row takes the full decoder, byte for byte) and the regression suite
+has a case per factor (`targeted:codec_jpeg_decode_half`/`_quarter`/
+`_eighth`, beside `codec_jpeg_decode`). What is left is one decision.
 
 ### Evidence
 
-`sink("blob")`, `"array"`, `"list"` and `"png"` outputs all feed
-`Pipeline().source()`. `sink("numpy")`, `"ndarray"` and `"torch"` fail with
-"auto source cannot infer a decode path for column dtype Struct(...)".
-`Source` (`polars-cv/src/formats/source.rs`) has eight variants and none
-takes the struct; `Source::route` has no `Struct` arm. A `polars_cv.ndarray`
-column survives a Parquet round trip and still cannot be read, because
-`_plugin.call` hands the plugin `.ext.storage()`, the same struct.
+Decode only, into the numpy sink, median of 9, two rounds, uncontended, a
+`--profile benchmark` build on a 4-core container (2026-11-11). Ratios are
+against the full decode of the same round:
 
-### Approach
+| Image | Rows | Full | 1/2 | 1/4 | 1/8 |
+|---|---:|---:|---:|---:|---:|
+| 620x496 | 300 | 98.5 ms | 1.08x | 0.82x | 0.73x |
+| | | 105.5 ms | 1.04x | 0.84x | 0.74x |
+| 1280x960 | 100 | 136.1 ms | 1.02x | 0.84x | 0.72x |
+| | | 148.6 ms | 0.96x | 0.72x | 0.66x |
+| 4000x3000 | 12 | 218.7 ms | 0.85x | 0.68x | 0.62x |
+| | | 215.2 ms | 0.96x | 0.72x | 0.64x |
 
-1. Add a `Source::Tensor` variant (wire name `"tensor"`; one name for the
-   three sinks, which share one struct), with `dtype` and `on_error` as
-   `Blob` has them: the row carries its own dtype, so a declared one is
-   checked at decode and a mismatch is a row error.
-2. Decode in `graph/decode.rs` beside `decode_binary_row`: build the
-   `ViewBuffer` over the row's `data` with its `shape`, `strides` and
-   `offset`, zero-copy where the bytes are aligned, exactly as the blob path
-   does. Validate that the view lies inside `data` before constructing it;
-   this is untrusted input and the check is the only thing between a
-   malformed row and an out-of-bounds read.
-3. Route it: a `Struct` whose fields are exactly `NUMPY_OUTPUT_SCHEMA`'s goes
-   to `Source::Tensor` in `Source::route`. Compare against the one schema
-   authority (`ext_types.rs`), not a second list of field names.
-4. Plan-time facts: dtype and rank are per-row, so the planned state is
-   `auto` dtype and unknown rank unless `dtype=` and an `assert_shape` say
-   otherwise. This is CR-82's question from the other side; do not add
-   metadata to the extension type here.
-5. `gen_ops.py` regenerates `source()` and its docstring.
+1/4 and 1/8 always win. 1/2 is within a few percent of the full decode either
+way: the scaled path (`jpeg-decoder`) is a slower decoder than the full one
+(`zune-jpeg`, which has no scaled IDCT), and at 1/2 that cancels what the
+smaller IDCT saves. It still returns a quarter of the pixels, so the memory
+and every later op are cheaper; the docs now say so.
 
-### Tests first
+### Decision needed (owner)
 
-- Round trip for each of `numpy`, `ndarray`, `torch`: sink, then
-  `source()` (auto) and `source("tensor")`, compare with the direct result.
-  Include a non-contiguous row (a flip, negative stride), `compact=True`, the
-  `f16` downcast, and a Parquet write/read between the two.
-- Malformed rows: `offset` past the end, a stride that walks out of `data`,
-  `shape` product larger than `data`, an unknown `dtype` string. Each is a
-  row error under `on_error`, never a panic.
-- Schema parity: planned schema equals executed schema for a tensor source
-  followed by each sink.
+Whether 1/2 falls through to the full decoder as scale 1 does.
 
-### Risks
+- **Keep 1/2 (as now).** No decode-time gain, a real memory and downstream
+  gain. The plan's "no factor slower than the full decode" is then not met
+  on small images, by 2 to 8%.
+- **Fall through at 1/2.** The option becomes "1/4 and smaller". A caller
+  who gets half-size rows today gets full-size ones: a shape change, not
+  only a pixel change, and more memory.
 
-- `strides` and `offset` from a file are attacker-controlled. Step 2's bounds
-  check needs its own unit tests and a fuzz-style sweep.
-- The `auto` router now accepts a struct; any other five-field struct with
-  the same names would route too. Matching the full schema, dtypes included,
-  keeps that narrow.
+Recommendation: keep it. The option is an assertion about how many pixels
+the pipeline needs, and honouring it at 1/2 costs nothing measurable.
 
-### Done when
-
-Every sink's output is readable by some source, and the docs' sink table says
-which.
+A longer-term option is a decoder with a fast scaled IDCT in place of
+`jpeg-decoder`. Not planned: a new dependency for one option.
 
 ---
 

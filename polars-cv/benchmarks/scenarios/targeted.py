@@ -179,6 +179,21 @@ def _pipe(
     return build
 
 
+def _scaled_decode(divisor: int) -> Callable[[_Inputs], Callable[[], Any]]:
+    """Decode the JPEG frame with a ``decode_max_size`` of the long side over
+    ``divisor``: the scaled decoder at that factor (1/2, 1/4, 1/8), to set
+    beside ``codec_jpeg_decode``, the full decode (CR-139)."""
+
+    def build(i: _Inputs) -> Callable[[], Any]:
+        df = i.jpeg
+        size = max(1, max(i.height, i.width) // divisor)
+        pipe = Pipeline().source("image_bytes", decode_max_size=size)
+        expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+        return lambda: df.select(expr)
+
+    return build
+
+
 def _array(
     pipe: Callable[[], Pipeline], shape: Callable[[_Inputs], list[int]]
 ) -> Callable[[_Inputs], Callable[[], Any]]:
@@ -256,6 +271,9 @@ def _u8() -> Pipeline:
 CASES: tuple[Case, ...] = (
     Case("codec_png_decode", "image", _pipe("png", _src, "numpy")),
     Case("codec_jpeg_decode", "image", _pipe("jpeg", _src, "numpy")),
+    Case("codec_jpeg_decode_half", "image", _scaled_decode(2)),
+    Case("codec_jpeg_decode_quarter", "image", _scaled_decode(4)),
+    Case("codec_jpeg_decode_eighth", "image", _scaled_decode(8)),
     Case("codec_png_roundtrip", "image", _pipe("png", _src, "png")),
     Case("codec_jpeg_roundtrip", "image", _pipe("jpeg", _src, "jpeg")),
     Case("sink_array_u8", "image", _array(_u8, lambda i: [i.height, i.width, 3])),

@@ -42,10 +42,12 @@ result = df.with_columns(
 
 | Format | Input Type | Description |
 |--------|-----------|-------------|
-| `auto` (default) | Varies | Infer the decode path from the column dtype (String → `file_path`, List/Array → `list`/`array`, Binary → `blob` if VIEW-tagged else `image_bytes`) |
+| `auto` (default) | Varies | Infer the decode path from the column dtype (String → `file_path`, List/Array → `list`/`array`, Binary → `blob` if VIEW-tagged else `image_bytes`, the tensor sinks' struct → `tensor`) |
 | `image_bytes` | Binary | Decode PNG/JPEG/TIFF bytes (auto format+dtype detect) |
 | `file_path` | String | Local/cloud/HTTP path; decodes like `image_bytes`. Needs `allowed_roots` (default-deny; `["*"]` opts in to any path) |
 | `raw` | Binary | Raw bytes (requires `dtype`) |
+| `blob` | Binary | Self-describing VIEW binary protocol (what `sink("blob")` writes) |
+| `tensor` | Struct / `polars_cv.ndarray` | What `sink("numpy")`, `sink("ndarray")` and `sink("torch")` write, read at its own strides; a `float16` row reads as `f32` |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
 | `long` | List(Struct) | One struct per pixel, `{row, col, <names>...}`; `names=` one per channel, `where=` keeps a channel's > 0 pixels |
@@ -68,19 +70,23 @@ If you use `sink("list")` or `sink("array")`, dtype must be known at planning ti
 
 ## Sink Formats
 
-| Format | Output Type | Description |
-|--------|------------|-------------|
-| `numpy` | Struct | NumPy-compatible zero-copy struct (`{data, dtype, shape, strides, offset}`); `dtype="f16"` downcasts, `compact=True` packs each row |
-| `torch` | Struct | PyTorch-compatible zero-copy struct; `dtype="f16"` downcasts, `compact=True` packs each row |
-| `ndarray` | `polars_cv.ndarray` | The `numpy` struct tagged with an [extension type](extension-types.md); `dtype="f16"` downcasts, `compact=True` packs each row |
-| `png` | Binary | PNG bytes; preserves bit depth (`u8` → 8-bit, `u16` → 16-bit) |
-| `jpeg` | Binary | JPEG bytes; 8-bit only, requires `u8` |
-| `webp` | Binary | WebP bytes; 8-bit only, requires `u8` |
-| `tiff` | Binary | TIFF bytes with LZW compression (supports floating-point) |
-| `blob` | Binary | Self-describing VIEW binary protocol |
-| `list` | List | Polars nested List |
-| `array` | Array | Polars fixed-size Array |
-| `native` | Varies | Native Python type (for scalars/vectors) |
+| Format | Output Type | Description | Read back by |
+|--------|------------|-------------|--------------|
+| `numpy` | Struct | NumPy-compatible zero-copy struct (`{data, dtype, shape, strides, offset}`); `dtype="f16"` downcasts, `compact=True` packs each row | `tensor` |
+| `torch` | Struct | PyTorch-compatible zero-copy struct; `dtype="f16"` downcasts, `compact=True` packs each row | `tensor` |
+| `ndarray` | `polars_cv.ndarray` | The `numpy` struct tagged with an [extension type](extension-types.md); `dtype="f16"` downcasts, `compact=True` packs each row | `tensor` |
+| `png` | Binary | PNG bytes; preserves bit depth (`u8` → 8-bit, `u16` → 16-bit) | `image_bytes` |
+| `jpeg` | Binary | JPEG bytes; 8-bit only, requires `u8` | `image_bytes` |
+| `webp` | Binary | WebP bytes; 8-bit only, requires `u8` | `image_bytes` |
+| `tiff` | Binary | TIFF bytes with LZW compression (supports floating-point) | `image_bytes` |
+| `blob` | Binary | Self-describing VIEW binary protocol | `blob` |
+| `list` | List | Polars nested List | `list` |
+| `array` | Array | Polars fixed-size Array | `array` |
+| `native` | Varies | Native Python type (for scalars/vectors) | (a plain column) |
+
+Every buffer sink's output is some source's input, and `source()` (auto)
+routes each of them, so one pipeline's result can feed another, across a
+Parquet file too. A tensor row is read where it lies, at its own strides.
 
 A tensor sink hands each row over without copying where it can, so a row
 that is a view (a crop, a flip, a transpose) carries the whole storage it reads

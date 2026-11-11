@@ -35,6 +35,7 @@ import polars as pl
 from PIL import Image
 
 from polars_cv import Pipeline, numpy_from_column, numpy_from_struct
+from polars_cv.extension_types import NUMPY_OUTPUT_SCHEMA
 from tests.parity.framework.images import DTYPES, dtype_name
 
 #: Polars element type per engine dtype spelling.
@@ -272,6 +273,23 @@ def _blob_row(arr: np.ndarray) -> bytes:
     return out["x"][0]
 
 
+def _tensor_row(arr: np.ndarray) -> dict[str, Any]:
+    """The tensor sinks' struct for *arr*, written from NumPy's own layout.
+
+    Not the engine's sink: the struct is NumPy's array interface (bytes,
+    dtype name, shape, byte strides, offset), so the ``tensor`` source is
+    checked against an independent writer.
+    """
+    arr = np.ascontiguousarray(arr)
+    return {
+        "data": arr.tobytes(),
+        "dtype": arr.dtype.name,
+        "shape": list(arr.shape),
+        "strides": list(arr.strides),
+        "offset": 0,
+    }
+
+
 def _png_carries(dtype: str, channels: int) -> bool:
     return (dtype == "u8") or (dtype == "u16" and channels != 2)
 
@@ -357,6 +375,20 @@ SOURCES: dict[str, SourceSpec] = {
             carries=lambda d, c: True,
             encode_row=_blob_row,
             column_type=lambda _: pl.Binary,
+        ),
+        SourceSpec(
+            name="tensor",
+            format="tensor",
+            carries=lambda d, c: True,
+            encode_row=_tensor_row,
+            column_type=lambda _: NUMPY_OUTPUT_SCHEMA,
+        ),
+        SourceSpec(
+            name="auto_tensor",
+            format="auto",
+            carries=lambda d, c: True,
+            encode_row=_tensor_row,
+            column_type=lambda _: NUMPY_OUTPUT_SCHEMA,
         ),
     )
 }

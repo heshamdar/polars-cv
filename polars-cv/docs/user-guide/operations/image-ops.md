@@ -700,6 +700,11 @@ formats (PNG, …) ignore the assertion and decode at full size, and so does a
 JPEG smaller than twice `N`: with no reduction to make, it is the same decode,
 byte for byte, as without the option.
 
+What a factor saves: 1/4 and 1/8 decode faster (about 15–35% on 0.3 to
+12-megapixel files) and return 1/16 or 1/64 of the pixels. 1/2 takes about as
+long to decode as the full image; its saving is the memory and the work of
+every later op, on a quarter of the pixels.
+
 ```python
 # Cheap decode for a curation pass
 Pipeline().source(
