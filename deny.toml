@@ -14,6 +14,7 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained; via polars, no fix published" },
     { id = "RUSTSEC-2026-0105", reason = "core2 unmaintained/yanked; via image->rav1e->ravif, no fix" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive, no fix published" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained (archived, no vulnerability); via futures-util 0.3 and hyper 1, whose newest releases still depend on it" },
     # Blocked by a pinned major dependency this workspace does not own the bump for.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41; held by object_store 0.13 — needs an object_store bump" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41; held by object_store 0.13 — needs an object_store bump" },
