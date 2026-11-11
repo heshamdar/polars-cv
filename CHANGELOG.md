@@ -58,6 +58,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   twice its `decode_max_size`: it is now what the source gives without the
   option.
 
+### Added
+
+- **`source("tensor")`: the `numpy`, `ndarray` and `torch` sinks can be read
+  back (CR-138).** Their output fed no source ("auto source cannot infer a
+  decode path for column dtype Struct(...)"), so a tensor column could not
+  enter another pipeline, even from a Parquet file. `source("tensor")` reads
+  each row where it lies, at its own shape, strides and offset (a flipped or
+  transposed row is not copied), and `source()` (auto) routes the struct to
+  it, tagged `polars_cv.ndarray` or not. A `float16` row reads as `f32`. A
+  row carries its own dtype and shape: `dtype=` declares one (checked per
+  row), and the rank is unknown until the data. A row's `shape`, `strides`
+  and `offset` are column data and are checked against its `data` before
+  anything is read: a row whose view does not lie inside it is a row error
+  (`on_error`), never a read outside it. Every buffer sink now has a source
+  that reads it; the sink table in the pipelines guide says which.
+
 ### Breaking changes
 
 - **The metrics are no longer re-exported from `polars_cv`; import them from

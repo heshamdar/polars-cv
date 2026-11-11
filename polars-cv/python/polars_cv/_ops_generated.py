@@ -419,6 +419,7 @@ class SourceFormat(str, Enum):
     IMAGE_BYTES = "image_bytes"
     LIST = "list"
     RAW = "raw"
+    TENSOR = "tensor"
 
 
 class SinkFormat(str, Enum):
@@ -1903,6 +1904,11 @@ class _OpsMixin:
         A ``"contour"`` source decodes to the contour domain; rasterize it with
         :meth:`rasterize`.
 
+        A ``"tensor"`` source reads what ``sink("numpy")``, ``sink("ndarray")`` and
+        ``sink("torch")`` write, so their output can feed another pipeline (after a
+        Parquet round trip too). Each row carries its own dtype and shape, so the
+        dtype is ``"auto"`` unless declared and the rank is unknown at planning.
+
         Each keyword applies to some formats and not others, and defaults to
         ``None`` (the format's own default). One that does not apply to the chosen
         format is **rejected**, naming the formats it applies to.
@@ -1933,15 +1939,18 @@ class _OpsMixin:
             format: How to decode the input column. ``array``: A Polars fixed-size
                 `Array` column, one nesting level per axis. ``auto``: Infer the decode
                 path from the column's Polars dtype: String → file_path, List/Array →
-                list/array, Binary → blob if VIEW-tagged else image_bytes. ``blob``: The
-                self-describing VIEW protocol. ``contour``: A contour column (one
-                contour or a set per row), decoded as the contour set `extract_contours`
-                produces. A mask is the `rasterize` op's. ``file_path``: A path (local,
-                s3://, gs://, az://, http://) whose contents decode like image bytes.
-                ``image_bytes``: Encoded image bytes (PNG/JPEG/TIFF/...), always decoded
-                to `[H, W, C]`. ``list``: A Polars nested `List` column, one nesting
-                level per axis; its sizes may differ from row to row. ``raw``: Raw
-                bytes, decoded as a flat 1-D buffer of `dtype`.
+                list/array, Binary → blob if VIEW-tagged else image_bytes, the
+                numpy/ndarray/torch sink struct → tensor. ``blob``: The self-describing
+                VIEW protocol. ``contour``: A contour column (one contour or a set per
+                row), decoded as the contour set `extract_contours` produces. A mask is
+                the `rasterize` op's. ``file_path``: A path (local, s3://, gs://, az://,
+                http://) whose contents decode like image bytes. ``image_bytes``:
+                Encoded image bytes (PNG/JPEG/TIFF/...), always decoded to `[H, W, C]`.
+                ``list``: A Polars nested `List` column, one nesting level per axis; its
+                sizes may differ from row to row. ``raw``: Raw bytes, decoded as a flat
+                1-D buffer of `dtype`. ``tensor``: The struct the `numpy`, `ndarray` and
+                `torch` sinks write, read where it lies at its own shape, strides and
+                offset. A `float16` row reads as f32.
             allowed_roots: ``auto``, ``file_path``: Locations a path column may read
                 from; required to read one (``["*"]`` for any; see above).
             cloud_options: ``auto``, ``file_path``: Cloud-storage credentials: a
@@ -1954,11 +1963,13 @@ class _OpsMixin:
                 declaration is checked at decode: a blob of another dtype is a row
                 error. ``file_path``, ``image_bytes``: Asserted element dtype: a decoded
                 image with another dtype is cast. ``raw``: The element dtype: raw bytes
-                carry no type metadata, so it is required.
+                carry no type metadata, so it is required. ``tensor``: Declared element
+                dtype. A row carries its own, so a declaration is checked at decode: a
+                row of another dtype is a row error.
             on_error: ``array``, ``auto``, ``blob``, ``contour``, ``image_bytes``,
-                ``list``, ``raw``: "raise" or "null": what a row that cannot be decoded
-                does. ``file_path``: "raise" or "null": what a row that cannot be read
-                or decoded does.
+                ``list``, ``raw``, ``tensor``: "raise" or "null": what a row that cannot
+                be decoded does. ``file_path``: "raise" or "null": what a row that
+                cannot be read or decoded does.
             require_contiguous: ``array``, ``list``: Require rectangular data (zero-
                 copy); jagged rows are then an error. ``auto``: Require rectangular data
                 when the column is a List/Array.

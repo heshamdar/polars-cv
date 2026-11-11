@@ -57,6 +57,11 @@ pub fn numpy_output_dtype() -> DataType {
     ])
 }
 
+/// The `dtype` field of a half-precision row: the one dtype the struct
+/// holds that the engine does not (`from_f16_bits` writes it, the `tensor`
+/// source reads it back as f32).
+pub(crate) const F16_NAME: &str = "float16";
+
 /// Encoded numpy output for a single row.
 ///
 /// This struct holds the components that will become the Struct column fields.
@@ -109,7 +114,7 @@ impl NumpyRowOutput {
             "internal: a float16 row holds its f16 bits as u16"
         );
         Self {
-            dtype: "float16",
+            dtype: F16_NAME,
             ..Self::from_buffer(bits)
         }
     }

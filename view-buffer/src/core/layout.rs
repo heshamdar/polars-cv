@@ -131,6 +131,25 @@ pub struct Layout {
     pub dtype: DType,
 }
 
+/// How far a strided view reaches from its first logical element, in bytes:
+/// `(lowest, highest)` element offset over every index, `lowest <= 0 <=
+/// highest`. **The one reach computation**: a blob header and a tensor row
+/// are both untrusted `(shape, strides)` pairs checked against the bytes
+/// they claim. In `i128`, so no pair of `usize`/`isize` values overflows.
+/// Meaningful for a view with at least one element.
+pub fn strided_reach(shape: &[usize], strides: &[isize]) -> (i128, i128) {
+    let (mut lowest, mut highest) = (0i128, 0i128);
+    for (&dim, &stride) in shape.iter().zip(strides) {
+        let reach = (dim as i128 - 1) * stride as i128;
+        if reach >= 0 {
+            highest += reach;
+        } else {
+            lowest += reach;
+        }
+    }
+    (lowest, highest)
+}
+
 impl Layout {
     /// Creates a new contiguous layout with the given shape and dtype.
     pub fn new_contiguous(shape: impl Into<Dims>, dtype: DType) -> Self {

@@ -637,9 +637,12 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> State {
         Source::ImageBytes { .. } | Source::FilePath { .. } => buffer(dtype, Some(3)),
         // Rank follows the column (nesting depth, blob header, or the path the
         // column's dtype routes to), known only with the input.
-        Source::Auto { .. } | Source::Blob { .. } | Source::List { .. } | Source::Array { .. } => {
-            buffer(dtype, None)
-        }
+        // A tensor row carries its own shape, as a blob does.
+        Source::Auto { .. }
+        | Source::Blob { .. }
+        | Source::List { .. }
+        | Source::Array { .. }
+        | Source::Tensor { .. } => buffer(dtype, None),
         // The column's contour set, as `extract_contours` publishes one:
         // f64 coordinates, no rank. Rasterizing is the `rasterize` op's.
         Source::Contour { .. } => State::new(

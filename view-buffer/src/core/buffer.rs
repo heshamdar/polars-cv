@@ -306,6 +306,17 @@ impl ViewBuffer {
         with_dtype!(self.dtype(), S => crate::core::convert::f16_bits::<S>(self))
     }
 
+    /// The inverse of [`to_f16_bits`](Self::to_f16_bits): a `U16` buffer of
+    /// binary16 bit patterns as the `F32` values they are, exactly (every
+    /// f16 is an f32). How a half-precision tensor row is read back.
+    ///
+    /// # Panics
+    /// Panics if the buffer is not `U16`.
+    pub fn from_f16_bits(&self) -> Self {
+        assert_eq!(self.dtype(), DType::U16, "f16 bits are held as u16");
+        crate::core::convert::f16_values(self)
+    }
+
     /// Returns true if the buffer data is aligned to the specified boundary.
     ///
     /// # Arguments
@@ -467,6 +478,94 @@ impl ViewBuffer {
             },
             layout,
         }
+    }
+
+    /// A strided view over `buffer`, validated: the inverse of
+    /// [`into_polars_buffer_strided`](Self::into_polars_buffer_strided), for a
+    /// `(shape, strides, offset)` that came from column data (a tensor
+    /// struct row) and is therefore untrusted.
+    ///
+    /// `offset` is the byte offset of the first logical element in `buffer`;
+    /// strides are in bytes and may be negative or zero. The view is built
+    /// only if every element it can address lies inside `buffer`, each stride
+    /// is a whole number of elements and the elements are aligned where they
+    /// lie: a typed view over them is a `&[T]`, so anything less is undefined
+    /// behaviour, not a wrong value. This check is the constructor, so no
+    /// caller can build the view without it.
+    ///
+    /// A view with no elements reads nothing; it gets packed strides.
+    #[cfg(feature = "polars_interop")]
+    pub fn from_polars_buffer_strided(
+        buffer: polars_buffer::Buffer<u8>,
+        shape: &[usize],
+        strides: &[isize],
+        offset: usize,
+        dtype: DType,
+    ) -> Result<Self, String> {
+        let elem = dtype.size_of();
+        let len = buffer.len();
+        if shape.len() != strides.len() {
+            return Err(format!(
+                "shape {shape:?} has {} dimensions and strides {strides:?} have {}",
+                shape.len(),
+                strides.len()
+            ));
+        }
+        // The largest size any prefix of the dimensions spans, zero-length
+        // ones aside: bounded, so the packed strides below cannot overflow.
+        shape
+            .iter()
+            .filter(|&&dim| dim != 0)
+            .try_fold(elem, |acc, &dim| acc.checked_mul(dim))
+            .filter(|&bytes| bytes <= isize::MAX as usize)
+            .ok_or_else(|| format!("shape {shape:?} is too large to address"))?;
+        if offset > len {
+            return Err(format!("offset {offset} is past the {len} data bytes"));
+        }
+        if shape.contains(&0) {
+            return Ok(Self::from_polars_buffer_slice(buffer, 0, 0, shape, dtype));
+        }
+        if let Some(bad) = strides.iter().find(|&&s| s % elem as isize != 0) {
+            return Err(format!(
+                "stride {bad} is not a whole number of {} elements ({elem} bytes): \
+                 strides={strides:?}",
+                dtype.short_name()
+            ));
+        }
+        let (lowest, highest) = crate::core::layout::strided_reach(shape, strides);
+        if offset as i128 + lowest < 0 {
+            return Err(format!(
+                "the view reaches below the start of its data: shape={shape:?}, \
+                 strides={strides:?}, offset={offset}"
+            ));
+        }
+        let end = offset as i128 + highest + elem as i128;
+        if end > len as i128 {
+            return Err(format!(
+                "the view reaches past the end of its data: shape={shape:?}, \
+                 strides={strides:?}, offset={offset} needs {end} bytes of {len}"
+            ));
+        }
+        if !(buffer.as_slice().as_ptr() as usize + offset).is_multiple_of(elem) {
+            return Err(format!(
+                "the data is not aligned to its {} element size ({elem} bytes) at offset \
+                 {offset}",
+                dtype.short_name()
+            ));
+        }
+        Ok(Self {
+            data: BufferStorage::PolarsArrow {
+                buffer,
+                offset: 0,
+                len,
+            },
+            layout: Layout {
+                shape: Dims::from_slice(shape),
+                strides: Strides::from_slice(strides),
+                offset,
+                dtype,
+            },
+        })
     }
 
     /// Returns the data type of the buffer elements.

@@ -38,5 +38,6 @@ mod resize_views;
 mod rotation;
 mod stride_contract_fixes;
 mod strided_ops;
+mod tensor_view;
 mod validation;
 mod zero_copy;

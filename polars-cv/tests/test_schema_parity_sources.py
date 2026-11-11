@@ -118,6 +118,7 @@ def test_source_axis_covers_the_vocabulary() -> None:
         SourceFormat.AUTO: "test_auto_source_on_a_binary_column",
         SourceFormat.IMAGE_BYTES: "test_image_bytes_source_every_channel_count",
         SourceFormat.BLOB: "test_blob_source_round_trips",
+        SourceFormat.TENSOR: "test_tensor_source_round_trips",
         SourceFormat.RAW: "test_raw_source_every_dtype",
         SourceFormat.FILE_PATH: "test_file_path_source",
         SourceFormat.LIST: "test_list_source_every_dtype",
@@ -405,6 +406,29 @@ def test_blob_source_round_trips(pattern: str) -> None:
 
     pipe = Pipeline().source("blob", dtype="u8")
     _sweep(df, pipe, f"blob source / {pattern}")
+
+
+@plugin_required
+@pytest.mark.parametrize("pattern", HOMOGENEOUS_PATTERNS)
+def test_tensor_source_round_trips(pattern: str) -> None:
+    """A tensor row is self-describing, as a blob is; the plan still has to match.
+
+    The column is the library's own ``numpy`` sink output (CR-138): what one
+    half writes, the other half must plan for.
+    """
+    src = pl.DataFrame(
+        {"img": [make_image_png(H, W, 3, seed=1)]}, schema={"img": pl.Binary}
+    )
+    out = src.select(
+        out=pl.col("img")
+        .cv.pipe(Pipeline().source("image_bytes").cast("u8"))
+        .sink("numpy")
+    )["out"]
+    row = out[0]
+    df = frame(rows_for(pattern, [row, row, row]), out.dtype)
+
+    pipe = Pipeline().source("tensor", dtype="u8")
+    _sweep(df, pipe, f"tensor source / {pattern}")
 
 
 @plugin_required

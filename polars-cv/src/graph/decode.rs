@@ -100,6 +100,26 @@ pub(crate) fn decode_source_row(
                 _ => Ok(buffer(buf)),
             }
         }
+        // A tensor row carries its own dtype, as a blob does (a `float16`
+        // row reads as f32), and a declared one must match it.
+        Source::Tensor { dtype, .. } => {
+            let Some(buf) =
+                decode_tensor_row(series, row).map_err(|e| format!("Tensor decode error: {e}"))?
+            else {
+                return Ok(None);
+            };
+            match dtype.map(|d| d.get()) {
+                Some(declared) if declared != buf.dtype() => Err(format!(
+                    "the tensor row holds {} elements, but the source declares dtype=\"{}\". \
+                     A tensor row carries its own dtype: drop the declaration, correct it, or \
+                     .cast(\"{}\") after the source.",
+                    buf.dtype().short_name(),
+                    declared.short_name(),
+                    declared.short_name()
+                )),
+                _ => Ok(buffer(buf)),
+            }
+        }
         Source::ImageBytes { .. } => match binary()?.get(row) {
             Some(bytes) => decode_image_bytes(bytes, source)
                 .map(buffer)
@@ -181,8 +201,6 @@ pub(crate) fn get_binary_row_buffer(
     row_idx: usize,
     in_place: impl FnOnce(&[u8]) -> bool,
 ) -> Option<(polars_buffer::Buffer<u8>, usize, usize)> {
-    use polars_arrow::array::{Array, View};
-
     // The chunk holding the row, and the row's index within it.
     let mut i = row_idx;
     let arr = binary_ca.downcast_iter().find(|arr| {
@@ -192,6 +210,17 @@ pub(crate) fn get_binary_row_buffer(
         }
         here
     })?;
+    binary_array_row_buffer(arr, i, in_place)
+}
+
+/// [`get_binary_row_buffer`] for row `i` of one chunk.
+fn binary_array_row_buffer(
+    arr: &polars_arrow::array::BinaryViewArray,
+    i: usize,
+    in_place: impl FnOnce(&[u8]) -> bool,
+) -> Option<(polars_buffer::Buffer<u8>, usize, usize)> {
+    use polars_arrow::array::{Array, View};
+
     if !arr.is_valid(i) {
         return None;
     }
@@ -208,6 +237,123 @@ pub(crate) fn get_binary_row_buffer(
         return Some((buffer, 0, bytes.len()));
     }
     Some((aligned_copy(bytes), 0, bytes.len()))
+}
+
+/// Row `row` of a tensor struct column (what the `numpy`, `ndarray` and
+/// `torch` sinks write): a view over the row's `data` at its own `shape`,
+/// `strides` and `offset`, read where the bytes lie when its elements are
+/// aligned there, else over an aligned copy. `None` for a null row.
+///
+/// Every field is untrusted column data. The view is built by
+/// [`ViewBuffer::from_polars_buffer_strided`], which refuses one that does
+/// not lie inside `data`; a null field, a null dimension or a dtype name the
+/// struct does not hold is an error too.
+pub(crate) fn decode_tensor_row(series: &Series, row: usize) -> Result<Option<ViewBuffer>, String> {
+    use polars_arrow::array::{
+        Array, BinaryViewArray, ListArray, PrimitiveArray, StructArray, Utf8ViewArray,
+    };
+
+    let storage = crate::output::numpy_output_dtype();
+    if series.dtype() != &storage {
+        return Err(format!(
+            "expected the tensor struct ({storage:?}), as sink(\"numpy\"), sink(\"ndarray\") \
+             and sink(\"torch\") write it, got {:?}",
+            series.dtype()
+        ));
+    }
+    // The chunk holding the row, and the row's index within it.
+    let mut i = row;
+    let Some(chunk) = series.chunks().iter().find(|arr| {
+        let here = i < arr.len();
+        if !here {
+            i -= arr.len();
+        }
+        here
+    }) else {
+        return Ok(None);
+    };
+    let arr = chunk
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or("internal: a struct column's chunk is not a struct array")?;
+    if !arr.is_valid(i) {
+        return Ok(None);
+    }
+    // Fields by name: the dtype check above fixed their names and types.
+    fn field<'a, A: Array + 'static>(arr: &'a StructArray, name: &str) -> Result<&'a A, String> {
+        arr.fields()
+            .iter()
+            .position(|f| f.name == name)
+            .and_then(|at| arr.values()[at].as_any().downcast_ref::<A>())
+            .ok_or_else(|| format!("internal: the tensor struct has no readable '{name}' field"))
+    }
+    let null = |name: &str| format!("the row's '{name}' is null");
+    // One list row's values, none of them null.
+    fn list_row<'a, T: polars_arrow::types::NativeType>(
+        arr: &'a StructArray,
+        name: &str,
+        i: usize,
+    ) -> Result<&'a [T], String> {
+        let list = field::<ListArray<i64>>(arr, name)?;
+        if !list.is_valid(i) {
+            return Err(format!("the row's '{name}' is null"));
+        }
+        let (start, end) = list.offsets().start_end(i);
+        let values = list
+            .values()
+            .as_any()
+            .downcast_ref::<PrimitiveArray<T>>()
+            .ok_or_else(|| format!("internal: the tensor struct's '{name}' has another type"))?;
+        if (start..end).any(|at| !values.is_valid(at)) {
+            return Err(format!("the row's '{name}' holds a null"));
+        }
+        Ok(&values.values()[start..end])
+    }
+
+    let names = field::<Utf8ViewArray>(arr, "dtype")?;
+    if !names.is_valid(i) {
+        return Err(null("dtype"));
+    }
+    let name = names.value(i);
+    // The struct's dtype names are the dtype table's numpy names, plus the
+    // half precision the engine holds as its u16 bits.
+    let half = name == crate::output::F16_NAME;
+    let dtype = if half {
+        view_buffer::DType::U16
+    } else {
+        view_buffer::DType::from_numpy_name(name).ok_or_else(|| {
+            format!("unknown dtype {name:?} (expected a numpy name, as \"uint8\")")
+        })?
+    };
+    let offsets = field::<PrimitiveArray<u64>>(arr, "offset")?;
+    if !offsets.is_valid(i) {
+        return Err(null("offset"));
+    }
+    let offset = usize::try_from(offsets.value(i))
+        .map_err(|_| format!("offset {} is too large", offsets.value(i)))?;
+    let shape = list_row::<u64>(arr, "shape", i)?
+        .iter()
+        .map(|&dim| usize::try_from(dim).map_err(|_| format!("dimension {dim} is too large")))
+        .collect::<Result<Vec<usize>, String>>()?;
+    let strides = list_row::<i64>(arr, "strides", i)?
+        .iter()
+        .map(|&s| isize::try_from(s).map_err(|_| format!("stride {s} is too large")))
+        .collect::<Result<Vec<isize>, String>>()?;
+
+    let elem = dtype.size_of();
+    let data = field::<BinaryViewArray>(arr, "data")?;
+    let Some((buffer, start, len)) = binary_array_row_buffer(data, i, |bytes| {
+        (bytes.as_ptr() as usize)
+            .wrapping_add(offset)
+            .is_multiple_of(elem)
+    }) else {
+        return Err(null("data"));
+    };
+    // Exactly the row's bytes: an aligned copy is padded to whole words, and
+    // the padding is not the row's to read.
+    let buffer = buffer.sliced(start..start + len);
+    let view = ViewBuffer::from_polars_buffer_strided(buffer, &shape, &strides, offset, dtype)?;
+    Ok(Some(if half { view.from_f16_bits() } else { view }))
 }
 
 /// Copy `bytes` into a buffer whose first byte is 8-byte aligned.

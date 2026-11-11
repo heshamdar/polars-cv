@@ -122,7 +122,9 @@ pair of runs.
 
 The adapter scenarios always decode PNG and sink to numpy, so whole subsystems
 went unmeasured. `targeted` times them directly, eager, grouped by prefix:
-`codec_` (PNG/JPEG decode and re-encode), `sink_` (the `array`/`list` tensor
+`codec_` (PNG/JPEG decode and re-encode, and the scaled JPEG decode at each
+factor: `codec_jpeg_decode_half`/`_quarter`/`_eighth` beside the full
+`codec_jpeg_decode`), `sink_` (the `array`/`list` tensor
 sinks, including a transposed input), `blob_` (the blob source, plain and
 through a fused op) and `geom_` (the `.contour`/`.point` accessors and contour
 rasterization). Image cases use the suite's counts and sizes; geometry cases run
