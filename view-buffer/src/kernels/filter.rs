@@ -105,12 +105,12 @@ pub(crate) fn convolve_in<F: Acc>(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuff
     let w = shape[1];
     let c = shape.get(2).copied().unwrap_or(1);
 
-    // The coefficients in the accumulator's precision (an f32 kernel widens
-    // exactly).
+    // The coefficients in the accumulator's precision: as given for f64,
+    // narrowed for f32.
     let kernel: Vec<F> = op
         .kernel
         .iter()
-        .map(|&k| F::from_f32(k).expect("an f32 coefficient converts"))
+        .map(|&k| F::from_f64(k).expect("an f64 coefficient converts"))
         .collect();
     let kernel = &kernel[..];
     let ksize = op.side();

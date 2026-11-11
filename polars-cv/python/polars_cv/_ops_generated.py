@@ -1908,12 +1908,14 @@ class _OpsMixin:
         format is **rejected**, naming the formats it applies to.
 
         ``decode_max_size`` asserts the pipeline needs at most this many pixels on
-        the decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or
-        1/2) to skip work. The long side never drops below
-        ``min(decode_max_size, original)``, so a downstream resize to that size
-        never upscales; other encodings decode at full size. A scaled decode
-        followed by a resize is not bit-identical to a full decode and the same
-        resize, hence the explicit opt-in.
+        the decoded long side, so a JPEG at least twice that size decodes with
+        IDCT scaling (1/8, 1/4 or 1/2), skipping work. The long side never drops
+        below ``min(decode_max_size, original)``, so a downstream resize to that
+        size never upscales. A JPEG with no reduction to make (smaller than twice
+        ``decode_max_size``) and every other encoding decode at full size, exactly
+        as without the option. A scaled decode followed by a resize is not
+        bit-identical to a full decode and the same resize, hence the explicit
+        opt-in.
 
         ``allowed_roots`` names which locations a path column may read from, and a
         path column reads nothing without it: reading is default-deny, and the
@@ -2117,7 +2119,8 @@ class _OpsMixin:
         Domain: buffer → buffer
 
         Args:
-            sigma: Standard deviation for Gaussian kernel.
+            sigma: Standard deviation for Gaussian kernel (an f32: it shapes the kernel
+                and is not a value in the data's range).
         """
         return self._append_typed("blur", {"sigma": sigma})
 
@@ -2137,8 +2140,9 @@ class _OpsMixin:
         Domain: buffer → buffer
 
         Args:
-            low_threshold: Lower hysteresis threshold.
-            high_threshold: Upper hysteresis threshold.
+            low_threshold: Lower hysteresis threshold (an f32, compared with the
+                gradient magnitude).
+            high_threshold: Upper hysteresis threshold (an f32, as ``low_threshold``).
 
         Example:
             >>> edges = Pipeline().source("image_bytes").blur(sigma=1.4).canny(low_threshold=50, high_threshold=150)
@@ -3021,7 +3025,8 @@ class _OpsMixin:
         Args:
             mean: Per-channel means (e.g. ImageNet ``[0.485, 0.456, 0.406]``), one per
                 channel. Each element may be a literal float or a Polars expression; the
-                list length is the channel count.
+                list length is the channel count. Read as f32, which normalization
+                computes in.
             std: Per-channel standard deviations (e.g. ImageNet ``[0.229, 0.224,
                 0.225]``), as many as ``mean``. Each element accepts an expression, as
                 with ``mean``.
@@ -3049,7 +3054,8 @@ class _OpsMixin:
         Domain: buffer → buffer
 
         Args:
-            low: The window's lower edge. Accepts a Polars expression.
+            low: The window's lower edge. Accepts a Polars expression. Read as f32,
+                which normalization computes in.
             high: The window's upper edge, above ``low``. Accepts a Polars expression.
             out_dtype: Output dtype (default f32), as ``normalize``'s.
 
@@ -3449,8 +3455,8 @@ class _OpsMixin:
         Domain: buffer → buffer
 
         Args:
-            scale_x: X (width) scale factor.
-            scale_y: Y (height) scale factor.
+            scale_x: X (width) scale factor (an f32: it sets a size).
+            scale_y: Y (height) scale factor (an f32: it sets a size).
             filter: Resize filter ("nearest", "bilinear", "lanczos3").
         """
         return self._append_typed(
@@ -3512,7 +3518,8 @@ class _OpsMixin:
 
         Args:
             angle: Rotation angle in degrees (positive = clockwise). Can be a literal
-                float or Polars expression.
+                float or Polars expression. An f32: it places pixels, it is not a value
+                among them.
             expand: If True, expand output dimensions to fit rotated image. If False
                 (default), keep original dimensions (corners may be cropped).
             interpolation: Interpolation method for arbitrary angles -- ``"bilinear"``

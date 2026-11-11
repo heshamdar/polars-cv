@@ -316,7 +316,7 @@ fn changed_from_legacy(op: &ComputeOp, buf: &ViewBuffer) -> Option<ViewBuffer> {
             let out: Vec<f64> = x
                 .as_slice::<f64>()
                 .iter()
-                .map(|&v| (v / max).clamp(0.0, 1.0).powf(*gamma as f64) * max)
+                .map(|&v| (v / max).clamp(0.0, 1.0).powf(*gamma) * max)
                 .collect();
             Some(ViewBuffer::from_vec_with_shape(out, buf.shape().to_vec()))
         }

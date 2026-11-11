@@ -56,7 +56,8 @@ path_pipe = Pipeline().source("file_path", allowed_roots=["/srv/images"])
 Both image sources accept `decode_max_size=<n>`, asserting the pipeline needs at
 most `n` pixels on the decoded long side. JPEG decoding then uses IDCT scaling
 (1/8, 1/4, 1/2) to skip work — a large CPU and memory saving for curation passes.
-Non-JPEG formats ignore the assertion and decode at full size.
+Non-JPEG formats, and a JPEG with no reduction to make (smaller than twice `n`),
+decode at full size, exactly as without the option.
 
 ```python
 pipe = Pipeline().source(

@@ -372,7 +372,7 @@ fn spatial_kernels(c: &mut Criterion) {
     // vertical flip), a transpose or horizontal flip a gathered row at a time.
     let convolve = |side: usize| {
         ViewDto::Filter(ConvolveOp {
-            kernel: (0..side * side).map(|i| (i % 7) as f32 - 3.0).collect(),
+            kernel: (0..side * side).map(|i| (i % 7) as f64 - 3.0).collect(),
             normalize: false,
             border: BorderMode::Reflect,
         })

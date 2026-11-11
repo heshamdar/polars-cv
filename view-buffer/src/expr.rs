@@ -332,7 +332,7 @@ impl ViewExpr {
         self.op_node(ComputeOp::Affine(params).into())
     }
 
-    pub fn scale(self: &Arc<Self>, factor: f32) -> Arc<Self> {
+    pub fn scale(self: &Arc<Self>, factor: f64) -> Arc<Self> {
         self.op_node(ComputeOp::Scale { factor }.into())
     }
 
@@ -378,17 +378,17 @@ impl ViewExpr {
     }
 
     /// Clamp values to [min, max] range.
-    pub fn clamp(self: &Arc<Self>, min: f32, max: f32) -> Arc<Self> {
+    pub fn clamp(self: &Arc<Self>, min: f64, max: f64) -> Arc<Self> {
         self.op_node(ComputeOp::Clamp { min, max }.into())
     }
 
     /// Adjust contrast: `(pixel - mean) * factor + mean`.
-    pub fn adjust_contrast(self: &Arc<Self>, factor: f32) -> Arc<Self> {
+    pub fn adjust_contrast(self: &Arc<Self>, factor: f64) -> Arc<Self> {
         self.op_node(ComputeOp::AdjustContrast { factor }.into())
     }
 
     /// Adjust gamma (power-law transformation).
-    pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
+    pub fn adjust_gamma(self: &Arc<Self>, gamma: f64) -> Arc<Self> {
         self.op_node(ComputeOp::AdjustGamma { gamma }.into())
     }
 

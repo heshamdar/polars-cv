@@ -63,7 +63,7 @@ pub fn pad(
     bottom: u32,
     left: u32,
     right: u32,
-    value: f32,
+    value: f64,
     mode: PadMode,
 ) -> ViewBuffer {
     crate::core::dtype::with_dtype!(buffer.dtype(), T => {
@@ -103,7 +103,7 @@ pub fn pad_to_size(
     height: u32,
     width: u32,
     position: PadPosition,
-    value: f32,
+    value: f64,
 ) -> ViewBuffer {
     let shape = buffer.shape();
     let (top, bottom, left, right) =

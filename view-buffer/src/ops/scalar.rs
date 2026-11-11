@@ -4,21 +4,25 @@ use serde::{Deserialize, Serialize};
 
 /// Elementary scalar operations that can be fused into a single kernel.
 ///
-/// All ops compute in `f32` regardless of the kernel's input/output dtype —
-/// the kernel converts on read and write (see [`FusedKernel::out_dtype`]).
+/// A constant is an `f64`, the value the caller gave. The fused kernel
+/// computes in `f32` regardless of its input/output dtype (it converts on
+/// read and write, see [`FusedKernel::out_dtype`]) and narrows each constant
+/// to `f32` where it uses it; the f64 path ([`ScalarOp::apply_f64`]) uses the
+/// constant as given. One representation: a constant is never rounded before
+/// the arithmetic that reads it is chosen.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ScalarOp {
-    Add(f32),
+    Add(f64),
     /// Subtraction of a constant. Kept distinct from `Add(-c)` so lowered ops
     /// stay bit-identical to their unfused form, mirroring `Div` vs `Mul`.
-    Sub(f32),
-    Mul(f32),
+    Sub(f64),
+    Mul(f64),
     /// Division by a constant. Kept distinct from `Mul(1/c)` so lowered ops
     /// (e.g. gamma's `x / max`) stay bit-identical to their unfused form.
-    Div(f32),
+    Div(f64),
     /// Power-law: `x.powf(c)`.
-    Pow(f32),
+    Pow(f64),
     /// Negate: `-x`.
     Neg,
     /// Absolute value: `x.abs()`.
@@ -30,10 +34,10 @@ pub enum ScalarOp {
     /// Reciprocal: `1.0 / x`.
     Recip,
     /// Minimum with a constant ceiling, NaN-propagating ([`crate::ops::util::minimum`]).
-    Min(f32),
+    Min(f64),
     /// Maximum with a constant floor, NaN-propagating ([`crate::ops::util::maximum`];
     /// `Relu == Max(0.0)`).
-    Max(f32),
+    Max(f64),
     /// Sign: `-1`, `0`, `+1`; `0` for `±0`, `NaN` for `NaN` (matches numpy.sign).
     Sign,
     /// Round toward negative infinity.
@@ -45,7 +49,7 @@ pub enum ScalarOp {
     /// Round toward zero (drop the fractional part).
     Trunc,
     Relu,
-    Clamp(f32, f32),
+    Clamp(f64, f64),
 }
 
 /// numpy-compatible sign: `0` for `±0`, `NaN` for `NaN`, else `±1`.
@@ -99,30 +103,29 @@ impl ScalarOp {
     /// `f64` buffer computes here so `PromoteToFloat`'s f64-preserving contract
     /// holds (the bulk f32 kernel in `apply_fused_op_passes` handles every
     /// other dtype). The two must agree; `scalar_f64_matches_f32_kernel` in the
-    /// buffer tests pins that. Constants are `f32` on the wire and widen to
-    /// `f64` here, matching the unfused compute paths.
+    /// buffer tests pins that. Constants are used as given, in f64.
     #[inline]
     pub fn apply_f64(&self, x: f64) -> f64 {
         match self {
-            ScalarOp::Add(c) => x + *c as f64,
-            ScalarOp::Sub(c) => x - *c as f64,
-            ScalarOp::Mul(c) => x * *c as f64,
-            ScalarOp::Div(c) => x / *c as f64,
-            ScalarOp::Pow(c) => x.powf(*c as f64),
+            ScalarOp::Add(c) => x + *c,
+            ScalarOp::Sub(c) => x - *c,
+            ScalarOp::Mul(c) => x * *c,
+            ScalarOp::Div(c) => x / *c,
+            ScalarOp::Pow(c) => x.powf(*c),
             ScalarOp::Neg => -x,
             ScalarOp::Abs => x.abs(),
             ScalarOp::Sqrt => x.sqrt(),
             ScalarOp::Square => x * x,
             ScalarOp::Recip => 1.0 / x,
-            ScalarOp::Min(c) => crate::ops::util::minimum(x, *c as f64),
-            ScalarOp::Max(c) => crate::ops::util::maximum(x, *c as f64),
+            ScalarOp::Min(c) => crate::ops::util::minimum(x, *c),
+            ScalarOp::Max(c) => crate::ops::util::maximum(x, *c),
             ScalarOp::Sign => signum_numpy(x),
             ScalarOp::Floor => x.floor(),
             ScalarOp::Ceil => x.ceil(),
             ScalarOp::Round => x.round_ties_even(),
             ScalarOp::Trunc => x.trunc(),
             ScalarOp::Relu => crate::ops::util::maximum(x, 0.0),
-            ScalarOp::Clamp(lo, hi) => x.clamp(*lo as f64, *hi as f64),
+            ScalarOp::Clamp(lo, hi) => x.clamp(*lo, *hi),
         }
     }
 }

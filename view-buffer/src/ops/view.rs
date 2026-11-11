@@ -71,7 +71,7 @@ pub enum ViewOp<M: Mode = Exec> {
         width: M::V<u32>,
         /// The fill outside the input.
         #[param(default = 0.0)]
-        value: M::V<f32>,
+        value: M::V<f64>,
     },
     /// Transpose dimensions.
     #[op(name = "transpose", sample = {"axes": [1, 0, 2]})]
@@ -162,7 +162,7 @@ pub struct Placement {
     pub start: Vec<usize>,
     pub end: Vec<usize>,
     /// `(top, bottom, left, right, value)`.
-    pub pad: Option<(u32, u32, u32, u32, f32)>,
+    pub pad: Option<(u32, u32, u32, u32, f64)>,
 }
 
 impl ViewOp {

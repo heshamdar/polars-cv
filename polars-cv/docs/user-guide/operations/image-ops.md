@@ -696,7 +696,9 @@ Decode only a downscaled version of an image source with
 pixels on the decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4,
 1/2) to skip work — a large CPU and memory win. The decoded long side never drops
 below `min(N, original)`, so a downstream resize to `N` never upscales. Non-JPEG
-formats (PNG, …) ignore the assertion and decode at full size.
+formats (PNG, …) ignore the assertion and decode at full size, and so does a
+JPEG smaller than twice `N`: with no reduction to make, it is the same decode,
+byte for byte, as without the option.
 
 ```python
 # Cheap decode for a curation pass

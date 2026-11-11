@@ -1,9 +1,9 @@
 {
- "generated": "2026-10-18",
- "commit": "27f8c3f",
+ "generated": "2026-11-11",
+ "commit": "996c2ad",
  "versions": {
-  "polars-cv": "0.39.0",
-  "polars": "2.0.0",
+  "polars-cv": "0.41.0",
+  "polars": "2.1.0",
   "numpy": "2.5.3",
   "opencv-python": "4.11.0.86",
   "scipy": "1.16.3",
@@ -2482,6 +2482,29 @@
    "tolerance": "exact for max/min/argmax/argmin/sum; rtol 1e-9 for mean/std",
    "tests": 17,
    "passed": 17,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy float64 arithmetic (float32 on Float32 data)",
+   "file": "tests/reference/test_scalar_f64_ref.py",
+   "ops": [
+    "scale",
+    "clamp",
+    "clamp_min",
+    "clamp_max",
+    "add_constant",
+    "subtract_constant",
+    "adjust_contrast",
+    "adjust_gamma",
+    "pad",
+    "pad_to_size",
+    "crop_pad",
+    "convolve2d"
+   ],
+   "tolerance": "exact (adjust_gamma: 1 ulp)",
+   "tests": 60,
+   "passed": 60,
    "failed": 0,
    "skipped": 0
   },

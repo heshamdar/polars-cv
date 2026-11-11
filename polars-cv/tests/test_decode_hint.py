@@ -111,6 +111,33 @@ class TestJpegScaledDecode:
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         assert numpy_from_struct(out["out"][0]).shape == (60, 80, 3)
 
+    @pytest.mark.parametrize("decode_max_size", [80, 81, 160, 4096])
+    @pytest.mark.parametrize("gray", [False, True])
+    def test_no_reduction_is_the_full_decoders_pixels(
+        self, decode_max_size: int, gray: bool
+    ) -> None:
+        """CR-139: an assertion the image already meets changes nothing.
+
+        The scaled path is another decoder, whose pixels differ from the full
+        one's (by up to 10 levels on a chroma-subsampled file) and which is
+        slower at scale 1. With no reduction to make, the row takes the full
+        path: byte-identical to leaving the option out.
+        """
+        jpg = _gray_jpeg(80, 60) if gray else _jpeg(80, 60)
+        df = pl.DataFrame({"img": [jpg]})
+
+        def decode(**source_kwargs: int) -> np.ndarray:
+            pipe = Pipeline().source("image_bytes", **source_kwargs)
+            out = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            return numpy_from_struct(out["out"][0])
+
+        full = decode()
+        hinted = decode(decode_max_size=decode_max_size)
+        assert hinted.shape == full.shape
+        assert np.array_equal(hinted, full), (
+            f"max difference {np.abs(hinted.astype(int) - full.astype(int)).max()}"
+        )
+
     def test_grayscale_jpeg_shape_matches_full_decode(self) -> None:
         jpg = _gray_jpeg(400, 320)
         df = pl.DataFrame({"img": [jpg]})
