@@ -122,6 +122,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   for code that wraps one in a signature of its own. The contour matcher kept
   a private copy of `FloatOrExpr` because core's was not public; that copy is
   deleted.
+- **The SessionStart hook no longer uninstalls the built extension.** It runs
+  again whenever a web session resumes, and its exact `uv sync
+  --no-install-project` removed the editable `polars-cv` that `maturin
+  develop` had installed, since the lockfile does not list it. Anything
+  starting a fresh interpreter (the pre-commit structural lane,
+  `test_each_module_imports_alone`) then failed with `No module named
+  'polars_cv'` until the next rebuild. The sync is now `--inexact`
+  (`test_session_start_hook_keeps_the_built_extension`).
 - **`ty` is pinned** (`uvx ty@0.0.100`) in CI, `scripts/verify.sh` and the
   pre-commit hook, and `test_ty_runs_at_one_pinned_version` holds the three to
   one version. `ty` renames rules between releases and reports an ignore
