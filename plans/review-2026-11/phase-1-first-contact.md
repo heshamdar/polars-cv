@@ -8,8 +8,8 @@ Phases [2](phase-2-stabilise.md) and [3](phase-3-depth.md) follow.
 **Goal:** remove the five things that make a first evaluation fail. Nothing
 here adds an op.
 
-**Order:** CR-136, CR-139, CR-138, CR-137, CR-140. The first two are defects
-with no open decision; CR-137 waits on one.
+**Order:** CR-139 (what is left of it), CR-138, CR-137, CR-140. CR-136 is
+closed (`ISSUES.md`, Closed findings). CR-137 waits on a decision.
 
 **Rules that apply to every item** (from `CLAUDE.md` and the ledger):
 
@@ -27,151 +27,53 @@ Every measurement below was taken on 2026-11-11 on a 4-core container with a
 
 ---
 
-## CR-136 — Scalar constants are `f32`, whatever the data
+## CR-139 — `decode_max_size` is no faster at scale 1/2
 
-**Re-verified: confirmed, and wider than first reported.**
-
-### Evidence
-
-Constants are `f32` on the wire (`M::V<f32>`, 24 fields: 14 in
-`view-buffer/src/ops/compute.rs`, 8 in `ops/image.rs`, one each in
-`ops/filter.rs` and `ops/view.rs`) and in `ScalarOp` (`ops/scalar.rs:11`).
-The f64 path widens them (`ScalarOp::apply_f64`, whose comment says so). So on
-data whose accumulator is f64 — `f64` and the 32/64-bit integers — the
-arithmetic is f64 but the constant has already lost precision.
-
-| Call | polars-cv | NumPy |
-|---|---|---|
-| `Float64 [1, 3]`, `scale(1/3)` | `0.3333333432674408, 1.0000000298023224` | `0.3333333333333333, 1.0` |
-| `Float64 [1.0]`, `add_constant(0.1)` | `1.1000000014901161` | `1.1` |
-| `Float64 [0.1, 0.30000000000000004]`, `clamp_min(0.3)` | `0.30000001192092896` twice | `0.3, 0.30000000000000004` |
-| `Int64 [16777217, …]`, `clamp(0, 16777217)` | `16777216` | `16777217` |
-| `Int64 [16777217]`, `add_constant(16777217)` | `33554433` | `33554434` |
-| `Float64` column parameter, `scale(pl.col("k"))`, `k = 1/3` | `0.3333333432674408` | `0.3333333333333333` |
-
-The third row raises a value that already met the bound. The integer rows are
-wrong in the last digit past 2^24. `Float32` and 8/16-bit data are unaffected:
-`Float32 [1, 3] * (1/3)` matches NumPy's f32 result exactly.
-
-The code already treats this as a defect in one place: `F64Step`
-(`kernels/elementwise/mod.rs:98`) exists because "contrast's mean is an f64
-statistic and must not be rounded to f32 first".
-
-### Approach
-
-1. Make the wire fields of the scalar family `f64`: `Scale.factor`,
-   `AddConstant`/`SubtractConstant.value`, `Clamp.min`/`max`,
-   `ClampMin`/`ClampMax.value`, `NormalizeRange.low`/`high`,
-   `AdjustContrast.factor`, `AdjustGamma.gamma`, and the `mean`/`std` lists of
-   `normalize_preset`. Leave geometric and filter parameters (`Rotate.angle`,
-   `Blur.sigma`, thresholds) as they are unless the audit in step 4 says
-   otherwise.
-2. Carry `f64` constants in `ScalarOp`. The f32 path narrows at use
-   (`c as f32`), which is the same f32 the wire produced before, so 8/16-bit
-   and `Float32` output stays bit-identical. The f64 path uses the constant
-   as given.
-3. Delete the `as f64` widenings in `apply_f64` and the special-case
-   `F64Step::{Sub,Mul,Add,Div}` variants that exist only to smuggle an f64
-   constant past `ScalarOp` — one representation, not two.
-4. Audit the remaining `M::V<f32>` fields: for each, either the op computes
-   in f32 by contract (leave it, and say so in its doc comment) or it reaches
-   an f64 path (convert it).
-5. Integer bounds: decide whether `clamp` on an integer buffer keeps
-   promoting to float. Out of scope here unless the audit shows the bound is
-   still inexact after step 1 (an `f64` holds integers to 2^53).
-
-### Tests first
-
-- `tests/test_known_gaps.py`: one `xfail(strict=True)` per table row above,
-  through `Pipeline` on an `Array` column. Watch each fail today.
-- A reference test against NumPy for the scalar family on `Float64`, `Int32`,
-  `Int64`, `UInt32`, exact equality.
-- Bit-identity: the golden corpus and the existing u8/f32 reference tests must
-  pass unchanged. This is the guard for step 2.
-- `test_expr_param_identity.py`: a literal and the same value from a
-  `Float64` column still give the same result.
-
-### Risks
-
-- **Op identity.** A constant enters CSE and the compiled-graph cache key.
-  `1/255` as f64 and as f32 are different keys; check that no golden wire
-  file pins the f32 spelling without being re-blessed.
-- **`repr`.** `scale(factor=0.003921568859368563)` becomes
-  `0.00392156862745098`. Snapshot tests of `repr`/`explain` move.
-- **Output change on f64 data.** Deliberate: CHANGELOG "Fixed", ledger
-  finding, the tests above as the guard.
-
-### Done when
-
-The six rows match NumPy, the u8/f32 corpus is byte-identical, and the pins
-are deleted from `test_known_gaps.py`.
-
----
-
-## CR-139 — `decode_max_size` can be slower than a full decode
-
-**Re-verified: confirmed, and the scale-1 case is worse than reported.**
+**Scale 1 is fixed:** `decode_jpeg_scaled` (`polars-cv/src/execute.rs`)
+returns `None` when the decoder's factor is 1, so the row takes the full
+decoder and is byte-identical to leaving the option out
+(`test_no_reduction_is_the_full_decoders_pixels`). What is left is the 1/2
+factor and the measurement.
 
 ### Evidence
 
-`decode_jpeg_scaled` (`polars-cv/src/execute.rs:23`) sends every JPEG with
-`decode_max_size` set through the `jpeg-decoder` crate, at whatever scale the
-decoder picks, including 1. The full path uses the `image` crate's decoder
-(`zune-jpeg`). `zune-jpeg` 0.5.8 has no scaled IDCT, so the two paths cannot
-share a decoder.
-
-Decode only, 300 JPEGs of 620x496, median of 9, two rounds. A `cargo check`
-was running, so absolute times are inflated; the ordering held in both rounds
-and in two earlier uncontended runs (full 206–214 ms against 225–236 ms at
-`decode_max_size=224`, 400 images).
+The scaled path is the `jpeg-decoder` crate; the full path is the `image`
+crate's decoder (`zune-jpeg`), which has no scaled IDCT, so the two cannot
+share a decoder. Decode only, 300 JPEGs of 620x496, median of 9, two rounds,
+on a 4-core container with a `cargo check` running (absolute times inflated;
+the ordering held in both rounds):
 
 | Source | Scale chosen | Round 1 | Round 2 |
 |---|---|---:|---:|
 | full decode | — | 362 ms | 336 ms |
-| `decode_max_size=4096` | 1 | 466 ms | 447 ms |
 | `decode_max_size=320` | 1/2 | 405 ms | 479 ms |
 | `decode_max_size=224` | 1/2 | 357 ms | 350 ms |
 | `decode_max_size=128` | 1/4 | 292 ms | 312 ms |
 | `decode_max_size=64` | 1/8 | 251 ms | 260 ms |
 
-At scale 1 the option costs about 30% **and changes pixels**: the two
-decoders differ by up to 10 levels on the same file. On a 12-megapixel JPEG
-with a 224 target (scale 1/8) it was 2.2 times faster, so the option is worth
-keeping.
+On a 12-megapixel JPEG with a 224 target (scale 1/8) it was 2.2 times
+faster, so the option is worth keeping.
 
 ### Approach
 
-1. In `decode_jpeg_scaled`, read the header, compute the factor the decoder
-   would choose, and return `None` (full path) when it is 1. That alone
-   removes the 30% case and makes `decode_max_size >= image` bit-identical to
-   leaving it out.
-2. Measure 1/2 properly (uncontended, the regression suite's `--profile
+1. Measure 1/2 properly (uncontended, the regression suite's `--profile
    benchmark`, several image sizes). If the scaled path does not win at 1/2,
    fall through there as well and document the option as "1/4 and smaller".
-3. Add a regression-suite case for each factor
+2. Add a regression-suite case for each factor
    (`benchmarks/regression/`), so the crossover is measured, not remembered.
-4. Correct the docstring in `formats/source.rs`: it says the option "skips
-   work"; say when.
-
-### Tests first
-
-- A test that `decode_max_size` larger than the image gives bytes identical to
-  no `decode_max_size`. Fails today (max difference 10).
-- The existing `test_decode_hint.py` invariant (long side never below
-  `min(decode_max_size, original)`) must keep passing.
 
 ### Risks
 
-- Output changes for callers who set `decode_max_size` at or above the image
-  size. The option was already documented as not bit-identical, and the new
-  behaviour is the full decoder's, so this is a "Fixed" entry.
+- Falling through at 1/2 changes the shape a caller gets (the full size
+  instead of half), not only its pixels. The documented invariant (long side
+  never below `min(decode_max_size, original)`) still holds, and
+  `test_decode_hint.py` pins shapes at 1/4 and 1/8 that must not move.
 - A longer-term option is to drop `jpeg-decoder` for a decoder with a fast
   scaled IDCT. Not planned: it is a new dependency for one option.
 
 ### Done when
 
-No factor is slower than the full decode in the regression suite, and scale 1
-is byte-identical.
+No factor is slower than the full decode in the regression suite.
 
 ---
 

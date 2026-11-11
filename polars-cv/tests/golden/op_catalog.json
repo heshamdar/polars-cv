@@ -405,7 +405,7 @@
     "fields": [
       {
         "name": "sigma",
-        "doc": "Standard deviation for Gaussian kernel.",
+        "doc": "Standard deviation for Gaussian kernel (an f32: it shapes the\nkernel and is not a value in the data's range).",
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -429,7 +429,7 @@
     "fields": [
       {
         "name": "low_threshold",
-        "doc": "Lower hysteresis threshold.",
+        "doc": "Lower hysteresis threshold (an f32, compared with the gradient\nmagnitude).",
         "default": 50.0,
         "type": {
           "kind": "scalar",
@@ -440,7 +440,7 @@
       },
       {
         "name": "high_threshold",
-        "doc": "Upper hysteresis threshold.",
+        "doc": "Upper hysteresis threshold (an f32, as ``low_threshold``).",
         "default": 150.0,
         "type": {
           "kind": "scalar",
@@ -2346,7 +2346,7 @@
     "fields": [
       {
         "name": "mean",
-        "doc": "Per-channel means (e.g. ImageNet ``[0.485, 0.456, 0.406]``), one\nper channel. Each element may be a literal float or a Polars\nexpression; the list length is the channel count.",
+        "doc": "Per-channel means (e.g. ImageNet ``[0.485, 0.456, 0.406]``), one\nper channel. Each element may be a literal float or a Polars\nexpression; the list length is the channel count. Read as f32,\nwhich normalization computes in.",
         "type": {
           "kind": "list",
           "inner": {
@@ -2411,7 +2411,7 @@
     "fields": [
       {
         "name": "low",
-        "doc": "The window's lower edge. Accepts a Polars expression.",
+        "doc": "The window's lower edge. Accepts a Polars expression. Read as\nf32, which normalization computes in.",
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -3434,7 +3434,7 @@
     "fields": [
       {
         "name": "scale_x",
-        "doc": "X (width) scale factor.",
+        "doc": "X (width) scale factor (an f32: it sets a size).",
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -3444,7 +3444,7 @@
       },
       {
         "name": "scale_y",
-        "doc": "Y (height) scale factor.",
+        "doc": "Y (height) scale factor (an f32: it sets a size).",
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -3573,7 +3573,7 @@
     "fields": [
       {
         "name": "angle",
-        "doc": "Rotation angle in degrees (positive = clockwise). Can be a literal float\nor Polars expression.",
+        "doc": "Rotation angle in degrees (positive = clockwise). Can be a literal float\nor Polars expression. An f32: it places pixels, it is not a value\namong them.",
         "type": {
           "kind": "scalar",
           "per_row": true,

@@ -28,6 +28,36 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   there is nothing to bump. Drop the ignore when they move to
   `core::pin::pin!`.
 
+### Fixed
+
+- **A constant is no longer rounded to f32 before f64 arithmetic (CR-136).**
+  `Float64` and 32/64-bit integer data compute in f64, but every constant was
+  an f32 on the wire and in the engine, so `scale(1/3)` on `Float64` gave
+  `0.3333333432674408`, `clamp_min(0.3)` *raised* `0.30000000000000004`, and
+  on `Int64` `add_constant(16777217)` was off by one (f32 holds integers to
+  2^24). The constants of `scale`, `clamp`, `clamp_min`, `clamp_max`,
+  `add_constant`, `subtract_constant`, `adjust_contrast` and `adjust_gamma`,
+  the `convolve2d` coefficients (and the filters built on it) and the fill
+  `value` of `pad`, `pad_to_size`, `letterbox` and `crop_pad` are now f64, as
+  given, from a literal or a `Float64` column alike; they match NumPy exactly
+  (`tests/reference/test_scalar_f64_ref.py`). **Output changes on `Float64`,
+  `Int32`, `UInt32`, `Int64` and `UInt64` data only.** `Float32` and 8/16-bit
+  data compute in f32 with the constant narrowed where it is used, the f32 it
+  always was: the golden corpus and every reference test are unchanged. (One
+  edge: an integer fill value is now truncated from the f64 given, where the
+  f32 rounding could first carry a value like `0.99999999` up to `1`.) The
+  normalize family (`normalize_preset`, `normalize_range`) computes in f32
+  for every input and keeps f32 parameters, as do `blur`'s `sigma`, `canny`'s
+  thresholds and `rotate`'s `angle`.
+- **`decode_max_size` at or above the image's size is the full decode
+  (CR-139).** Every JPEG with the option set went through the scaled decoder,
+  including at scale 1, where it has nothing to skip: about 30% slower than
+  the full decoder, with pixels up to 10 levels different. A row whose scale
+  factor is 1 now takes the full decoder, so the option changes nothing
+  until it reduces something. **Output changes** for a JPEG smaller than
+  twice its `decode_max_size`: it is now what the source gives without the
+  option.
+
 ### Breaking changes
 
 - **The metrics are no longer re-exported from `polars_cv`; import them from

@@ -147,7 +147,7 @@ fn cast_reading_ops(c: usize) -> Vec<(&'static str, ViewDto)> {
         ops.push((
             "convolve2d",
             ViewDto::Filter(ConvolveOp {
-                kernel: (0..side * side).map(|i| (i % 7) as f32 - 3.0).collect(),
+                kernel: (0..side * side).map(|i| (i % 7) as f64 - 3.0).collect(),
                 normalize: side == 5,
                 border,
             }),

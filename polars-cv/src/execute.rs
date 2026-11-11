@@ -17,9 +17,13 @@ use crate::formats::Format as _;
 /// Picks the smallest of the decoder's supported scale factors (1/8, 1/4,
 /// 1/2, 1) whose output is >= `max_size` on at least one axis, so the long
 /// side never drops below `min(max_size, original)` — downstream resizes
-/// down to `max_size` never upscale. Returns `None` for non-JPEG bytes or
-/// pixel formats the scaled path does not cover (16-bit, CMYK); the caller
-/// falls back to the full decoder.
+/// down to `max_size` never upscale. Returns `None` for non-JPEG bytes, for
+/// pixel formats the scaled path does not cover (16-bit, CMYK), and when the
+/// factor is 1: the caller falls back to the full decoder.
+///
+/// A factor of 1 has no work to skip, and this decoder is not the full one:
+/// it is slower at full size (about 30%, CR-139) and its pixels differ. So a
+/// `max_size` the image already meets is the full decode, byte for byte.
 fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
     // JPEG SOI marker; anything else takes the regular decode path.
     if bytes.len() < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
@@ -27,7 +31,13 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
     }
     let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(bytes));
     let requested = max_size.min(u16::MAX as u32) as u16;
+    // The stored size, read before `scale` replaces it with the scaled one.
+    decoder.read_info().ok()?;
+    let full = decoder.info()?;
     let (width, height) = decoder.scale(requested, requested).ok()?;
+    if (width, height) == (full.width, full.height) {
+        return None;
+    }
     let pixels = decoder.decode().ok()?;
     let info = decoder.info()?;
     let (h, w) = (height as usize, width as usize);

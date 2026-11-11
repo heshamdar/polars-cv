@@ -40,7 +40,8 @@ pub enum ImageOpKind<M: Mode = Exec> {
     /// Apply Gaussian blur.
     #[op(name = "blur", sample = {"sigma": 1.0})]
     Blur {
-        /// Standard deviation for Gaussian kernel.
+        /// Standard deviation for Gaussian kernel (an f32: it shapes the
+        /// kernel and is not a value in the data's range).
         sigma: M::V<f32>,
     },
     /// Convert to grayscale (luminance 0.299R + 0.587G + 0.114B): an
@@ -65,10 +66,11 @@ pub enum ImageOpKind<M: Mode = Exec> {
     ///     >>> edges = Pipeline().source("image_bytes").blur(sigma=1.4).canny(low_threshold=50, high_threshold=150)
     #[op(name = "canny", sample = {"low_threshold": 50.0, "high_threshold": 150.0})]
     Canny {
-        /// Lower hysteresis threshold.
+        /// Lower hysteresis threshold (an f32, compared with the gradient
+        /// magnitude).
         #[param(default = 50.0)]
         low_threshold: M::V<f32>,
-        /// Upper hysteresis threshold.
+        /// Upper hysteresis threshold (an f32, as ``low_threshold``).
         #[param(default = 150.0)]
         high_threshold: M::V<f32>,
     },
@@ -219,9 +221,9 @@ pub enum ImageOpKind<M: Mode = Exec> {
     #[op(name = "resize_scale", visibility = Internal,
          sample = {"scale_x": 0.5, "scale_y": 0.5, "filter": "bilinear"})]
     ResizeScale {
-        /// X (width) scale factor.
+        /// X (width) scale factor (an f32: it sets a size).
         scale_x: M::V<f32>,
-        /// Y (height) scale factor.
+        /// Y (height) scale factor (an f32: it sets a size).
         scale_y: M::V<f32>,
         /// Resize filter ("nearest", "bilinear", "lanczos3").
         #[param(default = "lanczos3")]
@@ -298,7 +300,7 @@ pub enum ImageOpKind<M: Mode = Exec> {
         /// Fill value for "constant" mode (default 0). Accepts a Polars expression
         /// for per-row dynamic values.
         #[param(default = 0.0)]
-        value: M::V<f32>,
+        value: M::V<f64>,
         /// Padding mode - "constant", "edge", "reflect", "symmetric".
         #[param(default = "constant")]
         mode: M::V<PadMode>,
@@ -322,7 +324,7 @@ pub enum ImageOpKind<M: Mode = Exec> {
         /// Fill value for padding (default 0). Accepts a Polars expression for
         /// per-row dynamic values.
         #[param(default = 0.0)]
-        value: M::V<f32>,
+        value: M::V<f64>,
     },
     /// Resize image maintaining aspect ratio and pad to exact target size: fit
     /// within the target, then pad with centered positioning.
@@ -339,7 +341,7 @@ pub enum ImageOpKind<M: Mode = Exec> {
         /// Fill value for padding (default 0, typically black). Accepts a Polars
         /// expression for per-row dynamic values.
         #[param(default = 0.0)]
-        value: M::V<f32>,
+        value: M::V<f64>,
         /// Resampling filter for the resize step (default "lanczos3").
         #[param(default = "lanczos3")]
         filter: M::V<FilterType>,

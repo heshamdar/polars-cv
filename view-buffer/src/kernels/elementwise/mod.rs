@@ -12,7 +12,9 @@
 //! `out_dtype` through the conversion rule. Ops with statistics (`normalize`,
 //! `adjust_contrast`) compute them first ([`stats`]) and lower to a kernel
 //! over the resulting constants. f64 input to the float-preserving ops
-//! computes in f64 instead ([`F64Step`], via `ScalarOp::apply_f64`).
+//! computes in f64 instead (`ScalarOp::apply_f64`), over the same constants:
+//! a `ScalarOp` constant is an f64, which the f32 passes narrow where they
+//! use it.
 //!
 //! How a kernel computes is decided once, here ([`strategy`]):
 //! - **Integer affine** when the kernel is exactly `clamp(±x + c)` over
@@ -55,9 +57,9 @@ mod tests;
 pub(crate) fn apply(buf: ViewBuffer, op: &ComputeOp) -> ViewBuffer {
     match lower(op, &buf) {
         Lowered::Kernels(kernels) => run_kernels(buf, &kernels),
-        Lowered::F64(steps) => match buf.dtype() {
-            DType::F64 => map_owned::<f64, _>(buf, &F64Map(&steps)),
-            dtype => with_dtype!(dtype, T => map_new::<T, f64, _>(&buf, &F64Map(&steps))),
+        Lowered::F64(ops) => match buf.dtype() {
+            DType::F64 => map_owned::<f64, _>(buf, &F64Map(&ops)),
+            dtype => with_dtype!(dtype, T => map_new::<T, f64, _>(&buf, &F64Map(&ops))),
         },
         Lowered::Zeros(out) => zeros(out, buf.shape()),
         Lowered::IntNot => match buf.dtype() {
@@ -85,38 +87,15 @@ enum Lowered {
     /// a channels-last buffer.
     Kernels(Vec<FusedKernel>),
     /// Input whose accumulator is f64 (f64 and the 32/64-bit integers):
-    /// read each element exactly as f64, compute and write f64.
-    F64(Vec<F64Step>),
+    /// read each element exactly as f64, compute ([`ScalarOp::apply_f64`])
+    /// and write f64.
+    F64(Vec<ScalarOp>),
     /// Every element is zero of this dtype (a normalize with no spread).
     Zeros(DType),
     /// `invert` of a 32/64-bit integer: `MAX + MIN - x`, the bitwise
     /// complement, in the input dtype. Those dtypes are not exact in f32, so
     /// they cannot take the scalar lowering the 8/16-bit ones do.
     IntNot,
-}
-
-/// One step of the f64 path. `ScalarOp` constants are f32; contrast's mean
-/// is an f64 statistic and must not be rounded to f32 first.
-#[derive(Debug, Clone)]
-pub(crate) enum F64Step {
-    Scalar(ScalarOp),
-    Sub(f64),
-    Mul(f64),
-    Add(f64),
-    Div(f64),
-}
-
-impl F64Step {
-    #[inline(always)]
-    fn apply(&self, x: f64) -> f64 {
-        match self {
-            F64Step::Scalar(op) => op.apply_f64(x),
-            F64Step::Sub(c) => x - c,
-            F64Step::Mul(c) => x * c,
-            F64Step::Add(c) => x + c,
-            F64Step::Div(c) => x / c,
-        }
-    }
 }
 
 fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
@@ -162,17 +141,17 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
             if dtype.accumulator() == DType::F64 {
                 let mean = stats::mean_f64(buf);
                 Lowered::F64(vec![
-                    F64Step::Sub(mean),
-                    F64Step::Mul(*factor as f64),
-                    F64Step::Add(mean),
+                    ScalarOp::Sub(mean),
+                    ScalarOp::Mul(*factor),
+                    ScalarOp::Add(mean),
                 ])
             } else {
                 let mean = stats::contrast_mean_f32(buf);
                 one(
                     vec![
-                        ScalarOp::Sub(mean),
+                        ScalarOp::Sub(mean.into()),
                         ScalarOp::Mul(*factor),
-                        ScalarOp::Add(mean),
+                        ScalarOp::Add(mean.into()),
                     ],
                     DType::F32,
                 )
@@ -201,10 +180,10 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
                 (ComputeOp::AdjustGamma { gamma }, _) if dtype.accumulator() == DType::F64 => {
                     let max = dtype.value_range_max();
                     return Lowered::F64(vec![
-                        F64Step::Div(max),
-                        F64Step::Scalar(ScalarOp::Clamp(0.0, 1.0)),
-                        F64Step::Scalar(ScalarOp::Pow(*gamma)),
-                        F64Step::Mul(max),
+                        ScalarOp::Div(max),
+                        ScalarOp::Clamp(0.0, 1.0),
+                        ScalarOp::Pow(*gamma),
+                        ScalarOp::Mul(max),
                     ]);
                 }
                 _ if dtype.accumulator() == DType::F64 => {
@@ -216,7 +195,7 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
                         "internal: `{}` has no scalar lowering",
                         op.name()
                     );
-                    return Lowered::F64(ops.into_iter().map(F64Step::Scalar).collect());
+                    return Lowered::F64(ops);
                 }
                 _ => {}
             }
@@ -237,10 +216,11 @@ fn normalized(out_dtype: &Option<DType>) -> DType {
     out_dtype.unwrap_or(DType::F32)
 }
 
-/// `(x - sub) / div`, as `out_dtype`.
+/// `(x - sub) / div` in f32 (the normalize family's arithmetic), as
+/// `out_dtype`.
 fn affine(sub: f32, div: f32, out_dtype: DType) -> FusedKernel {
     FusedKernel {
-        ops: vec![ScalarOp::Sub(sub), ScalarOp::Div(div)],
+        ops: vec![ScalarOp::Sub(sub.into()), ScalarOp::Div(div.into())],
         out_dtype,
     }
 }
@@ -295,8 +275,8 @@ fn window(lo: f32, hi: f32, out_dtype: DType) -> Lowered {
     }
     Lowered::Kernels(vec![FusedKernel {
         ops: vec![
-            ScalarOp::Sub(lo),
-            ScalarOp::Div(hi - lo),
+            ScalarOp::Sub(lo.into()),
+            ScalarOp::Div((hi - lo).into()),
             ScalarOp::Max(0.0),
             ScalarOp::Min(1.0),
         ],
@@ -368,18 +348,22 @@ pub(crate) fn strategy(in_dtype: DType, n_elems: usize, kernels: &[FusedKernel])
 /// 8/16-bit `x`: only integer `Add`/`Sub`, `Neg` and `Mul(±1)`, with every
 /// intermediate below 2^24 in magnitude so each f32 step is exact. The f32
 /// result is then an integer, which the output conversion only saturates,
-/// so `clamp(sign·x + offset)` in integers is the same value.
+/// so `clamp(sign·x + offset)` in integers is the same value. Each constant
+/// is read as the f32 the passes would use, so this is the same kernel.
 fn int_affine(ops: &[ScalarOp]) -> Option<(i32, i32)> {
     const LIMIT: i64 = 1 << 21;
-    let int = |c: f32| (c.fract() == 0.0 && (c.abs() as i64) <= LIMIT).then_some(c as i64);
+    let int = |c: f64| {
+        let c = c as f32;
+        (c.fract() == 0.0 && (c.abs() as i64) <= LIMIT).then_some(c as i64)
+    };
     let (mut sign, mut offset) = (1i64, 0i64);
     for op in ops {
         match *op {
             ScalarOp::Add(c) => offset += int(c)?,
             ScalarOp::Sub(c) => offset -= int(c)?,
             ScalarOp::Neg => (sign, offset) = (-sign, -offset),
-            ScalarOp::Mul(-1.0) => (sign, offset) = (-sign, -offset),
-            ScalarOp::Mul(1.0) => {}
+            ScalarOp::Mul(c) if c as f32 == -1.0 => (sign, offset) = (-sign, -offset),
+            ScalarOp::Mul(c) if c as f32 == 1.0 => {}
             _ => return None,
         }
         if offset.abs() > LIMIT {
@@ -911,14 +895,14 @@ impl SimdKernelMut<f32> for Passes<'_> {
     }
 }
 
-/// f64 input to a float-preserving op: each element through the steps in
+/// f64 input to a float-preserving op: each element through the ops in
 /// order, in f64.
-struct F64Map<'a>(&'a [F64Step]);
+struct F64Map<'a>(&'a [ScalarOp]);
 
 impl F64Map<'_> {
     #[inline(always)]
     fn apply(&self, x: f64) -> f64 {
-        self.0.iter().fold(x, |v, step| step.apply(v))
+        self.0.iter().fold(x, |v, op| op.apply_f64(v))
     }
 }
 
@@ -1187,12 +1171,12 @@ pub(crate) fn lower_to_scalars(
         ComputeOp::AdjustGamma { gamma: g } if promote_family_fusable => {
             let max_val: f32 = input_dtype.norm_range_max_f32();
             if max_val != 1.0 {
-                list.push(ScalarOp::Div(max_val));
+                list.push(ScalarOp::Div(max_val.into()));
             }
             list.push(ScalarOp::Clamp(0.0, 1.0));
             list.push(ScalarOp::Pow(*g));
             if max_val != 1.0 {
-                list.push(ScalarOp::Mul(max_val));
+                list.push(ScalarOp::Mul(max_val.into()));
             }
             true
         }
@@ -1212,7 +1196,7 @@ pub(crate) fn lower_to_scalars(
                 _ => return false,
             };
             list.push(ScalarOp::Mul(-1.0));
-            list.push(ScalarOp::Add(max_val));
+            list.push(ScalarOp::Add(max_val.into()));
             true
         }
         // A cast is the kernel's own read/write conversion:
@@ -1245,28 +1229,33 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
     for op in ops {
         match op {
             ScalarOp::Add(c) => {
+                let c = *c as f32;
                 for x in data.iter_mut() {
-                    *x += *c;
+                    *x += c;
                 }
             }
             ScalarOp::Sub(c) => {
+                let c = *c as f32;
                 for x in data.iter_mut() {
-                    *x -= *c;
+                    *x -= c;
                 }
             }
             ScalarOp::Mul(c) => {
+                let c = *c as f32;
                 for x in data.iter_mut() {
-                    *x *= *c;
+                    *x *= c;
                 }
             }
             ScalarOp::Div(c) => {
+                let c = *c as f32;
                 for x in data.iter_mut() {
-                    *x /= *c;
+                    *x /= c;
                 }
             }
             ScalarOp::Pow(c) => {
+                let c = *c as f32;
                 for x in data.iter_mut() {
-                    *x = x.powf(*c);
+                    *x = x.powf(c);
                 }
             }
             ScalarOp::Neg => {
@@ -1295,13 +1284,15 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
                 }
             }
             ScalarOp::Min(c) => {
+                let c = *c as f32;
                 for x in data.iter_mut() {
-                    *x = crate::ops::util::minimum(*x, *c);
+                    *x = crate::ops::util::minimum(*x, c);
                 }
             }
             ScalarOp::Max(c) => {
+                let c = *c as f32;
                 for x in data.iter_mut() {
-                    *x = crate::ops::util::maximum(*x, *c);
+                    *x = crate::ops::util::maximum(*x, c);
                 }
             }
             ScalarOp::Sign => {
@@ -1335,8 +1326,9 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
                 }
             }
             ScalarOp::Clamp(lo, hi) => {
+                let (lo, hi) = (*lo as f32, *hi as f32);
                 for x in data.iter_mut() {
-                    *x = x.clamp(*lo, *hi);
+                    *x = x.clamp(lo, hi);
                 }
             }
         }

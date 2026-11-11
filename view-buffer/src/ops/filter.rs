@@ -47,7 +47,7 @@ pub struct ConvolveOp<M: Mode = Exec> {
     /// side (9 for 3×3, 25 for 5×5, ...), which is the kernel's size. **Each
     /// coefficient may be a literal float or a Polars expression**, so a batch
     /// can convolve with a different kernel per row; the length is structural.
-    pub kernel: Vec<M::V<f32>>,
+    pub kernel: Vec<M::V<f64>>,
     /// If True, divide output by the sum of absolute kernel values.
     #[param(default = false)]
     pub normalize: M::V<bool>,

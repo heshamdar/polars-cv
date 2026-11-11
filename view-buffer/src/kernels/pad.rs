@@ -5,19 +5,21 @@ use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::ViewType;
 use crate::ops::pad::PadMode;
 
-/// Convert the user-facing `f32` fill value into the element type.
+/// Convert the user-facing fill value into the element type. The value is an
+/// `f64`, so it is exact in an `f64` buffer and in every integer one up to
+/// 2^53.
 ///
 /// Float→int `as` casts saturate in Rust, matching the old explicit
 /// `clamp(0.0, 255.0)` behavior for u8 and extending it to every dtype.
 pub(crate) trait FillValue: ViewType + Copy {
-    fn from_f32(v: f32) -> Self;
+    fn from_f64(v: f64) -> Self;
 }
 
 macro_rules! impl_fill_value {
     ($($t:ty),+ $(,)?) => {
         $(impl FillValue for $t {
             #[inline]
-            fn from_f32(v: f32) -> Self {
+            fn from_f64(v: f64) -> Self {
                 v as $t
             }
         })+
@@ -31,7 +33,7 @@ pub(crate) fn pad_generic<T: FillValue>(
     bottom: u32,
     left: u32,
     right: u32,
-    value: f32,
+    value: f64,
     mode: PadMode,
 ) -> ViewBuffer {
     let shape = buffer.shape();
@@ -53,7 +55,7 @@ pub(crate) fn pad_generic<T: FillValue>(
     let rows: Vec<&[T]> = rows_buf
         .dense_rows::<T>()
         .expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
-    let fill = T::from_f32(value);
+    let fill = T::from_f64(value);
     let mut output = vec![fill; output_h * output_w * channels];
     let out_shape = if shape.len() == 2 {
         vec![output_h, output_w]

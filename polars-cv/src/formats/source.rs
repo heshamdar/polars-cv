@@ -31,12 +31,14 @@ use crate::fetch::FetchErrorPolicy;
 /// format is **rejected**, naming the formats it applies to.
 ///
 /// ``decode_max_size`` asserts the pipeline needs at most this many pixels on
-/// the decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or
-/// 1/2) to skip work. The long side never drops below
-/// ``min(decode_max_size, original)``, so a downstream resize to that size
-/// never upscales; other encodings decode at full size. A scaled decode
-/// followed by a resize is not bit-identical to a full decode and the same
-/// resize, hence the explicit opt-in.
+/// the decoded long side, so a JPEG at least twice that size decodes with
+/// IDCT scaling (1/8, 1/4 or 1/2), skipping work. The long side never drops
+/// below ``min(decode_max_size, original)``, so a downstream resize to that
+/// size never upscales. A JPEG with no reduction to make (smaller than twice
+/// ``decode_max_size``) and every other encoding decode at full size, exactly
+/// as without the option. A scaled decode followed by a resize is not
+/// bit-identical to a full decode and the same resize, hence the explicit
+/// opt-in.
 ///
 /// ``allowed_roots`` names which locations a path column may read from, and a
 /// path column reads nothing without it: reading is default-deny, and the

@@ -47,7 +47,7 @@ pub enum ComputeOp<M: Mode = Exec> {
     #[op(name = "scale", visibility = Internal, sample = {"factor": 2.0})]
     Scale {
         /// Scale factor.
-        factor: M::V<f32>,
+        factor: M::V<f64>,
     },
     /// Apply ReLU activation (max(0, x)): negative values become zero.
     #[op(name = "relu", sample = {})]
@@ -81,7 +81,8 @@ pub enum ComputeOp<M: Mode = Exec> {
     NormalizePreset {
         /// Per-channel means (e.g. ImageNet ``[0.485, 0.456, 0.406]``), one
         /// per channel. Each element may be a literal float or a Polars
-        /// expression; the list length is the channel count.
+        /// expression; the list length is the channel count. Read as f32,
+        /// which normalization computes in.
         mean: Vec<M::V<f32>>,
         /// Per-channel standard deviations (e.g. ImageNet
         /// ``[0.229, 0.224, 0.225]``), as many as ``mean``. Each element
@@ -114,7 +115,8 @@ pub enum ComputeOp<M: Mode = Exec> {
     ///     >>> Pipeline().source("array").normalize_range(low=-1000.0, high=400.0)
     #[op(name = "normalize_range", sample = {"low": 10.0, "high": 200.0})]
     NormalizeRange {
-        /// The window's lower edge. Accepts a Polars expression.
+        /// The window's lower edge. Accepts a Polars expression. Read as
+        /// f32, which normalization computes in.
         low: M::V<f32>,
         /// The window's upper edge, above ``low``. Accepts a Polars expression.
         high: M::V<f32>,
@@ -128,9 +130,9 @@ pub enum ComputeOp<M: Mode = Exec> {
     #[op(name = "clamp", visibility = Internal, sample = {"min": 0.0, "max": 1.0})]
     Clamp {
         /// Minimum value (literal or expression).
-        min: M::V<f32>,
+        min: M::V<f64>,
         /// Maximum value (literal or expression).
-        max: M::V<f32>,
+        max: M::V<f64>,
     },
     /// Adjust image contrast: `(pixel - mean) * factor + mean`.
     ///
@@ -139,7 +141,7 @@ pub enum ComputeOp<M: Mode = Exec> {
     #[op(name = "adjust_contrast", sample = {"factor": 1.5})]
     AdjustContrast {
         /// Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.
-        factor: M::V<f32>,
+        factor: M::V<f64>,
     },
     /// Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,
     /// denormalize.
@@ -149,7 +151,7 @@ pub enum ComputeOp<M: Mode = Exec> {
     #[op(name = "adjust_gamma", sample = {"gamma": 0.5})]
     AdjustGamma {
         /// Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
-        gamma: M::V<f32>,
+        gamma: M::V<f64>,
     },
     /// Invert values, keeping the dtype: `MAX + MIN - x` for an integer
     /// (`255 - x` for u8, `-1 - x` for a signed dtype), `1 - x` for a float.
@@ -189,25 +191,25 @@ pub enum ComputeOp<M: Mode = Exec> {
     #[op(name = "clamp_min", sample = {"value": 0.0})]
     ClampMin {
         /// Lower bound (literal or per-row expression).
-        value: M::V<f32>,
+        value: M::V<f64>,
     },
     /// Cap values at `value` (`min(x, value)`); one-sided clamp.
     #[op(name = "clamp_max", sample = {"value": 1.0})]
     ClampMax {
         /// Upper bound (literal or per-row expression).
-        value: M::V<f32>,
+        value: M::V<f64>,
     },
     /// Add a constant to every value (`x + value`).
     #[op(name = "add_constant", sample = {"value": 1.0})]
     AddConstant {
         /// Constant addend (literal or per-row expression).
-        value: M::V<f32>,
+        value: M::V<f64>,
     },
     /// Subtract a constant from every value (`x - value`).
     #[op(name = "subtract_constant", sample = {"value": 1.0})]
     SubtractConstant {
         /// Constant subtrahend (literal or per-row expression).
-        value: M::V<f32>,
+        value: M::V<f64>,
     },
     /// Apply a 2x3 affine transformation matrix.
     ///
@@ -312,7 +314,8 @@ pub enum ComputeOp<M: Mode = Exec> {
                                     "border_value": 0.0})]
     Rotate {
         /// Rotation angle in degrees (positive = clockwise). Can be a literal float
-        /// or Polars expression.
+        /// or Polars expression. An f32: it places pixels, it is not a value
+        /// among them.
         angle: M::V<f32>,
         /// If True, expand output dimensions to fit rotated image. If False
         /// (default), keep original dimensions (corners may be cropped).
@@ -466,7 +469,7 @@ impl<M: Mode> ComputeOp<M> {
             let (lo, hi) = (M::sym(min).known(), M::sym(max).known());
             if let Some(nan) = [("min", lo), ("max", hi)]
                 .into_iter()
-                .find(|(_, v)| v.is_some_and(f32::is_nan))
+                .find(|(_, v)| v.is_some_and(f64::is_nan))
             {
                 return Err(format!("clamp: {} is NaN, which bounds nothing", nan.0));
             }

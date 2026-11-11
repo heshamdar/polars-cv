@@ -74,7 +74,8 @@ fn naive_convolve_reference(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
 
     let ksize = op.side();
     let half = (ksize / 2) as i64;
-    let kernel = &op.kernel;
+    // The f32 reference: the coefficients as the f32 accumulator reads them.
+    let kernel: Vec<f32> = op.kernel.iter().map(|&k| k as f32).collect();
 
     let norm_factor = if op.normalize {
         let abs_sum: f32 = kernel.iter().map(|k| k.abs()).sum();
@@ -193,7 +194,7 @@ fn convolve_matches_naive_reference_bit_exact() {
                     for border in borders {
                         for normalize in [false, true] {
                             let op = ConvolveOp {
-                                kernel: kernel.clone(),
+                                kernel: kernel.iter().copied().map(f64::from).collect(),
                                 normalize,
                                 border,
                             };
@@ -223,7 +224,9 @@ fn convolve_matches_naive_reference_u8_input() {
             let img = seeded_image_u8(h, w, c, 7);
             for &ksize in &[3usize, 5] {
                 let op = ConvolveOp {
-                    kernel: test_kernels(ksize).pop().unwrap().1,
+                    kernel: (test_kernels(ksize).pop().unwrap().1.into_iter())
+                        .map(f64::from)
+                        .collect(),
                     normalize: false,
                     border: BorderMode::Replicate,
                 };
@@ -240,7 +243,7 @@ fn convolve_identity_kernel_is_identity_on_interior() {
     // Sanity beyond equivalence: identity kernel must reproduce the input
     // exactly (everywhere — borders too, since the center tap is in-bounds).
     let img = seeded_image(16, 16, 3, 99);
-    let mut kernel = vec![0.0f32; 9];
+    let mut kernel = vec![0.0f64; 9];
     kernel[4] = 1.0;
     let op = ConvolveOp {
         kernel,

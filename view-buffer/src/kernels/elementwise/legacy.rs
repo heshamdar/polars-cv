@@ -7,7 +7,9 @@
 //! against the code that shipped rather than restated from memory. One rule
 //! has changed since, on purpose: `relu`, `clamp_min`, `clamp_max` and the
 //! MinMax normalize extremes propagate NaN (`ops::util::maximum`/`minimum`),
-//! as `clamp` and ZScore always did.
+//! as `clamp` and ZScore always did. And one representation: a constant is an
+//! f64 (CR-136), which the f32 arithmetic narrows (the f32 it always was) and
+//! the f64 arithmetic uses as given, where it used to widen an f32.
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};
 use crate::core::dtype::DType;
@@ -26,8 +28,8 @@ pub(super) fn apply(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     match op {
         ComputeOp::Scale { factor } => apply_scalar_owned_with(
             buf,
-            move |x: f32| x * factor,
-            move |x: f64| x * factor as f64,
+            move |x: f32| x * factor as f32,
+            move |x: f64| x * factor,
         ),
         // The one deliberate change since the move: NaN propagates
         // (`ops::util::maximum`), as it does through every scalar op.
@@ -49,8 +51,8 @@ pub(super) fn apply(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
         }
         ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
             buf,
-            move |x: f32| x.clamp(min, max),
-            move |x: f64| x.clamp(min as f64, max as f64),
+            move |x: f32| x.clamp(min as f32, max as f32),
+            move |x: f64| x.clamp(min, max),
         ),
         ComputeOp::AdjustContrast { factor } => apply_adjust_contrast(&buf, factor),
         ComputeOp::AdjustGamma { gamma } => apply_adjust_gamma(&buf, gamma),
@@ -279,7 +281,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &ComputeOp) -> ViewBuffer {
 ///
 /// Computes the global mean, then scales each pixel's deviation from it.
 /// Input is cast to f32; output is f32.
-fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
+fn apply_adjust_contrast(buf: &ViewBuffer, factor: f64) -> ViewBuffer {
     // f64 input computes (and stays) in f64, per the PromoteToFloat contract.
     if buf.dtype() == DType::F64 {
         let contig = buf.to_contiguous();
@@ -290,10 +292,10 @@ fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
         } else {
             0.0
         };
-        let factor = factor as f64;
         let new_data: Vec<f64> = src.iter().map(|&x| (x - mean) * factor + mean).collect();
         return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
     }
+    let factor = factor as f32;
     let work_buf = if buf.dtype() != DType::F32 {
         buf.cast(DType::F32)
     } else {
@@ -317,15 +319,15 @@ fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
 /// For u8 input the [0,255] range is used; for float [0,1] is assumed.
 /// Integer inputs promote to f32; f64 input computes (and stays) in f64,
 /// per the PromoteToFloat contract.
-fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
+fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f64) -> ViewBuffer {
     let input_dtype = buf.dtype();
     if input_dtype == DType::F64 {
         let contig = buf.to_contiguous();
         let src = contig.as_slice::<f64>();
-        let gamma = gamma as f64;
         let new_data: Vec<f64> = src.iter().map(|&x| x.clamp(0.0, 1.0).powf(gamma)).collect();
         return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
     }
+    let gamma = gamma as f32;
     let work_buf = if input_dtype != DType::F32 {
         buf.cast(DType::F32)
     } else {

@@ -47,10 +47,9 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
 | CR-129 | Params | Feature | A parameter from another node's values per row (`mask_node.p1` feeding any op) |
-| CR-136 | Review 2026-11 | Medium | Scalar constants are `f32` on f64-accumulator data (`Float64`, 32/64-bit integers): wrong from the eighth digit, and past 2^24 |
 | CR-137 | Review 2026-11 | Feature | EXIF orientation: no way to apply it or see it (default stays "stored": **decision** whether that ever changes) |
 | CR-138 | Review 2026-11 | Medium | `numpy`/`ndarray`/`torch` sink output cannot be read back by any source |
-| CR-139 | Review 2026-11 | Medium | `decode_max_size` is slower than a full decode at scale 1 (about 30%, and other pixels) and no faster at 1/2 |
+| CR-139 | Review 2026-11 | Low | `decode_max_size` at scale 1/2 is no faster than a full decode (scale 1 is fixed); no regression-suite case per factor |
 | CR-140 | Review 2026-11 | Feature | No Windows wheel; Python 3.14 untested |
 | CR-141 | Review 2026-11 | Decision | A stability policy: what the stable surface is, and how it deprecates |
 | CR-142 | Review 2026-11 | Low | `sink()` is hand-written with `**kwargs` while `source()` is generated from the same catalogue |
@@ -415,11 +414,10 @@ phase, and is not repeated here:
 
 Delete a plan's section when its item closes, and the file when it is empty.
 
-None of these is pinned in `test_known_gaps.py` yet. CR-136, CR-138 and
-CR-139 are verified wrong behaviour, and each plan's first step is its
-`xfail(strict=True)`; they were left out of this commit so that the pins
-arrive with an owner's agreement that the behaviour is a defect (CR-136's is
-documented as deliberate in `ScalarOp::apply_f64`).
+CR-136 is closed and CR-139's scale-1 half is fixed (below, and the
+CHANGELOG); each went in with its tests, watched failing first, so neither
+was pinned in `test_known_gaps.py`. CR-138 is verified wrong behaviour and
+is not pinned yet: its plan's first step is its `xfail(strict=True)`.
 
 Changed or dropped on the second check:
 
@@ -664,6 +662,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-136 | Scalar constants were `f32` on f64-accumulator data (`Float64`, 32/64-bit integers): wrong from the eighth digit, and past 2^24 | Fixed (unreleased): `ScalarOp` constants and the wire fields of `scale`, `clamp`, `clamp_min`/`max`, `add_constant`/`subtract_constant`, `adjust_contrast`, `adjust_gamma`, the `convolve2d` coefficients and the pad fill values are f64; the f32 passes narrow at use, so f32 and 8/16-bit output is unchanged; `F64Step` is gone (`tests/reference/test_scalar_f64_ref.py`). Left f32 by contract: the normalize family (computes in f32 for every input), `blur(sigma)`, `canny` thresholds, `rotate(angle)`, `resize_scale`. Of those, `sigma` shapes an f64 kernel on f64 data from an f32 value (weights off by ~1e-8 relative): not converted |
 | CR-131 | Repeated work in the new reductions: `rank_filter` gathered every window, `statistics(mask=)` and `region_stats` repeated their scan per statistic/map, the ADC file was read per remote object | Fixed (0.41.0): u8 `rank_filter` slides a 256-bin histogram (other dtypes keep the selection; a u16 histogram would need a coarse/fine count); `masked_select` gathers once for every masked statistic; a row's contour regions are found once for every `label_reduce` over them (`RegionCache`); the ADC probe is cached per file version |
 | CR-130 | Row errors composed by inspecting other errors' text; `(row n)` was a streaming batch's index presented as the frame's | Fixed (0.41.0): `row_ref.rs` names a row once, `(row i of n in this batch)`, from the pipeline's and the geometry functions' row loops; `ResolveError` replaces the text tests (`test_row_ref_guard.py`, `test_error_messages.py`) |
 | CR-132 | A ranged header read of an empty remote object was refused (HTTP 416, S3 `InvalidRange`) | Fixed (0.41.0): read whole on a range refusal (`test_remote_header_reads.py`, `test_cloud_access_probe.py`) |
