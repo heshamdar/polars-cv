@@ -273,13 +273,22 @@ class CvNamespace(_PluginNamespace):
         allowed_roots: "Sequence[str] | None" = None,
     ) -> pl.Expr:
         """
-        Width, height, channels and dtype from one header read per row.
+        Width, height, channels, dtype and the orientation tag from one
+        header read per row.
 
         Takes bytes or paths, as :meth:`width` does (see it for the options).
 
+        ``width`` and ``height`` are the stored size, which is what
+        ``source()`` decodes by default. ``orientation`` is the file's EXIF
+        (or TIFF) orientation tag, 1 to 8, null when it has none: with a tag
+        of 5 to 8, ``source(orientation="exif")`` decodes the image turned a
+        quarter, so its height is this ``width`` and its width this
+        ``height``.
+
         Returns:
             ``Struct{width: Int64, height: Int64, channels: Int64,
-            dtype: String}``; null for a null input or an unrecognised format.
+            dtype: String, orientation: Int64}``; null for a null input or an
+            unrecognised format.
         """
         return self._plugin(
             "image_info",

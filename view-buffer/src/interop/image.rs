@@ -348,16 +348,69 @@ impl AsImageView for ViewBuffer {
 pub struct ImageAdapter;
 
 impl ImageAdapter {
+    /// Whether the bytes are a TIFF file, by its magic (either byte order).
+    pub fn is_tiff(encoded_bytes: &[u8]) -> bool {
+        encoded_bytes.len() >= 4
+            && (&encoded_bytes[0..4] == b"II*\x00" || &encoded_bytes[0..4] == b"MM\x00*")
+    }
+
+    /// The orientation tag (1..=8) an opened decoder's EXIF block carries.
+    /// `None` when there is no block, no tag in it, a tag outside 1..=8, or a
+    /// block that does not parse: a malformed block is an absent tag, never a
+    /// failed decode. Not for TIFF, whose tag is its own
+    /// ([`tiff_orientation`](Self::tiff_orientation)).
+    pub fn exif_orientation_of(decoder: &mut impl image::ImageDecoder) -> Option<u8> {
+        let chunk = decoder.exif_metadata().ok().flatten()?;
+        image::metadata::Orientation::from_exif_chunk(&chunk).map(|o| o.to_exif())
+    }
+
+    /// A TIFF file's `Orientation` tag (1..=8), read from its first
+    /// directory; `None` when absent, out of range or unreadable.
+    pub fn tiff_orientation(encoded_bytes: &[u8]) -> Option<u8> {
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(encoded_bytes)).ok()?;
+        let tag = decoder
+            .find_tag(tiff::tags::Tag::Orientation)
+            .ok()??
+            .into_u16()
+            .ok()?;
+        (1..=8).contains(&tag).then_some(tag as u8)
+    }
+
+    /// **The one orientation reader**: the orientation tag (1..=8) of encoded
+    /// image bytes, from the header alone (no pixel is decoded). `None` for
+    /// bytes with no tag, an invalid one, or no recognisable format.
+    pub fn orientation(encoded_bytes: &[u8]) -> Option<u8> {
+        if Self::is_tiff(encoded_bytes) {
+            return Self::tiff_orientation(encoded_bytes);
+        }
+        let reader = image::ImageReader::new(std::io::Cursor::new(encoded_bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut decoder = reader.into_decoder().ok()?;
+        Self::exif_orientation_of(&mut decoder)
+    }
+
+    /// A decoded `[H, W, C]` image turned for display under orientation tag
+    /// `tag`, as `PIL.ImageOps.exif_transpose` turns it. Every orientation
+    /// is flips and a transpose, which are views here: no pixel is copied.
+    /// A tag outside 1..=8 changes nothing.
+    pub fn oriented(buf: ViewBuffer, tag: u8) -> ViewBuffer {
+        const TRANSPOSE: [usize; 3] = [1, 0, 2];
+        match tag {
+            2 => buf.flip(&[1]),
+            3 => buf.flip(&[0, 1]),
+            4 => buf.flip(&[0]),
+            5 => buf.permute(&TRANSPOSE),
+            6 => buf.permute(&TRANSPOSE).flip(&[1]),
+            7 => buf.permute(&TRANSPOSE).flip(&[0, 1]),
+            8 => buf.permute(&TRANSPOSE).flip(&[0]),
+            _ => buf,
+        }
+    }
+
     /// Decodes raw image bytes (PNG, JPEG, etc.) into a ViewBuffer [H, W, C].
     pub fn decode(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
-        // Check if it's a TIFF file by magic bytes
-        if encoded_bytes.len() >= 4
-            && (
-                &encoded_bytes[0..4] == b"II*\x00" ||  // Little-endian TIFF
-            &encoded_bytes[0..4] == b"MM\x00*"
-                // Big-endian TIFF
-            )
-        {
+        if Self::is_tiff(encoded_bytes) {
             // Use our custom TIFF decoder for floating-point support
             Self::decode_tiff(encoded_bytes)
         } else {

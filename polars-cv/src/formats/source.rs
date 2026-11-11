@@ -45,6 +45,15 @@ use crate::fetch::FetchErrorPolicy;
 /// bit-identical to a full decode and the same resize, hence the explicit
 /// opt-in.
 ///
+/// ``orientation`` says which way up a decoded image is. A camera stores the
+/// sensor's pixels and tags how to turn them for display (EXIF
+/// ``Orientation``; TIFF's own tag). ``"stored"``, the default, ignores the
+/// tag, as ``PIL.Image.open`` does; ``"exif"`` applies it, as
+/// ``PIL.ImageOps.exif_transpose`` and ``cv2.imdecode`` do, so a tagged
+/// portrait photo decodes as ``[H, W, C]`` with ``H > W``. The turn is flips
+/// and a transpose: views, not a copy. A file with no tag, or one that does
+/// not parse, decodes the same either way.
+///
 /// ``allowed_roots`` names which locations a path column may read from, and a
 /// path column reads nothing without it: reading is default-deny, and the
 /// query fails naming this option (under every ``on_error``). An entry that
@@ -74,6 +83,21 @@ use crate::fetch::FetchErrorPolicy;
 ///     >>> # Rasterize a contour column to a mask
 ///     >>> pipe = Pipeline().source("contour").rasterize(width=64, height=64)
 ///     ```
+/// Which way up an image source decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Orientation {
+    /// The pixels as the file stores them, whatever its orientation tag.
+    #[default]
+    Stored,
+    /// Turned for display by the file's orientation tag.
+    Exif,
+}
+
+view_buffer::naming::named_variants!(Orientation: "Which way up an image source decodes.\n\n- STORED: the pixels as the file stores them, ignoring its orientation tag (the default; what ``PIL.Image.open`` gives).\n- EXIF: turned for display by the file's EXIF (or TIFF) orientation tag, as ``PIL.ImageOps.exif_transpose`` does." {
+    "stored" => Stored,
+    "exif" => Exif,
+});
+
 #[derive(Debug, Clone, PartialEq, Ops)]
 pub enum Source {
     /// A Polars fixed-size `Array` column, one nesting level per axis.
@@ -106,6 +130,11 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// "stored" (default) decodes the pixels as the file stores them;
+        /// "exif" turns them for display by the file's orientation tag (see
+        /// above).
+        #[param(default = "stored")]
+        orientation: Literal<Orientation>,
         /// "raise" or "null": what a row that cannot be decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
@@ -143,6 +172,11 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// "stored" (default) decodes the pixels as the file stores them;
+        /// "exif" turns them for display by the file's orientation tag (see
+        /// above).
+        #[param(default = "stored")]
+        orientation: Literal<Orientation>,
         /// "raise" or "null": what a row that cannot be read or decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
@@ -155,6 +189,11 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// "stored" (default) decodes the pixels as the file stores them;
+        /// "exif" turns them for display by the file's orientation tag (see
+        /// above).
+        #[param(default = "stored")]
+        orientation: Literal<Orientation>,
         /// "raise" or "null": what a row that cannot be decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
@@ -232,19 +271,26 @@ impl Source {
             cloud_options,
             allowed_roots,
             decode_max_size,
+            orientation,
             on_error,
         } = self
         else {
             return None;
         };
-        let (dtype, require_contiguous, decode_max_size, on_error) =
-            (*dtype, *require_contiguous, *decode_max_size, *on_error);
+        let (dtype, require_contiguous, decode_max_size, orientation, on_error) = (
+            *dtype,
+            *require_contiguous,
+            *decode_max_size,
+            *orientation,
+            *on_error,
+        );
         Some(match column.dtype() {
             DataType::String => Ok(Source::FilePath {
                 dtype,
                 cloud_options: cloud_options.clone(),
                 allowed_roots: allowed_roots.clone(),
                 decode_max_size,
+                orientation,
                 on_error,
             }),
             DataType::List(_) => Ok(Source::List {
@@ -271,6 +317,7 @@ impl Source {
                     Source::ImageBytes {
                         dtype,
                         decode_max_size,
+                        orientation,
                         on_error,
                     }
                 })
@@ -389,6 +436,21 @@ impl Source {
             | Source::List { .. }
             | Source::Raw { .. }
             | Source::Tensor { .. } => None,
+        }
+    }
+
+    /// Whether an image decode applies the file's orientation tag.
+    pub fn applies_orientation(&self) -> bool {
+        match self {
+            Source::Auto { orientation, .. }
+            | Source::FilePath { orientation, .. }
+            | Source::ImageBytes { orientation, .. } => orientation.get() == Orientation::Exif,
+            Source::Array { .. }
+            | Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::List { .. }
+            | Source::Raw { .. }
+            | Source::Tensor { .. } => false,
         }
     }
 

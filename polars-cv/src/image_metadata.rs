@@ -22,6 +22,10 @@ struct ImageMeta {
     /// so an unknown colour type nulls these two fields only.
     channels: Option<u32>,
     dtype: Option<&'static str>,
+    /// The file's orientation tag (1..=8): read only when asked for
+    /// (`image_info`), `None` when absent, invalid, or the bytes are a VIEW
+    /// blob, which has none.
+    orientation: Option<u8>,
 }
 
 /// Try to extract metadata from VIEW protocol header (first 64 bytes).
@@ -70,18 +74,19 @@ fn try_view_header(bytes: &[u8]) -> Option<ImageMeta> {
         height,
         channels: Some(channels),
         dtype: Some(dtype_str),
+        orientation: None,
     })
 }
 
 /// Try to extract metadata from an encoded image (PNG, JPEG, etc.) using
 /// header-only decoding via the `image` crate.
-fn try_image_header(bytes: &[u8]) -> Option<ImageMeta> {
+fn try_image_header(bytes: &[u8], with_orientation: bool) -> Option<ImageMeta> {
     let cursor = Cursor::new(bytes);
     let reader = image::ImageReader::new(cursor).with_guessed_format().ok()?;
 
-    reader.format()?;
+    let format = reader.format()?;
 
-    let decoder = reader.into_decoder().ok()?;
+    let mut decoder = reader.into_decoder().ok()?;
     let (width, height) = decoder.dimensions();
     let color = decoder.color_type();
 
@@ -113,17 +118,29 @@ fn try_image_header(bytes: &[u8]) -> Option<ImageMeta> {
         _ => None,
     };
 
+    // The tag, through the engine's one reader of it (the decode's): a TIFF's
+    // own tag, any other format's EXIF block, from this same decoder.
+    let orientation = match (with_orientation, format) {
+        (false, _) => None,
+        (true, image::ImageFormat::Tiff) => view_buffer::ImageAdapter::tiff_orientation(bytes),
+        (true, _) => view_buffer::ImageAdapter::exif_orientation_of(&mut decoder),
+    };
+
     Some(ImageMeta {
         width,
         height,
         channels: channels_and_dtype.map(|(c, _)| c),
         dtype: channels_and_dtype.map(|(_, d)| d.numpy_name()),
+        orientation,
     })
 }
 
 /// Extract metadata by trying VIEW protocol first, then image format.
-fn extract_metadata(bytes: &[u8]) -> Option<ImageMeta> {
-    try_view_header(bytes).or_else(|| try_image_header(bytes))
+///
+/// `with_orientation` also reads the orientation tag, which costs a second
+/// pass over a JPEG's header: only `image_info` reports it, so only it asks.
+fn extract_metadata(bytes: &[u8], with_orientation: bool) -> Option<ImageMeta> {
+    try_view_header(bytes).or_else(|| try_image_header(bytes, with_orientation))
 }
 
 /// Static kwargs of the metadata functions: how to reach a *path* column's
@@ -148,7 +165,9 @@ fn metas(
     inputs: &[Series],
     kwargs: &MetaKwargs,
     name: &str,
+    with_orientation: bool,
 ) -> PolarsResult<Vec<Option<ImageMeta>>> {
+    let extract = |bytes: &[u8]| extract_metadata(bytes, with_orientation);
     let input = &inputs[0];
     match input.dtype() {
         DataType::Binary => {
@@ -165,7 +184,7 @@ fn metas(
             Ok(input
                 .binary()?
                 .iter()
-                .map(|b| b.and_then(extract_metadata))
+                .map(|b| b.and_then(extract))
                 .collect())
         }
         DataType::String | DataType::Null => {
@@ -187,7 +206,7 @@ fn metas(
                 .map_err(|e| polars_err!(ComputeError: "{}: {}", name, e))?;
             let fetcher = crate::fetch::HeaderFetcher::new(ca, options.as_ref(), &policy);
             (0..ca.len())
-                .map(|row| match fetcher.header(row, extract_metadata) {
+                .map(|row| match fetcher.header(row, extract) {
                     Ok(meta) => Ok(meta),
                     Err(_) if null_on_error => Ok(None),
                     Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
@@ -213,7 +232,7 @@ fn size_column(
     name: &'static str,
     field: impl Fn(&ImageMeta) -> Option<u32>,
 ) -> PolarsResult<Series> {
-    let out: Int64Chunked = metas(inputs, &kwargs, name)?
+    let out: Int64Chunked = metas(inputs, &kwargs, name, false)?
         .iter()
         .map(|m| m.as_ref().and_then(&field).map(i64::from))
         .collect();
@@ -241,7 +260,7 @@ fn image_channels(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series>
 /// Image element dtype (header-only, no full decode).
 #[polars_expr(output_type=String)]
 fn image_dtype(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
-    let out: StringChunked = metas(inputs, &kwargs, "image_dtype()")?
+    let out: StringChunked = metas(inputs, &kwargs, "image_dtype()", false)?
         .iter()
         .map(|m| m.as_ref().and_then(|m| m.dtype))
         .collect();
@@ -255,6 +274,7 @@ fn image_info_fields() -> Vec<Field> {
         Field::new(PlSmallStr::from_static("height"), DataType::Int64),
         Field::new(PlSmallStr::from_static("channels"), DataType::Int64),
         Field::new(PlSmallStr::from_static("dtype"), DataType::String),
+        Field::new(PlSmallStr::from_static("orientation"), DataType::Int64),
     ]
 }
 
@@ -266,11 +286,13 @@ fn image_info_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     Ok(Field::new(name, DataType::Struct(image_info_fields())))
 }
 
-/// Width, height, channels and dtype from one header read per row.
+/// Width, height, channels, dtype and the orientation tag from one header
+/// read per row. Width and height are the stored ones, whatever the tag.
 #[polars_expr(output_type_func=image_info_output_type)]
 fn image_info(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
-    let metas = metas(inputs, &kwargs, "image_info()")?;
-    let [w, h, c, d] = ["width", "height", "channels", "dtype"].map(PlSmallStr::from_static);
+    let metas = metas(inputs, &kwargs, "image_info()", true)?;
+    let [w, h, c, d, o] =
+        ["width", "height", "channels", "dtype", "orientation"].map(PlSmallStr::from_static);
     let size = |f: fn(&ImageMeta) -> Option<u32>| -> Int64Chunked {
         metas
             .iter()
@@ -280,6 +302,7 @@ fn image_info(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
     let width = size(|m| Some(m.width));
     let height = size(|m| Some(m.height));
     let channels = size(|m| m.channels);
+    let orientation = size(|m| m.orientation.map(u32::from));
     let dtype: StringChunked = metas
         .iter()
         .map(|m| m.as_ref().and_then(|m| m.dtype))
@@ -289,6 +312,7 @@ fn image_info(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
         height.with_name(h).into_series(),
         channels.with_name(c).into_series(),
         dtype.with_name(d).into_series(),
+        orientation.with_name(o).into_series(),
     ];
     let mut out = StructChunked::from_series(inputs[0].name().clone(), metas.len(), fields.iter())?;
     if metas.iter().any(Option::is_none) {

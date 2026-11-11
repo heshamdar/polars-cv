@@ -4306,6 +4306,11 @@
     "None"
    ],
    [
+    "orientation",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
     "require_contiguous",
     "KEYWORD_ONLY",
     "None"
