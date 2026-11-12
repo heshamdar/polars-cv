@@ -208,9 +208,6 @@ A `Sink` is accepted wherever a format name is, so `sink(Sink.jpeg(quality=85))`
 is `sink("jpeg", quality=85)`. Naming a parameter both on an output's own
 `Sink` and as a shared keyword is refused rather than resolved by precedence.
 
-The older `(format, {params})` tuple, `("jpeg", {"quality": 85})`, still works
-in this release and warns; it is removed in the next.
-
 ## Multi-Source Multi-Output
 
 Combine multiple input columns with multiple outputs:

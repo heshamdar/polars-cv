@@ -3958,10 +3958,7 @@ class _LazyOpsMixin:
     @overload
     def sink(
         self,
-        format: SinkFormat
-        | str
-        | Sink
-        | Mapping[str, SinkFormat | str | Sink | tuple[str, dict[str, Any]]] = ...,
+        format: SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink] = ...,
         return_expr: Literal[True] = ...,
         opt_flags: OptFlags | bool | None = ...,
         *,
@@ -3976,10 +3973,7 @@ class _LazyOpsMixin:
     @overload
     def sink(
         self,
-        format: SinkFormat
-        | str
-        | Sink
-        | Mapping[str, SinkFormat | str | Sink | tuple[str, dict[str, Any]]] = ...,
+        format: SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink] = ...,
         *,
         return_expr: Literal[False],
         opt_flags: OptFlags | bool | None = ...,
@@ -3996,7 +3990,7 @@ class _LazyOpsMixin:
         format: SinkFormat
         | str
         | Sink
-        | Mapping[str, SinkFormat | str | Sink | tuple[str, dict[str, Any]]] = "native",
+        | Mapping[str, SinkFormat | str | Sink] = "native",
         return_expr: bool = True,
         opt_flags: OptFlags | bool | None = None,
         *,

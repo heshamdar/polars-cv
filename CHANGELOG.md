@@ -117,15 +117,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   forgotten `.source()`, a null parameter, an undecodable row), and the
   sources guide a table of the image formats decoded.
 
-### Deprecated
-
-- **The `(format, {params})` tuple in a multi-output `sink()` (CR-142).**
-  `{"thumb": ("jpeg", {"quality": 85})}` still works in this release and
-  raises a `DeprecationWarning` naming its replacement,
-  `{"thumb": Sink.jpeg(quality=85)}`. It is removed in the next release.
-
 ### Breaking changes
 
+- **The `(format, {params})` tuple in a multi-output `sink()` is removed
+  (CR-142).** `{"thumb": ("jpeg", {"quality": 85})}` is
+  `{"thumb": Sink.jpeg(quality=85)}`; the tuple is now a `TypeError` naming
+  the output. The dict from alias to sink is unchanged.
 - **A misspelled `sink()` keyword is a `TypeError` (CR-142).** `sink("jpeg",
   qualtiy=50)` was refused by the plugin with a `ValueError` ("'qualtiy' is
   not a sink parameter"); Python now refuses it as it refuses any unknown
@@ -135,7 +132,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   keywords (CR-142).** `set_output(node, "jpeg", quality=85)` is
   `set_output(node, Sink.jpeg(quality=85))`; a format name alone is unchanged.
   `set_multi_output` takes a dict of format names or `Sink`s and no longer
-  reads the tuple form or shared keywords, which `sink()` resolves before it
+  reads shared keywords, which `sink()` merges into each output before it
   (`_graph.as_sink`, the one reading of what an output may be written as).
 - **`image_info()` returns a fifth field, `orientation: Int64` (CR-137).** Its
   struct is `{width, height, channels, dtype, orientation}`; code that names

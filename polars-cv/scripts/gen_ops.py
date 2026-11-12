@@ -438,7 +438,7 @@ _SINK_OWN = (
 
 #: What ``sink()`` takes as its format.
 _SINK_SPEC = "SinkFormat | str | Sink"
-_SINK_ARG = f"{_SINK_SPEC} | Mapping[str, {_SINK_SPEC} | tuple[str, dict[str, Any]]]"
+_SINK_ARG = f"{_SINK_SPEC} | Mapping[str, {_SINK_SPEC}]"
 
 
 def sink_method(io: dict[str, Any]) -> str:

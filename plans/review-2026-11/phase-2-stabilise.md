@@ -63,8 +63,7 @@ statement of what will not change on purpose.
    changes were CR-136 (wire only), CR-138 (additive), CR-137 (additive) and
    CR-142 (`sink()`). All four have landed; what remains of phases 1 and 2
    (CR-139, CR-140) changes no signature. So this option now reads: declare
-   with the next release, which is also the one that removes the
-   `(format, {params})` tuple.
+   with the next release.
 3. **Stay as is until 1.0.**
 
 Recommendation: option 2. It costs one more breaking release and avoids
@@ -82,9 +81,9 @@ promising a `sink()` signature that CR-142 is about to replace.
   a `DeprecationWarning` for a name marked deprecated in the catalogue
   (`#[op(deprecated = "...")]`), for one release, before the wire refuses it.
   This is the one place a tombstone is justified, and it is generated, not
-  hand-written. (CR-142's tuple form is the first deprecation and is
-  hand-written, in `_graph.as_sink`: it is a value's shape, not a name in a
-  catalogue, so the generated path would not have covered it.)
+  hand-written. (CR-142's `(format, {params})` tuple was removed outright
+  rather than deprecated, on the owner's word, so nothing has used a
+  deprecation path yet.)
 - README "Project status" rewritten to say what is stable.
 
 ---

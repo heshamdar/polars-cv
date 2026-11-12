@@ -1,8 +1,8 @@
 """``sink()`` is generated from the sink catalogue, as ``source()`` is (CR-142).
 
 ``sink()`` took ``**kwargs``: Rust refused a keyword that did not apply, but an
-editor and ``ty`` saw nothing, and a multi-output's parameters were a
-``(format, {params})`` tuple. The signature and the ``Sink.<format>``
+editor and ``ty`` saw nothing, and a multi-output's parameters were an
+untyped ``(format, {params})`` tuple. The signature and the ``Sink.<format>``
 constructors are now written by ``scripts/gen_ops.py`` from
 ``tests/golden/io_catalog.json``, so the tests here compare them with that
 file: a sink field added in Rust and not regenerated fails them.
@@ -13,7 +13,6 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -179,15 +178,3 @@ class TestSinkValues:
             _one().sink("jpeg", qualtiy=50)  # ty: ignore[unknown-argument]
         with pytest.raises(TypeError, match="quality"):
             Sink.png(quality=50)  # ty: ignore[unknown-argument]
-
-    def test_the_tuple_form_still_works_and_says_it_is_going(self) -> None:
-        with pytest.warns(DeprecationWarning, match=r"Sink\.jpeg\(quality=85\)"):
-            old = _branches().sink(
-                {"x": "png", "thumb": ("jpeg", {"quality": 85})}, return_expr=False
-            )
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            new = _branches().sink(
-                {"x": "png", "thumb": Sink.jpeg(quality=85)}, return_expr=False
-            )
-        assert old._to_json() == new._to_json()
