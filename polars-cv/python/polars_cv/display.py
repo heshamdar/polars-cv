@@ -134,11 +134,11 @@ def _ndarray_to_png(arr: "Any") -> bytes:
 
 
 def _numpy_struct_to_png(row: dict[str, Any]) -> bytes | None:
-    """Convert a numpy-sink struct to PNG bytes.
+    """Convert a tensor-sink struct to PNG bytes.
 
     Args:
         row: Dict with ``data``, ``dtype``, ``shape``, ``strides``, ``offset``
-            fields as returned by the numpy/torch sink.
+            fields as returned by the tensor sink.
 
     Returns:
         PNG-encoded bytes, or ``None`` if fields are null.
@@ -183,7 +183,7 @@ def show_images(
     """Display images from a binary column in a Jupyter notebook.
 
     Supports encoded images (PNG, JPEG, WebP, TIFF, BMP, GIF), VIEW
-    protocol blobs, and numpy-sink struct columns.  Null rows are shown
+    protocol blobs, and tensor-sink columns.  Null rows are shown
     as a grey placeholder.
 
     Outside of a notebook, prints a text summary of each row (format,
@@ -201,9 +201,10 @@ def show_images(
             (default 200).
         format: How to interpret the column.
 
-            - ``"auto"`` (default): a ``sink("ndarray")`` column is known by
+            - ``"auto"`` (default): a ``sink("tensor")`` column is known by
               its type; anything else is detected from magic bytes.
-            - ``"numpy"``: column is a numpy-sink Struct.
+            - ``"tensor"``: column is the tensor sink's struct without its
+              tag (``.ext.storage()`` of one).
 
     Example:
         ```python
@@ -217,7 +218,7 @@ def show_images(
     col = _image_column(df, column)
     n = min(max_rows, df.height)
     if format == "auto" and isinstance(col.dtype, NdArrayType):
-        format = "numpy"
+        format = "tensor"
 
     if _is_notebook():
         _show_notebook(col, n, max_width, format)
@@ -290,7 +291,7 @@ def _show_text(col: pl.Series, n: int, fmt: str) -> None:
             print(f"[{i}] null")
             continue
 
-        if fmt == "numpy" and isinstance(val, dict):
+        if fmt == "tensor" and isinstance(val, dict):
             shape = val.get("shape")
             dtype_str = val.get("dtype", "?")
             if shape is not None:
@@ -318,12 +319,12 @@ def _to_png_bytes(val: Any, fmt: str) -> bytes | None:
 
     Args:
         val: Cell value (bytes, dict, etc.).
-        fmt: Requested format hint (``"auto"`` or ``"numpy"``).
+        fmt: Requested format hint (``"auto"`` or ``"tensor"``).
 
     Returns:
         PNG-encoded bytes, or ``None`` if conversion failed.
     """
-    if fmt == "numpy" and isinstance(val, dict):
+    if fmt == "tensor" and isinstance(val, dict):
         return _numpy_struct_to_png(val)
 
     if not isinstance(val, bytes):

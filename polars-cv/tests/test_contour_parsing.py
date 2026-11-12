@@ -90,7 +90,7 @@ class TestContourSourceFormats:
         ]
         df = pl.DataFrame({"contour": [square]})
         pipe = Pipeline().source("contour").rasterize(width=64, height=64)
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
         assert result["mask"].null_count() == 0
 
     def test_contour_source_respects_holes(self) -> None:
@@ -102,7 +102,7 @@ class TestContourSourceFormats:
         contour = square_with_hole()
         df = pl.DataFrame({"contour": [contour]}).cast({"contour": CONTOUR_SCHEMA})
         pipe = Pipeline().source("contour").rasterize(width=12, height=12)
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
         arr = np.asarray(numpy_from_struct(result["mask"][0]))
         assert arr[5, 5, 0] == 0, "hole center must stay background"
         assert arr[2, 2, 0] == 255, "solid region must be filled"
@@ -124,7 +124,7 @@ class TestUniformParseErrors:
         df = pl.DataFrame({"contour": [bogus]})
         pipe = Pipeline().source("contour").rasterize(width=8, height=8)
         with pytest.raises(pl.exceptions.ComputeError) as exc_info:
-            df.with_columns(m=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(m=pl.col("contour").cv.pipe(pipe).sink("tensor"))
         errors.append(str(exc_info.value))
 
         for err in errors:
@@ -153,7 +153,7 @@ class TestUniformParseErrors:
             lambda: df.select(
                 pl.col("contour")
                 .cv.pipe(Pipeline().source("contour").rasterize(width=8, height=8))
-                .sink("numpy")
+                .sink("tensor")
             ),
         ]
         for run in consumers:

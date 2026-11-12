@@ -1,5 +1,5 @@
 """
-Strided reconstruction for the numpy/torch struct sink.
+Strided reconstruction for the tensor sink struct.
 
 The Rust sink can hand back a *non-contiguous* view of a shared buffer:
 transpose produces permuted (positive) strides, flip/rotate produce negative
@@ -97,7 +97,7 @@ class TestEndToEndStridedSink:
         df = pl.DataFrame({"img": [buf.getvalue()]})
 
         pipe = Pipeline().source("image_bytes").transpose([2, 0, 1])
-        out = df.select(o=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.select(o=pl.col("img").cv.pipe(pipe).sink("tensor"))
         row = out["o"][0]
 
         expected = np.transpose(arr, (2, 0, 1))

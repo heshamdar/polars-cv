@@ -1,4 +1,4 @@
-//! Output encoding for numpy/torch sinks with zero-copy support.
+//! Output encoding for the tensor sink with zero-copy support.
 //!
 //! This module provides zero-copy output encoding for numpy and torch sink formats.
 //! Instead of prepending a header to binary data (which requires copying), we return
@@ -33,7 +33,7 @@ use polars_arrow::bitmap::MutableBitmap;
 use pyo3::prelude::*;
 use view_buffer::{DType as VbDType, ViewBuffer};
 
-/// Get the Polars DataType for numpy/torch sink output.
+/// Get the Polars DataType of the tensor sink's storage struct.
 ///
 /// Returns a Struct schema with:
 /// - `data`: Binary (raw array bytes, may be larger than needed for strided views)
@@ -100,7 +100,7 @@ impl NumpyRowOutput {
     /// A half-precision (`float16`) row from its f16 bits, as
     /// `ViewBuffer::to_f16_bits` gives them: zero-copy like any other row,
     /// labelled `float16`. That conversion, which backs
-    /// `.sink("numpy"|"torch", dtype="f16")` (the engine has no f16 dtype),
+    /// `.sink("tensor", dtype="f16")` (the engine has no f16 dtype),
     /// runs on the row's own thread in the encode half
     /// (`graph::encode::encode_node_output`), not here in the serial column
     /// build.

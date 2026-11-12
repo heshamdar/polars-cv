@@ -44,45 +44,20 @@ pub enum Sink {
     /// vector, the contour struct for contours.
     #[op(name = "native", sample = {})]
     Native,
-    /// The `polars_cv.ndarray` extension type: a zero-copy tensor struct.
-    #[op(name = "ndarray", sample = {"dtype": "f16", "compact": true})]
-    NdArray {
-        /// Downcast the elements to this dtype at encode time: only half
-        /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
-        /// other dtype.
-        dtype: Option<Literal<SinkDType>>,
-        /// Make each row's ``data`` exactly its elements, row-major, at
-        /// offset zero, instead of the storage the row is a view into (whole,
-        /// with the strides and offset that read the view out of it). Copies
-        /// only a row that is not already that. Set it for a column that will
-        /// be persisted: Parquet and IPC write each row's ``data`` whole.
-        #[param(default = false)]
-        compact: Literal<bool>,
-    },
-    /// A zero-copy tensor struct `numpy_from_struct` reads.
-    #[op(name = "numpy", sample = {"compact": true})]
-    Numpy {
-        /// Downcast the elements to this dtype at encode time: only half
-        /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
-        /// other dtype.
-        dtype: Option<Literal<SinkDType>>,
-        /// Make each row's ``data`` exactly its elements, row-major, at
-        /// offset zero, instead of the storage the row is a view into (whole,
-        /// with the strides and offset that read the view out of it). Copies
-        /// only a row that is not already that. Set it for a column that will
-        /// be persisted: Parquet and IPC write each row's ``data`` whole.
-        #[param(default = false)]
-        compact: Literal<bool>,
-    },
     /// Re-encoded as PNG.
     #[op(name = "png", sample = {})]
     Png,
     /// Re-encoded as TIFF.
     #[op(name = "tiff", sample = {})]
     Tiff,
-    /// A zero-copy tensor struct `torch_from_struct` reads.
-    #[op(name = "torch", sample = {"dtype": "float16"})]
-    Torch {
+    /// One tensor per row, without copying it: the struct
+    /// ``{data, dtype, shape, strides, offset}``, tagged with the
+    /// `polars_cv.ndarray` extension type so the column says what it holds.
+    /// `numpy_from_struct` reads a row, and ``source("tensor")`` reads the
+    /// column back. Polars' struct operations need the storage:
+    /// ``.ext.storage().struct.field("shape")``.
+    #[op(name = "tensor", sample = {"dtype": "f16", "compact": true})]
+    Tensor {
         /// Downcast the elements to this dtype at encode time: only half
         /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
         /// other dtype.
@@ -110,11 +85,9 @@ impl super::Format for Sink {
             | Sink::Jpeg { .. }
             | Sink::List
             | Sink::Native
-            | Sink::NdArray { .. }
-            | Sink::Numpy { .. }
             | Sink::Png
             | Sink::Tiff
-            | Sink::Torch { .. }
+            | Sink::Tensor { .. }
             | Sink::WebP => Ok(()),
         }
     }
@@ -140,9 +113,7 @@ impl Sink {
             | Sink::List
             | Sink::Long { .. }
             | Sink::Native
-            | Sink::NdArray { .. }
-            | Sink::Numpy { .. }
-            | Sink::Torch { .. } => None,
+            | Sink::Tensor { .. } => None,
         }
     }
 
@@ -157,11 +128,9 @@ impl Sink {
             | Sink::List
             | Sink::Long { .. }
             | Sink::Native
-            | Sink::NdArray { .. }
-            | Sink::Numpy { .. }
             | Sink::Png
             | Sink::Tiff
-            | Sink::Torch { .. }
+            | Sink::Tensor { .. }
             | Sink::WebP => None,
         }
     }
@@ -169,7 +138,7 @@ impl Sink {
     /// Whether a tensor sink downcasts to half precision.
     pub fn as_f16(&self) -> bool {
         match self {
-            Sink::NdArray { dtype, .. } | Sink::Numpy { dtype, .. } | Sink::Torch { dtype, .. } => {
+            Sink::Tensor { dtype, .. } => {
                 matches!(dtype, Some(Literal(SinkDType::F16)))
             }
             Sink::Array { .. }
@@ -205,11 +174,9 @@ impl Sink {
             | Sink::Jpeg { .. }
             | Sink::List
             | Sink::Native
-            | Sink::NdArray { .. }
-            | Sink::Numpy { .. }
             | Sink::Png
             | Sink::Tiff
-            | Sink::Torch { .. }
+            | Sink::Tensor { .. }
             | Sink::WebP => None,
         }
     }
@@ -217,9 +184,7 @@ impl Sink {
     /// Whether a tensor sink compacts each row to exactly its elements.
     pub fn compact(&self) -> bool {
         match self {
-            Sink::NdArray { compact, .. }
-            | Sink::Numpy { compact, .. }
-            | Sink::Torch { compact, .. } => compact.get(),
+            Sink::Tensor { compact, .. } => compact.get(),
             Sink::Array { .. }
             | Sink::Blob
             | Sink::Jpeg { .. }
@@ -360,10 +325,10 @@ mod tests {
     /// did anything; the rest were ignored in Rust.
     #[test]
     fn a_sink_dtype_other_than_half_precision_is_rejected() {
-        let err = parse(serde_json::json!({"format": "numpy", "dtype": "f32"})).unwrap_err();
+        let err = parse(serde_json::json!({"format": "tensor", "dtype": "f32"})).unwrap_err();
         assert!(err.contains("'dtype'") && err.contains("f16"), "{err}");
         for spelling in ["f16", "float16"] {
-            let sink = parse(serde_json::json!({"format": "torch", "dtype": spelling})).unwrap();
+            let sink = parse(serde_json::json!({"format": "tensor", "dtype": spelling})).unwrap();
             assert!(sink.as_f16());
         }
     }

@@ -65,7 +65,7 @@ def _run(image: np.ndarray, *, signed: bool = False) -> np.ndarray:
         schema={"m": pl.Array(_POLARS[image.dtype], image.shape)},
     )
     pipe = Pipeline().source("array").distance_transform(signed=signed)
-    out = df.select(pl.col("m").cv.pipe(pipe).sink("numpy"))
+    out = df.select(pl.col("m").cv.pipe(pipe).sink("tensor"))
     (result,) = numpy_from_column(out.to_series(), copy=True)
     assert result is not None
     return result

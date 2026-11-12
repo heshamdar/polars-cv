@@ -106,11 +106,11 @@ def benchmark_image_bytes_source(
     pipeline = Pipeline().source("image_bytes")
 
     # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
+    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("tensor"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
+    result = df.select(pl.col("img").cv.pipe(pipeline).sink("tensor"))
     _ = result["img"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -138,11 +138,11 @@ def benchmark_blob_source(
     pipeline = Pipeline().source("blob")
 
     # Warmup
-    _ = df.head(5).select(pl.col("blob").cv.pipe(pipeline).sink("numpy"))
+    _ = df.head(5).select(pl.col("blob").cv.pipe(pipeline).sink("tensor"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("blob").cv.pipe(pipeline).sink("numpy"))
+    result = df.select(pl.col("blob").cv.pipe(pipeline).sink("tensor"))
     _ = result["blob"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -169,11 +169,11 @@ def benchmark_list_source_explicit_dtype(
     pipeline = Pipeline().source("list", dtype="u8")
 
     # Warmup
-    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
+    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline).sink("tensor"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
+    result = df.select(pl.col("arr").cv.pipe(pipeline).sink("tensor"))
     _ = result["arr"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -201,11 +201,11 @@ def benchmark_list_source_auto_dtype(
     pipeline = Pipeline().source("list")
 
     # Warmup
-    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
+    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline).sink("tensor"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
+    result = df.select(pl.col("arr").cv.pipe(pipeline).sink("tensor"))
     _ = result["arr"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -233,11 +233,11 @@ def benchmark_numpy_output(
     pipeline = Pipeline().source("image_bytes")
 
     # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
+    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("tensor"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("numpy"))
+    result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("tensor"))
     # Access all struct values to force evaluation
     _ = result["output"].to_list()
     elapsed = time.perf_counter() - start

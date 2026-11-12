@@ -404,7 +404,7 @@ class TestPerRowAffineExecution:
         )
         out = (
             df.lazy()
-            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor"))
             .collect()
         )
         a = numpy_from_struct(out["out"][0])
@@ -433,7 +433,7 @@ class TestPerRowAffineExecution:
         )
         out = (
             df.lazy()
-            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor"))
             .collect()
         )
         a = numpy_from_struct(out["out"][0])  # sx=0 -> identity
@@ -459,7 +459,7 @@ class TestPerRowAffineExecution:
         )
         out = (
             df.lazy()
-            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor"))
             .collect()
         )
         arr = numpy_from_struct(out["out"][0])
@@ -491,7 +491,7 @@ class TestAffineRankContract:
             .source("list", dtype="f32")
             .warp_affine(matrix=self.IDENTITY, output_size=(2, 2))
         )
-        lf = df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+        lf = df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor"))
         planned = (
             df.lazy()
             .with_columns(out=pl.col("x").cv.pipe(pipe).sink("list"))

@@ -135,7 +135,7 @@ def test_every_float_literal_is_checked_by_its_op(
         assert op in str(e) or field in str(e), f"refused without naming it: {e}"
         return
     df = pl.DataFrame({"img": [make_rect_png(100, 200, 3)]})
-    sink = "numpy" if pipe.current_domain() == "buffer" else "native"
+    sink = "tensor" if pipe.current_domain() == "buffer" else "native"
     try:
         df.select(pl.col("img").cv.pipe(pipe).sink(sink))
     except pl.exceptions.ComputeError as e:
@@ -159,7 +159,7 @@ def _sweep_lazy_only(op: str, field: str, path: tuple[int, ...], value: float) -
         return
     df = pl.DataFrame({"img": [make_rect_png(100, 200, 3)]})
     try:
-        df.select(expr.sink("numpy"))
+        df.select(expr.sink("tensor"))
     except pl.exceptions.ComputeError as e:
         assert "panicked" not in str(e), e
 
@@ -170,7 +170,7 @@ def test_a_nan_table_entry_is_a_nan() -> None:
     pipe = Pipeline().source("raw", dtype="u8").apply_lut(table, out_dtype="f32")
     data = np.array([[0, 1, 2]], np.uint8)
     df = pl.DataFrame({"b": [data.tobytes()]})
-    out = df.select(pl.col("b").cv.pipe(pipe).sink("numpy"))
+    out = df.select(pl.col("b").cv.pipe(pipe).sink("tensor"))
     (got,) = numpy_from_column(out.to_series(), copy=True)
     assert got.ravel()[0] == 0.5
     assert math.isnan(got.ravel()[1]) and got.ravel()[2] == math.inf
@@ -231,5 +231,5 @@ def test_clamp_refuses_bounds_no_row_can_clamp_to(lo: float, hi: float, match: s
     )
     pipe = Pipeline().source("raw", dtype="f32").clamp(pl.col("lo"), pl.col("hi"))
     with pytest.raises(pl.exceptions.ComputeError, match=match) as raised:
-        df.select(pl.col("b").cv.pipe(pipe).sink("numpy"))
+        df.select(pl.col("b").cv.pipe(pipe).sink("tensor"))
     assert "panicked" not in str(raised.value)

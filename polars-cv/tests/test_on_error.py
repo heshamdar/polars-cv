@@ -136,7 +136,7 @@ class TestOnErrorNull:
         bad = b"corrupt"
         df = pl.DataFrame({"img": [good, bad]})
         pipe = Pipeline().source("image_bytes", on_error="null")
-        expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+        expr = pl.col("img").cv.pipe(pipe).sink("tensor")
         result = df.with_columns(out=expr)
 
         row0 = result["out"][0]

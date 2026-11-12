@@ -18,7 +18,7 @@ pipe = (
 )
 
 df = pl.DataFrame({"path": ["photos/a.jpg", "photos/b.jpg"]})
-out = df.with_columns(gray=pl.col("path").cv.pipe(pipe).sink("numpy"))
+out = df.with_columns(gray=pl.col("path").cv.pipe(pipe).sink("tensor"))
 ```
 
 ## Features

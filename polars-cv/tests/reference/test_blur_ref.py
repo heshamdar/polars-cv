@@ -38,7 +38,7 @@ def _encode_png(arr: np.ndarray) -> bytes:
 
 def _run_pipe(pipe: Pipeline, arr: np.ndarray) -> np.ndarray:
     df = pl.DataFrame({"img": [_encode_png(arr)]})
-    result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+    result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(result.row(0)[0]).squeeze()
 
 
@@ -117,7 +117,7 @@ class TestBlurSigmaDomain:
     def test_zero_sigma_per_row_is_the_identity(self, smooth_gray: np.ndarray) -> None:
         df = pl.DataFrame({"img": [_encode_png(smooth_gray)] * 2, "s": [0.0, 1.0]})
         pipe = Pipeline().source("image_bytes").blur(pl.col("s"))
-        rows = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))["out"]
+        rows = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))["out"]
         np.testing.assert_array_equal(numpy_from_struct(rows[0]).squeeze(), smooth_gray)
         assert not np.array_equal(numpy_from_struct(rows[1]).squeeze(), smooth_gray)
 
@@ -138,4 +138,4 @@ class TestBlurSigmaDomain:
         df = pl.DataFrame({"img": [_encode_png(smooth_gray)], "s": [sigma]})
         pipe = Pipeline().source("image_bytes").blur(pl.col("s"))
         with pytest.raises(Exception, match="blur: sigma"):
-            df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))

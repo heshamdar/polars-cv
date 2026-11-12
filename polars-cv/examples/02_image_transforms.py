@@ -59,7 +59,7 @@ def render_grid(images: list[np.ndarray], titles: list[str], output_name: str) -
 
 
 def decode_column_numpy(df: pl.DataFrame, col: str) -> list[np.ndarray]:
-    """Decode a `sink('numpy')` output column to arrays."""
+    """Decode a `sink('tensor')` output column to arrays."""
     return [numpy_from_struct(row, copy=False) for row in df[col].to_list()]
 
 
@@ -68,21 +68,21 @@ def run_static_transform_showcase(df: pl.DataFrame) -> None:
     expr = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
 
     transformed = df.with_columns(
-        original=expr.sink("numpy"),
+        original=expr.sink("tensor"),
         resize=expr.pipe(
             Pipeline().resize(height=96, width=96, filter="bilinear")
-        ).sink("numpy"),
+        ).sink("tensor"),
         crop=expr.pipe(Pipeline().crop(top=16, left=16, width=80, height=80)).sink(
-            "numpy"
+            "tensor"
         ),
-        rotate=expr.pipe(Pipeline().rotate(angle=20.0)).sink("numpy"),
-        flip_h=expr.pipe(Pipeline().flip_h()).sink("numpy"),
-        blur=expr.pipe(Pipeline().blur(sigma=1.4)).sink("numpy"),
-        threshold=expr.pipe(Pipeline().grayscale().threshold(value=120)).sink("numpy"),
+        rotate=expr.pipe(Pipeline().rotate(angle=20.0)).sink("tensor"),
+        flip_h=expr.pipe(Pipeline().flip_h()).sink("tensor"),
+        blur=expr.pipe(Pipeline().blur(sigma=1.4)).sink("tensor"),
+        threshold=expr.pipe(Pipeline().grayscale().threshold(value=120)).sink("tensor"),
         pad_reflect=expr.pipe(
             Pipeline().pad(left=12, right=12, top=8, bottom=8, mode="reflect")
-        ).sink("numpy"),
-        letterbox=expr.pipe(Pipeline().letterbox(height=160, width=200)).sink("numpy"),
+        ).sink("tensor"),
+        letterbox=expr.pipe(Pipeline().letterbox(height=160, width=200)).sink("tensor"),
     )
 
     cols = [
@@ -105,16 +105,16 @@ def run_value_transform_showcase(df: pl.DataFrame) -> None:
     expr = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
 
     transformed = df.with_columns(
-        minmax=expr.pipe(Pipeline().normalize(method="minmax")).sink("numpy"),
-        zscore=expr.pipe(Pipeline().normalize(method="zscore")).sink("numpy"),
+        minmax=expr.pipe(Pipeline().normalize(method="minmax")).sink("tensor"),
+        zscore=expr.pipe(Pipeline().normalize(method="zscore")).sink("tensor"),
         imagenet=expr.pipe(
             Pipeline().normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ).sink("numpy"),
-        scaled=expr.pipe(Pipeline().cast("f32").scale(factor=0.2)).sink("numpy"),
+        ).sink("tensor"),
+        scaled=expr.pipe(Pipeline().cast("f32").scale(factor=0.2)).sink("tensor"),
         clamped=expr.pipe(
             Pipeline().cast("f32").scale(factor=0.2).clamp(min_val=0.0, max_val=30.0)
-        ).sink("numpy"),
-        relu=expr.pipe(Pipeline().cast("f32").scale(factor=-1.0).relu()).sink("numpy"),
+        ).sink("tensor"),
+        relu=expr.pipe(Pipeline().cast("f32").scale(factor=-1.0).relu()).sink("tensor"),
     )
 
     for col in transformed.columns:
@@ -149,7 +149,7 @@ def run_dynamic_parameter_demo(df: pl.DataFrame) -> None:
         )
     )
     out = dynamic_df.with_columns(
-        dynamic=pl.col("image").cv.pipe(dynamic_pipe).sink("numpy")
+        dynamic=pl.col("image").cv.pipe(dynamic_pipe).sink("tensor")
     )
     arr = decode_column_numpy(out, "dynamic")[0]
     print("\nDynamic parameter output shape:", arr.shape)

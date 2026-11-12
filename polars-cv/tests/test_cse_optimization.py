@@ -59,7 +59,7 @@ def _shared_prefix(a: Pipeline, b: Pipeline) -> int:
     graph = PipelineGraph()
     graph.add_node("a", a, pl.col("image"), alias="a")
     graph.add_node("b", b, pl.col("image"), alias="b")
-    graph.set_multi_output({"a": "numpy", "b": "numpy"})
+    graph.set_multi_output({"a": "tensor", "b": "tensor"})
     graph.optimize(OptFlags.parse("common_subexpression_elimination"))
 
     def chain(alias: str) -> list[str]:
@@ -140,8 +140,8 @@ class TestCSEBasic:
         # Compose and sink
         result_expr = gray.merge_pipe(thresh).sink(
             {
-                "gray": "numpy",
-                "thresh": "numpy",
+                "gray": "tensor",
+                "thresh": "tensor",
             }
         )
 
@@ -167,8 +167,8 @@ class TestCSEBasic:
 
         result_expr = expr1.merge_pipe(expr2).sink(
             {
-                "small": "numpy",
-                "large": "numpy",
+                "small": "tensor",
+                "large": "tensor",
             }
         )
 
@@ -206,8 +206,8 @@ class TestCSEBasic:
 
         result_expr = thresh.merge_pipe(blur).sink(
             {
-                "thresh": "numpy",
-                "blur": "numpy",
+                "thresh": "tensor",
+                "blur": "tensor",
             }
         )
 
@@ -258,9 +258,9 @@ class TestCSEMultiplePipelines:
 
         result_expr = a.merge_pipe(b, c).sink(
             {
-                "low": "numpy",
-                "mid": "numpy",
-                "high": "numpy",
+                "low": "tensor",
+                "mid": "tensor",
+                "high": "tensor",
             }
         )
 
@@ -287,7 +287,7 @@ class TestCSEEdgeCases:
         pipe = Pipeline().source("image_bytes").resize(width=50, height=50).grayscale()
 
         result = sample_df.with_columns(
-            output=pl.col("image").cv.pipe(pipe).sink("numpy")
+            output=pl.col("image").cv.pipe(pipe).sink("tensor")
         )
 
         arr = numpy_from_struct(result["output"][0])
@@ -303,8 +303,8 @@ class TestCSEEdgeCases:
 
         result_expr = expr1.merge_pipe(expr2).sink(
             {
-                "a": "numpy",
-                "b": "numpy",
+                "a": "tensor",
+                "b": "tensor",
             }
         )
 
@@ -326,8 +326,8 @@ class TestCSEEdgeCases:
 
         result_expr = expr1.merge_pipe(expr2).sink(
             {
-                "gray": "numpy",
-                "resized": "numpy",
+                "gray": "tensor",
+                "resized": "tensor",
             }
         )
 
@@ -360,8 +360,8 @@ class TestCSEEdgeCases:
 
         result_expr = base.merge_pipe(mask).sink(
             {
-                "preprocessed": "numpy",
-                "binary_mask": "numpy",
+                "preprocessed": "tensor",
+                "binary_mask": "tensor",
             }
         )
 
@@ -406,7 +406,7 @@ class TestFullCSE:
         a = img.pipe(self.BASE.grayscale()).alias("a")
         b = img.pipe(self.BASE.blur(1.0)).alias("b")
         c = img.pipe(self.BASE).alias("c")
-        return a.merge_pipe(b, c), {"a": "numpy", "b": "numpy", "c": "numpy"}
+        return a.merge_pipe(b, c), {"a": "tensor", "b": "tensor", "c": "tensor"}
 
     def test_pipelines_with_no_common_op_share_their_decode(self) -> None:
         expr, fmt = self._three_branches()
@@ -416,7 +416,7 @@ class TestFullCSE:
     def test_a_node_that_only_passes_its_input_on_vanishes(self) -> None:
         gray = _decode().pipe(Pipeline().grayscale())
         passthrough = gray.pipe(Pipeline()).alias("same")
-        graph = _physical(passthrough, {"same": "numpy"})
+        graph = _physical(passthrough, {"same": "tensor"})
         assert all(n["ops"] or "decode" in n["input"] for n in graph["nodes"].values())
         assert len(graph["nodes"]) == 1
 
@@ -426,7 +426,7 @@ class TestFullCSE:
         a = img.pipe(small.grayscale()).alias("a")
         b = img.pipe(small.blur(1.0)).alias("b")
         c = img.pipe(self.BASE.flip_h()).alias("c")
-        fmt = {"a": "numpy", "b": "numpy", "c": "numpy"}
+        fmt = {"a": "tensor", "b": "tensor", "c": "tensor"}
         graph = _physical(a.merge_pipe(b, c), fmt)
         # `c` shares only the decode, which no longer stops `a` and `b`
         # sharing their resize.
@@ -437,7 +437,7 @@ class TestFullCSE:
         gray = _decode().pipe(Pipeline().grayscale())
         x = gray.pipe(Pipeline().blur(1.0).threshold(10)).alias("x")
         y = gray.pipe(Pipeline().blur(1.0).canny()).alias("y")
-        graph = _physical(x.merge_pipe(y), {"x": "numpy", "y": "numpy"})
+        graph = _physical(x.merge_pipe(y), {"x": "tensor", "y": "tensor"})
         assert _ops(graph).count("blur") == 1
 
     def test_duplicates_merge_all_the_way_down(self) -> None:
@@ -450,7 +450,7 @@ class TestFullCSE:
             )
 
         a, b = branch("a"), branch("b")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "png"})
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "png"})
         assert graph["outputs"]["a"]["node"] == graph["outputs"]["b"]["node"]
         assert sorted(_ops(graph)) == ["blur", "grayscale"]
 
@@ -462,7 +462,7 @@ class TestFullCSE:
             return gray.maximum(blurred).alias(alias)
 
         a, b = brightest("a"), brightest("b")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "tensor"})
         assert _ops(graph).count("maximum") == 1
         assert _ops(graph).count("grayscale") == 2
 
@@ -472,7 +472,7 @@ class TestFullCSE:
         b = img.pipe(self.BASE.resize(height=8, width=pl.col("w2"))).alias("b")
         c = pl.col("other").cv.pipe(self.BASE.resize(height=8, width=8)).alias("c")
         d = img.pipe(Pipeline().source("image_bytes").resize(height=8, width=8))
-        fmt = {"a": "numpy", "b": "numpy", "c": "numpy", "d": "numpy"}
+        fmt = {"a": "tensor", "b": "tensor", "c": "tensor", "d": "tensor"}
         graph = _physical(a.merge_pipe(b, c, d.alias("d")), fmt)
         assert _ops(graph).count("resize") == 4
         # The u8 and the auto-dtype decode of `image`, and `other`'s.
@@ -480,16 +480,16 @@ class TestFullCSE:
 
     def test_a_run_nothing_else_reads_is_one_node(self) -> None:
         chained = _decode().grayscale().blur(1.0).threshold(10)
-        graph = _physical(chained, "numpy")
+        graph = _physical(chained, "tensor")
         assert len(graph["nodes"]) == 1
         assert _ops(graph) == ["grayscale", "blur", "threshold"]
-        assert len(_physical(chained, "numpy", opt_flags=False)["nodes"]) == 4
+        assert len(_physical(chained, "tensor", opt_flags=False)["nodes"]) == 4
 
     def test_outputs_and_operands_stay_nodes(self) -> None:
         gray = _decode().grayscale().alias("gray")
         edges = gray.blur(1.0).canny()
         both = edges.maximum(gray.threshold(100)).alias("both")
-        graph = _physical(both.merge_pipe(gray), {"both": "numpy", "gray": "numpy"})
+        graph = _physical(both.merge_pipe(gray), {"both": "tensor", "gray": "tensor"})
         nodes = graph["nodes"]
         gray_node = graph["outputs"]["gray"]["node"]
         assert [op["op"] for op in nodes[gray_node]["ops"]] == ["grayscale"]
@@ -526,7 +526,7 @@ class TestFullCSEIsByteIdentical:
         r, g, b = (photo.channel_select(i) for i in range(3))
         cut = r.channel_merge(g, b, alpha).alias("cut")
         expr = cut.merge_pipe(outline.area().alias("area"), photo.alias("photo"))
-        fmt = {"cut": "png", "area": "native", "photo": "numpy"}
+        fmt = {"cut": "png", "area": "native", "photo": "tensor"}
         on = df.select(o=expr.sink(fmt, opt_flags=True)).unnest("o")
         off = df.select(o=expr.sink(fmt, opt_flags=False)).unnest("o")
         assert on["cut"].item() == off["cut"].item()

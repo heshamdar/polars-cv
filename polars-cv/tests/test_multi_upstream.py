@@ -136,7 +136,7 @@ class TestMultiUpstreamWorkflows:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(output=expr1.add(expr2).sink("numpy"))
+        result = df.select(output=expr1.add(expr2).sink("tensor"))
         output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (50, 50, 3)
@@ -165,7 +165,7 @@ class TestMultiUpstreamWorkflows:
         expr1 = pl.col("gradient").cv.pipe(pipe1)
         expr2 = pl.col("solid").cv.pipe(pipe2)
 
-        result = df.select(output=expr1.subtract(expr2).sink("numpy"))
+        result = df.select(output=expr1.subtract(expr2).sink("tensor"))
         output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (50, 50, 3)
@@ -199,7 +199,7 @@ class TestMultiUpstreamWorkflows:
 
         # (a + b) - c: the exact result depends on arithmetic semantics
         # The key test is that chaining works without error
-        result = df.select(output=a.add(b).subtract(c).sink("numpy"))
+        result = df.select(output=a.add(b).subtract(c).sink("tensor"))
         output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (40, 40, 3)
@@ -233,7 +233,7 @@ class TestMultiUpstreamWorkflows:
 
         # Use 'a' in two different operations
         result = df.select(
-            sum_output=a.add(b).sink("numpy"),
+            sum_output=a.add(b).sink("tensor"),
         )
 
         sum_out = numpy_from_struct(result.row(0)[0])
@@ -266,7 +266,7 @@ class TestMultiUpstreamWorkflows:
 
         # (a * b) + c: the exact result depends on arithmetic semantics
         # The key test is that chaining multiply->add works without error
-        result = df.select(output=a.multiply(b).add(c).sink("numpy"))
+        result = df.select(output=a.multiply(b).add(c).sink("tensor"))
         output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (30, 30, 3)
@@ -305,7 +305,7 @@ class TestMultiUpstreamWorkflows:
         img = pl.col("image").cv.pipe(img_pipe)
         mask = pl.col("mask").cv.pipe(mask_pipe)
 
-        result = df.select(output=img.apply_mask(mask).sink("numpy"))
+        result = df.select(output=img.apply_mask(mask).sink("tensor"))
         output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (50, 50, 3)
@@ -346,7 +346,7 @@ class TestMultiUpstreamWorkflows:
         expr1 = pl.col("img1").cv.pipe(pipe)
         expr2 = pl.col("img2").cv.pipe(pipe)
 
-        result = df.select(output=expr1.add(expr2).sink("numpy"))
+        result = df.select(output=expr1.add(expr2).sink("tensor"))
 
         # Verify each row
         expected_colors = [
@@ -380,7 +380,7 @@ class TestRelu:
         # Actually for uint8, relu is a no-op. Let's test it anyway.
         pipe = Pipeline().source("image_bytes").relu()
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (20, 20, 3)

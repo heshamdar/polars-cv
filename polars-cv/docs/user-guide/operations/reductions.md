@@ -82,8 +82,8 @@ where > 0): every masked pixel, or one value per column (`axis=0`) or row
 heat = pl.col("heat").cv.pipe(Pipeline().source("array"))
 breast = pl.col("breast").cv.pipe(Pipeline().source("array"))
 
-heat.reduce_masked(breast, reduction="median", axis=1).sink("numpy")    # per row
-heat.reduce_masked(breast, reduction="p75", axis=0).sink("numpy")
+heat.reduce_masked(breast, reduction="median", axis=1).sink("tensor")    # per row
+heat.reduce_masked(breast, reduction="p75", axis=0).sink("tensor")
 heat.statistics(include=["mean", "median", "p10", "p90", "count"], mask=breast)
 ```
 

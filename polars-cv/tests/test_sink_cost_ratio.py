@@ -2,7 +2,7 @@
 
 ``sink("list")`` at rank >= 2, and ``sink("array")`` with any null row, used to
 build one ``AnyValue`` per *element*: on 64 rows of 64x64x3 u8 they ran ~34x
-and ~40x slower than ``sink("numpy")`` (CR-33). They are now built straight
+and ~40x slower than ``sink("tensor")`` (CR-33). They are now built straight
 into Arrow from one flat values buffer.
 
 A wall-clock test is only robust when the margin dwarfs the noise, so this
@@ -70,7 +70,7 @@ class TestTensorSinkCost:
     ) -> None:
         frame = frames[1] if nulls else frames[0]
         col = pl.col("img").cv
-        numpy = _best_seconds(frame, col.pipe(pipe).sink("numpy"))
+        numpy = _best_seconds(frame, col.pipe(pipe).sink("tensor"))
         typed = _best_seconds(frame, col.pipe(pipe).sink(sink, **kwargs))
         ratio = typed / numpy
         assert ratio < BOUND, (

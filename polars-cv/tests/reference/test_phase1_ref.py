@@ -63,7 +63,7 @@ class TestChannelSelect:
 
         pipe = Pipeline().source("image_bytes").channel_select(index=0)
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
@@ -73,7 +73,7 @@ class TestChannelSelect:
 
         pipe = Pipeline().source("image_bytes").channel_select(index=1)
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
@@ -83,7 +83,7 @@ class TestChannelSelect:
 
         pipe = Pipeline().source("image_bytes").channel_select(index=2)
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
@@ -103,7 +103,7 @@ class TestChannelSwap:
 
         pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
@@ -116,7 +116,7 @@ class TestChannelSwap:
         """Verify channel_swap([0,1,2]) is a no-op."""
         pipe = Pipeline().source("image_bytes").channel_swap(order=[0, 1, 2])
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, rgb_image)
 
@@ -151,7 +151,7 @@ class TestReflectPadding:
             .pad(top=1, bottom=1, left=2, right=2, mode="reflect")
         )
         df = pl.DataFrame({"img": [png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
@@ -174,7 +174,7 @@ class TestReflectPadding:
             .pad(top=1, bottom=1, left=2, right=2, mode="symmetric")
         )
         df = pl.DataFrame({"img": [png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
@@ -194,7 +194,7 @@ class TestReflectPadding:
             .pad(top=2, bottom=3, left=4, right=5, mode="reflect")
         )
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
@@ -219,7 +219,7 @@ class TestAdjustContrast:
         """Factor=1.0 should produce the same image (within float precision)."""
         pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.0)
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, rgb_image.astype(np.float32), atol=1e-4)
 
@@ -237,7 +237,7 @@ class TestAdjustContrast:
 
         pipe = Pipeline().source("image_bytes").adjust_contrast(factor=factor)
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, expected, atol=1e-2)
 
@@ -255,7 +255,7 @@ class TestAdjustGamma:
         """Gamma=1.0 should preserve pixel values."""
         pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=1.0)
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, rgb_image.astype(np.float32), atol=1.0)
 
@@ -272,7 +272,7 @@ class TestAdjustGamma:
 
         pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=gamma)
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, expected, atol=1.0)
 
@@ -292,7 +292,7 @@ class TestInvert:
 
         pipe = Pipeline().source("image_bytes").invert()
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
@@ -305,7 +305,7 @@ class TestInvert:
         """Double invert should recover the original image."""
         pipe = Pipeline().source("image_bytes").invert().invert()
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, rgb_image)
 
@@ -327,7 +327,7 @@ class TestInvert:
 
         df = pl.DataFrame({"buf": [data.tolist()]})
         pipe = Pipeline().source("list", dtype=dtype).invert()
-        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         assert actual.dtype == np_dtype
         np.testing.assert_array_equal(actual, ~data)
@@ -348,7 +348,7 @@ class TestAdjustBrightness:
         """Factor=1.0 should produce equivalent values (after f32 promotion + clamp)."""
         pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.0)
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, rgb_image.astype(np.float32), atol=1e-4)
 
@@ -364,7 +364,7 @@ class TestAdjustBrightness:
 
         pipe = Pipeline().source("image_bytes").adjust_brightness(factor=2.0)
         df = pl.DataFrame({"img": [png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, np.full((8, 8, 3), 255.0), atol=1e-4)
 

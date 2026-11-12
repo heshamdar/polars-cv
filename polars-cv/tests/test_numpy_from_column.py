@@ -44,7 +44,7 @@ PIPELINES = {
 }
 
 
-def _column(pipe: Pipeline, sink: str = "numpy") -> pl.Series:
+def _column(pipe: Pipeline, sink: str = "tensor") -> pl.Series:
     return _images().select(out=pl.col("img").cv.pipe(pipe).sink(sink)).to_series()
 
 
@@ -103,8 +103,8 @@ def test_copy_returns_owned_arrays() -> None:
 
 def test_an_ndarray_column_reads_the_same() -> None:
     pipe = PIPELINES["transposed"]
-    plain = numpy_from_column(_column(pipe, "numpy"))
-    tagged = numpy_from_column(_column(pipe, "ndarray"))
+    plain = numpy_from_column(_column(pipe, "tensor"))
+    tagged = numpy_from_column(_column(pipe, "tensor"))
     for p, t in zip(plain, tagged, strict=True):
         if p is None:
             assert t is None

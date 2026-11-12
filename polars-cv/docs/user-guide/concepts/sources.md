@@ -14,7 +14,7 @@ column's Polars dtype:
 | `Array` | `array` |
 | `Binary` carrying the VIEW protocol magic | `blob` |
 | `Binary` otherwise | `image_bytes` |
-| The tensor sinks' struct (`sink("numpy")`, `"ndarray"`, `"torch"`) | `tensor` |
+| The tensor sink's struct (`sink("tensor")`), tagged or not | `tensor` |
 
 ```python
 from polars_cv import Pipeline
@@ -424,6 +424,6 @@ the mask for that row is null too.
 - `auto` (default): infer the decode path from the column dtype (see above)
 - `raw`: raw bytes, requires explicit `dtype`
 - `blob`: self-describing binary VIEW protocol
-- `tensor`: the struct `sink("numpy")`, `sink("ndarray")` and `sink("torch")` write, read at its own shape, strides and offset (a `float16` row reads as `f32`). Each row carries its own dtype and shape, so declare `dtype=` (checked per row) where a later sink needs it at planning time
+- `tensor`: the struct `sink("tensor")` writes, read at its own shape, strides and offset (a `float16` row reads as `f32`). Each row carries its own dtype and shape, so declare `dtype=` (checked per row) where a later sink needs it at planning time
 - `list`/`array`: infer from Polars column type (or override with `dtype`)
 - `contour`: decodes contour structs to the contour domain; add `.rasterize(...)` for a mask buffer (see above)

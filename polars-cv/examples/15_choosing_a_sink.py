@@ -3,8 +3,8 @@
 Demonstrates:
 - `array`: a fixed-shape batch, one NumPy array for the whole column
 - `list`: ragged images as nested lists
-- `numpy` / `torch`: one zero-copy tensor per row, for a loader
-- `ndarray` with `compact=True`: tensors that persist (Parquet) and read back
+- `tensor`: one zero-copy tensor per row, for a loader
+- `tensor` with `compact=True`: tensors that persist (Parquet) and read back
 - `png` / `jpeg`: encoded bytes
 - `blob`: bytes another pipeline reads back, dtype and shape included
 - Several outputs from one decode, each with its own sink
@@ -63,26 +63,24 @@ def main() -> None:
     assert ragged["x"].list.len().to_list() == [40, 50, 64]  # each row's height
     # --8<-- [end:list]
 
-    # --8<-- [start:numpy]
+    # --8<-- [start:tensor]
     # One tensor per row for a data loader: no copy on the way out.
-    tensors = df.select(x=pl.col("image").cv.pipe(decoded).sink("numpy"))
+    tensors = df.select(x=pl.col("image").cv.pipe(decoded).sink("tensor"))
     shapes = [numpy_from_struct(row).shape for row in tensors["x"]]
     assert shapes == [(40, 60, 3), (50, 50, 3), (64, 48, 3)]
-    # --8<-- [end:numpy]
+    # --8<-- [end:tensor]
 
     # --8<-- [start:persist]
     # Persisting tensors: `compact=True` makes each row's data exactly its
     # elements, so Parquet does not write the storage a view was cut from.
-    stored = df.select(
-        x=pl.col("image").cv.pipe(decoded).sink("ndarray", compact=True)
-    )
+    stored = df.select(x=pl.col("image").cv.pipe(decoded).sink("tensor", compact=True))
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "tensors.parquet"
         stored.write_parquet(path)
         back = pl.read_parquet(path)
-    # The tensor sinks read back: the default source routes the struct.
+    # The tensor sink reads back: the default source routes the column.
     again = back.select(
-        x=pl.col("x").cv.pipe(Pipeline().source().flip_h()).sink("numpy")
+        x=pl.col("x").cv.pipe(Pipeline().source().flip_h()).sink("tensor")
     )
     assert numpy_from_struct(again["x"][0]).shape == (40, 60, 3)
     # --8<-- [end:persist]
@@ -126,8 +124,8 @@ def main() -> None:
     for name, frame in [
         ("array", batch),
         ("list", ragged),
-        ("numpy", tensors),
-        ("ndarray (compact)", stored),
+        ("tensor", tensors),
+        ("tensor (compact)", stored),
         ("png / jpeg", files),
         ("blob", stage_one),
         ("multi-output", both),

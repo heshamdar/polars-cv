@@ -59,7 +59,7 @@ class TestHttpSources:
         df = pl.DataFrame({"url": [placeholder_url]})
 
         pipe = Pipeline().source("file_path")
-        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("tensor"))
 
         # Should produce a valid image array
         arr = numpy_from_struct(result["out"][0])
@@ -72,7 +72,7 @@ class TestHttpSources:
         df = pl.DataFrame({"url": [placeholder_url]})
 
         pipe = Pipeline().source("file_path").grayscale()
-        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("tensor"))
 
         # Should produce grayscale output
         arr = numpy_from_struct(result["out"][0])
@@ -98,7 +98,7 @@ class TestHttpSources:
         df = pl.DataFrame({"url": [placeholder_url, placeholder_url]})
 
         pipe = Pipeline().source("file_path")
-        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("tensor"))
 
         assert len(result) == 2
         arr1 = numpy_from_struct(result["out"][0])

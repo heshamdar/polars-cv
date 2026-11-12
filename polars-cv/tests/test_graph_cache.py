@@ -57,8 +57,12 @@ class TestCacheHeterogeneousData:
         df_small = pl.DataFrame({"img": [_png(8, 8)]})
         df_large = pl.DataFrame({"img": [_png(32, 16)]})
 
-        out_small = df_small.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
-        out_large = df_large.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out_small = df_small.with_columns(
+            out=pl.col("img").cv.pipe(pipe).sink("tensor")
+        )
+        out_large = df_large.with_columns(
+            out=pl.col("img").cv.pipe(pipe).sink("tensor")
+        )
 
         assert _shape_of(out_small["out"][0]) == [8, 8, 1]
         assert _shape_of(out_large["out"][0]) == [16, 32, 1]
@@ -66,7 +70,7 @@ class TestCacheHeterogeneousData:
     def test_varying_sizes_within_one_column(self) -> None:
         pipe = Pipeline().source("image_bytes").grayscale()
         df = pl.DataFrame({"img": [_png(4, 4), _png(10, 6), _png(7, 13)]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         assert _shape_of(out["out"][0]) == [4, 4, 1]
         assert _shape_of(out["out"][1]) == [6, 10, 1]
@@ -77,21 +81,21 @@ class TestCacheHeterogeneousData:
         # sources through the same pipeline keep their respective dtypes.
         pipe = Pipeline().source("image_bytes")
         df = pl.DataFrame({"img": [_png(4, 4)]})
-        out8 = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out8 = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out8["out"][0]).dtype == np.uint8
 
         df16 = pl.DataFrame({"img": [_png_u16(4, 4)]})
-        out16 = df16.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out16 = df16.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out16["out"][0]).dtype == np.uint16
 
     def test_repeated_calls_are_consistent(self) -> None:
         # Many calls through the cache must give byte-identical results.
         pipe = Pipeline().source("image_bytes").grayscale().resize(height=5, width=5)
         df = pl.DataFrame({"img": [_png(16, 16, value=200)]})
-        first = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        first = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         ref = numpy_from_struct(first["out"][0])
         for _ in range(5):
-            out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             np.testing.assert_array_equal(numpy_from_struct(out["out"][0]), ref)
 
 
@@ -107,7 +111,7 @@ class TestCacheNullSafety:
             {"img": [_png(4, 4), None, _png(6, 6)]},
             schema={"img": pl.Binary},
         )
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
@@ -118,12 +122,12 @@ class TestCacheNullSafety:
         # following all-valid batch (and vice versa).
         pipe = Pipeline().source("image_bytes").grayscale()
         df_null = pl.DataFrame({"img": [None, None]}, schema={"img": pl.Binary})
-        out_null = df_null.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
-        assert out_null["out"].struct.field("data").null_count() == 2
+        out_null = df_null.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
+        assert out_null["out"].ext.storage().struct.field("data").null_count() == 2
 
         df_ok = pl.DataFrame({"img": [_png(4, 4)]})
-        out_ok = df_ok.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
-        assert out_ok["out"].struct.field("data").null_count() == 0
+        out_ok = df_ok.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
+        assert out_ok["out"].ext.storage().struct.field("data").null_count() == 0
 
 
 @plugin_required
@@ -143,7 +147,7 @@ class TestCacheDynamicParams:
                 "w": [6, 3, 9],
             }
         )
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert _shape_of(out["out"][0]) == [4, 6, 3]
         assert _shape_of(out["out"][1]) == [8, 3, 3]
         assert _shape_of(out["out"][2]) == [2, 9, 3]
@@ -162,7 +166,7 @@ class TestCacheDynamicParams:
                 "h": [3, 7],
             }
         )
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert _shape_of(out["out"][0]) == [7, 7, 3]
         assert _shape_of(out["out"][1]) == [7, 7, 3]
 
@@ -177,7 +181,7 @@ class TestCacheDynamicParams:
         img = _png(16, 16)
         for dtype in (pl.Int64, pl.Int32, pl.UInt16, pl.Float64):
             df = pl.DataFrame({"img": [img], "h": pl.Series([5], dtype=dtype)})
-            out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             assert _shape_of(out["out"][0]) == [5, 5, 3]
 
 
@@ -190,10 +194,10 @@ class TestCacheIdentity:
         pipe_b = Pipeline().source("image_bytes").resize(height=9, width=9)
         df = pl.DataFrame({"img": [_png(16, 16)]})
 
-        out_a = df.with_columns(out=pl.col("img").cv.pipe(pipe_a).sink("numpy"))
-        out_b = df.with_columns(out=pl.col("img").cv.pipe(pipe_b).sink("numpy"))
+        out_a = df.with_columns(out=pl.col("img").cv.pipe(pipe_a).sink("tensor"))
+        out_b = df.with_columns(out=pl.col("img").cv.pipe(pipe_b).sink("tensor"))
         # Interleave again to exercise cache hits on both entries.
-        out_a2 = df.with_columns(out=pl.col("img").cv.pipe(pipe_a).sink("numpy"))
+        out_a2 = df.with_columns(out=pl.col("img").cv.pipe(pipe_a).sink("tensor"))
 
         assert _shape_of(out_a["out"][0]) == [4, 4, 3]
         assert _shape_of(out_b["out"][0]) == [9, 9, 3]
@@ -205,7 +209,7 @@ class TestCacheIdentity:
         df = pl.DataFrame({"img": [_png(64, 64)]})
         for size in range(2, 40):
             pipe = Pipeline().source("image_bytes").resize(height=size, width=size)
-            out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             assert _shape_of(out["out"][0]) == [size, size, 3]
 
 
@@ -231,7 +235,7 @@ class TestCacheStreaming:
         )
         out = (
             df.lazy()
-            .with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             .collect(engine="streaming")
         )
         assert out.height == n
@@ -244,7 +248,7 @@ class TestCacheStreaming:
         df = pl.DataFrame({"img": imgs}, schema={"img": pl.Binary})
         out = (
             df.lazy()
-            .with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             .collect(engine="streaming")
         )
         for i in range(90):
@@ -266,7 +270,7 @@ class TestGraphVersionField:
         graph = PipelineGraph()
         pipe = Pipeline().source("image_bytes").grayscale()
         graph.add_node("n0", pipe, column=pl.col("img"))
-        graph.set_output("n0", "numpy")
+        graph.set_output("n0", "tensor")
         spec = json.loads(graph._to_json())
         assert spec["version"] == 2
 
@@ -280,7 +284,7 @@ class TestGraphVersionField:
         graph = PipelineGraph()
         pipe = Pipeline().source("image_bytes").grayscale()
         graph.add_node("n0", pipe, column=pl.col("img"))
-        graph.set_output("n0", "numpy")
+        graph.set_output("n0", "tensor")
         spec = json.loads(graph._to_json())
         spec["version"] = 999
         from polars_cv import _plugin
@@ -308,7 +312,7 @@ class TestGraphStructureValidation:
         graph = PipelineGraph()
         pipe = Pipeline().source("image_bytes").grayscale()
         graph.add_node("n0", pipe, column=pl.col("img"))
-        graph.set_output("n0", "numpy")
+        graph.set_output("n0", "tensor")
         spec = json.loads(graph._to_json())
         mutate(spec)
         expr = _plugin.call(

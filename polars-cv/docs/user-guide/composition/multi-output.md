@@ -180,7 +180,7 @@ Different outputs can have different formats:
 result = df.with_columns(
     outputs=merged.sink({
         "display": "png",           # For display
-        "analysis": "numpy",        # For NumPy analysis
+        "analysis": "tensor",        # For NumPy analysis
         "raw_data": "list",         # As Polars List
     })
 )

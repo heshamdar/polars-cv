@@ -186,7 +186,7 @@ def test_channel_select_then_merge_is_the_identity(spec) -> None:
     planes = [
         pl.col("img").cv.pipe(source.channel_select(c)) for c in range(image.shape[2])
     ]
-    merged = planes[0].channel_merge(*planes[1:]).sink("numpy")
+    merged = planes[0].channel_merge(*planes[1:]).sink("tensor")
     out = numpy_from_struct(frame.select(out=merged)["out"][0])
     _agree("channel_select each, channel_merge back", out, image)
 
@@ -799,7 +799,7 @@ def test_a_stroked_line_is_the_band_round_it(data) -> None:
         .stroke(width=2.0 * k, cap=cap, join=join)
         .rasterize(width=side, height=side)
     )
-    out = frame.select(out=pl.col("c").cv.pipe(pipe).sink("numpy"))
+    out = frame.select(out=pl.col("c").cv.pipe(pipe).sink("tensor"))
     got = numpy_from_struct(out["out"][0]).reshape(side, side) != 0
     want = _to_polyline((side, side), points, metric) <= k
     _agree(f"stroke(width={2 * k}, cap={cap}, join={join}) of {points}", got, want)

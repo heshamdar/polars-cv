@@ -71,6 +71,8 @@ def with_params(df: pl.DataFrame, *, seed: int, epoch: int) -> pl.DataFrame:
         angle=(u("angle") - 0.5) * 30.0,  # degrees, in [-15, 15)
         contrast=0.8 + 0.4 * u("contrast"),  # in [0.8, 1.2)
     )
+
+
 # --8<-- [end:params]
 
 
@@ -100,6 +102,8 @@ def epoch_batch(df: pl.DataFrame, *, seed: int, epoch: int) -> np.ndarray:
         x=pl.col("image").cv.pipe(augment()).sink("array", shape=[OUT, OUT, 3])
     )
     return out["x"].to_numpy()
+
+
 # --8<-- [end:pipeline]
 
 

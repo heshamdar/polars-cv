@@ -80,24 +80,24 @@ def _src() -> Pipeline:
 # ops would break the invariant here. `fmt` is the op's natural sink (buffer ops
 # → numpy; scalar/vector ops → native).
 _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
-    ("resize", lambda p: p.resize(height=32, width=32), "numpy"),
-    ("grayscale", lambda p: p.grayscale(), "numpy"),
-    ("threshold", lambda p: p.grayscale().threshold(128), "numpy"),
-    ("blur", lambda p: p.blur(1.0), "numpy"),
-    ("convolve2d", lambda p: p.convolve2d(kernel=[1.0 / 9] * 9), "numpy"),
+    ("resize", lambda p: p.resize(height=32, width=32), "tensor"),
+    ("grayscale", lambda p: p.grayscale(), "tensor"),
+    ("threshold", lambda p: p.grayscale().threshold(128), "tensor"),
+    ("blur", lambda p: p.blur(1.0), "tensor"),
+    ("convolve2d", lambda p: p.convolve2d(kernel=[1.0 / 9] * 9), "tensor"),
     (
         "convert_color",
         lambda p: p.convert_color(from_space="rgb", to_space="hsv"),
-        "numpy",
+        "tensor",
     ),
-    ("cast", lambda p: p.cast("f32"), "numpy"),
-    ("scale", lambda p: p.cast("f32").scale(0.5), "numpy"),
-    ("clamp", lambda p: p.cast("f32").clamp(0.0, 128.0), "numpy"),
-    ("invert", lambda p: p.invert(), "numpy"),
-    ("adjust_gamma", lambda p: p.adjust_gamma(gamma=2.2), "numpy"),
-    ("adjust_contrast", lambda p: p.adjust_contrast(factor=1.5), "numpy"),
-    ("pad", lambda p: p.pad(top=1, bottom=2, left=3, right=4), "numpy"),
-    ("crop", lambda p: p.crop(top=0, left=0, height=8, width=8), "numpy"),
+    ("cast", lambda p: p.cast("f32"), "tensor"),
+    ("scale", lambda p: p.cast("f32").scale(0.5), "tensor"),
+    ("clamp", lambda p: p.cast("f32").clamp(0.0, 128.0), "tensor"),
+    ("invert", lambda p: p.invert(), "tensor"),
+    ("adjust_gamma", lambda p: p.adjust_gamma(gamma=2.2), "tensor"),
+    ("adjust_contrast", lambda p: p.adjust_contrast(factor=1.5), "tensor"),
+    ("pad", lambda p: p.pad(top=1, bottom=2, left=3, right=4), "tensor"),
+    ("crop", lambda p: p.crop(top=0, left=0, height=8, width=8), "tensor"),
     # A window past the edge, padded or clipped: the shape alone does not say
     # where the data went.
     (
@@ -107,31 +107,31 @@ _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
         lambda p: p.resize(height=20, width=20).crop_pad(
             top=-2, left=-3, height=20, width=20
         ),
-        "numpy",
+        "tensor",
     ),
     (
         "crop_clip",
         lambda p: p.crop_clip(top=-2, left=90, height=8, width=8),
-        "numpy",
+        "tensor",
     ),
-    ("flip_when", lambda p: p.flip(axes=[0], when=False), "numpy"),
+    ("flip_when", lambda p: p.flip(axes=[0], when=False), "tensor"),
     # `this` reads the buffer its op is given, so no pass may change which.
     (
         "this_before_crop",
         lambda p: p.cast("f32").scale(this.height).crop(height=4, width=4),
-        "numpy",
+        "tensor",
     ),
     (
         "this_in_crop",
         lambda p: p.grayscale().crop(height=this.channels, width=4),
-        "numpy",
+        "tensor",
     ),
-    ("flip", lambda p: p.flip(axes=[0]), "numpy"),
-    ("transpose", lambda p: p.transpose(axes=[1, 0, 2]), "numpy"),
-    ("erode", lambda p: p.grayscale().erode(ksize=3, iterations=1), "numpy"),
-    ("dilate", lambda p: p.grayscale().dilate(ksize=3, iterations=1), "numpy"),
-    ("canny", lambda p: p.grayscale().canny(), "numpy"),
-    ("rotate_lone", lambda p: p.rotate(30.0), "numpy"),
+    ("flip", lambda p: p.flip(axes=[0]), "tensor"),
+    ("transpose", lambda p: p.transpose(axes=[1, 0, 2]), "tensor"),
+    ("erode", lambda p: p.grayscale().erode(ksize=3, iterations=1), "tensor"),
+    ("dilate", lambda p: p.grayscale().dilate(ksize=3, iterations=1), "tensor"),
+    ("canny", lambda p: p.grayscale().canny(), "tensor"),
+    ("rotate_lone", lambda p: p.rotate(30.0), "tensor"),
     ("reduce_sum", lambda p: p.reduce_sum(), "native"),
     ("histogram", lambda p: p.grayscale().histogram(bins=8), "native"),
     ("perceptual_hash", lambda p: p.perceptual_hash(), "native"),
@@ -187,7 +187,9 @@ def _run_multi(
     exprs = [pl.col("image").cv.pipe(pipes_by_alias[a]).alias(a) for a in aliases]
     first, *rest = exprs
     out = df.select(
-        res=first.merge_pipe(*rest).sink({a: "numpy" for a in aliases}, opt_flags=flags)
+        res=first.merge_pipe(*rest).sink(
+            {a: "tensor" for a in aliases}, opt_flags=flags
+        )
     )["res"]
     return {a: out.struct.field(a).to_list() for a in aliases}
 
@@ -198,7 +200,7 @@ def _built_graph(pipes_by_alias: dict[str, Pipeline], flags: OptFlags):  # type:
     exprs = [pl.col("image").cv.pipe(pipes_by_alias[a]).alias(a) for a in aliases]
     first, *rest = exprs
     return first.merge_pipe(*rest).sink(
-        {a: "numpy" for a in aliases}, return_expr=False, opt_flags=flags
+        {a: "tensor" for a in aliases}, return_expr=False, opt_flags=flags
     )
 
 
@@ -286,7 +288,7 @@ class TestSourceRowNullVariety:
             {"image": [_png((40, 90, 160)), _png((10, 200, 30)), _png((250, 5, 90))]}
         )
         pipe = _src().resize(width=32, height=32).grayscale().threshold(128)
-        outputs = [_sink_output(df, pipe, f, "numpy") for f in _all_flag_subsets()]
+        outputs = [_sink_output(df, pipe, f, "tensor") for f in _all_flag_subsets()]
         assert len(outputs[0]) == 3
         for other in outputs[1:]:
             assert other == outputs[0]
@@ -294,7 +296,7 @@ class TestSourceRowNullVariety:
     def test_null_row_is_preserved_across_flag_subsets(self) -> None:
         df = pl.DataFrame({"image": [_png((40, 90, 160)), None, _png((250, 5, 90))]})
         pipe = _src().resize(width=32, height=32).grayscale()
-        outputs = [_sink_output(df, pipe, f, "numpy") for f in _all_flag_subsets()]
+        outputs = [_sink_output(df, pipe, f, "tensor") for f in _all_flag_subsets()]
         # The null input row stays null in the output (numpy sink represents a
         # null row as a struct with no buffer), under every flag subset.
         assert outputs[0][1] is None
@@ -322,7 +324,7 @@ class TestSourceRowNullVariety:
         )
         pipe = Pipeline().source("list", dtype="f32").scale(0.5)
         outputs = [
-            _sink_output(df, pipe, f, "numpy", column="x") for f in _all_flag_subsets()
+            _sink_output(df, pipe, f, "tensor", column="x") for f in _all_flag_subsets()
         ]
         assert outputs[0] and outputs[0][0] is not None
         for other in outputs[1:]:
@@ -379,7 +381,7 @@ class TestSpatialPushdownEquivalence:
     ) -> None:
         pipe = build(_src())  # type: ignore[operator]
         outputs = [
-            _sink_output(sample_df, pipe, f, "numpy") for f in _all_flag_subsets()
+            _sink_output(sample_df, pipe, f, "tensor") for f in _all_flag_subsets()
         ]
         assert outputs[0] and outputs[0][0] is not None, (
             f"{case_id}: produced an empty/null output"
@@ -396,7 +398,7 @@ class TestSpatialPushdownEquivalence:
                 pl.col("image")
                 .cv.pipe(pipe)
                 .sink(
-                    "numpy",
+                    "tensor",
                     return_expr=False,
                     opt_flags=OptFlags(spatial_window_pushdown=flag),
                 )
@@ -412,7 +414,7 @@ class TestSpatialPushdownEquivalence:
         # commutes with any window) and stays byte-identical across flag subsets.
         df = sample_df.with_columns(t=pl.lit(3))
         pipe = _src().grayscale().crop(top=pl.col("t"), left=0, height=8, width=8)
-        outputs = [_sink_output(df, pipe, f, "numpy") for f in _all_flag_subsets()]
+        outputs = [_sink_output(df, pipe, f, "tensor") for f in _all_flag_subsets()]
         assert outputs[0] and outputs[0][0] is not None
         for other in outputs[1:]:
             assert other == outputs[0]
@@ -434,7 +436,7 @@ class TestDifferentialEquivalence:
             .threshold(128)
         )
         outputs = [
-            _arr(sample_df, pl.col("image").cv.pipe(pipe).sink("numpy", opt_flags=f))
+            _arr(sample_df, pl.col("image").cv.pipe(pipe).sink("tensor", opt_flags=f))
             for f in _all_flag_subsets()
         ]
         for other in outputs[1:]:
@@ -459,7 +461,7 @@ class TestDifferentialEquivalence:
             thresh = pl.col("image").cv.pipe(thresh_pipe).alias("thresh")
             out = sample_df.select(
                 res=gray.merge_pipe(thresh).sink(
-                    {"gray": "numpy", "thresh": "numpy"}, opt_flags=flags
+                    {"gray": "tensor", "thresh": "tensor"}, opt_flags=flags
                 )
             )["res"]
             return (
@@ -481,10 +483,10 @@ class TestDifferentialEquivalence:
 
         pipe = Pipeline().source("image_bytes").resize(width=40, height=40).grayscale()
         monkeypatch.setenv(OPT_ENV_VAR, "none")
-        from_env = _arr(sample_df, pl.col("image").cv.pipe(pipe).sink("numpy"))
+        from_env = _arr(sample_df, pl.col("image").cv.pipe(pipe).sink("tensor"))
         explicit = _arr(
             sample_df,
-            pl.col("image").cv.pipe(pipe).sink("numpy", opt_flags=OptFlags.none()),
+            pl.col("image").cv.pipe(pipe).sink("tensor", opt_flags=OptFlags.none()),
         )
         assert np.array_equal(from_env, explicit)
 
@@ -529,7 +531,7 @@ class TestIdentityEliminationByteExact:
     ) -> None:
         pipe = build(_src())  # type: ignore[operator]
         outputs = [
-            _sink_output(sample_df, pipe, f, "numpy") for f in _all_flag_subsets()
+            _sink_output(sample_df, pipe, f, "tensor") for f in _all_flag_subsets()
         ]
         assert outputs[0] and outputs[0][0] is not None, (
             f"{case_id}: produced an empty/null output"
@@ -548,26 +550,26 @@ _PER_OPT_CASES: list[tuple[str, object, str]] = [
         lambda p: p.resize(height=32, width=32).crop(
             top=0, left=0, height=32, width=32
         ),
-        "numpy",
+        "tensor",
     ),
     (
         "spatial_window_pushdown",
         lambda p: p.grayscale().crop(top=1, left=1, height=16, width=16),
-        "numpy",
+        "tensor",
     ),
-    ("cast_chain_collapse", lambda p: p.cast("u16").cast("f32"), "numpy"),
-    ("cast_identity", lambda p: p.cast("u8"), "numpy"),
+    ("cast_chain_collapse", lambda p: p.cast("u16").cast("f32"), "tensor"),
+    ("cast_identity", lambda p: p.cast("u8"), "tensor"),
     (
         "view_flip_involution",
         lambda p: p.flip(axes=[0]).flip(axes=[0]),
-        "numpy",
+        "tensor",
     ),
     (
         "view_transpose_merge",
         lambda p: p.transpose(axes=[1, 0, 2]).transpose(axes=[1, 0, 2]),
-        "numpy",
+        "tensor",
     ),
-    ("scalar_fusion", lambda p: p.cast("f32").scale(0.5).invert(), "numpy"),
+    ("scalar_fusion", lambda p: p.cast("f32").scale(0.5).invert(), "tensor"),
 ]
 
 #: The one pass not expressible as a single-pipeline case; covered elsewhere.
@@ -666,7 +668,7 @@ class TestOptimizationRegressions:
         pipe = _src().crop(top=5, left=5, height=96, width=96)
         for flags in _all_flag_subsets():
             with pytest.raises(pl.exceptions.ComputeError, match="outside"):
-                _sink_output(sample_df, pipe, flags, "numpy")
+                _sink_output(sample_df, pipe, flags, "tensor")
 
     def test_a_wrong_declaration_reaching_a_cse_suffix_fails_every_way(
         self, sample_df: pl.DataFrame
@@ -698,7 +700,7 @@ class TestOptimizationRegressions:
         )
         for flags in [OptFlags.none(), *_all_flag_subsets()]:
             with pytest.raises(pl.exceptions.ComputeError, match="does not hold"):
-                sample_df.select(o=cont.sink("numpy", opt_flags=flags))
+                sample_df.select(o=cont.sink("tensor", opt_flags=flags))
 
     def test_a_true_declaration_lets_optimizations_rely_on_it(
         self, sample_df: pl.DataFrame
@@ -707,9 +709,9 @@ class TestOptimizationRegressions:
         cont = upstream.pipe(
             Pipeline().grayscale().crop(top=0, left=0, height=96, width=96)
         )
-        off = sample_df.select(o=cont.sink("numpy", opt_flags=OptFlags.none()))
+        off = sample_df.select(o=cont.sink("tensor", opt_flags=OptFlags.none()))
         for flags in _all_flag_subsets():
-            on = sample_df.select(o=cont.sink("numpy", opt_flags=flags))
+            on = sample_df.select(o=cont.sink("tensor", opt_flags=flags))
             assert on["o"].to_list() == off["o"].to_list(), (
                 f"output changed under {flags}"
             )

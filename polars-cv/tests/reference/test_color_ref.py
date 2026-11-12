@@ -52,7 +52,7 @@ def rgb_png(rgb_image: np.ndarray) -> bytes:
 def _run_pipe(pipe: Pipeline, png_bytes: bytes) -> np.ndarray:
     """Execute a pipeline on a single PNG image and return numpy result."""
     df = pl.DataFrame({"img": [png_bytes]})
-    result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+    result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(result.row(0)[0])
 
 
@@ -317,7 +317,7 @@ class TestRgbLab:
             .convert_color(from_space="rgb", to_space="lab")
         )
         df = pl.DataFrame({"img": [rgb_png]})
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out_struct = result.row(0)[0]
         actual = numpy_from_struct(out_struct)
         assert actual.dtype == np.float32

@@ -1,10 +1,13 @@
-"""``sink("ndarray")``: the numpy sink struct, tagged ``polars_cv.ndarray``.
+"""``sink("tensor")``: the tensor struct, tagged ``polars_cv.ndarray``.
 
-The tagged sink is the plain ``sink("numpy")`` struct with a type on top, so
-every assertion here is a comparison against ``sink("numpy")``: same rows, same
-bytes, same strides, same nulls — plus the tag, planned and executed alike.
-``sink("numpy")`` itself must not change; users' struct operations on it do not
-see through a tag (see ``polars_cv.extension_types``).
+The sink's column is the struct ``{data, dtype, shape, strides, offset}`` with
+an extension type on top, planned and executed alike. The tag is what says a
+column holds tensors after a round trip; polars' struct operations need the
+storage under it (``.ext.storage()``, see ``polars_cv.extension_types``).
+
+There were three sinks: ``numpy`` and ``torch`` wrote the plain struct and
+``ndarray`` the tagged one. They are one, always tagged, so what was compared
+here against the plain sink is compared against NumPy's own result.
 """
 
 from __future__ import annotations
@@ -36,24 +39,29 @@ def _images() -> pl.DataFrame:
     )
 
 
-def _both(pipe: Pipeline, **sink_kwargs: object) -> tuple[pl.Series, pl.Series]:
-    """The same pipeline through ``sink("numpy")`` and ``sink("ndarray")``."""
-    df = _images()
-    plain = df.select(
-        out=pl.col("img").cv.pipe(pipe).sink("numpy", **sink_kwargs)
-    ).to_series()
-    tagged = assert_plan_equals_exec(
-        df, pl.col("img").cv.pipe(pipe).sink("ndarray", **sink_kwargs)
+def _tensors(pipe: Pipeline, **sink_kwargs: object) -> pl.Series:
+    """*pipe* through ``sink("tensor")``, its planned type checked against
+    the executed one."""
+    return assert_plan_equals_exec(
+        _images(), pl.col("img").cv.pipe(pipe).sink("tensor", **sink_kwargs)
     )
-    return plain, tagged
+
+
+def _decoded() -> list[np.ndarray | None]:
+    """The rows of :func:`_images` as PIL decodes them."""
+    import io
+
+    from PIL import Image
+
+    return [
+        None if data is None else np.asarray(Image.open(io.BytesIO(data)))
+        for data in _images()["img"]
+    ]
 
 
 def _is_null_row(row: dict | None) -> bool:
-    """A null input row, as the numpy struct encodes it: all fields null.
-
-    (Not a null struct — that is ``sink("numpy")``'s existing encoding, and the
-    tagged sink must match it rather than improve on it silently.)
-    """
+    """A null row: a null value (or, read from older files, a struct whose
+    fields are all null)."""
     return row is None or row["data"] is None
 
 
@@ -61,69 +69,80 @@ def _arrays(series: pl.Series) -> list[np.ndarray | None]:
     return [None if _is_null_row(row) else numpy_from_struct(row) for row in series]
 
 
+#: name -> (the pipeline, the same operation on a decoded NumPy array).
 PIPELINES = {
-    "decode": lambda: Pipeline().source("image_bytes"),
-    "grayscale": lambda: Pipeline().source("image_bytes").grayscale(),
+    "decode": (lambda: Pipeline().source("image_bytes"), lambda a: a),
+    "grayscale_shape": (
+        lambda: Pipeline().source("image_bytes").channel_select(0),
+        lambda a: a[..., :1],
+    ),
     # Non-contiguous outputs: the strided branch of the struct encoding.
-    "transpose": lambda: Pipeline().source("image_bytes").transpose([1, 0, 2]),
-    "flip": lambda: Pipeline().source("image_bytes").flip([0]),
-    "float": lambda: Pipeline().source("image_bytes").cast("f32").scale(0.5),
+    "transpose": (
+        lambda: Pipeline().source("image_bytes").transpose([1, 0, 2]),
+        lambda a: a.transpose(1, 0, 2),
+    ),
+    "flip": (lambda: Pipeline().source("image_bytes").flip([0]), lambda a: a[::-1]),
+    "float": (
+        lambda: Pipeline().source("image_bytes").cast("f32").scale(0.5),
+        lambda a: a.astype(np.float32) * np.float32(0.5),
+    ),
 }
 
 
 @pytest.mark.parametrize("name", sorted(PIPELINES))
-def test_ndarray_is_the_numpy_struct_tagged(name: str) -> None:
-    plain, tagged = _both(PIPELINES[name]())
+def test_the_tensor_sink_is_the_storage_struct_tagged(name: str) -> None:
+    tagged = _tensors(PIPELINES[name][0]())
 
-    assert plain.dtype == polars_cv.NUMPY_OUTPUT_SCHEMA
     assert isinstance(tagged.dtype, NdArrayType)
-    assert tagged.ext.storage().to_list() == plain.to_list()
+    assert tagged.ext.storage().dtype == polars_cv.NUMPY_OUTPUT_SCHEMA
 
 
 @pytest.mark.parametrize("name", sorted(PIPELINES))
 def test_numpy_from_struct_reads_the_tagged_rows(name: str) -> None:
-    plain, tagged = _both(PIPELINES[name]())
-    for got, want in zip(_arrays(tagged), _arrays(plain), strict=True):
-        if want is None:
+    pipe, reference = PIPELINES[name]
+    for got, image in zip(_arrays(_tensors(pipe())), _decoded(), strict=True):
+        if image is None:
             assert got is None
         else:
-            np.testing.assert_array_equal(got, want)
+            np.testing.assert_array_equal(got, reference(image))
 
 
 def test_numpy_from_struct_accepts_a_tagged_single_row_series() -> None:
-    _, tagged = _both(PIPELINES["transpose"]())
-    one = tagged.slice(0, 1)
+    one = _tensors(PIPELINES["transpose"][0]()).slice(0, 1)
     assert isinstance(one.dtype, NdArrayType)
     np.testing.assert_array_equal(numpy_from_struct(one), numpy_from_struct(one[0]))
 
 
-def test_null_input_rows_encode_as_the_numpy_sink_does() -> None:
-    plain, tagged = _both(PIPELINES["decode"]())
-    assert _is_null_row(tagged[1])
-    assert tagged[1] == plain[1]
+def test_a_null_input_row_is_a_null_value() -> None:
+    tagged = _tensors(PIPELINES["decode"][0]())
+    assert tagged[1] is None
+    assert tagged.null_count() == 1 == tagged.ext.storage().null_count()
     assert not _is_null_row(tagged[0]) and not _is_null_row(tagged[2])
 
 
 def test_the_f16_downcast_applies() -> None:
-    plain, tagged = _both(PIPELINES["float"](), dtype="f16")
+    tagged = _tensors(PIPELINES["float"][0](), dtype="f16")
     assert {row["dtype"] for row in tagged if not _is_null_row(row)} == {"float16"}
-    assert tagged.ext.storage().to_list() == plain.to_list()
+    for got, image in zip(_arrays(tagged), _decoded(), strict=True):
+        if image is not None:
+            want = PIPELINES["float"][1](image).astype(np.float16)
+            np.testing.assert_array_equal(got, want)
 
 
-def test_ndarray_inside_a_multi_output_struct() -> None:
+def test_every_tensor_field_of_a_multi_output_struct_is_tagged() -> None:
     base = pl.col("img").cv.pipe(Pipeline().source("image_bytes")).alias("base")
     gray = base.pipe(Pipeline().grayscale()).alias("gray")
-    expr = gray.sink({"base": "ndarray", "gray": "numpy"})
+    expr = gray.sink({"base": "tensor", "gray": "tensor"})
 
     out = assert_plan_equals_exec(_images(), expr)
 
     fields = dict(zip(out.struct.fields, out.dtype.fields, strict=True))  # type: ignore[union-attr]
     assert isinstance(fields["base"].dtype, NdArrayType)
-    assert fields["gray"].dtype == polars_cv.NUMPY_OUTPUT_SCHEMA
+    assert isinstance(fields["gray"].dtype, NdArrayType)
 
 
 def test_parquet_round_trip(tmp_path) -> None:
-    _, tagged = _both(PIPELINES["transpose"]())
+    tagged = _tensors(PIPELINES["transpose"][0]())
     path = tmp_path / "arrays.parquet"
     pl.DataFrame({"a": tagged}).write_parquet(path)
 
@@ -136,17 +155,9 @@ def test_parquet_round_trip(tmp_path) -> None:
             np.testing.assert_array_equal(got, want)
 
 
-def test_the_plain_numpy_sink_is_unchanged() -> None:
-    """``sink("numpy")`` keeps emitting the untagged struct: tagging it would
-    break ``.struct.field`` / ``unnest`` / casts in existing user code."""
-    plain, _ = _both(PIPELINES["decode"]())
-    assert plain.dtype == polars_cv.NUMPY_OUTPUT_SCHEMA
-    assert not isinstance(plain.dtype, pl.datatypes.BaseExtension)
-
-
 def test_show_images_recognises_the_tag(capsys) -> None:
-    """``format="auto"`` identifies an ndarray column by its type."""
-    _, tagged = _both(PIPELINES["decode"]())
+    """``format="auto"`` identifies a tensor column by its type."""
+    tagged = _tensors(PIPELINES["decode"][0]())
     polars_cv.show_images(pl.DataFrame({"a": tagged}), "a")
     out = capsys.readouterr().out
     assert "numpy struct: shape=[6, 9, 3], dtype=uint8" in out

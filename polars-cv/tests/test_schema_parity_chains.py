@@ -97,7 +97,7 @@ def test_composed_chain_plans_what_it_executes(prefix_len: int) -> None:
         pipe = step(pipe)
 
     df = _df("null_first")
-    for sink in ("list", "numpy", "blob"):
+    for sink in ("list", "tensor", "blob"):
         assert_plan_equals_exec(df, pl.col("img").cv.pipe(pipe).sink(sink))
 
 
@@ -237,7 +237,7 @@ def test_binary_ops_plan_what_they_execute(op: str) -> None:
     combined = getattr(left, op)(right)
     results = {
         sink: plan_or_reject(df, lambda s=sink: combined.sink(s))
-        for sink in ("list", "numpy", "blob")
+        for sink in ("list", "tensor", "blob")
     }
     # As above: discarding these made the whole binary-op family vacuous the
     # moment any shared build step started raising.

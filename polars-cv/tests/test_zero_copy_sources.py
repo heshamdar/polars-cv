@@ -275,7 +275,7 @@ class TestRoundTrip:
 
         blob_df = df.with_columns(blob=pl.col("img").cv.pipe(to_blob).sink("blob"))
         result = blob_df.with_columns(
-            arr=pl.col("blob").cv.pipe(from_blob).sink("numpy")
+            arr=pl.col("blob").cv.pipe(from_blob).sink("tensor")
         )
 
         arr = numpy_from_struct(result["arr"][0])
@@ -387,7 +387,7 @@ class TestFullZeroCopyPipeline:
             .resize(height=64, width=64)  # Strided op
         )
 
-        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("tensor"))
 
         arr = numpy_from_struct(result["output"][0])
 
@@ -428,7 +428,7 @@ class TestFullZeroCopyPipeline:
             .flip(axes=[0])  # Back to original
         )
 
-        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
 
         # Red corner should still be at top-left
@@ -457,7 +457,7 @@ class TestFullZeroCopyPipeline:
             .normalize(method="minmax")
         )
 
-        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
 
         assert arr.dtype == np.float32
@@ -493,7 +493,7 @@ class TestFullZeroCopyPipeline:
             .threshold(value=100)  # Element-wise op
         )
 
-        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
 
         assert arr.shape == (32, 32, 1)

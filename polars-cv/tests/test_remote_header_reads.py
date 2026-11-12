@@ -149,7 +149,7 @@ def test_a_pipeline_still_reads_the_whole_object(server) -> None:
     log.clear()
     pipe = polars_cv.Pipeline().source("file_path", allowed_roots=["*"])
     out = pl.DataFrame({"p": [f"{base}/big.png"]}).select(
-        pl.col("p").cv.pipe(pipe).sink("numpy")
+        pl.col("p").cv.pipe(pipe).sink("tensor")
     )
     assert polars_cv.numpy_from_struct(out.item()).shape == (500, 600, 3)
     assert log == [("/big.png", None, len(files["/big.png"]))]

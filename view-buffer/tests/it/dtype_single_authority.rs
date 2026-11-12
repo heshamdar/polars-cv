@@ -2,7 +2,7 @@
 //!
 //! A dtype is spelled three ways across this workspace's boundaries: a short
 //! name in the graph JSON, a wire code in the VIEW binary header, and a numpy
-//! name in the numpy/torch sink and the metadata accessors. These tests pin
+//! name in the tensor sink and the metadata accessors. These tests pin
 //! the properties that make one table safe to rely on — total coverage,
 //! round-tripping, and uniqueness — so a table that grows a wrong or duplicate
 //! entry fails here rather than at a user's dtype.

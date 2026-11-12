@@ -61,7 +61,7 @@ def _numpy_shape(df: pl.DataFrame, pipe: Pipeline) -> list[int]:
     """
     series = (
         df.lazy()
-        .select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        .select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         .collect(engine="streaming")["out"]
     )
     # A null row of a struct output is a struct whose *fields* are null, not a

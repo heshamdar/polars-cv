@@ -54,7 +54,7 @@ class TestBlendExecution:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(out=expr1.blend(expr2).sink("numpy"))
+        result = df.select(out=expr1.blend(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
@@ -83,7 +83,7 @@ class TestBitwiseXorExecution:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(out=expr1.bitwise_xor(expr2).sink("numpy"))
+        result = df.select(out=expr1.bitwise_xor(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, expected)
@@ -112,7 +112,7 @@ class TestMaximumMinimumReference:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(out=expr1.maximum(expr2).sink("numpy"))
+        result = df.select(out=expr1.maximum(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, expected)
@@ -131,7 +131,7 @@ class TestMaximumMinimumReference:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(out=expr1.minimum(expr2).sink("numpy"))
+        result = df.select(out=expr1.minimum(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, expected)
@@ -167,7 +167,7 @@ class TestApplyMaskInvert:
         mask_expr = pl.col("mask").cv.pipe(mask_pipe)
 
         result = df.select(
-            out=img_expr.apply_mask(mask_expr, invert=True).sink("numpy")
+            out=img_expr.apply_mask(mask_expr, invert=True).sink("tensor")
         )
         actual = numpy_from_struct(result.row(0)[0])
 
@@ -200,9 +200,9 @@ class TestApplyMaskInvert:
         img_expr = pl.col("image").cv.pipe(img_pipe)
         mask_expr = pl.col("mask").cv.pipe(mask_pipe)
 
-        r_normal = df.select(out=img_expr.apply_mask(mask_expr).sink("numpy"))
+        r_normal = df.select(out=img_expr.apply_mask(mask_expr).sink("tensor"))
         r_invert = df.select(
-            out=img_expr.apply_mask(mask_expr, invert=True).sink("numpy")
+            out=img_expr.apply_mask(mask_expr, invert=True).sink("tensor")
         )
 
         arr_normal = numpy_from_struct(r_normal.row(0)[0])
@@ -258,7 +258,7 @@ class TestMixedDtypePromotion:
             pl.col("a")
             .cv.pipe(Pipeline().source("array"))
             .bitwise_and(pl.col("b").cv.pipe(Pipeline().source("array")))
-            .sink("numpy")
+            .sink("tensor")
         )
         with pytest.raises(
             (ValueError, pl.exceptions.ComputeError), match="no common integer"
@@ -301,7 +301,7 @@ class TestApplyMaskScale:
         src = Pipeline().source("image_bytes", dtype="u8")
         img = pl.col("image").cv.pipe(src).pipe(image)
         m = pl.col("mask").cv.pipe(src).pipe(mask.channel_select(0))
-        out = df.select(o=img.apply_mask(m, invert=invert).sink("numpy")).item()
+        out = df.select(o=img.apply_mask(m, invert=invert).sink("tensor")).item()
         return numpy_from_struct(out)
 
     def test_u8_image_u8_mask_is_unchanged(self, df, arrays) -> None:
@@ -356,6 +356,6 @@ class TestApplyMaskScale:
         src = Pipeline().source("image_bytes", dtype="u8")
         flat = pl.col("image").cv.pipe(src.channel_select(0, keepdims=False))
         m = pl.col("mask").cv.pipe(src.channel_select(0))  # [H, W, 1]
-        out = numpy_from_struct(df.select(o=flat.apply_mask(m).sink("numpy")).item())
+        out = numpy_from_struct(df.select(o=flat.apply_mask(m).sink("tensor")).item())
         expected = _round_half_away(img[..., 0] * (mask / 255.0)).astype(np.uint8)
         np.testing.assert_array_equal(out, expected)

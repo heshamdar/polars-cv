@@ -21,6 +21,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
+import polars_cv
 from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
@@ -394,12 +395,13 @@ class TestUnifiedGraphEntry:
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
 
         output_col = result["output"]
-        assert isinstance(output_col.dtype, pl.Struct), (
-            f"Expected Struct for numpy sink, got {output_col.dtype}"
+        assert isinstance(output_col.dtype, polars_cv.NdArrayType), (
+            f"Expected NdArrayType for tensor sink, got {output_col.dtype}"
         )
+        assert isinstance(output_col.ext.storage().dtype, pl.Struct)
 
         # Verify we can decode the output
         arr = numpy_from_struct(output_col[0])
@@ -453,7 +455,7 @@ class TestUnifiedGraphEntry:
         thresh = base.pipe(Pipeline().threshold(128)).alias("thresh")
 
         result = df.with_columns(
-            outputs=thresh.sink({"gray": "numpy", "thresh": "numpy"})
+            outputs=thresh.sink({"gray": "tensor", "thresh": "tensor"})
         )
 
         outputs_col = result["outputs"]
@@ -465,12 +467,14 @@ class TestUnifiedGraphEntry:
         gray_field = outputs_col.struct.field("gray")
         thresh_field = outputs_col.struct.field("thresh")
 
-        assert isinstance(gray_field.dtype, pl.Struct), (
-            f"Expected Struct for gray numpy sink, got {gray_field.dtype}"
+        assert isinstance(gray_field.dtype, polars_cv.NdArrayType), (
+            f"Expected NdArrayType for gray tensor sink, got {gray_field.dtype}"
         )
-        assert isinstance(thresh_field.dtype, pl.Struct), (
-            f"Expected Struct for thresh numpy sink, got {thresh_field.dtype}"
+        assert isinstance(gray_field.ext.storage().dtype, pl.Struct)
+        assert isinstance(thresh_field.dtype, polars_cv.NdArrayType), (
+            f"Expected NdArrayType for thresh tensor sink, got {thresh_field.dtype}"
         )
+        assert isinstance(thresh_field.ext.storage().dtype, pl.Struct)
 
     def test_mixed_domain_multi_output(self, binary_mask_image_bytes: bytes) -> None:
         """
@@ -490,7 +494,7 @@ class TestUnifiedGraphEntry:
         pixel_sum = base.pipe(Pipeline().reduce_sum()).alias("sum")
 
         result = df.with_columns(
-            outputs=pixel_sum.sink({"mask": "numpy", "sum": "native"})
+            outputs=pixel_sum.sink({"mask": "tensor", "sum": "native"})
         )
 
         outputs_col = result["outputs"]
@@ -500,9 +504,10 @@ class TestUnifiedGraphEntry:
         mask_field = outputs_col.struct.field("mask")
         sum_field = outputs_col.struct.field("sum")
 
-        assert isinstance(mask_field.dtype, pl.Struct), (
-            f"Expected Struct for mask numpy sink, got {mask_field.dtype}"
+        assert isinstance(mask_field.dtype, polars_cv.NdArrayType), (
+            f"Expected NdArrayType for mask tensor sink, got {mask_field.dtype}"
         )
+        assert isinstance(mask_field.ext.storage().dtype, pl.Struct)
         assert sum_field.dtype == pl.Float64, (
             f"Expected Float64 for sum, got {sum_field.dtype}"
         )

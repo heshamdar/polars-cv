@@ -16,6 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import polars_cv
 from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ class TestMultiPhaseWorkaround:
         )
 
         result = sample_df.with_columns(
-            thresholded=pl.col("image").cv.pipe(pipe).sink("numpy")
+            thresholded=pl.col("image").cv.pipe(pipe).sink("tensor")
         )
 
         arr = numpy_from_struct(result["thresholded"][0])
@@ -142,9 +143,9 @@ class TestMultiPhaseWorkaround:
 
         result_expr = masked.sink(
             {
-                "resized": "numpy",
-                "mask": "numpy",
-                "masked": "numpy",
+                "resized": "tensor",
+                "mask": "tensor",
+                "masked": "tensor",
             }
         )
 
@@ -229,9 +230,9 @@ class TestSeamlessPipeline:
         # Multi-output sink
         result_expr = masked.sink(
             {
-                "resized": "numpy",
-                "mask": "numpy",
-                "masked": "numpy",
+                "resized": "tensor",
+                "mask": "tensor",
+                "masked": "tensor",
             }
         )
 
@@ -279,8 +280,8 @@ class TestSeamlessPipeline:
         merged = img.merge_pipe(mask)
         result_expr = merged.sink(
             {
-                "resized": "numpy",
-                "mask": "numpy",
+                "resized": "tensor",
+                "mask": "tensor",
             }
         )
 
@@ -332,7 +333,7 @@ class TestSeamlessPipeline:
         # Sink with mixed types
         result_expr = merged.sink(
             {
-                "resized": "numpy",  # Buffer → Binary
+                "resized": "tensor",  # Buffer → Binary
                 "contours": "native",  # Contour → List[Struct]
                 "area": "native",  # Vector → List[Float64]
             }
@@ -409,11 +410,12 @@ class TestSeamlessPipeline:
         )
 
         result = sample_df.with_columns(
-            mask=pl.col("image").cv.pipe(pipe).sink("numpy")
+            mask=pl.col("image").cv.pipe(pipe).sink("tensor")
         )
 
-        # Should be Struct (numpy output with data, dtype, shape fields)
-        assert isinstance(result["mask"].dtype, pl.Struct)
+        # Should be NdArrayType over the struct (data, dtype, shape fields)
+        assert isinstance(result["mask"].dtype, polars_cv.NdArrayType)
+        assert isinstance(result["mask"].ext.storage().dtype, pl.Struct)
         arr = numpy_from_struct(result["mask"][0])
         assert arr.shape == (50, 50, 1)
 
@@ -466,9 +468,9 @@ class TestMergePipeBranches:
         result = blurred.merge_pipe(threshold, gray)
         expr = result.sink(
             {
-                "gray": "numpy",
-                "blurred": "numpy",
-                "threshold": "numpy",
+                "gray": "tensor",
+                "blurred": "tensor",
+                "threshold": "tensor",
             }
         )
 
@@ -500,8 +502,8 @@ class TestMergePipeBranches:
         result = blurred.merge_pipe(gray)
         expr = result.sink(
             {
-                "gray": "numpy",
-                "blurred": "numpy",
+                "gray": "tensor",
+                "blurred": "tensor",
             }
         )
 
@@ -519,13 +521,13 @@ class TestMergePipeBranches:
 
         # Single output mode - should output img1's result
         merged = img1.merge_pipe(img2)
-        expr = merged.sink("numpy")
+        expr = merged.sink("tensor")
 
         # Execute both ways and compare
         direct_pipe = Pipeline().source("image_bytes").grayscale()
         df = sample_df.with_columns(
             merged=expr,
-            direct=pl.col("image").cv.pipe(direct_pipe).sink("numpy"),
+            direct=pl.col("image").cv.pipe(direct_pipe).sink("tensor"),
         )
         assert df["merged"][0] == df["direct"][0]
 
@@ -540,8 +542,8 @@ class TestMergePipeBranches:
         merged = a.merge_pipe(b)
         expr = merged.sink(
             {
-                "small": "numpy",
-                "large": "numpy",
+                "small": "tensor",
+                "large": "tensor",
             }
         )
 
@@ -586,7 +588,7 @@ class TestRasterizeShapeReference:
             .extract_contours()
             .rasterize(shape=ref)
         )
-        out = df.with_columns(mask=pl.col("image").cv.pipe(mask_pipe).sink("numpy"))
+        out = df.with_columns(mask=pl.col("image").cv.pipe(mask_pipe).sink("tensor"))
         assert numpy_from_struct(out["mask"][0]).shape == (12, 20, 1)
 
     def test_shape_reference_follows_per_row_dynamic_size(self) -> None:
@@ -611,7 +613,7 @@ class TestRasterizeShapeReference:
             .extract_contours()
             .rasterize(shape=ref)
         )
-        out = df.with_columns(mask=pl.col("image").cv.pipe(mask_pipe).sink("numpy"))
+        out = df.with_columns(mask=pl.col("image").cv.pipe(mask_pipe).sink("tensor"))
         assert numpy_from_struct(out["mask"][0]).shape == (8, 10, 1)
         assert numpy_from_struct(out["mask"][1]).shape == (16, 24, 1)
 
@@ -631,7 +633,7 @@ class TestRasterizeShapeReference:
             .rasterize(width=8, height=8)
         )
         graph.add_node("n0", pipe, column=pl.col("image"))
-        graph.set_output("n0", "numpy")
+        graph.set_output("n0", "tensor")
         spec = json.loads(graph._to_json())
         # Doctor the rasterize op into a dangling shape reference.
         for op in spec["nodes"]["n0"]["ops"]:

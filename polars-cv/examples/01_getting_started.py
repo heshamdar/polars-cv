@@ -78,13 +78,13 @@ def run_getting_started_demo() -> pl.DataFrame:
     )
 
     result = df.with_columns(
-        processed=pl.col("image").cv.pipe(preprocess).sink("numpy"),
+        processed=pl.col("image").cv.pipe(preprocess).sink("tensor"),
     )
     return result
 
 
 def decode_numpy_structs(frame: pl.DataFrame) -> list[np.ndarray]:
-    """Convert `sink('numpy')` struct rows to NumPy arrays."""
+    """Convert `sink('tensor')` struct rows to NumPy arrays."""
     rows: list[dict[str, Any]] = frame["processed"].to_list()
     return [numpy_from_struct(row, copy=False) for row in rows]
 

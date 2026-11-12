@@ -197,7 +197,7 @@ class Axes:
     """How to execute a case. The defaults are the reference execution."""
 
     source: str = "array"
-    sink: str = "numpy"
+    sink: str = "tensor"
     engine: str = "eager"
     params: str = "literal"
     composition: str = "chain"
@@ -419,10 +419,10 @@ def execute(
     params = _Params(axes.params, len(images))
     pipe = build_pipeline(source, present[0], steps, params)
     if shapes is None:
-        if axes.sink == "numpy" or pipe.current_domain() != "buffer":
+        if axes.sink == "tensor" or pipe.current_domain() != "buffer":
             shapes = []
         else:
-            probe = execute(images, steps, axes.but(sink="numpy"))
+            probe = execute(images, steps, axes.but(sink="tensor"))
             shapes = [r.shape for r in probe.rows if r is not None]
     info = plan_info(pipe, shapes)
     if not sink.applies(info):
@@ -606,7 +606,7 @@ def execute_binary(
         node = node.pipe(apply_steps(Pipeline(), case.tail, params))
     opt_flags = opt_flags_for(optimize)
     try:
-        expr = node.sink("numpy", opt_flags=opt_flags)
+        expr = node.sink("tensor", opt_flags=opt_flags)
     except ValueError as exc:
         raise PlanRefused(str(exc)) from exc
 
@@ -623,7 +623,7 @@ def execute_binary(
         raise PlanRefused(str(exc)) from exc
     out = _collect(frame, query, expr, engine)
     info = OutputInfo(domain="buffer", dtype="auto", shapes=())
-    rows = SINKS["numpy"].decode(out["out"], info)
+    rows = SINKS["tensor"].decode(out["out"], info)
     return Result(
         rows=rows, info=info, planned=planned_dtype, realized=out.schema["out"]
     )

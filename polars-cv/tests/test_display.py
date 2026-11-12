@@ -118,7 +118,7 @@ class TestToPngBytes:
             "strides": None,
             "offset": 0,
         }
-        result = _to_png_bytes(struct_val, "numpy")
+        result = _to_png_bytes(struct_val, "tensor")
         assert result is not None
         assert result[:4] == b"\x89PNG"
 
@@ -129,7 +129,7 @@ class TestToPngBytes:
             "dtype": None,
             "shape": None,
         }
-        assert _to_png_bytes(struct_val, "numpy") is None
+        assert _to_png_bytes(struct_val, "tensor") is None
 
 
 class TestIsNotebook:

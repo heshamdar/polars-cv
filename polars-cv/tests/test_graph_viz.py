@@ -20,7 +20,7 @@ pytest.importorskip("pydot")
 def test_the_rendered_graph_names_alias_and_dtype() -> None:
     img = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
     small = img.pipe(Pipeline().resize(height=8, width=8).cast("f32")).alias("small")
-    graph = small.sink("numpy", return_expr=False)
+    graph = small.sink("tensor", return_expr=False)
     dot = graph.show_graph().source
     assert "small" in dot
     assert "f32" in dot
@@ -44,7 +44,7 @@ def test_a_source_node_renders_its_ops() -> None:
     """A root node holds the decode *and* the ops after it (CSE moves a shared
     prefix there); the label shows both."""
     gray = pl.col("img").cv.pipe(Pipeline().source("image_bytes").grayscale())
-    (label, _sink) = _labels(gray.sink("numpy", return_expr=False)).values()
+    (label, _sink) = _labels(gray.sink("tensor", return_expr=False)).values()
     assert "image_bytes" in label
     assert "grayscale" in label
 
@@ -55,7 +55,7 @@ def test_nodes_are_labelled_by_the_id_operands_name() -> None:
     img = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
     gray = img.pipe(Pipeline().grayscale())
     graph = gray.maximum(img.pipe(Pipeline().grayscale().blur(1.0))).sink(
-        "numpy", return_expr=False
+        "tensor", return_expr=False
     )
     labels = _labels(graph)
     assert not any("None" in label for label in labels.values())
@@ -71,6 +71,6 @@ def test_nodes_are_labelled_by_the_id_operands_name() -> None:
 def test_the_dot_source_carries_no_python_reprs() -> None:
     """Only display attributes reach the DOT text, not the node payloads."""
     small = pl.col("img").cv.pipe(Pipeline().source("image_bytes").grayscale())
-    dot = small.sink("numpy", return_expr=False).show_graph().source
+    dot = small.sink("tensor", return_expr=False).show_graph().source
     assert "payload" not in dot
     assert "ComputeNode" not in dot

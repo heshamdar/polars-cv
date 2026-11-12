@@ -60,7 +60,7 @@ def _rasterize(
         pipe = pipe.stroke(**stroke)
     pipe = pipe.rasterize(width=width, height=height, **kw)
     df = pl.DataFrame({"c": [contours]}, schema={"c": CONTOUR_SET_SCHEMA})
-    out = df.select(pl.col("c").cv.pipe(pipe).sink("numpy"))
+    out = df.select(pl.col("c").cv.pipe(pipe).sink("tensor"))
     (mask,) = numpy_from_column(out.to_series(), copy=True)
     assert mask is not None and mask.shape == (height, width, 1)
     return mask[:, :, 0]

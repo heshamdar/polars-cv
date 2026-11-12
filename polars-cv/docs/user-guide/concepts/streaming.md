@@ -9,7 +9,7 @@ multi-core, whatever the column's chunking:
 ```python
 # Eager: the rows of each call run in parallel
 result = df.with_columns(
-    processed=pl.col("image").cv.pipe(pipe).sink("numpy")
+    processed=pl.col("image").cv.pipe(pipe).sink("tensor")
 )
 ```
 

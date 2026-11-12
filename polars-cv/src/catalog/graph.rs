@@ -24,7 +24,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.add(b).sink("numpy")
+    ///     >>> result = a.add(b).sink("tensor")
     ///     ```
     #[op(name = "add", visibility = LazyOnly, sample = {"other": "n0"})]
     Add {
@@ -40,7 +40,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.subtract(b).sink("numpy")
+    ///     >>> result = a.subtract(b).sink("tensor")
     ///     ```
     #[op(name = "subtract", visibility = LazyOnly, sample = {"other": "n0"})]
     Subtract {
@@ -57,7 +57,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.multiply(b).sink("numpy")
+    ///     >>> result = a.multiply(b).sink("tensor")
     ///     ```
     #[op(name = "multiply", visibility = LazyOnly, sample = {"other": "n0"})]
     Multiply {
@@ -76,7 +76,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.divide(b).sink("numpy")
+    ///     >>> result = a.divide(b).sink("tensor")
     ///     ```
     #[op(name = "divide", visibility = LazyOnly, sample = {"other": "n0"})]
     Divide {
@@ -92,7 +92,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.blend(b).sink("numpy")
+    ///     >>> result = a.blend(b).sink("tensor")
     ///     ```
     #[op(name = "blend", visibility = LazyOnly, sample = {"other": "n0"})]
     Blend {
@@ -106,7 +106,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.maximum(b).sink("numpy")
+    ///     >>> result = a.maximum(b).sink("tensor")
     ///     ```
     #[op(name = "maximum", visibility = LazyOnly, sample = {"other": "n0"})]
     Maximum {
@@ -120,7 +120,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.minimum(b).sink("numpy")
+    ///     >>> result = a.minimum(b).sink("tensor")
     ///     ```
     #[op(name = "minimum", visibility = LazyOnly, sample = {"other": "n0"})]
     Minimum {
@@ -133,7 +133,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.bitwise_and(b).sink("numpy")
+    ///     >>> result = a.bitwise_and(b).sink("tensor")
     ///     ```
     #[op(name = "bitwise_and", visibility = LazyOnly, sample = {"other": "n0"})]
     BitwiseAnd {
@@ -146,7 +146,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.bitwise_or(b).sink("numpy")
+    ///     >>> result = a.bitwise_or(b).sink("tensor")
     ///     ```
     #[op(name = "bitwise_or", visibility = LazyOnly, sample = {"other": "n0"})]
     BitwiseOr {
@@ -160,7 +160,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```python
     ///     >>> a = pl.col("image1").cv.pipe(pipe1)
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.bitwise_xor(b).sink("numpy")
+    ///     >>> result = a.bitwise_xor(b).sink("tensor")
     ///     ```
     #[op(name = "bitwise_xor", visibility = LazyOnly, sample = {"other": "n0"})]
     BitwiseXor {

@@ -59,7 +59,7 @@ def _run_fused(png: bytes, ops: list[Op]) -> np.ndarray:
         pipe = op(pipe)
     df = pl.DataFrame({"img": [png]})
     return numpy_from_struct(
-        df.select(o=pl.col("img").cv.pipe(pipe).sink("numpy")).row(0)[0]
+        df.select(o=pl.col("img").cv.pipe(pipe).sink("tensor")).row(0)[0]
     )
 
 
@@ -77,9 +77,9 @@ def _run_unfused(png: bytes, ops: list[Op]) -> np.ndarray:
             buf=pl.col("buf").cv.pipe(op(Pipeline().source("blob"))).sink("blob")
         )
     return numpy_from_struct(
-        df.select(o=pl.col("buf").cv.pipe(Pipeline().source("blob")).sink("numpy")).row(
-            0
-        )[0]
+        df.select(
+            o=pl.col("buf").cv.pipe(Pipeline().source("blob")).sink("tensor")
+        ).row(0)[0]
     )
 
 
@@ -136,12 +136,12 @@ def test_blob_roundtrip_is_lossless_for_f32(png: bytes) -> None:
     """The barrier itself must be lossless, or the equivalence test is vacuous."""
     df = pl.DataFrame({"img": [png]})
     direct = numpy_from_struct(
-        df.select(o=pl.col("img").cv.pipe(_base()).sink("numpy")).row(0)[0]
+        df.select(o=pl.col("img").cv.pipe(_base()).sink("tensor")).row(0)[0]
     )
     viablob = df.select(buf=pl.col("img").cv.pipe(_base()).sink("blob"))
     roundtripped = numpy_from_struct(
         viablob.select(
-            o=pl.col("buf").cv.pipe(Pipeline().source("blob")).sink("numpy")
+            o=pl.col("buf").cv.pipe(Pipeline().source("blob")).sink("tensor")
         ).row(0)[0]
     )
     np.testing.assert_array_equal(direct, roundtripped)

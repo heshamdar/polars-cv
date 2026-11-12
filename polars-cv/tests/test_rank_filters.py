@@ -31,7 +31,7 @@ MODES = {"replicate": "nearest", "reflect": "reflect", "zero": "constant"}
 def _run(pipe: Pipeline, arr: np.ndarray) -> np.ndarray:
     frame = pl.DataFrame({"a": pl.Series("a", arr[np.newaxis])})
     return numpy_from_struct(
-        frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+        frame.select(pl.col("a").cv.pipe(pipe).sink("tensor")).item()
     )
 
 
@@ -92,10 +92,10 @@ def test_background_divide_is_the_image_over_its_blur() -> None:
     img = pl.col("a").cv.pipe(Pipeline().source("array"))
     frame = pl.DataFrame({"a": pl.Series("a", (FMAP + 1.0)[np.newaxis])})
     got = numpy_from_struct(
-        frame.select(img.background_divide(sigma=2.0).sink("numpy")).item()
+        frame.select(img.background_divide(sigma=2.0).sink("tensor")).item()
     )
     blur = numpy_from_struct(
-        frame.select(img.pipe(Pipeline().blur(2.0)).sink("numpy")).item()
+        frame.select(img.pipe(Pipeline().blur(2.0)).sink("tensor")).item()
     )
     np.testing.assert_allclose(got, (FMAP + 1.0) / (blur + 1e-6), rtol=1e-5)
 
@@ -110,7 +110,7 @@ def test_background_divide_blurs_an_integer_image_in_float(dtype: type) -> None:
 
     def flat(arr: np.ndarray) -> np.ndarray:
         frame = pl.DataFrame({"a": pl.Series("a", arr[np.newaxis])})
-        out = frame.select(img.background_divide(sigma=3.0).sink("numpy")).item()
+        out = frame.select(img.background_divide(sigma=3.0).sink("tensor")).item()
         return numpy_from_struct(out)
 
     np.testing.assert_allclose(flat(spot), flat(spot.astype(np.float64)), rtol=1e-5)

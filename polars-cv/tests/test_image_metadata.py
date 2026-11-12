@@ -321,7 +321,7 @@ class TestSignedMetadata:
             .crop(left=pl.col("img").cv.width() - 32, width=4)
         )
         with pytest.raises(pl.exceptions.ComputeError) as err:
-            df.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.select(pl.col("img").cv.pipe(pipe).sink("tensor"))
         msg = str(err.value)
         assert "crop: left: " in msg and "-1 cannot be negative" in msg
         assert_names_row(msg, 0, 1)

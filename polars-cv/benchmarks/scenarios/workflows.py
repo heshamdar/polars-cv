@@ -95,7 +95,7 @@ def _etl_polars() -> pl.Expr:
     )
     mean = gray.pipe(Pipeline().reduce_mean()).alias("mean")
     return tensor.merge_pipe(thumb, mean).sink(
-        {"tensor": "numpy", "thumb": "numpy", "mean": "native"}
+        {"tensor": "tensor", "thumb": "tensor", "mean": "native"}
     )
 
 
@@ -155,7 +155,7 @@ def _unsharp_polars() -> pl.Expr:
     blurred = f.pipe(Pipeline().blur(sigma=UNSHARP_SIGMA)).alias("blurred")
     detail = f.subtract(blurred).pipe(Pipeline().scale(UNSHARP_AMOUNT))
     out = f.add(detail).pipe(Pipeline().clamp(0, 255).cast(dtype="u8"))
-    return out.sink("numpy")
+    return out.sink("tensor")
 
 
 def _unsharp_extract(struct: dict[str, Any]) -> Outputs:

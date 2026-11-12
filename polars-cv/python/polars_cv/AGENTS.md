@@ -80,8 +80,8 @@ The **primary API path**: `Pipeline()` -> `.cv.pipe()` -> `LazyPipelineExpr.sink
 img = pl.col("image").cv.pipe(
     Pipeline().source("image_bytes").resize(height=224, width=224)
 )
-expr = img.sink("numpy")  # single output
-expr = img.alias("resized").sink({"resized": "numpy"})  # multi-output
+expr = img.sink("tensor")  # single output
+expr = img.alias("resized").sink({"resized": "tensor"})  # multi-output
 ```
 
 `LazyPipelineExpr` enables:
@@ -402,8 +402,11 @@ same parser as its plain struct. Rust only builds tagged *outputs*
 our name over any other storage, so `isinstance(dtype, PointType)` is a
 complete check.
 
-Emitting a tag is opt-in (`sink("ndarray")`) because a tag breaks polars'
-struct operations (measured on py-polars 1.42):
+`sink("tensor")` always emits the tag (owner's decision, 2026-11-12, CR-81;
+the `numpy`/`torch` sinks that wrote the plain struct are gone). Geometry
+outputs stay plain structs. The cost of a tag is that it breaks polars'
+struct operations (measured on py-polars 1.42), so docs and messages point
+at `.ext.storage()`:
 
 | Operation | On a tagged column |
 |---|---|

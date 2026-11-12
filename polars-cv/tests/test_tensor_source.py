@@ -26,7 +26,7 @@ from .conftest import make_image_png, plugin_required
 
 pytestmark = plugin_required
 
-SINKS = ["numpy", "ndarray", "torch"]
+SINKS = ["tensor"]
 SOURCES = [(), ("tensor",)]  # auto, and the explicit format
 
 
@@ -64,7 +64,7 @@ def _tensors(pipe: Pipeline, sink: str, **sink_kwargs: Any) -> pl.DataFrame:
 
 def _read(df: pl.DataFrame, source: tuple[str, ...], **kwargs: Any) -> pl.Series:
     pipe = Pipeline().source(*source, **kwargs)
-    return df.select(o=pl.col("t").cv.pipe(pipe).sink("numpy"))["o"]
+    return df.select(o=pl.col("t").cv.pipe(pipe).sink("tensor"))["o"]
 
 
 @pytest.mark.parametrize("sink", SINKS)
@@ -80,7 +80,7 @@ def test_a_strided_row_reads_back(sink: str, source: tuple[str, ...]) -> None:
     """Flips and a transpose: negative strides, an offset, no packed order."""
     pipe = Pipeline().source("image_bytes").flip_h().flip_v().transpose([1, 0, 2])
     df = _tensors(pipe, sink)
-    storage = df["t"].ext.storage() if sink == "ndarray" else df["t"]
+    storage = df["t"].ext.storage()
     strides = storage.struct.field("strides").drop_nulls()
     assert any(s < 0 for row in strides for s in row), (
         "the case must hold a negative stride to mean anything"
@@ -93,7 +93,7 @@ def test_a_compact_row_reads_back(source: tuple[str, ...]) -> None:
     pipe = (
         Pipeline().source("image_bytes").flip_h().crop(top=1, left=1, height=2, width=3)
     )
-    df = _tensors(pipe, "numpy", compact=True)
+    df = _tensors(pipe, "tensor", compact=True)
     _same(_read(df, source), df["t"])
 
 
@@ -101,7 +101,7 @@ def test_a_compact_row_reads_back(source: tuple[str, ...]) -> None:
 def test_a_float16_row_reads_back_as_f32(source: tuple[str, ...]) -> None:
     """The engine has no f16: a half-precision row widens to f32, exactly."""
     pipe = Pipeline().source("image_bytes").scale(1 / 255)
-    df = _tensors(pipe, "numpy", dtype="f16")
+    df = _tensors(pipe, "tensor", dtype="f16")
     halves = _rows(df["t"])
     assert halves[0] is not None and halves[0].dtype == np.float16
     got = _rows(_read(df, source))
@@ -113,7 +113,7 @@ def test_a_float16_row_reads_back_as_f32(source: tuple[str, ...]) -> None:
             assert np.array_equal(g, h.astype(np.float32))
 
 
-@pytest.mark.parametrize("sink", ["numpy", "ndarray"])
+@pytest.mark.parametrize("sink", ["tensor"])
 def test_a_parquet_round_trip_reads_back(sink: str, tmp_path: Any) -> None:
     df = _tensors(Pipeline().source("image_bytes").flip_h(), sink)
     path = tmp_path / "t.parquet"
@@ -122,9 +122,9 @@ def test_a_parquet_round_trip_reads_back(sink: str, tmp_path: Any) -> None:
 
 
 def test_ops_run_on_a_tensor_source() -> None:
-    df = _tensors(Pipeline().source("image_bytes").flip_v(), "numpy")
+    df = _tensors(Pipeline().source("image_bytes").flip_v(), "tensor")
     pipe = Pipeline().source("tensor").grayscale().resize(height=3, width=3)
-    out = df.select(o=pl.col("t").cv.pipe(pipe).sink("numpy"))["o"]
+    out = df.select(o=pl.col("t").cv.pipe(pipe).sink("tensor"))["o"]
     direct = _images().select(
         o=pl.col("img")
         .cv.pipe(
@@ -134,15 +134,15 @@ def test_ops_run_on_a_tensor_source() -> None:
             .grayscale()
             .resize(height=3, width=3)
         )
-        .sink("numpy")
+        .sink("tensor")
     )["o"]
     _same(out, direct)
 
 
-@pytest.mark.parametrize("sink", ["numpy", "ndarray", "array", "list", "blob", "png"])
+@pytest.mark.parametrize("sink", ["tensor", "array", "list", "blob", "png"])
 def test_planned_schema_is_the_executed_one(sink: str) -> None:
     """A row carries its own rank, so a nested sink is told it (as for a blob)."""
-    df = _tensors(Pipeline().source("image_bytes"), "numpy")
+    df = _tensors(Pipeline().source("image_bytes"), "tensor")
     pipe = Pipeline().source("tensor", dtype="u8")
     if sink in ("array", "list"):
         pipe = pipe.resize(height=4, width=4).grayscale().assert_shape(dims=[4, 4, 1])
@@ -156,7 +156,7 @@ def test_the_rank_is_unknown_at_planning() -> None:
 
 
 def test_a_declared_dtype_is_checked_against_the_row() -> None:
-    df = _tensors(Pipeline().source("image_bytes"), "numpy")
+    df = _tensors(Pipeline().source("image_bytes"), "tensor")
     with pytest.raises(pl.exceptions.ComputeError, match="declares dtype"):
         _read(df, ("tensor",), dtype="f32")
     out = _read(df, ("tensor",), dtype="f32", on_error="null")

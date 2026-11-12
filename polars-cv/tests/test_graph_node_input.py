@@ -22,7 +22,7 @@ pytestmark = plugin_required
 
 
 def _graph(expr):  # noqa: ANN001, ANN202
-    return expr.sink("numpy", return_expr=False)
+    return expr.sink("tensor", return_expr=False)
 
 
 def test_a_wire_node_is_its_input_and_its_ops() -> None:
@@ -61,7 +61,7 @@ def test_merge_pipe_keeps_unread_branches_reachable() -> None:
     merged = small.merge_pipe(flat)
     assert any(d is flat for d in merged._dependencies())
     df = pl.DataFrame({"img": [make_test_png(8, 8)]})
-    out = df.select(merged.sink({"small": "numpy", "flat": "numpy"}))
+    out = df.select(merged.sink({"small": "tensor", "flat": "tensor"}))
     assert out.columns == ["img"]
     assert set(out["img"].struct.fields) == {"small", "flat"}
 
@@ -72,7 +72,7 @@ def test_the_plugin_refuses_a_version_1_graph() -> None:
     v1 = {
         "version": 1,
         "nodes": {"n0": {"source": {"format": "image_bytes"}, "ops": []}},
-        "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}},
+        "outputs": {"_output": {"node": "n0", "sink": {"format": "tensor"}}},
         "column_bindings": {"n0": 0},
     }
     with pytest.raises(ValueError, match="version 1.*rebuild"):

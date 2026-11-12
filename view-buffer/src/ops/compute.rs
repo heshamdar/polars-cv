@@ -66,7 +66,7 @@ pub enum ComputeOp<M: Mode = Exec> {
         method: M::L<NormalizeMethod>,
         /// Output dtype (default f32). Normalization computes in f32 and the result
         /// is cast to this dtype at execution. For half precision use the sink
-        /// dtype instead (`.sink("numpy", dtype="f16")`).
+        /// dtype instead (`.sink("tensor", dtype="f16")`).
         out_dtype: Option<M::L<DType>>,
     },
     /// Normalize each channel by given statistics, ``(x - mean[c]) / std[c]``

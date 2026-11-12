@@ -44,7 +44,7 @@ def _run(contours, w, h, **kw) -> np.ndarray:
     out = df.select(
         pl.col("c")
         .cv.pipe(Pipeline().source("contour").rasterize(width=w, height=h, **kw))
-        .sink("numpy")
+        .sink("tensor")
     )
     (mask,) = numpy_from_column(out.to_series(), copy=True)
     assert mask is not None and mask.shape == (h, w, 1)

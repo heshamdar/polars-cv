@@ -49,7 +49,7 @@ def _run(image: np.ndarray, table, **kw) -> np.ndarray:
     out = _frame([image]).select(
         pl.col("m")
         .cv.pipe(Pipeline().source("array").apply_lut(table, **kw))
-        .sink("numpy")
+        .sink("tensor")
     )
     (result,) = numpy_from_column(out.to_series(), copy=True)
     assert result is not None
@@ -155,7 +155,7 @@ def test_an_index_past_the_table_is_a_row_error() -> None:
         pl.exceptions.ComputeError,
         match=r'value 3 is past.*3 entries.*clamp\(0, 2, out_dtype="u8"\)',
     ):
-        df.select(pl.col("m").cv.pipe(pipe).sink("numpy"))
+        df.select(pl.col("m").cv.pipe(pipe).sink("tensor"))
     # Clamping is explicit, and then every value has an entry.
     clamped = (
         Pipeline()

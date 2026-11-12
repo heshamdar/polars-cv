@@ -6,17 +6,17 @@ Utility functions for working with polars-cv outputs.
 
 ### numpy_from_struct
 
-Convert numpy/torch/ndarray sink output (struct) to NumPy array.
+Convert a row of `sink("tensor")` output to a NumPy array.
 
-The numpy and torch sinks return a Polars Struct (`NUMPY_OUTPUT_SCHEMA`):
+The tensor sink returns a `polars_cv.ndarray` column (`NdArrayType`) whose
+storage is a Polars Struct (`NUMPY_OUTPUT_SCHEMA`):
 - `data`: Binary - raw bytes of the array
 - `dtype`: String - NumPy dtype name (e.g., "float32")
 - `shape`: List[UInt64] - shape of the array
 - `strides`: List[Int64] - byte strides, so non-contiguous outputs keep their layout
 - `offset`: UInt64 - byte offset into `data`
 
-The ndarray sink returns the same struct tagged `polars_cv.ndarray`
-(`NdArrayType`); `numpy_from_struct` reads both.
+`numpy_from_struct` reads a row of it, and the same struct without the tag.
 
 ```python
 from polars_cv import numpy_from_struct
@@ -180,7 +180,7 @@ from polars_cv import show_images
 show_images(df, "image_column", max_rows=10, max_width=200)
 ```
 
-Supports PNG, JPEG, WebP, TIFF, BMP, GIF, VIEW protocol blobs, and numpy-sink struct columns. Format is auto-detected.
+Supports PNG, JPEG, WebP, TIFF, BMP, GIF, VIEW protocol blobs, and tensor-sink columns. Format is auto-detected.
 
 ## Types
 

@@ -26,9 +26,9 @@ use crate::fetch::FetchErrorPolicy;
 /// A ``"contour"`` source decodes to the contour domain; rasterize it with
 /// :meth:`rasterize`.
 ///
-/// A ``"tensor"`` source reads what ``sink("numpy")``, ``sink("ndarray")`` and
-/// ``sink("torch")`` write, so their output can feed another pipeline (after a
-/// Parquet round trip too). Each row carries its own dtype and shape, so the
+/// A ``"tensor"`` source reads what ``sink("tensor")`` writes, so its output
+/// can feed another pipeline (after a Parquet round trip too); the same
+/// struct without its extension tag reads the same. Each row carries its own dtype and shape, so the
 /// dtype is ``"auto"`` unless declared and the rank is unknown at planning.
 ///
 /// Each keyword applies to some formats and not others, and defaults to

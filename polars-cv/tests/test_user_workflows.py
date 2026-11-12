@@ -83,7 +83,7 @@ class TestMLPreprocessingPipeline:
                 std=[0.229, 0.224, 0.225],
             )
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = _decode(result.row(0)[0])
 
         assert out.shape == (224, 224, 3)
@@ -105,7 +105,7 @@ class TestMLPreprocessingPipeline:
                 std=[0.229, 0.224, 0.225],
             )
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = _decode(result.row(0)[0])
 
         assert float(out.min()) > -4.0, "Min value suspiciously low"
@@ -124,7 +124,7 @@ class TestMLPreprocessingPipeline:
             .cast("f32")
             .scale(1.0 / 255.0)
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         outputs = [_decode(result.row(i)[0]) for i in range(len(colors))]
         # Each row must differ from all other rows
@@ -135,7 +135,7 @@ class TestMLPreprocessingPipeline:
                 )
 
     def test_sink_torch_layout(self) -> None:
-        """sink('torch') produces the same HWC struct as numpy sink.
+        """sink('tensor') produces the same HWC struct as numpy sink.
 
         The torch sink tags the output format but does not permute axes in
         the serialized struct — CHW permutation is left to the consumer.
@@ -150,7 +150,7 @@ class TestMLPreprocessingPipeline:
             .cast("f32")
             .scale(1.0 / 255.0)
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("torch"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = _decode(result.row(0)[0])
 
         assert out.shape == (32, 32, 3), (
@@ -179,7 +179,7 @@ class TestPerRowColumnArguments:
             .source("image_bytes")
             .resize(height=pl.col("h"), width=pl.col("w"))
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         for i, s in enumerate(sizes):
             out = _decode(result.row(i)[0])
@@ -195,7 +195,7 @@ class TestPerRowColumnArguments:
         df = pl.DataFrame({"img": pngs, "thresh": thresholds})
 
         pipe = Pipeline().source("image_bytes").grayscale().threshold(pl.col("thresh"))
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         # thresh=50:  100 > 50  → all pixels = 255
         out0 = _decode(result.row(0)[0])
@@ -218,7 +218,7 @@ class TestPerRowColumnArguments:
         df = pl.DataFrame({"img": pngs, "sigma": [0.5, 4.0]})
 
         pipe = Pipeline().source("image_bytes").grayscale().blur(pl.col("sigma"))
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         out_soft = _decode(result.row(0)[0]).astype(float)
         out_heavy = _decode(result.row(1)[0]).astype(float)
@@ -250,7 +250,7 @@ class TestPerRowColumnArguments:
             .source("image_bytes")
             .crop(top=pl.col("top"), left=pl.col("left"), height=10, width=10)
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         for i in range(4):
             out = _decode(result.row(i)[0])
@@ -267,7 +267,7 @@ class TestPerRowColumnArguments:
         df = pl.DataFrame({"img": pngs, "h": heights})
 
         pipe = Pipeline().source("image_bytes").resize(height=pl.col("h"), width=48)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         for i, h in enumerate(heights):
             out = _decode(result.row(i)[0])
@@ -303,7 +303,7 @@ class TestBinaryImageAlgebra:
         la = pl.col("img_a").cv.pipe(pipe)
         lb = pl.col("img_b").cv.pipe(pipe)
         op_method = getattr(la, op_name)
-        result = df.select(out=op_method(lb).sink("numpy"))
+        result = df.select(out=op_method(lb).sink("tensor"))
         out = _decode(result.row(0)[0])
         assert out.dtype == np.uint8
         assert int(out[0, 0, 0]) == expected_val, (
@@ -359,7 +359,7 @@ class TestBinaryImageAlgebra:
         img_expr = pl.col("img").cv.pipe(pipe)
         mask_expr = pl.col("mask").cv.pipe(pipe)
 
-        result = df.select(out=img_expr.apply_mask(mask_expr).sink("numpy"))
+        result = df.select(out=img_expr.apply_mask(mask_expr).sink("tensor"))
         out = _decode(result.row(0)[0])
 
         # Top half: original values preserved (saturating multiply by 255/255)
@@ -397,7 +397,7 @@ class TestMultiOutputBranching:
         thresh_expr = pl.col("img").cv.pipe(thresh_pipe).alias("thresh")
 
         result_expr = gray_expr.merge_pipe(thresh_expr).sink(
-            {"gray": "numpy", "thresh": "numpy"}
+            {"gray": "tensor", "thresh": "tensor"}
         )
         result = df.select(out=result_expr)
 
@@ -432,7 +432,7 @@ class TestMultiOutputBranching:
         c = pl.col("img").cv.pipe(blur_pipe).alias("blur")
 
         result_expr = a.merge_pipe(b, c).sink(
-            {"base": "numpy", "gray": "numpy", "blur": "numpy"}
+            {"base": "tensor", "gray": "tensor", "blur": "tensor"}
         )
         result = df.select(out=result_expr)
 
@@ -538,7 +538,7 @@ class TestComplexChainedPipelines:
             .blur(sigma=1.0)
             .canny(low_threshold=30.0, high_threshold=90.0)
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = _decode(result.row(0)[0])
 
         assert out.shape == (64, 64, 1), f"Expected (64,64,1), got {out.shape}"
@@ -567,8 +567,8 @@ class TestComplexChainedPipelines:
         )
         pipe_orig = Pipeline().source("image_bytes").grayscale().threshold(128)
 
-        result_open = df.select(out=pl.col("img").cv.pipe(pipe_open).sink("numpy"))
-        result_orig = df.select(out=pl.col("img").cv.pipe(pipe_orig).sink("numpy"))
+        result_open = df.select(out=pl.col("img").cv.pipe(pipe_open).sink("tensor"))
+        result_orig = df.select(out=pl.col("img").cv.pipe(pipe_orig).sink("tensor"))
 
         out_open = _decode(result_open.row(0)[0])
         out_orig = _decode(result_orig.row(0)[0])
@@ -594,7 +594,7 @@ class TestComplexChainedPipelines:
         pipe = (
             Pipeline().source("image_bytes").letterbox(height=200, width=200, value=0)
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = _decode(result.row(0)[0])
 
         assert out.shape == (200, 200, 3), f"Expected (200,200,3), got {out.shape}"
@@ -624,7 +624,7 @@ class TestComplexChainedPipelines:
             .scale(255.0)
             .cast("u8")
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = _decode(result.row(0)[0])
 
         assert out.dtype == np.uint8
@@ -645,7 +645,7 @@ class TestComplexChainedPipelines:
         df = pl.DataFrame({"img": [_png(arr)]})
 
         pipe = Pipeline().source("image_bytes").cast("f32").normalize(method="minmax")
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = _decode(result.row(0)[0])
 
         assert out.dtype == np.float32
@@ -675,7 +675,7 @@ class TestStreamingVsEager:
         df = pl.DataFrame({"img": pngs})
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+        expr = pl.col("img").cv.pipe(pipe).sink("tensor")
 
         eager, streaming = self._run_both(df, expr)
 
@@ -697,7 +697,7 @@ class TestStreamingVsEager:
             .cast("f32")
             .scale(1.0 / 255.0)
         )
-        expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+        expr = pl.col("img").cv.pipe(pipe).sink("tensor")
 
         eager, streaming = self._run_both(df, expr)
 
@@ -717,7 +717,7 @@ class TestStreamingVsEager:
             .source("image_bytes")
             .resize(height=pl.col("sz"), width=pl.col("sz"))
         )
-        expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+        expr = pl.col("img").cv.pipe(pipe).sink("tensor")
 
         eager, streaming = self._run_both(df, expr)
 

@@ -101,7 +101,7 @@ class TestTheManifestIsTheList:
 def _decode(data: bytes) -> np.ndarray:
     df = pl.DataFrame({"img": [data]}, schema={"img": pl.Binary})
     out = df.select(
-        out=pl.col("img").cv.pipe(Pipeline().source("image_bytes")).sink("numpy")
+        out=pl.col("img").cv.pipe(Pipeline().source("image_bytes")).sink("tensor")
     )
     return numpy_from_struct(out["out"][0])
 

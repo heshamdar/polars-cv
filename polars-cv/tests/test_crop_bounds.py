@@ -34,7 +34,7 @@ def _png(arr: np.ndarray) -> bytes:
 def _run(pipe: Pipeline, **columns: list) -> list[np.ndarray]:
     rows = len(next(iter(columns.values()))) if columns else 1
     frame = pl.DataFrame({"img": [_png(IMAGE)] * rows, **columns})
-    out = frame.select(pl.col("img").cv.pipe(pipe).sink("numpy")).to_series()
+    out = frame.select(pl.col("img").cv.pipe(pipe).sink("tensor")).to_series()
     return [numpy_from_struct(row) for row in out]
 
 

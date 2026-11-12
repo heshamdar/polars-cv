@@ -56,7 +56,7 @@ class TestBlobBufferRegistration:
 
         out = df.with_columns(
             blob=pl.col("img").cv.pipe(to_blob).sink("blob")
-        ).with_columns(arr=pl.col("blob").cv.pipe(from_blob).sink("numpy"))
+        ).with_columns(arr=pl.col("blob").cv.pipe(from_blob).sink("tensor"))
 
         for i in range(n):
             decoded = numpy_from_struct(out["arr"][i])
@@ -79,7 +79,7 @@ class TestBlobBufferRegistration:
         ).with_columns(
             arr=pl.col("blob")
             .cv.pipe(Pipeline().source("blob", dtype="u8"))
-            .sink("numpy")
+            .sink("tensor")
         )
         expected = np.array(Image.open(io.BytesIO(img)))[top : top + 2]
         header = 64 + 2 * 3 * 8  # fixed header, then u64 shape and i64 strides

@@ -61,7 +61,7 @@ def _run(values: np.ndarray, build: Build, **columns: float) -> np.ndarray:
         schema_overrides={"a": pl.Array(_POLARS[values.dtype], len(values))},
     )
     pipe = build(Pipeline().source("array"))
-    out = df.select(o=pl.col("a").cv.pipe(pipe).sink("numpy"))
+    out = df.select(o=pl.col("a").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(out.row(0)[0])
 
 
@@ -218,7 +218,7 @@ def test_a_fill_value_is_exact_in_the_buffers_dtype(
     )
     pipe = build(Pipeline().source("array"), fill)
     got = numpy_from_struct(
-        df.select(o=pl.col("a").cv.pipe(pipe).sink("numpy")).row(0)[0]
+        df.select(o=pl.col("a").cv.pipe(pipe).sink("tensor")).row(0)[0]
     )
     assert got.dtype == values.dtype
     assert fill in got.ravel().tolist(), got
@@ -233,6 +233,6 @@ def test_convolve2d_coefficients_are_f64_on_float64() -> None:
     kernel = [0.0, 0.0, 0.0, 0.0, THIRD, 0.0, 0.0, 0.0, 0.0]
     pipe = Pipeline().source("array").convolve2d(kernel=kernel, normalize=False)
     got = numpy_from_struct(
-        df.select(o=pl.col("a").cv.pipe(pipe).sink("numpy")).row(0)[0]
+        df.select(o=pl.col("a").cv.pipe(pipe).sink("tensor")).row(0)[0]
     )
     _exact(got, values * THIRD)

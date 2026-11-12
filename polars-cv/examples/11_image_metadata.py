@@ -118,7 +118,7 @@ def demo_on_error_null() -> None:
 
     pipe = Pipeline().source("image_bytes", on_error="null").resize(height=32, width=32)
     result = df.with_columns(
-        processed=pl.col("image").cv.pipe(pipe).sink("numpy"),
+        processed=pl.col("image").cv.pipe(pipe).sink("tensor"),
     )
 
     print("Results with on_error='null':")

@@ -154,10 +154,10 @@ def main() -> None:
     print("First two histogram buckets:", histogram_df["hist_buckets"][0][:2])
 
     axis_reductions_df = df.with_columns(
-        row_max=heat_expr.pipe(Pipeline().reduce_max(axis=1)).sink("numpy"),
-        row_min=heat_expr.pipe(Pipeline().reduce_min(axis=1)).sink("numpy"),
-        argmax_col=heat_expr.pipe(Pipeline().reduce_argmax(axis=1)).sink("numpy"),
-        argmin_col=heat_expr.pipe(Pipeline().reduce_argmin(axis=1)).sink("numpy"),
+        row_max=heat_expr.pipe(Pipeline().reduce_max(axis=1)).sink("tensor"),
+        row_min=heat_expr.pipe(Pipeline().reduce_min(axis=1)).sink("tensor"),
+        argmax_col=heat_expr.pipe(Pipeline().reduce_argmax(axis=1)).sink("tensor"),
+        argmin_col=heat_expr.pipe(Pipeline().reduce_argmin(axis=1)).sink("tensor"),
     )
     print("\nAxis reductions:")
     print(axis_reductions_df.select("row_max", "row_min", "argmax_col", "argmin_col"))
@@ -196,7 +196,7 @@ def main() -> None:
     print(mask_metrics.select("inside", "outside", "mask_iou", "mask_dice"))
 
     # Save GT mask output image.
-    gt_mask_df = df.with_columns(mask=gt_mask_expr.sink("numpy"))
+    gt_mask_df = df.with_columns(mask=gt_mask_expr.sink("tensor"))
     gt_mask_arr = numpy_from_struct(gt_mask_df["mask"][0], copy=False)
     fig, ax = plt.subplots(figsize=(4, 4))
     ax.imshow(gt_mask_arr.squeeze(-1), cmap="gray")

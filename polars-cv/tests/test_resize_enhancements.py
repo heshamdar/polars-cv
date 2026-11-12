@@ -80,7 +80,7 @@ class TestResizeScalePolarsCV:
         # Scale 0.5 on 200x100 -> 100x50
         pipe = Pipeline().source("image_bytes").resize_scale(scale=0.5)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         # Original: (100, 200, 3), scaled: (50, 100, 3)
@@ -99,7 +99,7 @@ class TestResizeScalePolarsCV:
         # scale_x=0.5, scale_y=2.0 on 200x100 -> 100x200
         pipe = Pipeline().source("image_bytes").resize_scale(scale_x=0.5, scale_y=2.0)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         # Original: (100, 200, 3), scaled: (200, 100, 3)
@@ -118,7 +118,7 @@ class TestResizeScalePolarsCV:
 
         pipe = Pipeline().source("image_bytes").resize_scale(scale=2.0)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         # Original: (100, 100, 3), scaled: (200, 200, 3)
@@ -143,7 +143,7 @@ class TestResizeScalePolarsCV:
             Pipeline().source("image_bytes").resize_scale(scale=pl.col("scale_factor"))
         )
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (50, 50, 3)
@@ -166,7 +166,7 @@ class TestAspectRatioResizePolarsCV:
         # 200x100 (2:1) to height=50 -> 100x50
         pipe = Pipeline().source("image_bytes").resize_to_height(50)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape[0] == 50  # Height
@@ -186,7 +186,7 @@ class TestAspectRatioResizePolarsCV:
         # 200x100 (2:1) to width=100 -> 100x50
         pipe = Pipeline().source("image_bytes").resize_to_width(100)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape[1] == 100  # Width
@@ -206,7 +206,7 @@ class TestAspectRatioResizePolarsCV:
         # 200x100, max_size=50 -> 50x25 (max dim = 50)
         pipe = Pipeline().source("image_bytes").resize_max(50)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert max(actual.shape[0], actual.shape[1]) == 50
@@ -225,7 +225,7 @@ class TestAspectRatioResizePolarsCV:
         # 200x100, min_size=50 -> 100x50 (min dim = 50)
         pipe = Pipeline().source("image_bytes").resize_min(50)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert min(actual.shape[0], actual.shape[1]) == 50
@@ -248,7 +248,7 @@ class TestAspectRatioResizePolarsCV:
 
         pipe = Pipeline().source("image_bytes").resize_to_height(pl.col("target_h"))
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape[0] == 50
@@ -267,7 +267,7 @@ class TestAspectRatioResizePolarsCV:
         # 100x100 with max_size=50 -> 50x50
         pipe = Pipeline().source("image_bytes").resize_max(50)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (50, 50, 3)

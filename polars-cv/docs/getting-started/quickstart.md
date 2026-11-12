@@ -24,7 +24,7 @@ pipe = (
 # 2. Apply to a DataFrame column and specify sink
 df = pl.DataFrame({"image": [png_bytes]})
 result = df.with_columns(
-    resized=pl.col("image").cv.pipe(pipe).sink("numpy")
+    resized=pl.col("image").cv.pipe(pipe).sink("tensor")
 )
 ```
 
@@ -93,7 +93,7 @@ pipe = (
 )
 
 result = df.with_columns(
-    resized=pl.col("image").cv.pipe(pipe).sink("numpy")
+    resized=pl.col("image").cv.pipe(pipe).sink("tensor")
 )
 ```
 
@@ -110,9 +110,7 @@ A null in a parameter column fails the query by default;
 
 | Format | Description | Use Case |
 |--------|-------------|----------|
-| `numpy` | NumPy-compatible struct | NumPy, OpenCV, Scikit-image |
-| `torch` | PyTorch-compatible struct | PyTorch DataLoaders |
-| `ndarray` | The `numpy` struct, tagged `polars_cv.ndarray` | Columns that should say what they are (see [Extension Types](../user-guide/concepts/extension-types.md)) |
+| `tensor` | One zero-copy tensor per row, typed `polars_cv.ndarray` (see [Extension Types](../user-guide/concepts/extension-types.md)) | NumPy, PyTorch, OpenCV, data loaders |
 | `png` | Re-encode as PNG bytes | Storage, display |
 | `jpeg` | Re-encode as JPEG bytes | Web usage |
 | `webp` | Re-encode as WebP bytes | Web usage (smaller files) |
@@ -122,7 +120,7 @@ A null in a parameter column fails the query by default;
 | `array` | Fixed-size Polars Array | Fixed-shape tensors |
 | `native` | Python primitive | Scalars (Area, Mean) |
 
-The `numpy` and `torch` sinks accept `dtype="f16"` to downcast the output tensor
+The `tensor` sink accepts `dtype="f16"` to downcast the output tensor
 to half precision at the encode boundary — halving the output bytes and
 host→device transfer. (The engine has no native f16 dtype; only the sink container
 is f16.)
@@ -130,7 +128,7 @@ is f16.)
 ```python
 # Half-precision output tensor
 result = df.with_columns(
-    processed=pl.col("image").cv.pipe(pipe).sink("torch", dtype="f16")
+    processed=pl.col("image").cv.pipe(pipe).sink("tensor", dtype="f16")
 )
 ```
 
@@ -152,7 +150,7 @@ pipe = (
 )
 
 result = df.with_columns(
-    processed=pl.col("path").cv.pipe(pipe).sink("numpy")
+    processed=pl.col("path").cv.pipe(pipe).sink("tensor")
 )
 ```
 
@@ -163,7 +161,7 @@ result = df.with_columns(
 - Common decodes: PNG/JPEG -> `u8`, 16-bit PNG -> `u16`
 - TIFF may produce `u8`, `u16`, `f32`, or `f64`
 
-For `sink("numpy")`, `sink("png")`, `sink("jpeg")`, etc., this is usually fine.
+For `sink("tensor")`, `sink("png")`, `sink("jpeg")`, etc., this is usually fine.
 For `sink("list")` or `sink("array")`, dtype must be known during planning.
 
 ```python
@@ -190,7 +188,7 @@ with one. End it with `.sink(...)`:
 
 ```python
 df.with_columns(out=pl.col("image").cv.pipe(pipe))                 # TypeError
-df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("numpy"))   # an expression
+df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("tensor"))   # an expression
 ```
 
 **`this pipeline has no source ...`.** A pipeline applied to a column has to

@@ -287,7 +287,7 @@ class TestAlphaDecoding:
         png_bytes = _make_rgba_png(10, 8)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes")
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [8, 10, 4]
 
@@ -296,7 +296,7 @@ class TestAlphaDecoding:
         png_bytes = _make_graya_png(10, 8)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes")
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [8, 10, 2]
 
@@ -305,7 +305,7 @@ class TestAlphaDecoding:
         png_bytes = _make_rgb_png(10, 8)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes")
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [8, 10, 3]
 
@@ -314,7 +314,7 @@ class TestAlphaDecoding:
         png_bytes = _make_gray_png(10, 8)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes")
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [8, 10, 1]
 
@@ -325,7 +325,7 @@ class TestAlphaDecoding:
         png_bytes = _make_rgba_png(4, 4)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes")
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape[2] == 4
         assert np.all(arr[:, :, 3] == 128)
@@ -340,7 +340,7 @@ class TestAlphaPassthroughOps:
         png_bytes = _make_rgba_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").resize(height=5, width=5)
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [5, 5, 4]
 
@@ -351,7 +351,7 @@ class TestAlphaPassthroughOps:
         png_bytes = _make_rgba_png(4, 4)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").normalize()
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape[2] == 4
 
@@ -360,7 +360,7 @@ class TestAlphaPassthroughOps:
         png_bytes = _make_rgba_png(4, 4)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").flip(axes=[1])
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [4, 4, 4]
 
@@ -374,7 +374,7 @@ class TestAlphaDropOps:
         png_bytes = _make_rgba_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 1]
 
@@ -383,7 +383,7 @@ class TestAlphaDropOps:
         png_bytes = _make_graya_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 1]
 
@@ -392,7 +392,7 @@ class TestAlphaDropOps:
         png_bytes = _make_rgba_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").canny()
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 1]
 
@@ -406,7 +406,7 @@ class TestAlphaColorChannels:
         png_bytes = _make_rgba_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").blur(sigma=1.0)
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 4]
 
@@ -419,7 +419,7 @@ class TestAlphaColorChannels:
             .source("image_bytes")
             .convert_color(from_space="rgb", to_space="hsv")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 4]
 
@@ -432,7 +432,7 @@ class TestAlphaColorChannels:
             .source("image_bytes")
             .convert_color(from_space="rgb", to_space="gray")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 2]
 
@@ -447,7 +447,7 @@ class TestAlphaColorChannels:
             .source("image_bytes")
             .convert_color(from_space="rgb", to_space="bgr")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape[2] == 4
         assert np.all(arr[:, :, 3] == 128)
@@ -483,7 +483,7 @@ class TestAlphaEncoding:
 
         df2 = pl.DataFrame({"image": [tiff_bytes]})
         pipe2 = Pipeline().source("image_bytes")
-        result2 = df2.with_columns(output=pl.col("image").cv.pipe(pipe2).sink("numpy"))
+        result2 = df2.with_columns(output=pl.col("image").cv.pipe(pipe2).sink("tensor"))
         arr = numpy_from_struct(result2["output"][0])
         assert arr.shape[2] == 4
 

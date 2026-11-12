@@ -70,7 +70,7 @@ def _run(image: np.ndarray, build) -> np.ndarray:
         {"m": [image]}, schema={"m": pl.Array(_POLARS[image.dtype], image.shape)}
     )
     out = df.select(
-        pl.col("m").cv.pipe(build(Pipeline().source("array"))).sink("numpy")
+        pl.col("m").cv.pipe(build(Pipeline().source("array"))).sink("tensor")
     )
     (result,) = numpy_from_column(out.to_series(), copy=True)
     assert result is not None

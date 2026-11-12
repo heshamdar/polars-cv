@@ -26,7 +26,7 @@ from polars_cv import Pipeline
 
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
 pipe = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3).dilate(ksize=3)
-df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
+df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("tensor"))
 ```
 
 This is a **pre-release, largely AI-developed project**. Fix inconsistencies when you encounter them, or document them in the relevant AGENTS.md.

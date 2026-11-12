@@ -276,8 +276,8 @@ pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=64, width=64)
 img = pl.col("img").cv.pipe(pipe)
 lf = df.lazy().with_columns(
     blob=img.sink("blob"),
-    numpy=img.sink("numpy"),
-    ndarray=img.sink("ndarray"),
+    numpy=img.sink("tensor"),
+    ndarray=img.sink("tensor"),
     array=img.sink("array", shape=[64, 64, 3]),
 )
 for name, q in {

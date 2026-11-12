@@ -48,20 +48,20 @@ class TestADtypeClaimIsChecked:
         df = _f32_blob_frame()
         pipe = Pipeline().source("blob", dtype="u8")
         with pytest.raises(pl.exceptions.ComputeError, match=r"(?i)f32.*u8|u8.*f32"):
-            df.select(pl.col("b").cv.pipe(pipe).sink("numpy"))
+            df.select(pl.col("b").cv.pipe(pipe).sink("tensor"))
 
     @pytest.mark.parametrize("flags", [OptFlags.none(), OptFlags.all()])
     def test_the_claim_does_not_blame_the_planner(self, flags: OptFlags) -> None:
         df = _f32_blob_frame()
         pipe = Pipeline().source("blob", dtype="u8").cast("u8")
         with pytest.raises(pl.exceptions.ComputeError) as err:
-            df.select(pl.col("b").cv.pipe(pipe).sink("numpy", opt_flags=flags))
+            df.select(pl.col("b").cv.pipe(pipe).sink("tensor", opt_flags=flags))
         assert "planner" not in str(err.value)
 
     def test_a_matching_claim_decodes(self) -> None:
         df = _f32_blob_frame()
         out = df.select(
-            pl.col("b").cv.pipe(Pipeline().source("blob", dtype="f32")).sink("numpy")
+            pl.col("b").cv.pipe(Pipeline().source("blob", dtype="f32")).sink("tensor")
         ).to_series()[0]
         assert out["dtype"] == "float32"
 
@@ -102,7 +102,7 @@ class TestACanvasFromAnotherNodeIsChecked:
         )
         with pytest.raises(pl.exceptions.ComputeError) as err:
             self._frame().select(
-                pl.col("c").cv.pipe(pipe).sink("numpy", opt_flags=flags)
+                pl.col("c").cv.pipe(pipe).sink("tensor", opt_flags=flags)
             )
         assert "assert_shape(height=10, width=10) does not hold" in str(err.value)
         assert "contract" not in str(err.value)
@@ -117,7 +117,7 @@ class TestACanvasFromAnotherNodeIsChecked:
             .pad_to_size(height=6, width=8)
         )
         out = self._frame().select(
-            pl.col("c").cv.pipe(pipe).sink("numpy", opt_flags=flags)
+            pl.col("c").cv.pipe(pipe).sink("tensor", opt_flags=flags)
         )
         assert out.to_series()[0]["shape"] == [6, 8, 1]
 
@@ -192,7 +192,7 @@ _UNKNOWN_FACT_BUILDS = {
         pl.col("i")
         .cv.pipe(Pipeline().source("image_bytes").resize(height=8, width=8))
         .add(pl.col("i").cv.pipe(Pipeline().source("image_bytes")))
-        .sink("numpy")
+        .sink("tensor")
     ),
 }
 

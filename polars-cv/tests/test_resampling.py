@@ -36,14 +36,14 @@ def _png(arr: np.ndarray) -> bytes:
 def _run_bytes(pipe: Pipeline, arr: np.ndarray) -> np.ndarray:
     frame = pl.DataFrame({"img": [_png(arr)]})
     return numpy_from_struct(
-        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy")).item()
+        frame.select(pl.col("img").cv.pipe(pipe).sink("tensor")).item()
     )
 
 
 def _run_array(pipe: Pipeline, arr: np.ndarray) -> np.ndarray:
     frame = pl.DataFrame({"a": pl.Series("a", arr[np.newaxis])})
     return numpy_from_struct(
-        frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+        frame.select(pl.col("a").cv.pipe(pipe).sink("tensor")).item()
     )
 
 
@@ -160,7 +160,7 @@ class TestResizeLike:
         heat = pl.col("heat").cv.pipe(Pipeline().source("list", dtype="f64"))
         out = (
             self._frame(heats)
-            .select(img.resize_like(heat, filter="area").sink("numpy"))
+            .select(img.resize_like(heat, filter="area").sink("tensor"))
             .to_series()
         )
         for row, h in zip(out, heats):

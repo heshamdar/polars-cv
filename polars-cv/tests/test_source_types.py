@@ -184,7 +184,7 @@ class TestListSource:
 
         # Second: use list source for processing
         pipe2 = Pipeline().source("list", dtype="u8").grayscale()
-        result = df2.with_columns(gray=pl.col("pixels").cv.pipe(pipe2).sink("numpy"))
+        result = df2.with_columns(gray=pl.col("pixels").cv.pipe(pipe2).sink("tensor"))
 
         # Verify grayscale output
         gray_arr = numpy_from_struct(result["gray"][0])
@@ -292,7 +292,7 @@ class TestSourceFormatValidation:
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
         pipe = Pipeline().source("image_bytes")
-        result = df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("tensor"))
 
         arr = numpy_from_struct(result["out"][0])
         # Grayscale PNG decodes to [H, W, 1] preserving native channel count
@@ -308,7 +308,7 @@ class TestSourceFormatValidation:
 
         # Then decode from blob
         pipe2 = Pipeline().source("blob")
-        result = df2.with_columns(out=pl.col("blob").cv.pipe(pipe2).sink("numpy"))
+        result = df2.with_columns(out=pl.col("blob").cv.pipe(pipe2).sink("tensor"))
 
         arr = numpy_from_struct(result["out"][0])
         # Grayscale PNG decodes to [H, W, 1] preserving native channel count

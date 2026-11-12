@@ -41,7 +41,7 @@ _KNOWN_GOOD = [
     'unknown sink format \'nunpy\', expected one of ["array", "blob"]',
     "this pipeline has no source; start it with `.source()`",
     # Braces and colons that are not a Debug value.
-    'sink("array", shape=[224, 224, 3]) and {"x": "numpy"}',
+    'sink("array", shape=[224, 224, 3]) and {"x": "tensor"}',
     "column 'img' is List(Struct({'x': Float64, 'y': Float64}))",
     "the long sink gives List[Struct{row: u32, col: u32}]",
     # A row reference, and a user's own names, are the user's words.
@@ -98,28 +98,28 @@ def _run(expr: Callable[[], Any]) -> Callable[[], Any]:
 #: refused as they are built.
 FAILURES: dict[str, Callable[[], Any]] = {
     "a row that is not an image": _run(
-        lambda: pl.col("junk").cv.pipe(_src()).sink("numpy")
+        lambda: pl.col("junk").cv.pipe(_src()).sink("tensor")
     ),
-    "a truncated image": _run(lambda: pl.col("cut").cv.pipe(_src()).sink("numpy")),
+    "a truncated image": _run(lambda: pl.col("cut").cv.pipe(_src()).sink("tensor")),
     "a blob that is not one": _run(
-        lambda: pl.col("junk").cv.pipe(Pipeline().source("blob")).sink("numpy")
+        lambda: pl.col("junk").cv.pipe(Pipeline().source("blob")).sink("tensor")
     ),
     "a missing file": _run(
         lambda: (
             pl.col("path")
             .cv.pipe(Pipeline().source("file_path", allowed_roots=["/no"]))
-            .sink("numpy")
+            .sink("tensor")
         )
     ),
     "a null parameter": _run(
         lambda: (
             pl.col("img")
             .cv.pipe(_src().resize(height=pl.col("h"), width=4))
-            .sink("numpy")
+            .sink("tensor")
         )
     ),
     "a row in a multi-output graph": _run(
-        lambda: pl.col("junk").cv.pipe(_src()).alias("x").sink({"x": "numpy"})
+        lambda: pl.col("junk").cv.pipe(_src()).alias("x").sink({"x": "tensor"})
     ),
     "an unknown sink": _run(lambda: pl.col("img").cv.pipe(_src()).sink("nunpy")),
     "an option of another sink": _run(
@@ -132,14 +132,14 @@ FAILURES: dict[str, Callable[[], Any]] = {
         lambda: pl.col("img").cv.pipe(_src()).sink("jpeg", quality=1000)
     ),
     "an output alias the graph does not have": _run(
-        lambda: pl.col("img").cv.pipe(_src()).alias("x").sink({"y": "numpy"})
+        lambda: pl.col("img").cv.pipe(_src()).alias("x").sink({"y": "tensor"})
     ),
     "a sink the planned dtype cannot take": _run(
         lambda: pl.col("img").cv.pipe(_src().cast("f32")).sink("jpeg")
     ),
     "a pipeline with no source": _run(
         lambda: (
-            pl.col("img").cv.pipe(Pipeline().resize(height=4, width=4)).sink("numpy")
+            pl.col("img").cv.pipe(Pipeline().resize(height=4, width=4)).sink("tensor")
         )
     ),
     "an unknown source": lambda: Pipeline().source("image_bites"),

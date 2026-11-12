@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```python
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
-df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
+df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("tensor"))
 ```
 
 The project is a Rust/Python hybrid built with [Maturin](https://github.com/PyO3/maturin) (PyO3). The Python package lives under `polars-cv/`, and `view-buffer/` is a separate Rust crate that is the kernel library (the engine) its ops execute with.
@@ -360,8 +360,8 @@ The three-layer overview (Python builder, Rust plugin, view-buffer engine) is in
 - `row_ref.rs` — the one rendering of a failing row, `(row i of n in this batch)`, attached by the code that owns each row loop (`test_row_ref_guard.py` rejects a hand-rolled one)
 - `read_bytes.rs` — `read_file_bytes` plugin function (`.cv.read_bytes()`) — `fetch.rs` with the decode omitted, for byte-identical passthrough
 - `image_metadata.rs` — header-only metadata plugin functions (`.cv.width()`/`height()`/`channels()`/`image_dtype()`)
-- `output.rs` — zero-copy numpy/torch struct output encoding
-- `ext_types.rs` — `ExtType`, the polars-cv extension types (`polars_cv.ndarray`/`point`/`contour`/`bbox`); builds tagged outputs such as `sink("ndarray")`, published over FFI by `extension_types`
+- `output.rs` — zero-copy tensor struct output encoding
+- `ext_types.rs` — `ExtType`, the polars-cv extension types (`polars_cv.ndarray`/`point`/`contour`/`bbox`); builds the tagged output of `sink("tensor")`, published over FFI by `extension_types`
 - `namespaces/` — everything behind the `.contour`/`.point`/`.bbox` namespaces (the plugin side of view-buffer's `geometry/`); `exec.rs` is the one geometry-step runner, shared with the pipeline graph
 - `namespaces/contour.rs`, `namespaces/point.rs` — standalone plugin functions for geometry namespaces
 - `namespaces/columns.rs` — `ContourColumn`/`PointColumn`/`BBoxColumn`, the one reader per geometry type (straight from Arrow, fields by name, a null field an error) every geometry consumer uses

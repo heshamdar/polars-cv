@@ -58,7 +58,7 @@ class TestGrayscaleCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         gray = numpy_from_struct(result.row(0)[0])
 
         expected = int(round(0.299 * 255))  # 76
@@ -73,7 +73,7 @@ class TestGrayscaleCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         gray = numpy_from_struct(result.row(0)[0])
 
         expected = int(round(0.587 * 255))  # 150
@@ -86,7 +86,7 @@ class TestGrayscaleCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         gray = numpy_from_struct(result.row(0)[0])
 
         expected = int(round(0.114 * 255))  # 29
@@ -99,7 +99,7 @@ class TestGrayscaleCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         gray = numpy_from_struct(result.row(0)[0])
 
         assert gray[0, 0, 0] == 255
@@ -120,7 +120,7 @@ class TestThresholdCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").grayscale().threshold(100)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         # Values: 50→0, 100→0/255 (boundary), 150→255, 200→255, 25→0, 128→255
@@ -147,7 +147,7 @@ class TestNormalizeCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").normalize(method="zscore")
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.dtype == np.float32
@@ -163,7 +163,7 @@ class TestNormalizeCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").normalize(method="minmax")
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.dtype == np.float32
@@ -187,7 +187,7 @@ class TestClampCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").cast("f32").clamp(50.0, 200.0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert np.min(out) >= 50.0 - 0.01
@@ -205,7 +205,7 @@ class TestScaleCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").cast("f32").scale(2.0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(out[0, 0], [100.0, 200.0, 50.0], atol=0.5)
@@ -229,7 +229,7 @@ class TestCropCorrectness:
 
         # Crop: top=2, left=3, height=4, width=5
         pipe = Pipeline().source("image_bytes").crop(top=2, left=3, height=4, width=5)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.shape == (4, 5, 3)
@@ -253,7 +253,7 @@ class TestFlipCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").flip_h()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.shape == (4, 6, 3)
@@ -270,7 +270,7 @@ class TestFlipCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").flip_v()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.shape == (6, 4, 3)
@@ -286,7 +286,7 @@ class TestFlipCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").flip_h().flip_h()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(out, arr)
@@ -304,7 +304,7 @@ class TestRotateCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").rotate(90)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         # After 90° CW rotation of a 10x20 image, it becomes 20x10
@@ -321,8 +321,8 @@ class TestRotateCorrectness:
         pipe_rotate = Pipeline().source("image_bytes").rotate(180)
         pipe_flip = Pipeline().source("image_bytes").flip_h().flip_v()
 
-        result_rotate = df.select(out=pl.col("img").cv.pipe(pipe_rotate).sink("numpy"))
-        result_flip = df.select(out=pl.col("img").cv.pipe(pipe_flip).sink("numpy"))
+        result_rotate = df.select(out=pl.col("img").cv.pipe(pipe_rotate).sink("tensor"))
+        result_flip = df.select(out=pl.col("img").cv.pipe(pipe_flip).sink("tensor"))
 
         rotated = numpy_from_struct(result_rotate.row(0)[0])
         flipped = numpy_from_struct(result_flip.row(0)[0])
@@ -344,7 +344,7 @@ class TestTransposeCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").transpose([2, 0, 1])
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         # After transpose [2,0,1]: (H,W,C) -> (C,H,W) = (3,10,20)
@@ -368,7 +368,7 @@ class TestCastCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").cast("f32")
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.dtype == np.float32
@@ -381,7 +381,7 @@ class TestCastCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").cast("f32").cast("u8")
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.dtype == np.uint8
@@ -400,7 +400,7 @@ class TestLetterboxCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").letterbox(height=100, width=100)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.shape == (100, 100, 3)
@@ -423,7 +423,7 @@ class TestPadCorrectness:
             .source("image_bytes")
             .pad(top=5, bottom=5, left=5, right=5, value=0)
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.shape == (20, 20, 3)
@@ -439,7 +439,7 @@ class TestPadCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").pad_to_size(height=20, width=30)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.shape == (20, 30, 3)
@@ -463,7 +463,7 @@ class TestReluCorrectness:
             .scale(-1.0)  # all values become -100
             .relu()
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         # All values should be 0 after relu (since they were negative)
@@ -1000,7 +1000,7 @@ class TestResizeCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").resize(height=50, width=75)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         assert out.shape == (50, 75, 3)
@@ -1012,7 +1012,7 @@ class TestResizeCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         # A solid color resized should still be that color
@@ -1039,7 +1039,7 @@ class TestMultiRowCorrectness:
         )
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         red_gray = numpy_from_struct(result.row(0)[0])
         green_gray = numpy_from_struct(result.row(1)[0])
@@ -1290,7 +1290,7 @@ class TestNonFiniteAndEmptyInputs:
             .normalize(method="minmax")
         )
         out = numpy_from_struct(
-            df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy")).row(0)[0]
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor")).row(0)[0]
         )
         assert np.isnan(out).all(), out
 
@@ -1310,7 +1310,7 @@ class TestNonFiniteAndEmptyInputs:
             )
         )
         with pytest.raises(pl.exceptions.ComputeError, match="not finite"):
-            df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
     @pytest.mark.parametrize("factor", [0.0, -0.5])
     def test_a_resize_factor_must_be_finite_and_positive(self, factor: float) -> None:
@@ -1454,7 +1454,7 @@ class TestSinkFormats:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes")
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         struct_val = result["out"][0]
         assert "data" in struct_val
@@ -1499,7 +1499,7 @@ class TestBlurCorrectness:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("image_bytes").blur(3.0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         out = numpy_from_struct(result.row(0)[0])
 
         # Central pixels should still be 128 (edges may differ due to border handling)
@@ -1532,7 +1532,7 @@ class TestDynamicParameterCorrectness:
             .source("image_bytes")
             .resize(height=pl.col("h"), width=pl.col("w"))
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         out1 = numpy_from_struct(result.row(0)[0])
         out2 = numpy_from_struct(result.row(1)[0])
@@ -1553,7 +1553,7 @@ class TestDynamicParameterCorrectness:
         )
 
         pipe = Pipeline().source("image_bytes").grayscale().threshold(pl.col("thresh"))
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         out1 = numpy_from_struct(result.row(0)[0])
         out2 = numpy_from_struct(result.row(1)[0])

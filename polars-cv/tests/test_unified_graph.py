@@ -22,6 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import polars_cv
 from polars_cv import Pipeline
 from polars_cv.geometry.schemas import contour_from_points
 
@@ -169,18 +170,19 @@ class TestUnifiedGraphSingleOutput:
         pipe = Pipeline().source("blob").transpose([2, 0, 1])
 
         result = synthetic_image_df.with_columns(
-            processed=pl.col("images").cv.pipe(pipe).sink("numpy")
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
         )
 
         assert "processed" in result.columns
-        assert isinstance(result["processed"].dtype, pl.Struct)
+        assert isinstance(result["processed"].dtype, polars_cv.NdArrayType)
+        assert isinstance(result["processed"].ext.storage().dtype, pl.Struct)
 
     def test_resize_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test resize operation through the graph path."""
         pipe = Pipeline().source("blob").resize(height=32, width=32)
 
         result = synthetic_image_df.with_columns(
-            resized=pl.col("images").cv.pipe(pipe).sink("numpy")
+            resized=pl.col("images").cv.pipe(pipe).sink("tensor")
         )
 
         assert "resized" in result.columns
@@ -193,7 +195,7 @@ class TestUnifiedGraphSingleOutput:
         )
 
         result = synthetic_image_df.with_columns(
-            normalized=pl.col("images").cv.pipe(pipe).sink("numpy")
+            normalized=pl.col("images").cv.pipe(pipe).sink("tensor")
         )
 
         assert "normalized" in result.columns
@@ -210,7 +212,7 @@ class TestUnifiedGraphMultiOutput:
         small = original.pipe(Pipeline().resize(height=32, width=32)).alias("small")
 
         result = synthetic_image_df.with_columns(
-            outputs=small.sink({"original": "numpy", "small": "numpy"})
+            outputs=small.sink({"original": "tensor", "small": "tensor"})
         )
 
         assert "outputs" in result.columns
@@ -223,7 +225,7 @@ class TestUnifiedGraphMultiOutput:
         chw = raw.pipe(Pipeline().transpose([2, 0, 1])).alias("chw")
 
         result = synthetic_image_df.with_columns(
-            outputs=chw.sink({"raw": "numpy", "chw": "numpy"})
+            outputs=chw.sink({"raw": "tensor", "chw": "tensor"})
         )
 
         output_schema = result["outputs"].dtype
@@ -241,11 +243,12 @@ class TestContourSourceGraph:
         pipe = Pipeline().source("contour").rasterize(width=100, height=100)
 
         result = contour_df.with_columns(
-            rasterized=pl.col("contour").cv.pipe(pipe).sink("numpy")
+            rasterized=pl.col("contour").cv.pipe(pipe).sink("tensor")
         )
 
         assert "rasterized" in result.columns
-        assert isinstance(result["rasterized"].dtype, pl.Struct)
+        assert isinstance(result["rasterized"].dtype, polars_cv.NdArrayType)
+        assert isinstance(result["rasterized"].ext.storage().dtype, pl.Struct)
 
     def test_contour_with_operations(self, contour_df: pl.DataFrame) -> None:
         """Test contour source with additional operations."""
@@ -257,7 +260,7 @@ class TestContourSourceGraph:
         )
 
         result = contour_df.with_columns(
-            processed=pl.col("contour").cv.pipe(pipe).sink("numpy")
+            processed=pl.col("contour").cv.pipe(pipe).sink("tensor")
         )
 
         assert "processed" in result.columns
@@ -275,7 +278,7 @@ class TestExpressionArgumentsGraph:
         )
 
         result = contour_df.with_columns(
-            rasterized=pl.col("contour").cv.pipe(pipe).sink("numpy")
+            rasterized=pl.col("contour").cv.pipe(pipe).sink("tensor")
         )
 
         assert "rasterized" in result.columns
@@ -290,7 +293,7 @@ class TestLazyCompositionGraph:
         pipe = Pipeline().source("blob").resize(height=32, width=32)
 
         lazy_expr = pl.col("images").cv.pipe(pipe)
-        final_expr = lazy_expr.sink("numpy")
+        final_expr = lazy_expr.sink("tensor")
 
         result = synthetic_image_df.with_columns(output=final_expr)
         assert "output" in result.columns
@@ -304,7 +307,7 @@ class TestLazyCompositionGraph:
         aliased = lazy_expr.alias("resized")
 
         # For multi-output (dict format), produces Struct with named fields
-        final_expr = aliased.sink({"resized": "numpy"})
+        final_expr = aliased.sink({"resized": "tensor"})
 
         result = synthetic_image_df.with_columns(outputs=final_expr)
         assert "outputs" in result.columns
@@ -321,7 +324,9 @@ class TestGraphEdgeCases:
 
         pipe = Pipeline().source("blob")
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         assert len(result) == 0
         assert "processed" in result.columns
@@ -337,10 +342,12 @@ class TestGraphEdgeCases:
 
         pipe = Pipeline().source("blob")
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         # With struct output, null rows have null 'data' field
-        data_nulls = result["processed"].struct.field("data").null_count()
+        data_nulls = result["processed"].ext.storage().struct.field("data").null_count()
         assert data_nulls == 1
         assert result["processed"][1] is None
 
@@ -349,7 +356,7 @@ class TestGraphEdgeCases:
         pipe = Pipeline().source("blob")
 
         result = synthetic_image_df.with_columns(
-            identity=pl.col("images").cv.pipe(pipe).sink("numpy")
+            identity=pl.col("images").cv.pipe(pipe).sink("tensor")
         )
 
         # Output should be same shape as input

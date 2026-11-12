@@ -350,7 +350,7 @@ class TestStatisticsLazy:
         result = df.select(
             output=merged.sink(
                 {
-                    "gray": "numpy",
+                    "gray": "tensor",
                     "stat_mean": "native",
                     "stat_max": "native",
                 }

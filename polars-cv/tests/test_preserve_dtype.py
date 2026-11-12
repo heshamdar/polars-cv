@@ -36,7 +36,7 @@ def _png_from(arr: np.ndarray) -> bytes:
 
 def _run(pipe: Pipeline, png: bytes) -> np.ndarray:
     df = pl.DataFrame({"img": [png]})
-    out = df.with_columns(o=pl.col("img").cv.pipe(pipe).sink("numpy"))
+    out = df.with_columns(o=pl.col("img").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(out["o"][0])
 
 
@@ -152,7 +152,7 @@ class TestPreserveDtypeExecution:
             pl.col("img")
             .cv.pipe(_u8_src())
             .adjust_brightness(factor=1.2, preserve_dtype=True)
-            .sink("numpy")
+            .sink("tensor")
         )
         out = numpy_from_struct(df.with_columns(o=expr)["o"][0])
         assert out.dtype == np.uint8

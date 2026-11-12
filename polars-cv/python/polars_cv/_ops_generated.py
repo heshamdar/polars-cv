@@ -445,11 +445,9 @@ class SinkFormat(str, Enum):
     LIST = "list"
     LONG = "long"
     NATIVE = "native"
-    NDARRAY = "ndarray"
-    NUMPY = "numpy"
     PNG = "png"
+    TENSOR = "tensor"
     TIFF = "tiff"
-    TORCH = "torch"
     WEBP = "webp"
 
 
@@ -1921,35 +1919,9 @@ SINK_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "native": {},
-    "ndarray": {
-        "dtype": {
-            "kind": "optional",
-            "inner": {
-                "kind": "scalar",
-                "per_row": False,
-                "py": "SinkDType",
-                "this": False,
-                "variants": ["f16", "float16"],
-            },
-        },
-        "compact": {"kind": "scalar", "per_row": False, "py": "bool", "this": False},
-    },
-    "numpy": {
-        "dtype": {
-            "kind": "optional",
-            "inner": {
-                "kind": "scalar",
-                "per_row": False,
-                "py": "SinkDType",
-                "this": False,
-                "variants": ["f16", "float16"],
-            },
-        },
-        "compact": {"kind": "scalar", "per_row": False, "py": "bool", "this": False},
-    },
     "png": {},
     "tiff": {},
-    "torch": {
+    "tensor": {
         "dtype": {
             "kind": "optional",
             "inner": {
@@ -2046,50 +2018,18 @@ class Sink:
         return cls("native", {})
 
     @classmethod
-    def ndarray(cls, *, dtype: str | None = None, compact: bool | None = None) -> Sink:
-        """The `polars_cv.ndarray` extension type: a zero-copy tensor struct.
-
-        Args:
-            dtype: Downcast the elements to this dtype at encode time: only half
-                precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any other
-                dtype.
-            compact: Make each row's ``data`` exactly its elements, row-major, at offset
-                zero, instead of the storage the row is a view into (whole, with the
-                strides and offset that read the view out of it). Copies only a row that
-                is not already that. Set it for a column that will be persisted: Parquet
-                and IPC write each row's ``data`` whole.
-        """
-        return cls("ndarray", {"dtype": dtype, "compact": compact})
-
-    @classmethod
-    def numpy(cls, *, dtype: str | None = None, compact: bool | None = None) -> Sink:
-        """A zero-copy tensor struct `numpy_from_struct` reads.
-
-        Args:
-            dtype: Downcast the elements to this dtype at encode time: only half
-                precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any other
-                dtype.
-            compact: Make each row's ``data`` exactly its elements, row-major, at offset
-                zero, instead of the storage the row is a view into (whole, with the
-                strides and offset that read the view out of it). Copies only a row that
-                is not already that. Set it for a column that will be persisted: Parquet
-                and IPC write each row's ``data`` whole.
-        """
-        return cls("numpy", {"dtype": dtype, "compact": compact})
-
-    @classmethod
     def png(cls) -> Sink:
         """Re-encoded as PNG."""
         return cls("png", {})
 
     @classmethod
-    def tiff(cls) -> Sink:
-        """Re-encoded as TIFF."""
-        return cls("tiff", {})
-
-    @classmethod
-    def torch(cls, *, dtype: str | None = None, compact: bool | None = None) -> Sink:
-        """A zero-copy tensor struct `torch_from_struct` reads.
+    def tensor(cls, *, dtype: str | None = None, compact: bool | None = None) -> Sink:
+        """One tensor per row, without copying it: the struct
+        ``{data, dtype, shape, strides, offset}``, tagged with the
+        `polars_cv.ndarray` extension type so the column says what it holds.
+        `numpy_from_struct` reads a row, and ``source("tensor")`` reads the
+        column back. Polars' struct operations need the storage:
+        ``.ext.storage().struct.field("shape")``.
 
         Args:
             dtype: Downcast the elements to this dtype at encode time: only half
@@ -2101,7 +2041,12 @@ class Sink:
                 is not already that. Set it for a column that will be persisted: Parquet
                 and IPC write each row's ``data`` whole.
         """
-        return cls("torch", {"dtype": dtype, "compact": compact})
+        return cls("tensor", {"dtype": dtype, "compact": compact})
+
+    @classmethod
+    def tiff(cls) -> Sink:
+        """Re-encoded as TIFF."""
+        return cls("tiff", {})
 
     @classmethod
     def webp(cls) -> Sink:
@@ -3168,7 +3113,7 @@ class _OpsMixin:
                 is ``normalize_percentile`` or ``normalize_range``.
             out_dtype: Output dtype (default f32). Normalization computes in f32 and the
                 result is cast to this dtype at execution. For half precision use the
-                sink dtype instead (`.sink("numpy", dtype="f16")`).
+                sink dtype instead (`.sink("tensor", dtype="f16")`).
 
         Example:
             >>> Pipeline().source().normalize(method="minmax")
@@ -4020,11 +3965,13 @@ class _LazyOpsMixin:
                 ``[H, W, C]`` buffer as ``List[Struct{row: u32, col: u32,
                 <names>...}]``, each channel a field of the buffer's dtype. ``native``:
                 The domain's own Polars type: `Float64` for a scalar, a `List` for a
-                vector, the contour struct for contours. ``ndarray``: The
-                `polars_cv.ndarray` extension type: a zero-copy tensor struct.
-                ``numpy``: A zero-copy tensor struct `numpy_from_struct` reads. ``png``:
-                Re-encoded as PNG. ``tiff``: Re-encoded as TIFF. ``torch``: A zero-copy
-                tensor struct `torch_from_struct` reads. ``webp``: Re-encoded as WebP
+                vector, the contour struct for contours. ``png``: Re-encoded as PNG.
+                ``tiff``: Re-encoded as TIFF. ``tensor``: One tensor per row, without
+                copying it: the struct ``{data, dtype, shape, strides, offset}``, tagged
+                with the `polars_cv.ndarray` extension type so the column says what it
+                holds. `numpy_from_struct` reads a row, and ``source("tensor")`` reads
+                the column back. Polars' struct operations need the storage:
+                ``.ext.storage().struct.field("shape")``. ``webp``: Re-encoded as WebP
                 (lossless).
             return_expr: If True (default), return a ``pl.Expr``; if False, the
                 ``PipelineGraph``.
@@ -4034,15 +3981,14 @@ class _LazyOpsMixin:
                 :class:`polars_cv.OptFlags` selects passes individually. Every pass is
                 output-preserving, so this only changes the physical graph
                 (:mod:`polars_cv._optimize`).
-            compact: ``ndarray``, ``numpy``, ``torch``: Make each row's ``data`` exactly
-                its elements, row-major, at offset zero, instead of the storage the row
-                is a view into (whole, with the strides and offset that read the view
-                out of it). Copies only a row that is not already that. Set it for a
-                column that will be persisted: Parquet and IPC write each row's ``data``
-                whole.
-            dtype: ``ndarray``, ``numpy``, ``torch``: Downcast the elements to this
-                dtype at encode time: only half precision (``"f16"``/``"float16"``); use
-                ``.cast(...)`` for any other dtype.
+            compact: ``tensor``: Make each row's ``data`` exactly its elements, row-
+                major, at offset zero, instead of the storage the row is a view into
+                (whole, with the strides and offset that read the view out of it).
+                Copies only a row that is not already that. Set it for a column that
+                will be persisted: Parquet and IPC write each row's ``data`` whole.
+            dtype: ``tensor``: Downcast the elements to this dtype at encode time: only
+                half precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
+                other dtype.
             names: ``long``: One field name per channel, in channel order (one for an
                 ``[H, W]`` buffer); distinct, and neither ``row`` nor ``col``.
             quality: ``jpeg``: JPEG quality, 1-100. Only the JPEG encoder takes one.
@@ -4083,7 +4029,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.add(b).sink("numpy")
+            >>> result = a.add(b).sink("tensor")
             ```
         """
         return self._node_op("add", {"other": other})
@@ -4120,7 +4066,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.bitwise_and(b).sink("numpy")
+            >>> result = a.bitwise_and(b).sink("tensor")
             ```
         """
         return self._node_op("bitwise_and", {"other": other})
@@ -4137,7 +4083,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.bitwise_or(b).sink("numpy")
+            >>> result = a.bitwise_or(b).sink("tensor")
             ```
         """
         return self._node_op("bitwise_or", {"other": other})
@@ -4155,7 +4101,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.bitwise_xor(b).sink("numpy")
+            >>> result = a.bitwise_xor(b).sink("tensor")
             ```
         """
         return self._node_op("bitwise_xor", {"other": other})
@@ -4175,7 +4121,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.blend(b).sink("numpy")
+            >>> result = a.blend(b).sink("tensor")
             ```
         """
         return self._node_op("blend", {"other": other})
@@ -4251,7 +4197,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.divide(b).sink("numpy")
+            >>> result = a.divide(b).sink("tensor")
             ```
         """
         return self._node_op("divide", {"other": other})
@@ -4317,7 +4263,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.maximum(b).sink("numpy")
+            >>> result = a.maximum(b).sink("tensor")
             ```
         """
         return self._node_op("maximum", {"other": other})
@@ -4335,7 +4281,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.minimum(b).sink("numpy")
+            >>> result = a.minimum(b).sink("tensor")
             ```
         """
         return self._node_op("minimum", {"other": other})
@@ -4356,7 +4302,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.multiply(b).sink("numpy")
+            >>> result = a.multiply(b).sink("tensor")
             ```
         """
         return self._node_op("multiply", {"other": other})
@@ -4465,7 +4411,7 @@ class _LazyOpsMixin:
             ```python
             >>> a = pl.col("image1").cv.pipe(pipe1)
             >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.subtract(b).sink("numpy")
+            >>> result = a.subtract(b).sink("tensor")
             ```
         """
         return self._node_op("subtract", {"other": other})

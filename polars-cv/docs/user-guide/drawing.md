@@ -79,8 +79,8 @@ outlined = (
     .rasterize(width=32, height=32, supersample=4)
 )
 masks = df.select(
-    filled=pl.col("c").cv.pipe(filled).sink("numpy"),
-    outlined=pl.col("c").cv.pipe(outlined).sink("numpy"),
+    filled=pl.col("c").cv.pipe(filled).sink("tensor"),
+    outlined=pl.col("c").cv.pipe(outlined).sink("tensor"),
 )
 (outline,) = numpy_from_column(masks["outlined"], copy=True)
 assert outline[16, 16, 0] == 0 and outline[4, 16, 0] == 255  # hollow, edge drawn
@@ -157,7 +157,7 @@ ramp = (
     .scale(85.0)
     .clamp(0, 255, out_dtype="u8")
 )
-(bands,) = numpy_from_column(df.select(pl.col("m").cv.pipe(ramp).sink("numpy")).to_series(), copy=True)
+(bands,) = numpy_from_column(df.select(pl.col("m").cv.pipe(ramp).sink("tensor")).to_series(), copy=True)
 assert set(np.unique(bands)) == {0, 85, 170, 255}
 ```
 

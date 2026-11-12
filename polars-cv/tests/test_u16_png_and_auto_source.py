@@ -136,7 +136,7 @@ class TestAutoSource:
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("auto").resize(height=4, width=4)
-        result = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert "out" in result.columns
 
     def test_auto_string_column_is_file_path(self, tmp_path) -> None:
@@ -248,7 +248,7 @@ class TestAutoSource:
         lf = df.lazy().with_columns(out=pl.col("img").cv.pipe(named).sink("list"))
         assert lf.collect_schema()["out"] == lf.collect()["out"].dtype
 
-        lf = df.lazy().with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        lf = df.lazy().with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert lf.collect_schema()["out"] == lf.collect()["out"].dtype
 
     def test_auto_blob_roundtrip(self) -> None:
@@ -261,7 +261,9 @@ class TestAutoSource:
         blobs = df.with_columns(blob=pl.col("img").cv.pipe(blob_pipe).sink("blob"))
 
         auto_pipe = Pipeline().source("auto")
-        result = blobs.with_columns(out=pl.col("blob").cv.pipe(auto_pipe).sink("numpy"))
+        result = blobs.with_columns(
+            out=pl.col("blob").cv.pipe(auto_pipe).sink("tensor")
+        )
         assert "out" in result.columns
 
     def test_auto_unroutable_dtype_errors(self) -> None:
@@ -270,4 +272,4 @@ class TestAutoSource:
 
         pipe = Pipeline().source("auto")
         with pytest.raises(Exception, match="auto source cannot infer"):
-            df.with_columns(out=pl.col("nums").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(out=pl.col("nums").cv.pipe(pipe).sink("tensor"))

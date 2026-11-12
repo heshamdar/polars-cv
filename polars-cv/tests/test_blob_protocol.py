@@ -56,7 +56,7 @@ def _with_strides(blob: bytes, strides: list[int]) -> bytes:
 def _run(blob: bytes) -> pl.DataFrame:
     df = pl.DataFrame({"b": [blob]}, schema={"b": pl.Binary})
     pipe = Pipeline().source("blob").scale(2.0)
-    return df.select(o=pl.col("b").cv.pipe(pipe).sink("numpy"))
+    return df.select(o=pl.col("b").cv.pipe(pipe).sink("tensor"))
 
 
 @plugin_required
@@ -89,6 +89,6 @@ class TestHostileBlobAlignment:
             schema={"b": pl.Binary},
         )
         pipe = Pipeline().source("blob").scale(2.0).on_error("null")
-        out = df.select(o=pl.col("b").cv.pipe(pipe).sink("numpy"))["o"]
+        out = df.select(o=pl.col("b").cv.pipe(pipe).sink("tensor"))["o"]
         assert out[0] is not None
         assert out[1] is None

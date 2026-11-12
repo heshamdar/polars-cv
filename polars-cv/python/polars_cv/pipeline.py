@@ -180,7 +180,7 @@ class Pipeline(_OpsMixin):
         >>> # Apply to a DataFrame and choose the output format at the sink
         >>> df = pl.DataFrame({"image": [img_bytes]})
         >>> result = df.with_columns(
-        ...     processed=pl.col("image").cv.pipe(preprocess).sink("numpy")
+        ...     processed=pl.col("image").cv.pipe(preprocess).sink("tensor")
         ... )
         ```
 

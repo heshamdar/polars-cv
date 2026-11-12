@@ -288,7 +288,7 @@ class TestMyFeature:
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").my_op(param=42)
-        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
         assert result["output"].dtype == pl.Struct(...)
 ```
 

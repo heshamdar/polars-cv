@@ -45,7 +45,7 @@ def _canny(arr: np.ndarray, low: float, high: float) -> np.ndarray:
     )
     df = pl.DataFrame({"img": [_png(arr)]})
     out = numpy_from_struct(
-        df.select(pl.col("img").cv.pipe(pipe).sink("numpy"))["img"][0]
+        df.select(pl.col("img").cv.pipe(pipe).sink("tensor"))["img"][0]
     )
     assert out.shape == (*arr.shape[:2], 1)
     return out[..., 0]
@@ -141,6 +141,6 @@ def test_a_non_u8_image_of_the_same_values_matches_opencv(dtype: str) -> None:
     )
     df = pl.DataFrame({"img": [_png(img)]})
     got = numpy_from_struct(
-        df.select(pl.col("img").cv.pipe(pipe).sink("numpy"))["img"][0]
+        df.select(pl.col("img").cv.pipe(pipe).sink("tensor"))["img"][0]
     )
     np.testing.assert_array_equal(got[..., 0], cv2.Canny(img, 50.0, 150.0))

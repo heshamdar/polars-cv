@@ -83,7 +83,7 @@ def run(name, query, check):
 run("read_bytes", lambda: df.select(pl.col("p").cv.read_bytes(allowed_roots=["*"]))["p"],
     lambda s: s.to_list() == [PNG] * N)
 pipe = polars_cv.Pipeline().source("file_path", allowed_roots=["*"])
-run("file_path", lambda: df.select(pl.col("p").cv.pipe(pipe).sink("numpy"))["p"],
+run("file_path", lambda: df.select(pl.col("p").cv.pipe(pipe).sink("tensor"))["p"],
     lambda s: s.null_count() == 0 and s.len() == N)
 run("width", lambda: df.select(pl.col("p").cv.width(allowed_roots=["*"]))["p"],
     lambda s: s.to_list() == [8] * N)

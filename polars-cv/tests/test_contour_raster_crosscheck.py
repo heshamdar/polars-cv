@@ -183,7 +183,7 @@ def _mask(contour: dict) -> np.ndarray:
         .source("contour")
         .rasterize(width=CANVAS, height=CANVAS, fill_value=1, background=0)
     )
-    out = frame.with_columns(m=pl.col("c").cv.pipe(pipe).sink("numpy"))
+    out = frame.with_columns(m=pl.col("c").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(out["m"][0]).reshape(CANVAS, CANVAS).astype(bool)
 
 
@@ -310,7 +310,7 @@ def _coverage(contour: dict, n: int) -> float:
         .source("contour")
         .rasterize(width=CANVAS, height=CANVAS, supersample=n)
     )
-    out = frame.with_columns(m=pl.col("c").cv.pipe(pipe).sink("numpy"))
+    out = frame.with_columns(m=pl.col("c").cv.pipe(pipe).sink("tensor"))
     return float(numpy_from_struct(out["m"][0]).astype(np.float64).sum()) / 255.0
 
 
