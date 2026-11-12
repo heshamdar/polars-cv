@@ -52,7 +52,7 @@ def _quantized(arr: np.ndarray, bins: int) -> np.ndarray:
         .histogram(bins=bins, range=(0, 256), output="quantized")
     )
     df = pl.DataFrame({"img": [_png(arr)]})
-    out = df.select(o=pl.col("img").cv.pipe(pipe).sink("numpy"))
+    out = df.select(o=pl.col("img").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(out.row(0)[0])
 
 

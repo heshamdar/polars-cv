@@ -45,7 +45,7 @@ use polars_utils::aliases::PlFixedStateQuality;
 /// variants by `all_lists_every_variant_once`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ExtType {
-    /// A strided N-D array carried as the numpy/torch sink struct.
+    /// A strided N-D array carried as the tensor sink struct.
     NdArray,
     /// A 2-D `{x, y}` point.
     Point,

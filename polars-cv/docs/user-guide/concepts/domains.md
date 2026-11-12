@@ -78,7 +78,7 @@ square = {
 df = pl.DataFrame({"contour": [square]}, schema={"contour": CONTOUR_SCHEMA})
 
 pipe = Pipeline().source("contour").rasterize(width=200, height=200)
-result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 ```
 
 ### Contour → Vector

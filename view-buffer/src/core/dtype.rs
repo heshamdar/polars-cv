@@ -23,7 +23,7 @@ pub enum DType {
 ///
 /// A dtype is named three times across this workspace's boundaries: a short
 /// name (`"u8"`) in the graph JSON, a VIEW protocol wire code (`1`) in the
-/// binary header, and a numpy name (`"uint8"`) in the numpy/torch sink and
+/// binary header, and a numpy name (`"uint8"`) in the tensor sink and
 /// the header-only metadata accessors. Each used to be its own `match` — five
 /// tables in four files — so adding a dtype meant finding all five.
 ///

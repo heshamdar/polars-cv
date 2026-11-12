@@ -57,7 +57,9 @@ class TestLiteralPipelineCorrectness:
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
         output_struct = result["processed"][0]
 
         # Verify dimensions using struct shape field
@@ -74,7 +76,9 @@ class TestLiteralPipelineCorrectness:
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
         output_struct = result["processed"][0]
 
         shape = get_shape(output_struct)
@@ -94,7 +98,9 @@ class TestLiteralPipelineCorrectness:
         png_bytes = create_test_png(100, 100, (200, 100, 50))
         df = pl.DataFrame({"images": [png_bytes, png_bytes, png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         # All rows should produce identical output (same input, same literal pipeline)
         arr0 = numpy_from_struct(result["processed"][0])
@@ -112,7 +118,9 @@ class TestLiteralPipelineCorrectness:
         # Create a batch of 100 identical images
         df = pl.DataFrame({"images": [png_bytes] * 100})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         # All outputs should have same shape
         first_shape = get_shape(result["processed"][0])
@@ -142,7 +150,9 @@ class TestExpressionPipelineCorrectness:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         # Each row should have different dimensions based on h/w columns
         shape0 = get_shape(result["processed"][0])
@@ -176,7 +186,9 @@ class TestExpressionPipelineCorrectness:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         # Both should produce 20x20 crops, but from different positions
         shape0 = get_shape(result["processed"][0])
@@ -206,7 +218,9 @@ class TestExpressionPipelineCorrectness:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         # Verify each row has the correct size - NOT all using first row's value
         for i, expected_size in enumerate([10, 20, 30, 40]):
@@ -241,7 +255,9 @@ class TestMixedLiteralExpressionPipeline:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         # Height should be 50 for all, width should vary
         shape0 = get_shape(result["processed"][0])
@@ -281,7 +297,9 @@ class TestMixedLiteralExpressionPipeline:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(
+            processed=pl.col("images").cv.pipe(pipe).sink("tensor")
+        )
 
         # Both should produce 32x32 output (literal crop dimensions)
         shape0 = get_shape(result["processed"][0])
@@ -305,7 +323,7 @@ class TestStreamingVsEagerPrecompile:
         # Use streaming execution
         result = (
             df.lazy()
-            .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+            .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("tensor"))
             .collect(engine="streaming")
         )
 
@@ -334,7 +352,7 @@ class TestStreamingVsEagerPrecompile:
         # Use streaming execution
         result = (
             df.lazy()
-            .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
+            .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("tensor"))
             .collect(engine="streaming")
         )
 

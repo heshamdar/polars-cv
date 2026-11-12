@@ -64,6 +64,6 @@ def test_a_zero_width_array_is_refused() -> None:
     column; the FFI import of one panicked the plugin."""
     empty = np.zeros((0, 3, 1), np.float32)
     df = pl.DataFrame({"a": pl.Series([empty], dtype=pl.Array(pl.Float32, (0, 3, 1)))})
-    query = pl.col("a").cv.pipe(Pipeline().source("array")).sink("numpy")
+    query = pl.col("a").cv.pipe(Pipeline().source("array")).sink("tensor")
     with pytest.raises(pl.exceptions.ComputeError, match="zero-size dimension"):
         df.select(query)

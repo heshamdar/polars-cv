@@ -60,7 +60,7 @@ def _decode(data: bytes, **source: Any) -> np.ndarray:
     df = pl.DataFrame({"img": [data]}, schema={"img": pl.Binary})
     pipe = Pipeline().source("image_bytes", **source)
     return numpy_from_struct(
-        df.select(o=pl.col("img").cv.pipe(pipe).sink("numpy"))["o"][0]
+        df.select(o=pl.col("img").cv.pipe(pipe).sink("tensor"))["o"][0]
     )
 
 
@@ -149,7 +149,7 @@ def test_auto_and_file_path_take_it(tmp_path: Path) -> None:
 
     df = pl.DataFrame({"img": [data]}, schema={"img": pl.Binary})
     auto = Pipeline().source(orientation="exif")
-    got = df.select(o=pl.col("img").cv.pipe(auto).sink("numpy"))["o"][0]
+    got = df.select(o=pl.col("img").cv.pipe(auto).sink("tensor"))["o"][0]
     assert np.array_equal(numpy_from_struct(got), want)
 
     path = tmp_path / "a.jpg"
@@ -158,7 +158,7 @@ def test_auto_and_file_path_take_it(tmp_path: Path) -> None:
     fp = Pipeline().source(
         "file_path", orientation="exif", allowed_roots=[str(tmp_path)]
     )
-    got = paths.select(o=pl.col("p").cv.pipe(fp).sink("numpy"))["o"][0]
+    got = paths.select(o=pl.col("p").cv.pipe(fp).sink("tensor"))["o"][0]
     assert np.array_equal(numpy_from_struct(got), want)
 
 
@@ -188,10 +188,10 @@ def test_ops_run_on_the_oriented_view() -> None:
         .crop(top=2, left=3, height=8, width=6)
         .blur(sigma=1.0)
     )
-    got = df.select(o=pl.col("img").cv.pipe(pipe).sink("numpy"))["o"][0]
+    got = df.select(o=pl.col("img").cv.pipe(pipe).sink("tensor"))["o"][0]
     ref = pl.DataFrame(
         {"a": [oriented]}, schema={"a": pl.Array(pl.UInt8, oriented.shape)}
-    ).select(o=pl.col("a").cv.pipe(direct).sink("numpy"))["o"][0]
+    ).select(o=pl.col("a").cv.pipe(direct).sink("tensor"))["o"][0]
     assert np.array_equal(numpy_from_struct(got), numpy_from_struct(ref))
 
 

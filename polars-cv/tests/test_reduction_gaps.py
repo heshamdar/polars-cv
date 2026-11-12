@@ -85,7 +85,7 @@ class TestReduceMeanAxes:
         """Mean along axis 0 should reduce height dimension."""
         df = pl.DataFrame({"img": [img_png]})
         pipe = Pipeline().source("image_bytes").reduce_mean(axis=0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         # Should have reduced the height (axis 0)
         assert arr.shape[0] < 32 or arr.ndim < 3
@@ -94,7 +94,7 @@ class TestReduceMeanAxes:
         """Mean along axis 1 should reduce width dimension."""
         df = pl.DataFrame({"img": [img_png]})
         pipe = Pipeline().source("image_bytes").reduce_mean(axis=1)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape[0] == 32 or arr.ndim < 3
 
@@ -132,7 +132,7 @@ class TestReduceStdDdof:
         """Per-row std should produce a reduction."""
         df = pl.DataFrame({"img": [img_png]})
         pipe = Pipeline().source("image_bytes").reduce_std(axis=0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         # Should have reduced the height axis
         assert arr.shape[0] < 50 or arr.ndim < 3
@@ -158,7 +158,7 @@ class TestReduceArgmaxArgmin:
         """argmax along axis=0 should return valid indices."""
         df = pl.DataFrame({"img": [known_img_png]})
         pipe = Pipeline().source("image_bytes").reduce_argmax(axis=0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         # Should have shape (width, channels) or similar reduced shape
         assert arr.ndim >= 1
@@ -167,7 +167,7 @@ class TestReduceArgmaxArgmin:
         """argmin along axis=0 should return valid indices."""
         df = pl.DataFrame({"img": [known_img_png]})
         pipe = Pipeline().source("image_bytes").reduce_argmin(axis=0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.ndim >= 1
 
@@ -177,7 +177,7 @@ class TestReduceArgmaxArgmin:
         png = encode_png(img)
         df = pl.DataFrame({"img": [png]})
         pipe = Pipeline().source("image_bytes").reduce_argmax(axis=1)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.ndim >= 1
 

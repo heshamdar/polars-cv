@@ -66,8 +66,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
-- **`source("tensor")`: the `numpy`, `ndarray` and `torch` sinks can be read
-  back (CR-138).** Their output fed no source ("auto source cannot infer a
+- **`source("tensor")`: the tensor sink can be read back (CR-138).** Its
+  output (then the `numpy`, `ndarray` and `torch` sinks') fed no source ("auto source cannot infer a
   decode path for column dtype Struct(...)"), so a tensor column could not
   enter another pipeline, even from a Parquet file. `source("tensor")` reads
   each row where it lies, at its own shape, strides and offset (a flipped or
@@ -119,6 +119,35 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **One tensor sink: `sink("tensor")` replaces `numpy`, `torch` and
+  `ndarray`, and its column is always typed `polars_cv.ndarray` (CR-81).**
+  `numpy` and `torch` wrote byte-identical plain structs and `ndarray` the
+  same struct with the extension tag; all three were already read by one
+  source, `tensor`. There is now one sink of the same name, with the same
+  `dtype="f16"` and `compact=True`, and it always carries the tag, so a
+  column says what it holds, through Parquet and IPC too. The rows, bytes
+  and strides are unchanged (the golden corpus re-records only the column
+  type). What to change:
+    - `sink("numpy")`, `sink("torch")`, `sink("ndarray")` → `sink("tensor")`;
+      likewise `Sink.tensor(...)` and `SinkFormat.TENSOR`.
+    - Reading rows is unchanged: `numpy_from_struct(out["x"][0])`,
+      `numpy_from_column(out["x"])`, `.to_list()`.
+    - Polars' struct operations do not see through the tag. Go through the
+      storage: `pl.col("x").ext.storage().struct.field("shape")`,
+      `df.with_columns(pl.col("x").ext.storage()).unnest("x")`.
+    - A dtype check is `isinstance(dtype, polars_cv.NdArrayType)`; the
+      struct is `NUMPY_OUTPUT_SCHEMA`, the type's storage.
+    - Concatenating with a plain-struct column written by an earlier release:
+      tag the old one, `pl.col("x").ext.to(polars_cv.NdArrayType())`. Such a
+      column is still read by `source("tensor")` and `numpy_from_struct`.
+    - `show_images(format="numpy")` is `format="tensor"` (an untagged struct
+      column; a tagged one is recognised under `"auto"`).
+
+  The source and sink names now pair up: `tensor`, `blob`, `list` and `array`
+  each read what the sink of the same name writes; the image encoders
+  (`png`, `jpeg`, `webp`, `tiff`) are read by `image_bytes`. `blob` stays:
+  it is the one form that is a single `Binary` value. Geometry outputs stay
+  plain structs.
 - **The `(format, {params})` tuple in a multi-output `sink()` is removed
   (CR-142).** `{"thumb": ("jpeg", {"quality": 85})}` is
   `{"thumb": Sink.jpeg(quality=85)}`; the tuple is now a `TypeError` naming

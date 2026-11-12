@@ -13,7 +13,7 @@ flowchart LR
 
 1. **Source**: How to interpret input data (e.g., `image_bytes`, `file_path`)
 2. **Operations**: Transformations to apply (e.g., `resize`, `grayscale`)
-3. **Sink**: Final output format (e.g., `numpy`, `png`)
+3. **Sink**: Final output format (e.g., `tensor`, `png`)
 
 ## Modular Style
 
@@ -34,7 +34,7 @@ preprocess = (
 # 2. Apply to column and choose sink
 df = pl.DataFrame({"image": [png_bytes]})
 result = df.with_columns(
-    processed=pl.col("image").cv.pipe(preprocess).sink("numpy")
+    processed=pl.col("image").cv.pipe(preprocess).sink("tensor")
 )
 ```
 
@@ -47,7 +47,7 @@ result = df.with_columns(
 | `file_path` | String | Local/cloud/HTTP path; decodes like `image_bytes`. Needs `allowed_roots` (default-deny; `["*"]` opts in to any path) |
 | `raw` | Binary | Raw bytes (requires `dtype`) |
 | `blob` | Binary | Self-describing VIEW binary protocol (what `sink("blob")` writes) |
-| `tensor` | Struct / `polars_cv.ndarray` | What `sink("numpy")`, `sink("ndarray")` and `sink("torch")` write, read at its own strides; a `float16` row reads as `f32` |
+| `tensor` | Struct / `polars_cv.ndarray` | What `sink("tensor")` writes (and the same struct untagged), read at its own strides; a `float16` row reads as `f32` |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
 | `long` | List(Struct) | One struct per pixel, `{row, col, <names>...}`; `names=` one per channel, `where=` keeps a channel's > 0 pixels |
@@ -72,9 +72,7 @@ If you use `sink("list")` or `sink("array")`, dtype must be known at planning ti
 
 | Format | Output Type | Description | Read back by |
 |--------|------------|-------------|--------------|
-| `numpy` | Struct | NumPy-compatible zero-copy struct (`{data, dtype, shape, strides, offset}`); `dtype="f16"` downcasts, `compact=True` packs each row | `tensor` |
-| `torch` | Struct | PyTorch-compatible zero-copy struct; `dtype="f16"` downcasts, `compact=True` packs each row | `tensor` |
-| `ndarray` | `polars_cv.ndarray` | The `numpy` struct tagged with an [extension type](extension-types.md); `dtype="f16"` downcasts, `compact=True` packs each row | `tensor` |
+| `tensor` | `polars_cv.ndarray` | One zero-copy tensor per row: the struct `{data, dtype, shape, strides, offset}`, tagged with an [extension type](extension-types.md); `dtype="f16"` downcasts, `compact=True` packs each row | `tensor` |
 | `png` | Binary | PNG bytes; preserves bit depth (`u8` → 8-bit, `u16` → 16-bit) | `image_bytes` |
 | `jpeg` | Binary | JPEG bytes; 8-bit only, requires `u8` | `image_bytes` |
 | `webp` | Binary | WebP bytes; 8-bit only, requires `u8` | `image_bytes` |
@@ -125,10 +123,10 @@ which the test suite runs.
 |----------|------|
 | One array for the whole column (a batch), every row the same shape | `array` |
 | Rows of different shapes, kept as Polars values | `list` |
-| A tensor per row for a data loader | `numpy`, or `torch` |
-| To write tensors to Parquet or IPC and read them back | `ndarray` with `compact=True` |
+| A tensor per row for a data loader | `tensor` |
+| To write tensors to Parquet or IPC and read them back | `tensor` with `compact=True` |
 | To write images | `png` (lossless, 8- or 16-bit), `jpeg`, `webp`, or `tiff` (floats too) |
-| To hand the result to another pipeline | `blob`, or any tensor sink |
+| To hand the result to another pipeline | `blob`, or `tensor` |
 | A number or a list per row (after a reduction) | `native` (the default) |
 
 **A batch.** `array` gives a fixed-shape `Array` column, which `to_numpy()`
@@ -148,16 +146,18 @@ itself will work on the values, not as a way to reach NumPy.
 --8<-- "examples/15_choosing_a_sink.py:list"
 ```
 
-**A tensor per row.** `numpy` and `torch` hand each row's buffer over without
-copying it; `numpy_from_struct` (or the torch equivalent) reads a row.
+**A tensor per row.** `tensor` hands each row's buffer over without copying
+it; `numpy_from_struct` reads a row and `numpy_from_column` the column. The
+column is typed `polars_cv.ndarray`, so it says what it holds after a round
+trip; Polars' struct operations need `.ext.storage()` first
+([Extension Types](extension-types.md)).
 
 ```python
---8<-- "examples/15_choosing_a_sink.py:numpy"
+--8<-- "examples/15_choosing_a_sink.py:tensor"
 ```
 
-**Tensors that persist.** `ndarray` is the same struct tagged with an
-[extension type](extension-types.md), so the column says what it holds after
-a round trip. Add `compact=True` for anything written to disk (above).
+**Tensors that persist.** The same sink with `compact=True` (above), so each
+row writes only its own elements. The default source reads the column back.
 
 ```python
 --8<-- "examples/15_choosing_a_sink.py:persist"

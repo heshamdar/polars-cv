@@ -232,7 +232,7 @@ class TestPipelineGraphSerialization:
 
         graph = PipelineGraph()
         graph.add_node("node1", pipe, pl.col("image"))
-        graph.set_output("node1", "numpy")
+        graph.set_output("node1", "tensor")
 
         json_str = graph._to_json()
 
@@ -246,7 +246,7 @@ class TestPipelineGraphSerialization:
         assert "outputs" in parsed
         assert "_output" in parsed["outputs"]
         assert parsed["outputs"]["_output"]["node"] == "n0"
-        assert parsed["outputs"]["_output"]["sink"]["format"] == "numpy"
+        assert parsed["outputs"]["_output"]["sink"]["format"] == "tensor"
 
     def test_graph_topological_order(self) -> None:
         """Graph should compute correct topological order."""
@@ -258,7 +258,7 @@ class TestPipelineGraphSerialization:
         graph.add_node("c", Pipeline().blur(1.0), input="b")
         graph.add_node("b", Pipeline().grayscale(), input="a")
         graph.add_node("a", pipe, pl.col("a"))
-        graph.set_output("c", "numpy")
+        graph.set_output("c", "tensor")
 
         # Each node after the node it reads.
         assert graph.topological_order() == ["a", "b", "c"]
@@ -272,7 +272,7 @@ class TestPipelineGraphSerialization:
         graph = PipelineGraph()
         graph.add_node("node1", pipe, pl.col("col_a"))
         graph.add_node("node2", pipe, pl.col("col_b"))
-        graph.set_output("node2", "numpy")
+        graph.set_output("node2", "tensor")
 
         nodes = graph._to_dict()["nodes"]
         assert {k: n["input"]["decode"]["column"] for k, n in nodes.items()} == {
@@ -289,7 +289,7 @@ class TestPipelineGraphSerialization:
         graph = PipelineGraph()
         graph.add_node("node1", pipe, pl.col("same_col"))
         graph.add_node("node2", pipe, pl.col("same_col"))
-        graph.set_output("node2", "numpy")
+        graph.set_output("node2", "tensor")
 
         # Only one unique input column
         assert len(graph._slot_table()) == 1
@@ -330,7 +330,7 @@ class TestLazyCompositionExecution:
         img = pl.col("image").cv.pipe(img_pipe)
         mask = pl.col("mask").cv.pipe(mask_pipe)
 
-        result_expr = img.apply_mask(mask).sink("numpy")
+        result_expr = img.apply_mask(mask).sink("tensor")
 
         # This will FAIL until apply_mask is implemented in execute.rs
         result = df.select(output=result_expr)
@@ -360,7 +360,7 @@ class TestLazyCompositionExecution:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result_expr = expr1.add(expr2).sink("numpy")
+        result_expr = expr1.add(expr2).sink("tensor")
 
         # This will FAIL until add is implemented in execute.rs
         result = df.select(output=result_expr)
@@ -392,7 +392,7 @@ class TestLazyCompositionExecution:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result_expr = expr1.subtract(expr2).sink("numpy")
+        result_expr = expr1.subtract(expr2).sink("tensor")
 
         # This will FAIL until subtract is implemented in execute.rs
         result = df.select(output=result_expr)
@@ -424,7 +424,7 @@ class TestLazyCompositionExecution:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result_expr = expr1.multiply(expr2).sink("numpy")
+        result_expr = expr1.multiply(expr2).sink("tensor")
 
         # This will FAIL until multiply is implemented in execute.rs
         result = df.select(output=result_expr)
@@ -454,7 +454,7 @@ class TestLazyCompositionExecution:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result_expr = expr1.divide(expr2).sink("numpy")
+        result_expr = expr1.divide(expr2).sink("tensor")
 
         result = df.select(output=result_expr)
         output = numpy_from_struct(result.row(0)[0])
@@ -490,7 +490,7 @@ class TestLazyCompositionExecution:
         expr3 = pl.col("img3").cv.pipe(pipe3)
 
         # Chain: (expr1 + expr2) * expr3
-        result_expr = expr1.add(expr2).multiply(expr3).sink("numpy")
+        result_expr = expr1.add(expr2).multiply(expr3).sink("tensor")
 
         # This will FAIL until both add and multiply are implemented
         result = df.select(output=result_expr)
@@ -534,7 +534,7 @@ class TestLazyCompositionExecution:
         mask = pl.col("contour").cv.pipe(contour_pipe)
 
         # Use apply_mask directly (contour source already rasterizes)
-        result_expr = img.apply_mask(mask).sink("numpy")
+        result_expr = img.apply_mask(mask).sink("tensor")
 
         result = df.select(output=result_expr)
         output = numpy_from_struct(result.row(0)[0])
@@ -580,7 +580,7 @@ class TestLazyCompositionExecution:
         mask = pl.col("contour").cv.pipe(contour_pipe)
 
         # Apply the mask
-        result_expr = img.apply_mask(mask).sink("numpy")
+        result_expr = img.apply_mask(mask).sink("tensor")
 
         result = df.select(output=result_expr)
         output = numpy_from_struct(result.row(0)[0])
@@ -621,7 +621,7 @@ class TestLazyCompositionExecution:
             Pipeline().source("contour").rasterize(shape=img)
         )
 
-        graph = mask.sink("numpy", return_expr=False)
+        graph = mask.sink("tensor", return_expr=False)
         assert img._node_id in graph._nodes, (
             "the shape reference must be part of the graph"
         )
@@ -630,7 +630,7 @@ class TestLazyCompositionExecution:
         (raster,) = [n for n in nodes.values() if n["ops"]]
         assert raster["ops"][0]["size"] in nodes
 
-        output = numpy_from_struct(df.select(out=mask.sink("numpy")).row(0)[0])
+        output = numpy_from_struct(df.select(out=mask.sink("tensor")).row(0)[0])
         # Dimensions come from the referenced image: 120x80 (WxH) -> (80, 120).
         assert output.shape[:2] == (80, 120)
 
@@ -670,7 +670,7 @@ class TestLazyCompositionExecution:
         contour = pl.col("contour").cv.pipe(contour_pipe)
 
         # apply_contour_mask should auto-infer dimensions from the image
-        result_expr = img.apply_contour_mask(contour).sink("numpy")
+        result_expr = img.apply_contour_mask(contour).sink("tensor")
 
         result = df.select(output=result_expr)
         output = numpy_from_struct(result.row(0)[0])
@@ -717,7 +717,7 @@ class TestLazyCompositionExecution:
         img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
         contour = pl.col("contour").cv.pipe(contour_pipe)
         output = numpy_from_struct(
-            df.select(o=img.apply_contour_mask(contour).sink("numpy")).row(0)[0]
+            df.select(o=img.apply_contour_mask(contour).sink("tensor")).row(0)[0]
         )
         inside, outside = output[50, 50], output[0, 0]
         if fill is None:
@@ -759,7 +759,7 @@ class TestLazyCompositionExecution:
         }[form]
         img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
         output = numpy_from_struct(
-            df.select(o=img.apply_contour_mask(contour).sink("numpy")).row(0)[0]
+            df.select(o=img.apply_contour_mask(contour).sink("tensor")).row(0)[0]
         )
         kept = np.argwhere(output[..., 0])
         assert kept.min(axis=0).tolist() == [12, 12]
@@ -800,19 +800,19 @@ class TestGeneratedLazyWrappers:
 
     def test_resize_family_chain(self) -> None:
         df = self._df()
-        expr = self._base(df).grayscale().resize(height=8, width=4).sink("numpy")
+        expr = self._base(df).grayscale().resize(height=8, width=4).sink("tensor")
         out = df.with_columns(out=expr)
         assert numpy_from_struct(out["out"][0]).shape == (8, 4, 1)
 
     def test_pad_chain(self) -> None:
         df = self._df()
-        expr = self._base(df).pad(top=2, bottom=2, left=1, right=1).sink("numpy")
+        expr = self._base(df).pad(top=2, bottom=2, left=1, right=1).sink("tensor")
         out = df.with_columns(out=expr)
         assert numpy_from_struct(out["out"][0]).shape == (20, 18, 3)
 
     def test_rotate_chain(self) -> None:
         df = self._df(w=8, h=16)
-        expr = self._base(df).rotate(90).sink("numpy")
+        expr = self._base(df).rotate(90).sink("tensor")
         out = df.with_columns(out=expr)
         assert numpy_from_struct(out["out"][0]).shape == (8, 16, 3)
 
@@ -881,9 +881,9 @@ class TestPipelineGraphRefusals:
 
     def test_an_unknown_output_is_refused(self) -> None:
         with pytest.raises(ValueError, match="'nope' not found"):
-            self._graph().set_output("nope", "numpy")
+            self._graph().set_output("nope", "tensor")
         with pytest.raises(ValueError, match="nope"):
-            self._graph().set_multi_output({"nope": "numpy"})
+            self._graph().set_multi_output({"nope": "tensor"})
 
     def test_a_graph_with_no_output_is_refused(self) -> None:
         with pytest.raises(ValueError, match="[Nn]o output"):
@@ -891,7 +891,7 @@ class TestPipelineGraphRefusals:
 
     def test_an_unoptimized_graph_is_refused(self) -> None:
         graph = self._graph()
-        graph.set_output("_output", "numpy")
+        graph.set_output("_output", "tensor")
         with pytest.raises(RuntimeError, match="optimization phase"):
             graph.to_expr()
 
@@ -930,7 +930,7 @@ class TestCompositionAppliesTheOperandOnce:
 
     @staticmethod
     def _run(df: pl.DataFrame, expr: LazyPipelineExpr) -> np.ndarray:
-        return numpy_from_struct(df.select(o=expr.sink("numpy")).item())
+        return numpy_from_struct(df.select(o=expr.sink("tensor")).item())
 
     def test_channel_merge(self, df: pl.DataFrame) -> None:
         gray = self._gray()

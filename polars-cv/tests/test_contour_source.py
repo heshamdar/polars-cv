@@ -19,6 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import polars_cv
 from polars_cv import Pipeline, numpy_from_struct
 from polars_cv.geometry import CONTOUR_SCHEMA, CONTOUR_SET_SCHEMA
 from tests._plan_view import EXPR, planned
@@ -85,7 +86,7 @@ def _rasterize(column: pl.Series, **canvas) -> np.ndarray:
     pipe = Pipeline().source("contour").rasterize(**canvas)
     frame = pl.DataFrame({"c": column})
     return numpy_from_struct(
-        frame.select(m=pl.col("c").cv.pipe(pipe).sink("numpy"))["m"][0]
+        frame.select(m=pl.col("c").cv.pipe(pipe).sink("tensor"))["m"][0]
     )
 
 
@@ -141,9 +142,10 @@ class TestContourSourceExplicitDims:
         ).cast({"contour": CONTOUR_SCHEMA})
 
         pipe = Pipeline().source("contour").rasterize(width=100, height=100)
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 
-        assert isinstance(result["mask"].dtype, pl.Struct)
+        assert isinstance(result["mask"].dtype, polars_cv.NdArrayType)
+        assert isinstance(result["mask"].ext.storage().dtype, pl.Struct)
         assert result["mask"].len() == 1
 
         # Parse the numpy output
@@ -165,7 +167,7 @@ class TestContourSourceExplicitDims:
             .source("contour")
             .rasterize(width=100, height=100, fill_value=128, background=64)
         )
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 
         arr = numpy_from_struct(result["mask"][0])
 
@@ -186,7 +188,7 @@ class TestContourSourceExplicitDims:
         ).cast({"contour": CONTOUR_SCHEMA})
 
         pipe = Pipeline().source("contour").rasterize(width=100, height=100)
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 
         assert result["mask"].len() == 2
 
@@ -207,7 +209,7 @@ class TestContourSourceExplicitDims:
 
         # Rasterize and then blur
         pipe = Pipeline().source("contour").rasterize(width=100, height=100).blur(2.0)
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 
         arr = numpy_from_struct(result["mask"][0])
         assert arr.shape == (100, 100, 1)
@@ -230,7 +232,7 @@ class TestContourSourceExplicitDims:
             .rasterize(width=100, height=100)
             .resize(width=50, height=50)
         )
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 
         arr = numpy_from_struct(result["mask"][0])
         assert arr.shape == (50, 50, 1)
@@ -257,7 +259,7 @@ class TestContourSourceDynamicDims:
             .source("contour")
             .rasterize(width=pl.col("w"), height=pl.col("h"))
         )
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 
         # First row: 50x50
         arr1 = numpy_from_struct(result["mask"][0])
@@ -320,7 +322,7 @@ class TestContourSourceNullHandling:
         ).cast({"contour": CONTOUR_SCHEMA})
 
         pipe = Pipeline().source("contour").rasterize(width=100, height=100)
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 
         # First and third rows should have data
         assert result["mask"][0].get("data") is not None
@@ -462,7 +464,7 @@ class TestContourSetSource:
         )
         pipe = Pipeline().source("contour").rasterize(width=32, height=32)
         result = pl.DataFrame({"c": column}).with_columns(
-            m=pl.col("c").cv.pipe(pipe).sink("numpy")
+            m=pl.col("c").cv.pipe(pipe).sink("tensor")
         )
 
         assert result["m"][0].get("data") is not None
@@ -566,7 +568,7 @@ class TestMaskContourRoundTrip:
                     .extract_contours(mode="external", method="simple")
                     .rasterize(width=self.CANVAS, height=self.CANVAS)
                 )
-                .sink("numpy")
+                .sink("tensor")
             )["m"][0]
         )
         via_column = _rasterize(
@@ -590,7 +592,7 @@ class TestContourSourceIntegration:
         pipe = (
             Pipeline().source("contour").rasterize(width=100, height=100).threshold(128)
         )
-        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("tensor"))
 
         arr = numpy_from_struct(result["mask"][0])
 

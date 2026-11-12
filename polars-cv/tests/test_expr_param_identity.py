@@ -96,7 +96,7 @@ class TestExecution:
         return pl.DataFrame({"img": [make_test_png(4, 4, (10, 10, 10))] * N})
 
     def _first_value(self, df: pl.DataFrame, pipe: Pipeline) -> float:
-        out = df.select(o=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.select(o=pl.col("img").cv.pipe(pipe).sink("tensor"))
         from polars_cv import numpy_from_struct
 
         return float(np.asarray(numpy_from_struct(out["o"][0])).ravel()[0])
@@ -125,7 +125,7 @@ class TestExecution:
         assert str(pl.lit(pl.Series("img", [a] * N))) == str(
             pl.lit(pl.Series("img", [b] * N))
         )
-        out = pl.DataFrame({"i": range(N)}).select(o=left.add(right).sink("numpy"))
+        out = pl.DataFrame({"i": range(N)}).select(o=left.add(right).sink("tensor"))
         from polars_cv import numpy_from_struct
 
         value = float(np.asarray(numpy_from_struct(out["o"][0])).ravel()[0])

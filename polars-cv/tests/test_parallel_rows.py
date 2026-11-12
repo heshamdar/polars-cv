@@ -52,13 +52,13 @@ def _sums(series: pl.Series) -> list[float | None]:
 class TestParallelRows:
     def test_rows_come_back_in_order(self) -> None:
         pipe = Pipeline().source("blob", dtype="f32").scale(2.0)
-        out = _frame(corrupt=False).select(o=pl.col("b").cv.pipe(pipe).sink("numpy"))
+        out = _frame(corrupt=False).select(o=pl.col("b").cv.pipe(pipe).sink("tensor"))
         assert _sums(out["o"]) == [12.0 * i for i in range(N)]
 
     def test_raise_reports_the_earliest_failing_row(self) -> None:
         pipe = Pipeline().source("blob", dtype="f32").scale(2.0)
         with pytest.raises(pl.exceptions.ComputeError) as excinfo:
-            _frame(corrupt=True).select(o=pl.col("b").cv.pipe(pipe).sink("numpy"))
+            _frame(corrupt=True).select(o=pl.col("b").cv.pipe(pipe).sink("tensor"))
         message = str(excinfo.value)
         assert "magic" in message
         assert "too short" not in message
@@ -70,7 +70,7 @@ class TestParallelRows:
             .scale(2.0)
             .on_error("null_with_message")
         )
-        out = _frame(corrupt=True).select(o=pl.col("b").cv.pipe(pipe).sink("numpy"))
+        out = _frame(corrupt=True).select(o=pl.col("b").cv.pipe(pipe).sink("tensor"))
         rows = out.unnest("o")
         expected = [None if i in (BAD_EARLY, BAD_LATE) else 12.0 * i for i in range(N)]
         assert _sums(rows["_output"]) == expected
@@ -97,7 +97,7 @@ class TestParallelRows:
         ]
         df = pl.DataFrame({"image": images})
         pipe = Pipeline().source("image_bytes").resize(height=64, width=64).blur(1.5)
-        expr = pl.col("image").cv.pipe(pipe).sink("numpy").alias("o")
+        expr = pl.col("image").cv.pipe(pipe).sink("tensor").alias("o")
         streamed = df.lazy().select(expr).collect(engine="streaming")
         eager = df.select(expr)
         assert lib._last_split_workers() > 1
@@ -119,7 +119,7 @@ class TestRowParallelismSwitch:
         images = [make_test_png(32, 32, (i % 256, 0, 0)) for i in range(64)]
         df = pl.DataFrame({"image": images})
         pipe = Pipeline().source("image_bytes").resize(height=16, width=16)
-        expr = pl.col("image").cv.pipe(pipe).sink("numpy").alias("o")
+        expr = pl.col("image").cv.pipe(pipe).sink("tensor").alias("o")
         split = df.select(expr)
         assert lib._last_split_workers() > 1
         previous = polars_cv.set_row_parallelism(False)

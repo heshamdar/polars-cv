@@ -137,7 +137,7 @@ class TestLabelReduce:
 
 
 def _reduce(pipe: Pipeline) -> np.ndarray:
-    out = _frame().select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+    out = _frame().select(pl.col("a").cv.pipe(pipe).sink("tensor")).item()
     from polars_cv import numpy_from_struct
 
     return numpy_from_struct(out)
@@ -232,7 +232,7 @@ def _masked(reduction: str, axis: int | None = None, **frame):
     mask = pl.col("m").cv.pipe(Pipeline().source("array"))
     expr = img.reduce_masked(mask, reduction=reduction, axis=axis)
     out = _masked_frame(**frame).select(
-        expr.sink("native" if axis is None else "numpy")
+        expr.sink("native" if axis is None else "tensor")
     )
     if axis is None:
         return out.item()
@@ -327,7 +327,7 @@ class TestMasked:
 def _selected(**frame) -> np.ndarray:
     img = pl.col("a").cv.pipe(Pipeline().source("array"))
     mask = pl.col("m").cv.pipe(Pipeline().source("array"))
-    out = _masked_frame(**frame).select(img.masked_select(mask).sink("numpy"))
+    out = _masked_frame(**frame).select(img.masked_select(mask).sink("tensor"))
     from polars_cv import numpy_from_struct
 
     return numpy_from_struct(out.item())
@@ -509,7 +509,7 @@ class TestNormalizeWindows:
 
         frame = _frame().with_columns(**{k: pl.lit(v) for k, v in columns.items()})
         return numpy_from_struct(
-            frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+            frame.select(pl.col("a").cv.pipe(pipe).sink("tensor")).item()
         )
 
     @pytest.mark.parametrize(("low", "high"), [(2.0, 98.0), (0.0, 100.0), (25.0, 30.0)])
@@ -535,7 +535,7 @@ class TestNormalizeWindows:
             Pipeline().source("array").normalize_percentile(low=2.0, high=98.0),
             Pipeline().source("array").normalize(method="minmax"),
         ):
-            out = frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+            out = frame.select(pl.col("a").cv.pipe(pipe).sink("tensor")).item()
             assert np.isnan(numpy_from_struct(out)).all(), pipe
 
     def test_range_window_per_row(self) -> None:
@@ -573,7 +573,7 @@ class TestNormalizePercentileMasked:
         image = pl.col("a").cv.pipe(Pipeline().source("array"))
         selector = pl.col("m").cv.pipe(Pipeline().source("array"))
         expr = image.normalize_percentile_masked(selector, low=low, high=high, **kw)
-        return numpy_from_struct(frame.select(expr.sink("numpy")).item())
+        return numpy_from_struct(frame.select(expr.sink("tensor")).item())
 
     @pytest.mark.parametrize(("low", "high"), [(2.0, 98.0), (0.0, 100.0), (25.0, 30.0)])
     def test_the_window_is_the_masked_pixels_percentiles(
@@ -593,7 +593,7 @@ class TestNormalizePercentileMasked:
         frame = _masked_frame(mask=every)
         whole = Pipeline().source("array").normalize_percentile(low=5.0, high=95.0)
         want = numpy_from_struct(
-            frame.select(pl.col("a").cv.pipe(whole).sink("numpy")).item()
+            frame.select(pl.col("a").cv.pipe(whole).sink("tensor")).item()
         )
         np.testing.assert_array_equal(self._run(5.0, 95.0, mask=every), want)
 
@@ -679,7 +679,7 @@ class TestNormalizePreset:
         from polars_cv import numpy_from_struct
 
         frame = pl.DataFrame({"a": pl.Series("a", self.RGB[np.newaxis])})
-        out = frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).item()
+        out = frame.select(pl.col("a").cv.pipe(pipe).sink("tensor")).item()
         return numpy_from_struct(out)
 
     def test_matches_numpy(self) -> None:

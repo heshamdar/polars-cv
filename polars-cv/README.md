@@ -51,13 +51,13 @@ pipe = (
     .resize(height=224, width=224)
     .grayscale()
 )
-out = df.with_columns(gray=pl.col("path").cv.pipe(pipe).sink("numpy"))
+out = df.with_columns(gray=pl.col("path").cv.pipe(pipe).sink("tensor"))
 ```
 
 Sources include `image_bytes`, local paths and `s3://`/`gs://`/`az://`/`http(s)://`
 URLs. A path column is data, so reading it is **default-deny**: `allowed_roots`
 names where it may read (`allowed_roots=["*"]` opts in to anywhere). Sinks
-include `numpy`, `array`, `list`, `png` and `jpeg`. See
+include `tensor`, `array`, `list`, `png` and `jpeg`. See
 [Sources](https://heshamdar.github.io/polars-cv/user-guide/concepts/sources/)
 and [Pipelines](https://heshamdar.github.io/polars-cv/user-guide/concepts/pipelines/).
 

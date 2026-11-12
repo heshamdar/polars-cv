@@ -49,7 +49,7 @@ def _base(arr: np.ndarray) -> np.ndarray:
 def _run(pipe: Pipeline, png: bytes) -> np.ndarray:
     df = pl.DataFrame({"img": [png]})
     return numpy_from_struct(
-        df.select(o=pl.col("img").cv.pipe(pipe).sink("numpy")).row(0)[0]
+        df.select(o=pl.col("img").cv.pipe(pipe).sink("tensor")).row(0)[0]
     )
 
 

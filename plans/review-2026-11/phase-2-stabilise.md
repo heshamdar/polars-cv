@@ -62,8 +62,13 @@ statement of what will not change on purpose.
 2. **Hold until phases 1 and 2 land, then declare.** The known signature
    changes were CR-136 (wire only), CR-138 (additive), CR-137 (additive) and
    CR-142 (`sink()`). All four have landed; what remains of phases 1 and 2
-   (CR-139, CR-140) changes no signature. So this option now reads: declare
-   with the next release.
+   (CR-139, CR-140) changes no signature. Since then the owner has also
+   taken two breaking changes for the same release, so that the declared
+   surface starts clean: the `(format, {params})` tuple is removed, and the
+   `numpy`, `torch` and `ndarray` sinks are one, `tensor`, always tagged
+   (CR-81). So this option now reads: declare with the next release. CR-82
+   (metadata on `polars_cv.ndarray`) should be decided first: it would
+   change the dtype of every tensor column.
 3. **Stay as is until 1.0.**
 
 Recommendation: option 2. It costs one more breaking release and avoids

@@ -61,7 +61,7 @@ class TestExecuted:
 
     @staticmethod
     def _run(df: pl.DataFrame, pipe: Pipeline) -> np.ndarray:
-        out = df.select(o=pl.col("image").cv.pipe(pipe).sink("numpy")).item()
+        out = df.select(o=pl.col("image").cv.pipe(pipe).sink("tensor")).item()
         return numpy_from_struct(out)
 
     def test_kept(self, df: pl.DataFrame, image: np.ndarray) -> None:

@@ -1,10 +1,12 @@
 # Extension Types
 
-polars-cv's outputs are plain Polars structs: a point is `{x, y}`, a contour is
-`{exterior, holes, is_closed}`, the numpy sink is `{data, dtype, shape, strides,
+polars-cv's values are Polars structs: a point is `{x, y}`, a contour is
+`{exterior, holes, is_closed}`, a tensor is `{data, dtype, shape, strides,
 offset}`. A struct says what fields it has, not what it *is*. Arrow
 **extension types** add that: a column tagged `polars_cv.point` is a point by
-type, and keeps that identity through Parquet and IPC.
+type, and keeps that identity through Parquet and IPC. The `tensor` sink's
+output is always tagged (`polars_cv.ndarray`); geometry outputs are plain
+structs you can tag.
 
 | Type | Class | Storage |
 |------|-------|---------|
@@ -22,15 +24,15 @@ The types are registered with Polars when you `import polars_cv`.
 
 ## Producing tagged columns
 
-**Arrays** — `sink("ndarray")` is `sink("numpy")` with the `polars_cv.ndarray`
-tag. Same rows, bytes and strides; `dtype="f16"` works the same way.
+**Arrays** — `sink("tensor")` gives a `polars_cv.ndarray` column: the tensor
+struct with the tag on it.
 
 ```python
 import polars as pl
 from polars_cv import NdArrayType, Pipeline, numpy_from_struct
 
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-out = df.select(t=pl.col("image").cv.pipe(pipe).sink("ndarray"))
+out = df.select(t=pl.col("image").cv.pipe(pipe).sink("tensor"))
 
 assert isinstance(out.schema["t"], NdArrayType)
 arr = numpy_from_struct(out["t"][0])
@@ -57,7 +59,7 @@ Every polars-cv expression accepts a tagged column wherever it accepts the
 plain struct, and computes exactly the same result — every `.point`,
 `.contour`, `.bbox` and `.cv` accessor, and pipeline sources such as
 `source("contour")`. `numpy_from_struct` and `show_images` read
-`sink("ndarray")` output directly.
+`sink("tensor")` output directly.
 
 To check what a column is, test its dtype:
 
@@ -88,9 +90,12 @@ Recover the struct first:
 df.select(pl.col("p").ext.storage().struct.field("x"))
 ```
 
-This is why `sink("numpy")` stays untagged: tagging it would break existing
-code that unnests or casts its output. Choose `sink("ndarray")` when you want
-the type.
+This applies to every `sink("tensor")` column: read a field with
+`pl.col("t").ext.storage().struct.field("shape")`. Reading rows needs
+nothing: `numpy_from_struct(out["t"][0])` and `numpy_from_column(out["t"])`
+take the tagged column as it is. (Before 0.42 there were three tensor sinks,
+`numpy` and `torch` untagged and `ndarray` tagged; a plain struct written by
+the first two is still read by `source("tensor")` and `numpy_from_struct`.)
 
 ## Persistence
 
@@ -101,6 +106,6 @@ default) — no data is lost, and `.ext.storage()` gives the plain struct. Setti
 `POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage` reads the plain struct
 directly instead.
 
-Each row is written whole, `data` included. A row of `sink("ndarray")` that is
+Each row is written whole, `data` included. A row of `sink("tensor")` that is
 a view (a crop, a flip) holds the storage it was cut from, so write
-`sink("ndarray", compact=True)` to persist only the elements each row reads.
+`sink("tensor", compact=True)` to persist only the elements each row reads.

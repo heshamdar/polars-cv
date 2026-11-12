@@ -225,7 +225,7 @@ def run_remote_source(
         def run_local() -> Any:
             return (
                 local_df.lazy()
-                .select(out=pl.col("path").cv.pipe(pipe).sink("numpy"))
+                .select(out=pl.col("path").cv.pipe(pipe).sink("tensor"))
                 .collect()
             )
 
@@ -251,7 +251,7 @@ def run_remote_source(
             def run_http() -> Any:
                 return (
                     http_df.lazy()
-                    .select(out=pl.col("path").cv.pipe(pipe).sink("numpy"))
+                    .select(out=pl.col("path").cv.pipe(pipe).sink("tensor"))
                     .collect()
                 )
 

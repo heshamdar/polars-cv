@@ -34,14 +34,14 @@ class TestAliases:
         a = img.pipe(Pipeline().grayscale()).alias("x")
         b = img.pipe(Pipeline().blur(2.0)).alias("x")
         with pytest.raises(ValueError, match="'x'.*two different nodes"):
-            a.merge_pipe(b).sink({"x": "numpy"})
+            a.merge_pipe(b).sink({"x": "tensor"})
 
     def test_a_node_may_carry_several_aliases(self) -> None:
         gray = _img().pipe(Pipeline().grayscale())
         graph = (
             gray.alias("p")
             .merge_pipe(gray.alias("q"))
-            .sink({"p": "numpy", "q": "png"}, return_expr=False)
+            .sink({"p": "tensor", "q": "png"}, return_expr=False)
         )
         outputs = graph._to_dict()["outputs"]
         assert set(outputs) == {"p", "q"}
@@ -49,7 +49,7 @@ class TestAliases:
 
     def test_the_same_alias_on_the_same_node_twice_is_one_output(self) -> None:
         gray = _img().pipe(Pipeline().grayscale()).alias("g")
-        graph = gray.merge_pipe(gray).sink({"g": "numpy"}, return_expr=False)
+        graph = gray.merge_pipe(gray).sink({"g": "tensor"}, return_expr=False)
         assert set(graph._to_dict()["outputs"]) == {"g"}
 
 
@@ -60,7 +60,7 @@ class TestMergePipe:
         b = img.pipe(Pipeline().blur(1.0)).alias("b")
         merged = a.merge_pipe(b)
         for opt in (True, False):
-            nodes = _wire_nodes(merged, {"a": "numpy", "b": "numpy"}, opt_flags=opt)
+            nodes = _wire_nodes(merged, {"a": "tensor", "b": "tensor"}, opt_flags=opt)
             # The source, `a` and `b`: nothing reads the merge node.
             assert len(nodes) == 3, (opt, nodes)
 
@@ -72,7 +72,7 @@ class TestMergePipe:
         graph = (
             a.merge_pipe(b)
             .merge_pipe(c)
-            .sink({"a": "numpy", "b": "numpy", "c": "numpy"}, return_expr=False)
+            .sink({"a": "tensor", "b": "tensor", "c": "tensor"}, return_expr=False)
         )
         assert set(graph._to_dict()["outputs"]) == {"a", "b", "c"}
 
@@ -97,14 +97,14 @@ class TestMergePipeExecutes:
         brighter = gray.pipe(Pipeline().add_constant(50))
         merged = brighter.merge_pipe(gray)
         np.testing.assert_array_equal(
-            numpy_from_struct(self._run(df, merged.sink("numpy"))),
-            numpy_from_struct(self._run(df, brighter.sink("numpy"))),
+            numpy_from_struct(self._run(df, merged.sink("tensor"))),
+            numpy_from_struct(self._run(df, brighter.sink("tensor"))),
         )
 
     def test_branches_from_different_columns(self, df: pl.DataFrame) -> None:
         a = _img().pipe(Pipeline().grayscale()).alias("a")
         b = _img("other").pipe(Pipeline().grayscale()).alias("b")
-        out = self._run(df, a.merge_pipe(b).sink({"a": "numpy", "b": "numpy"}))
+        out = self._run(df, a.merge_pipe(b).sink({"a": "tensor", "b": "tensor"}))
         assert numpy_from_struct(out["a"]).shape == (6, 8, 1)
         assert numpy_from_struct(out["b"]).shape == (4, 4, 1)
 
@@ -112,7 +112,7 @@ class TestMergePipeExecutes:
         img = _img().alias("img")
         gray = img.pipe(Pipeline().grayscale()).alias("gray")
         out = self._run(
-            df, gray.merge_pipe(img).sink({"img": "numpy", "gray": "numpy"})
+            df, gray.merge_pipe(img).sink({"img": "tensor", "gray": "tensor"})
         )
         assert numpy_from_struct(out["img"]).shape == (6, 8, 3)
         assert numpy_from_struct(out["gray"]).shape == (6, 8, 1)
@@ -125,7 +125,7 @@ class TestOnlyNeededNodesAreSerialized:
         unused = img.pipe(Pipeline().blur(3.0)).alias("unused")
         for opt in (True, False):
             nodes = _wire_nodes(
-                used.merge_pipe(unused), {"used": "numpy"}, opt_flags=opt
+                used.merge_pipe(unused), {"used": "tensor"}, opt_flags=opt
             )
             ops = [op["op"] for n in nodes.values() for op in n["ops"]]
             assert "blur" not in ops, (opt, nodes)

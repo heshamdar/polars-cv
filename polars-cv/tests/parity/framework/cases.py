@@ -343,7 +343,7 @@ def draw_batch_chain(
                 event(f"known divergence: {divergence.key}")
                 continue
         spec = OPS[step.method]
-        sink = "numpy" if spec.domain_out == "buffer" else "native"
+        sink = "tensor" if spec.domain_out == "buffer" else "native"
         try:
             result = execute(batch.images, [*steps, step], axes.but(sink=sink))
         except PlanRefused:
@@ -385,7 +385,7 @@ def baseline_axes(images: Sequence[Any], domain: str = "buffer") -> Axes:
     homogeneous = len({im.shape for im in present}) == 1
     return Axes(
         source="array" if homogeneous else "list",
-        sink="numpy" if domain == "buffer" else "native",
+        sink="tensor" if domain == "buffer" else "native",
     )
 
 

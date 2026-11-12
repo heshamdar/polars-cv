@@ -1,4 +1,4 @@
-"""ML integration patterns: numpy/torch sinks and dataset wrapping.
+"""ML integration patterns: the tensor sink and dataset wrapping.
 
 Run:
     uv run python polars-cv/examples/08_ml_integration.py
@@ -84,7 +84,7 @@ def preprocess_for_numpy(df: pl.DataFrame) -> pl.DataFrame:
         .assert_shape(channels=3, height=96, width=96)
         .transpose([2, 0, 1])
     )
-    return df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
+    return df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("tensor"))
 
 
 def demonstrate_sink_formats(df: pl.DataFrame) -> pl.DataFrame:
@@ -95,7 +95,7 @@ def demonstrate_sink_formats(df: pl.DataFrame) -> pl.DataFrame:
         .alias("img")
     )
     sink_df = df.with_columns(
-        numpy_struct=img.sink("numpy"),
+        numpy_struct=img.sink("tensor"),
         png_bytes=img.sink("png"),
         jpeg_bytes=img.sink("jpeg"),
         blob_bytes=img.sink("blob"),
@@ -120,11 +120,11 @@ def demonstrate_array_and_list_sinks() -> pl.DataFrame:
 
 
 def maybe_torch_demo(processed: pl.DataFrame) -> None:
-    """Try `sink('torch')` and report shape when torch is available."""
+    """Read `sink('tensor')` rows as torch tensors, when torch is available."""
     try:
-        import torch  # noqa: F401
+        import torch
     except Exception:
-        print("\nTorch is not installed; skipping `sink('torch')` section.")
+        print("\nTorch is not installed; skipping the torch section.")
         return
 
     torch_df = processed.with_columns(
@@ -135,10 +135,10 @@ def maybe_torch_demo(processed: pl.DataFrame) -> None:
             .resize(height=64, width=64)
             .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         )
-        .sink("torch"),
+        .sink("tensor"),
     )
-    print("\nTorch sink sample:")
-    print(torch_df.select("torch_tensor").head(1))
+    row = torch.from_numpy(numpy_from_struct(torch_df["torch_tensor"][0]).copy())
+    print("\nTorch tensor sample:", tuple(row.shape), row.dtype)
 
 
 def main() -> None:

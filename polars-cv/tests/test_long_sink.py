@@ -139,4 +139,4 @@ def test_channel_merge_of_mixed_dtypes_says_to_cast() -> None:
         pl.col("m").cv.pipe(Pipeline().source("array").cast("u8"))
     )
     with pytest.raises(pl.exceptions.ComputeError, match="cast them to one"):
-        _frame(h=HEAT, m=MASK).select(expr.sink("numpy"))
+        _frame(h=HEAT, m=MASK).select(expr.sink("tensor"))

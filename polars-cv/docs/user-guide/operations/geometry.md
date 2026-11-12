@@ -351,7 +351,7 @@ Convert contours to binary masks:
 pipe = Pipeline().source("contour").rasterize(width=200, height=200)
 
 result = df.with_columns(
-    mask=pl.col("contour").cv.pipe(pipe).sink("numpy")
+    mask=pl.col("contour").cv.pipe(pipe).sink("tensor")
 )
 ```
 

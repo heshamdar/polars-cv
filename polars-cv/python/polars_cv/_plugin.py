@@ -18,7 +18,7 @@ things this module does cannot be skipped:
    zero-copy relabel on a tagged one. So a tagged column is accepted wherever
    its plain struct is, and no Rust function has to know extension types exist
    on the way *in* — they only ever build them on the way out (e.g.
-   ``sink("ndarray")``). A tag adds no acceptance of its own: the storage is
+   ``sink("tensor")``). A tag adds no acceptance of its own: the storage is
    validated by the same parser that validates an untagged column.
 
 3. **It declares every plugin function deterministic**, which is what makes

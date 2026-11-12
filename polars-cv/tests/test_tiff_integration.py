@@ -82,7 +82,7 @@ class TestTiffSinkSupport:
         result = df.with_columns(
             [
                 pl.col("data").cv.pipe(pipe_base).sink("tiff").alias("tiff_output"),
-                pl.col("data").cv.pipe(pipe_base).sink("numpy").alias("numpy_output"),
+                pl.col("data").cv.pipe(pipe_base).sink("tensor").alias("numpy_output"),
             ]
         )
 
@@ -208,7 +208,7 @@ class TestTiffSinkSupport:
     def test_tiff_round_trip_source_sink(self):
         """Test the complete TIFF round-trip: sink to TIFF, then source from TIFF."""
         # This tests the exact use case mentioned by the user:
-        # pl.col('im').cv.pipe(Pipeline().source('image_bytes')).sink('numpy')
+        # pl.col('im').cv.pipe(Pipeline().source('image_bytes')).sink('tensor')
 
         # Create medical imaging test data (3x3 f32 image)
         original_data = [1.0, 0.8, 0.6, 0.4, 0.2, 0.0, 0.3, 0.7, 0.9]
@@ -233,7 +233,7 @@ class TestTiffSinkSupport:
         df_decoded = df_with_tiff.with_columns(
             reconstructed=pl.col("tiff_compressed")
             .cv.pipe(decode_pipeline)
-            .sink("numpy")
+            .sink("tensor")
         )
 
         # Step 4: Verify the round-trip
@@ -298,7 +298,7 @@ class TestTiffSinkSupport:
             # Decode from TIFF
             decode_pipe = Pipeline().source("image_bytes")
             df_decoded = df_tiff.with_columns(
-                result=pl.col("tiff").cv.pipe(decode_pipe).sink("numpy")
+                result=pl.col("tiff").cv.pipe(decode_pipe).sink("tensor")
             )
 
             # Verify

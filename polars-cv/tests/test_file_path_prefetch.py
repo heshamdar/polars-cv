@@ -81,7 +81,7 @@ class TestCloudOptionsRoundTrip:
         pipe = Pipeline().source("file_path", cloud_options=opts).grayscale()
         graph = PipelineGraph()
         graph.add_node("n0", pipe, column=pl.col("paths"))
-        graph.set_output("n0", "numpy")
+        graph.set_output("n0", "tensor")
         spec = json.loads(graph._to_json())
         assert spec["nodes"]["n0"]["input"]["decode"]["source"]["cloud_options"] == {
             "aws_region": "eu-west-1",
@@ -208,7 +208,7 @@ class TestRemotePrefetch:
         urls = [f"{http_image_server}/img/{i}.png" for i in range(8)]
         df = pl.DataFrame({"paths": urls})
         pipe = Pipeline().source("file_path", allowed_roots=["*"]).grayscale()
-        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
         for i in range(8):
             arr = numpy_from_struct(out["out"][i])
             assert arr.shape == (4 + i, 4 + i, 1)
@@ -219,7 +219,7 @@ class TestRemotePrefetch:
         url = f"{http_image_server}/img/3.png"
         df = pl.DataFrame({"paths": [url] * 20})
         pipe = Pipeline().source("file_path", allowed_roots=["*"])
-        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
         ref = numpy_from_struct(out["out"][0])
         for i in range(20):
             np.testing.assert_array_equal(numpy_from_struct(out["out"][i]), ref)
@@ -235,7 +235,7 @@ class TestRemotePrefetch:
             .source("file_path", on_error="null", allowed_roots=["*"])
             .grayscale()
         )
-        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
         assert out["out"][2]["data"] is not None
@@ -244,7 +244,7 @@ class TestRemotePrefetch:
         df = pl.DataFrame({"paths": [f"{http_image_server}/img/nope.png"]})
         pipe = Pipeline().source("file_path", allowed_roots=["*"])
         with pytest.raises(pl.exceptions.ComputeError, match="remote file"):
-            df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
 
     def test_mixed_local_and_remote_paths(
         self, http_image_server: str, tmp_path
@@ -257,7 +257,7 @@ class TestRemotePrefetch:
             .source("file_path", allowed_roots=[str(tmp_path), http_image_server])
             .grayscale()
         )
-        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out["out"][0]).shape == (6, 6, 1)
         assert numpy_from_struct(out["out"][1]).shape == (6, 6, 1)
 
@@ -269,7 +269,7 @@ class TestRemotePrefetch:
         pipe = Pipeline().source("file_path", allowed_roots=["*"]).grayscale()
         out = (
             df.lazy()
-            .with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
             .collect(engine="streaming")
         )
         for i in (0, 31, 63):
@@ -288,7 +288,7 @@ class TestLocalFileUrls:
         local.write_bytes(_png(6, 4, 77))
         df = pl.DataFrame({"paths": [f"file://{local}"]})
         pipe = Pipeline().source("file_path", allowed_roots=[str(tmp_path)]).grayscale()
-        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out["out"][0]).shape == (4, 6, 1)
 
     def test_bare_local_path_still_works(self, tmp_path) -> None:
@@ -296,5 +296,5 @@ class TestLocalFileUrls:
         local.write_bytes(_png(6, 4, 77))
         df = pl.DataFrame({"paths": [str(local)]})
         pipe = Pipeline().source("file_path", allowed_roots=[str(tmp_path)]).grayscale()
-        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out["out"][0]).shape == (4, 6, 1)

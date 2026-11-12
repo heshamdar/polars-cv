@@ -263,7 +263,7 @@ def benchmark_polars_cv_pipeline(
         .crop(top=16, left=16, height=224, width=224)  # Center crop
         .scale(1 / 255.0)  # [0, 255] -> [0, 1]
         .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD)
-        .sink("torch")
+        .sink("tensor")
     )
 
     # Load metadata
@@ -413,7 +413,7 @@ def verify_output_equivalence(
         .crop(top=16, left=16, height=224, width=224)
         .scale(1 / 255.0)
         .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD)
-        .sink("torch")
+        .sink("tensor")
     )
 
     # Load samples from each
@@ -585,7 +585,7 @@ def run_inference_serving(
         .crop(top=16, left=16, height=224, width=224)
         .scale(1 / 255.0)
         .normalize_preset(mean=IMAGENET_MEAN, std=IMAGENET_STD)
-        .sink("torch")
+        .sink("tensor")
     )
 
     log("Loading and preprocessing with polars-cv...")

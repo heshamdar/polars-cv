@@ -144,7 +144,7 @@ pipe = Pipeline().source("image_bytes").resize(height=1, width=2)
 ```
 
 ```py
-df.with_columns(x=pl.col("a").cv.pipe(pipe).sink("numpy"))
+df.with_columns(x=pl.col("a").cv.pipe(pipe).sink("tensor"))
 ```
 
 ```bash

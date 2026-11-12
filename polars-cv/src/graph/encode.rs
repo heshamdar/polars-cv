@@ -83,8 +83,7 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
     let inner = |sink: &str| list_array_inner_dtype(spec.expected_dtype, sink, facts);
     match SinkKind::resolve(spec)? {
         SinkKind::HistogramBuckets => Ok(DataType::List(Box::new(histogram_struct_dtype()))),
-        SinkKind::NumpyStruct => Ok(crate::output::numpy_output_dtype()),
-        SinkKind::NdArray => Ok(crate::ext_types::ExtType::NdArray.dtype()),
+        SinkKind::Tensor => Ok(crate::ext_types::ExtType::NdArray.dtype()),
         // A VIEW blob is self-describing, so it carries no codec precondition.
         SinkKind::Blob => Ok(DataType::Binary),
         kind @ SinkKind::EncodedImage => {
@@ -242,7 +241,7 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
     let kind = SinkKind::resolve(spec)?;
     Ok(match kind {
         SinkKind::HistogramBuckets => RowResult::HistogramBuckets(None),
-        SinkKind::NumpyStruct | SinkKind::NdArray => RowResult::NumpyStruct(None),
+        SinkKind::Tensor => RowResult::NumpyStruct(None),
         SinkKind::EncodedImage | SinkKind::Blob => RowResult::Binary(None),
         SinkKind::BufferList | SinkKind::VectorList => RowResult::TypedList(None),
         SinkKind::BufferArray | SinkKind::VectorArray => RowResult::TypedArray(None),
@@ -329,11 +328,11 @@ pub(crate) fn build_series_from_spec(
             let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
             Series::from_any_values_and_dtype(name, &values, &histogram_dtype, true)
         }
-        SinkKind::NumpyStruct | SinkKind::NdArray => {
+        SinkKind::Tensor => {
             // Move the buffers in so each is the sole Arc owner: that lets
             // `into_polars_buffer_strided` take the zero-copy *strided* branch
             // for non-contiguous (transposed/flipped/rotated) outputs. The
-            // numpy/torch struct carries shape/strides/offset, and the Python
+            // tensor struct carries shape/strides/offset, and the Python
             // consumers (`numpy_from_struct`, the struct->PNG helper) honor them
             // via `np.lib.stride_tricks.as_strided`, so permuted layouts decode
             // correctly without materialising to contiguous here.
@@ -342,10 +341,7 @@ pub(crate) fn build_series_from_spec(
                 other => Err(other.variant_name()),
             })?;
             let series = crate::output::build_numpy_series(name, buffers, spec.sink.as_f16())?;
-            match kind {
-                SinkKind::NdArray => crate::ext_types::ExtType::NdArray.tag(series),
-                _ => Ok(series),
-            }
+            crate::ext_types::ExtType::NdArray.tag(series)
         }
         SinkKind::EncodedImage | SinkKind::Blob => {
             // Register each row's already-materialised bytes as a BinaryView
@@ -837,7 +833,7 @@ pub(crate) fn encode_node_output(
                 contig.as_slice::<f64>().to_vec(),
             ))
         }
-        SinkKind::NumpyStruct | SinkKind::NdArray => {
+        SinkKind::Tensor => {
             let buf = require_buffer(output, domain, format)?;
             // A half-precision sink converts here, on the row's thread,
             // not in the serial column build; the row then holds the f16

@@ -83,7 +83,7 @@ def _mask(contours: list, w: int = 44, h: int = 44) -> np.ndarray:
     out = df.select(
         pl.col("c")
         .cv.pipe(Pipeline().source("contour").rasterize(width=w, height=h))
-        .sink("numpy")
+        .sink("tensor")
     )
     (mask,) = numpy_from_column(out.to_series(), copy=True)
     return mask[:, :, 0] > 0

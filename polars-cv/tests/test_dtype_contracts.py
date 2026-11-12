@@ -163,7 +163,7 @@ class TestResizeDtypePreservationE2E:
 
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").resize(height=32, width=32)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.uint8
         assert arr.shape == (32, 32, 3)
@@ -185,7 +185,7 @@ class TestResizeDtypePreservationE2E:
 
         df = pl.DataFrame({"buf": [rows]})
         pipe = Pipeline().source("list", dtype="f32").resize(height=2, width=2)
-        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.float32, (
             f"Expected float32 output from f32 resize, got {arr.dtype}"
@@ -207,7 +207,7 @@ class TestResizeDtypePreservationE2E:
 
         df = pl.DataFrame({"buf": [rows]})
         pipe = Pipeline().source("list", dtype="u8").resize(height=2, width=2)
-        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.uint8
         assert arr.shape == (2, 2, 3)
@@ -267,7 +267,7 @@ class TestRotateDtypePreservationE2E:
 
         df = _make_f32_3ch_list_df(h=8, w=8)
         pipe = Pipeline().source("list", dtype="f32").rotate(45.0)
-        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.float32, (
             f"Expected float32 output from f32 rotate, got {arr.dtype}"
@@ -279,7 +279,7 @@ class TestRotateDtypePreservationE2E:
 
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").rotate(30.0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.uint8
 
@@ -294,7 +294,7 @@ class TestGrayscaleDtypePreservationE2E:
 
         df = _make_f32_3ch_list_df(h=4, w=4)
         pipe = Pipeline().source("list", dtype="f32").grayscale()
-        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.float32, (
             f"Expected float32 output from f32 grayscale, got {arr.dtype}"
@@ -308,7 +308,7 @@ class TestGrayscaleDtypePreservationE2E:
 
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.uint8
         assert arr.shape[-1] == 1
@@ -324,7 +324,7 @@ class TestThresholdDtypeE2E:
 
         df = _make_f32_1ch_list_df(h=4, w=4)
         pipe = Pipeline().source("list", dtype="f32").threshold(0.5)
-        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.uint8, (
             f"Expected uint8 output from threshold, got {arr.dtype}"
@@ -341,7 +341,7 @@ class TestThresholdDtypeE2E:
 
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").grayscale().threshold(128)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.dtype == np.uint8
         unique_vals = set(arr.flatten().tolist())
@@ -632,10 +632,10 @@ class TestGrayscaleFusionDtypeRegression:
         )
 
         unfused = numpy_from_struct(
-            df.select(out=pl.col("buf").cv.pipe(unfused_pipe).sink("numpy")).row(0)[0]
+            df.select(out=pl.col("buf").cv.pipe(unfused_pipe).sink("tensor")).row(0)[0]
         )
         fused = numpy_from_struct(
-            df.select(out=pl.col("buf").cv.pipe(fused_pipe).sink("numpy")).row(0)[0]
+            df.select(out=pl.col("buf").cv.pipe(fused_pipe).sink("tensor")).row(0)[0]
         )
 
         assert unfused.dtype == np.float32

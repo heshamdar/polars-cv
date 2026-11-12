@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import atexit
 import hashlib
-import importlib.util
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -34,7 +33,7 @@ import numpy as np
 import polars as pl
 from PIL import Image
 
-from polars_cv import Pipeline, numpy_from_column, numpy_from_struct
+from polars_cv import Pipeline, numpy_from_struct
 from polars_cv.extension_types import NUMPY_OUTPUT_SCHEMA
 from tests.parity.framework.images import DTYPES, dtype_name
 
@@ -433,22 +432,8 @@ class OutputInfo:
     shapes: tuple[tuple[int, ...], ...]  # every non-null row's reference shape
 
 
-def _torch_installed() -> bool:
-    return importlib.util.find_spec("torch") is not None
-
-
 def _decode_numpy(series: pl.Series, info: OutputInfo) -> list[Any]:
     return [None if v is None else numpy_from_struct(v) for v in series]
-
-
-def _decode_ndarray(series: pl.Series, info: OutputInfo) -> list[Any]:
-    return list(numpy_from_column(series))
-
-
-def _decode_torch(series: pl.Series, info: OutputInfo) -> list[Any]:  # pragma: no cover
-    from polars_cv import torch_from_struct  # type: ignore[attr-defined]
-
-    return [None if v is None else torch_from_struct(v).numpy() for v in series]
 
 
 def _decode_list(series: pl.Series, info: OutputInfo) -> list[Any]:
@@ -464,7 +449,7 @@ def _decode_array(series: pl.Series, info: OutputInfo) -> list[Any]:
 def _decode_blob(series: pl.Series, info: OutputInfo) -> list[Any]:
     # The one sink whose bytes only the engine can read (see _blob_row).
     out = series.to_frame("b").select(
-        pl.col("b").cv.pipe(Pipeline().source("blob")).sink("numpy")
+        pl.col("b").cv.pipe(Pipeline().source("blob")).sink("tensor")
     )
     return _decode_numpy(out["b"], info)
 
@@ -582,9 +567,7 @@ BUFFER = frozenset({"buffer"})
 SINKS: dict[str, SinkSpec] = {
     spec.name: spec
     for spec in (
-        SinkSpec("numpy", BUFFER, _decode_numpy),
-        SinkSpec("ndarray", BUFFER, _decode_ndarray),
-        SinkSpec("torch", BUFFER, _decode_torch, available=_torch_installed),
+        SinkSpec("tensor", BUFFER, _decode_numpy),
         SinkSpec(
             "list", frozenset({"buffer", "vector"}), _decode_list, needs_dtype=True
         ),

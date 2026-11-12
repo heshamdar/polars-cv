@@ -676,78 +676,6 @@
       "fields": []
     },
     {
-      "name": "ndarray",
-      "python": "ndarray",
-      "visibility": "public",
-      "doc": "The `polars_cv.ndarray` extension type: a zero-copy tensor struct.",
-      "fields": [
-        {
-          "name": "dtype",
-          "doc": "Downcast the elements to this dtype at encode time: only half\nprecision (``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any\nother dtype.",
-          "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "SinkDType",
-              "this": false,
-              "variants": [
-                "f16",
-                "float16"
-              ]
-            }
-          }
-        },
-        {
-          "name": "compact",
-          "doc": "Make each row's ``data`` exactly its elements, row-major, at\noffset zero, instead of the storage the row is a view into (whole,\nwith the strides and offset that read the view out of it). Copies\nonly a row that is not already that. Set it for a column that will\nbe persisted: Parquet and IPC write each row's ``data`` whole.",
-          "default": false,
-          "type": {
-            "kind": "scalar",
-            "per_row": false,
-            "py": "bool",
-            "this": false
-          }
-        }
-      ]
-    },
-    {
-      "name": "numpy",
-      "python": "numpy",
-      "visibility": "public",
-      "doc": "A zero-copy tensor struct `numpy_from_struct` reads.",
-      "fields": [
-        {
-          "name": "dtype",
-          "doc": "Downcast the elements to this dtype at encode time: only half\nprecision (``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any\nother dtype.",
-          "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "SinkDType",
-              "this": false,
-              "variants": [
-                "f16",
-                "float16"
-              ]
-            }
-          }
-        },
-        {
-          "name": "compact",
-          "doc": "Make each row's ``data`` exactly its elements, row-major, at\noffset zero, instead of the storage the row is a view into (whole,\nwith the strides and offset that read the view out of it). Copies\nonly a row that is not already that. Set it for a column that will\nbe persisted: Parquet and IPC write each row's ``data`` whole.",
-          "default": false,
-          "type": {
-            "kind": "scalar",
-            "per_row": false,
-            "py": "bool",
-            "this": false
-          }
-        }
-      ]
-    },
-    {
       "name": "png",
       "python": "png",
       "visibility": "public",
@@ -762,10 +690,10 @@
       "fields": []
     },
     {
-      "name": "torch",
-      "python": "torch",
+      "name": "tensor",
+      "python": "tensor",
       "visibility": "public",
-      "doc": "A zero-copy tensor struct `torch_from_struct` reads.",
+      "doc": "One tensor per row, without copying it: the struct\n``{data, dtype, shape, strides, offset}``, tagged with the\n`polars_cv.ndarray` extension type so the column says what it holds.\n`numpy_from_struct` reads a row, and ``source(\"tensor\")`` reads the\ncolumn back. Polars' struct operations need the storage:\n``.ext.storage().struct.field(\"shape\")``.",
       "fields": [
         {
           "name": "dtype",

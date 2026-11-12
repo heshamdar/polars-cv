@@ -116,7 +116,7 @@ def reference_inputs(images: Sequence[Any], axes: Axes) -> list[Any]:
 
     if SOURCES[axes.source].lossless:
         return list(images)
-    decoded = execute(images, [], axes.but(sink="numpy", params="literal"))
+    decoded = execute(images, [], axes.but(sink="tensor", params="literal"))
     return decoded.rows
 
 

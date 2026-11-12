@@ -133,9 +133,7 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &Sink) -> PolarsResult<Vec<u8>> {
         | Sink::List
         | Sink::Long { .. }
         | Sink::Native
-        | Sink::NdArray { .. }
-        | Sink::Numpy { .. }
-        | Sink::Torch { .. } => unreachable!("only an image sink has a codec"),
+        | Sink::Tensor { .. } => unreachable!("only an image sink has a codec"),
     };
     encoded.map_err(|e| polars_err!(ComputeError: "Failed to encode {}: {}", codec.name(), e))
 }

@@ -715,7 +715,7 @@ def test_accessors_accept_tagged_inputs(name: str) -> None:
     Driven from the same case tables the completeness check pins, so a new
     accessor is swept with tagged inputs the moment it gets its parity case.
     Outputs are plain structs either way: tags are accepted on input, and
-    only ``sink("ndarray")`` emits one.
+    only ``sink("tensor")`` emits one.
     """
     build = _GEOMETRY_CASES[name]
     tagged = assert_plan_equals_exec(_tagged_contour_df(), build())

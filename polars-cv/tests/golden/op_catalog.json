@@ -16,7 +16,7 @@
     "name": "add",
     "python": "add",
     "visibility": "lazy_only",
-    "doc": "Element-wise addition with another array.\n\nFor u8/u16: saturating addition (clamps to the maximum, e.g. 255 for\nu8). For f32/f64: standard addition.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.add(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise addition with another array.\n\nFor u8/u16: saturating addition (clamps to the maximum, e.g. 255 for\nu8). For f32/f64: standard addition.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.add(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -243,7 +243,7 @@
     "name": "bitwise_and",
     "python": "bitwise_and",
     "visibility": "lazy_only",
-    "doc": "Element-wise bitwise AND: for binary masks (0/255), the intersection.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_and(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise bitwise AND: for binary masks (0/255), the intersection.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_and(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -268,7 +268,7 @@
     "name": "bitwise_or",
     "python": "bitwise_or",
     "visibility": "lazy_only",
-    "doc": "Element-wise bitwise OR: for binary masks (0/255), the union.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_or(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise bitwise OR: for binary masks (0/255), the union.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_or(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -293,7 +293,7 @@
     "name": "bitwise_xor",
     "python": "bitwise_xor",
     "visibility": "lazy_only",
-    "doc": "Element-wise bitwise XOR: for binary masks (0/255), the symmetric\ndifference.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_xor(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise bitwise XOR: for binary masks (0/255), the symmetric\ndifference.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_xor(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -318,7 +318,7 @@
     "name": "blend",
     "python": "blend",
     "visibility": "lazy_only",
-    "doc": "Normalized blend (element-wise), for image blending/compositing.\n\nFor u8: (a/255) * (b/255) * 255. For u16: (a/65535) * (b/65535) *\n65535. For f32/f64: standard multiplication.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.blend(b).sink(\"numpy\")\n    ```",
+    "doc": "Normalized blend (element-wise), for image blending/compositing.\n\nFor u8: (a/255) * (b/255) * 255. For u16: (a/65535) * (b/65535) *\n65535. For f32/f64: standard multiplication.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.blend(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -1490,7 +1490,7 @@
     "name": "divide",
     "python": "divide",
     "visibility": "lazy_only",
-    "doc": "Element-wise true division, into a float.\n\nThe operands promote as NumPy's do and divide in float: ``f64`` when\nthat promotion is ``f64`` or a 32/64-bit integer, else ``f32``. ``a / b``\nfollows IEEE 754, as NumPy's ``true_divide``:\n``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is\n``nan``.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise true division, into a float.\n\nThe operands promote as NumPy's do and divide in float: ``f64`` when\nthat promotion is ``f64`` or a 32/64-bit integer, else ``f32``. ``a / b``\nfollows IEEE 754, as NumPy's ``true_divide``:\n``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is\n``nan``.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -2035,7 +2035,7 @@
     "name": "maximum",
     "python": "maximum",
     "visibility": "lazy_only",
-    "doc": "Element-wise maximum of two arrays, for compositing, clamping and\nnon-linear image processing.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.maximum(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise maximum of two arrays, for compositing, clamping and\nnon-linear image processing.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.maximum(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -2060,7 +2060,7 @@
     "name": "minimum",
     "python": "minimum",
     "visibility": "lazy_only",
-    "doc": "Element-wise minimum of two arrays, for compositing, clamping and\nnon-linear image processing.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.minimum(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise minimum of two arrays, for compositing, clamping and\nnon-linear image processing.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.minimum(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -2125,7 +2125,7 @@
     "name": "multiply",
     "python": "multiply",
     "visibility": "lazy_only",
-    "doc": "Element-wise multiplication.\n\nFor u8/u16: saturating multiplication (clamps to the maximum). For\nf32/f64: standard multiplication. For normalized image blending\n(values treated as [0, 1]), use ``blend`` instead.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.multiply(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise multiplication.\n\nFor u8/u16: saturating multiplication (clamps to the maximum). For\nf32/f64: standard multiplication. For normalized image blending\n(values treated as [0, 1]), use ``blend`` instead.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.multiply(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -2182,7 +2182,7 @@
       },
       {
         "name": "out_dtype",
-        "doc": "Output dtype (default f32). Normalization computes in f32 and the result\nis cast to this dtype at execution. For half precision use the sink\ndtype instead (`.sink(\"numpy\", dtype=\"f16\")`).",
+        "doc": "Output dtype (default f32). Normalization computes in f32 and the result\nis cast to this dtype at execution. For half precision use the sink\ndtype instead (`.sink(\"tensor\", dtype=\"f16\")`).",
         "type": {
           "kind": "optional",
           "inner": {
@@ -3793,7 +3793,7 @@
     "name": "subtract",
     "python": "subtract",
     "visibility": "lazy_only",
-    "doc": "Element-wise subtraction.\n\nFor u8/u16: saturating subtraction (clamps to 0). For f32/f64:\nstandard subtraction.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.subtract(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise subtraction.\n\nFor u8/u16: saturating subtraction (clamps to 0). For f32/f64:\nstandard subtraction.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.subtract(b).sink(\"tensor\")\n    ```",
     "fields": [
       {
         "name": "other",

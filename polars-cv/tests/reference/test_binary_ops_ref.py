@@ -33,7 +33,7 @@ def _col(name: str) -> "pl.Expr":
 
 def _numpy(df: pl.DataFrame, lazy) -> np.ndarray:
     """Evaluate a lazy pipeline expression with the numpy sink."""
-    return numpy_from_struct(df.select(output=lazy.sink("numpy")).row(0)[0])
+    return numpy_from_struct(df.select(output=lazy.sink("tensor")).row(0)[0])
 
 
 @plugin_required
@@ -371,7 +371,7 @@ class TestBinaryOpsPolarsCV:
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
         # This will FAIL until add is implemented in execute.rs
-        result = df.select(output=expr1.add(expr2).sink("numpy"))
+        result = df.select(output=expr1.add(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
@@ -409,7 +409,7 @@ class TestBinaryOpsPolarsCV:
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
         # This will FAIL until subtract is implemented in execute.rs
-        result = df.select(output=expr1.subtract(expr2).sink("numpy"))
+        result = df.select(output=expr1.subtract(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
@@ -446,7 +446,7 @@ class TestBinaryOpsPolarsCV:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(output=expr1.multiply(expr2).sink("numpy"))
+        result = df.select(output=expr1.multiply(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
@@ -484,7 +484,7 @@ class TestBinaryOpsPolarsCV:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(output=expr1.blend(expr2).sink("numpy"))
+        result = df.select(output=expr1.blend(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
@@ -522,7 +522,7 @@ class TestBinaryOpsPolarsCV:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(output=expr1.divide(expr2).sink("numpy"))
+        result = df.select(output=expr1.divide(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.dtype == np.float32
@@ -561,7 +561,7 @@ class TestBinaryOpsPolarsCV:
         mask_expr = pl.col("mask").cv.pipe(mask_pipe)
 
         # This will FAIL until apply_mask is implemented in execute.rs
-        result = df.select(output=img_expr.apply_mask(mask_expr).sink("numpy"))
+        result = df.select(output=img_expr.apply_mask(mask_expr).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         # Scale expected to match normalized mask behavior (0/1 -> 0/255)

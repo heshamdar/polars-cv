@@ -61,7 +61,7 @@ def test_composed_graphs_built_twice_are_equal() -> None:
     def build() -> pl.Expr:
         img = pl.col("img").cv.pipe(_PIPE).alias("base")
         gray = img.pipe(Pipeline().threshold(100)).alias("mask")
-        return gray.sink({"base": "numpy", "mask": "png"})
+        return gray.sink({"base": "tensor", "mask": "png"})
 
     assert build().meta.eq(build())
 
@@ -71,14 +71,14 @@ def test_ops_reading_other_nodes_built_twice_are_equal() -> None:
     def binary() -> pl.Expr:
         a = pl.col("img").cv.pipe(_PIPE)
         b = pl.col("img").cv.pipe(_PIPE.invert())
-        return a.add(b).sink("numpy")
+        return a.add(b).sink("tensor")
 
     def raster() -> pl.Expr:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
         return (
             pl.col("c")
             .cv.pipe(Pipeline().source("contour").rasterize(shape=img))
-            .sink("numpy")
+            .sink("tensor")
         )
 
     assert binary().meta.eq(binary())
@@ -96,7 +96,7 @@ def test_per_row_parameters_merge_only_on_the_same_column() -> None:
 
     def sized(column: str) -> pl.Expr:
         pipe = Pipeline().source("image_bytes").resize(height=pl.col(column), width=4)
-        return pl.col("img").cv.pipe(pipe).sink("numpy")
+        return pl.col("img").cv.pipe(pipe).sink("tensor")
 
     same = df.lazy().with_columns(a=sized("h"), b=sized("h"))
     different = df.lazy().with_columns(a=sized("h"), b=sized("h2"))

@@ -25,7 +25,7 @@ image it was computed from, so the two compare cell by cell.
 ```python
 img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
 heat = pl.col("heatmap").cv.pipe(Pipeline().source("array"))
-heat.resize_like(img, filter="bilinear").sink("numpy")
+heat.resize_like(img, filter="bilinear").sink("tensor")
 ```
 
 ### Block reduce
@@ -77,7 +77,7 @@ Gaussian blur (plus `epsilon`), on a `LazyPipelineExpr`:
 
 ```python
 img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").grayscale())
-img.background_divide(50.0).sink("numpy")
+img.background_divide(50.0).sink("tensor")
 ```
 
 ## Threshold
@@ -263,7 +263,7 @@ selects, a lesion's 1st-99th say, and applies it to the whole image:
 ```python
 ct = pl.col("ct").cv.pipe(Pipeline().source("array"))
 lesion = pl.col("lesion").cv.pipe(Pipeline().source("array"))
-ct.normalize_percentile_masked(lesion, low=1.0, high=99.0).sink("numpy")
+ct.normalize_percentile_masked(lesion, low=1.0, high=99.0).sink("tensor")
 ```
 
 ## Intensity Adjustments

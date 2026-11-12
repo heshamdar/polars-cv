@@ -56,7 +56,7 @@ def make_contour(width: int, height: int) -> dict[str, object]:
 
 
 def decode_struct_col(df: pl.DataFrame, col: str) -> np.ndarray:
-    """Decode the first row of a numpy sink struct column."""
+    """Decode the first row of a tensor sink column."""
     return numpy_from_struct(df[col][0], copy=False)
 
 
@@ -123,13 +123,13 @@ def main() -> None:
     out = df.with_columns(
         outputs=merged.sink(
             {
-                "add": "numpy",
-                "subtract": "numpy",
-                "blend": "numpy",
-                "maximum": "numpy",
-                "xor": "numpy",
-                "left_blur": "numpy",
-                "masked": "numpy",
+                "add": "tensor",
+                "subtract": "tensor",
+                "blend": "tensor",
+                "maximum": "tensor",
+                "xor": "tensor",
+                "left_blur": "tensor",
+                "masked": "tensor",
             }
         )
     )

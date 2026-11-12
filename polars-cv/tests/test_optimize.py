@@ -127,7 +127,7 @@ import polars_cv._graph
         # Engine on, logical off.
         flags_on = OptFlags(**{n: (n in ENGINE_PASS_NAMES) for n in PASS_NAMES})
         g = _graph_of(Pipeline().source("image_bytes").grayscale())
-        g.set_output("n", "numpy")
+        g.set_output("n", "tensor")
         g.optimize(flags_on)
         opt = json.loads(g._to_json())["opt"]
         assert set(opt) == set(ENGINE_PASS_NAMES)
@@ -135,7 +135,7 @@ import polars_cv._graph
 
         # Everything off → every engine flag serializes False.
         g2 = _graph_of(Pipeline().source("image_bytes").grayscale())
-        g2.set_output("n", "numpy")
+        g2.set_output("n", "tensor")
         g2.optimize(OptFlags.none())
         opt2 = json.loads(g2._to_json())["opt"]
         assert all(opt2[n] is False for n in ENGINE_PASS_NAMES)
@@ -366,14 +366,14 @@ class TestToExprRequiresOptimization:
 
     def test_to_expr_rejects_unoptimized_graph(self) -> None:
         graph = _graph_of(_removable_op_pipe())
-        graph.set_output("n", "numpy")
+        graph.set_output("n", "tensor")
         with pytest.raises(RuntimeError, match="optimization phase"):
             graph.to_expr()
 
     @plugin_required
     def test_to_expr_works_after_optimize(self) -> None:
         graph = _graph_of(_removable_op_pipe())
-        graph.set_output("n", "numpy")
+        graph.set_output("n", "tensor")
         graph.optimize(OptFlags.all())
         # Does not raise; register_plugin_function builds the expr lazily and
         # needs no compiled .so at construction time.
@@ -382,7 +382,9 @@ class TestToExprRequiresOptimization:
     @plugin_required
     def test_sink_return_graph_is_optimized(self) -> None:
         graph = (
-            pl.col("img").cv.pipe(_removable_op_pipe()).sink("numpy", return_expr=False)
+            pl.col("img")
+            .cv.pipe(_removable_op_pipe())
+            .sink("tensor", return_expr=False)
         )
         assert graph._optimized is True
         # sink() auto-generates the node id, so read the sole node generically.
@@ -524,7 +526,7 @@ class TestSpatialWindowPushdown:
         )
 
         def op_lists(flags: OptFlags) -> list[list[str]]:
-            graph = expr.sink("numpy", return_expr=False, opt_flags=flags)
+            graph = expr.sink("tensor", return_expr=False, opt_flags=flags)
             return [op_names(n.pipeline) for n in graph._nodes.values()]
 
         assert op_lists(OptFlags.all()) == [["crop", "grayscale"]]
@@ -563,7 +565,7 @@ class TestShapeSubpipelineStaging:
         on = (
             pl.col("c")
             .cv.pipe(contour)
-            .sink("numpy", return_expr=False, opt_flags=OptFlags.all())
+            .sink("tensor", return_expr=False, opt_flags=OptFlags.all())
         )
         assert _shape_node_ops(on, shape_id) == ["resize"]
 
@@ -571,7 +573,7 @@ class TestShapeSubpipelineStaging:
             pl.col("c")
             .cv.pipe(contour)
             .sink(
-                "numpy",
+                "tensor",
                 return_expr=False,
                 opt_flags=OptFlags(identity_elimination=False),
             )
@@ -613,9 +615,9 @@ class TestShapeSubpipelineStaging:
         pipe = Pipeline().source("contour").rasterize(shape=_shape_ref())
 
         def run(flags: OptFlags) -> "np.ndarray":
-            out = df.select(m=pl.col("c").cv.pipe(pipe).sink("numpy", opt_flags=flags))[
-                "m"
-            ][0]
+            out = df.select(
+                m=pl.col("c").cv.pipe(pipe).sink("tensor", opt_flags=flags)
+            )["m"][0]
             return numpy_from_struct(out)
 
         assert np.array_equal(run(OptFlags.all()), run(OptFlags.none()))
@@ -778,7 +780,7 @@ class TestIdentityElimination:
             Pipeline()
             .pad(top=0, bottom=0, left=0, right=0)
             .crop(top=0, left=0, height=10, width=10)
-        ).sink("numpy", return_expr=False, opt_flags=OptFlags.all())
+        ).sink("tensor", return_expr=False, opt_flags=OptFlags.all())
         ops = [op_names(n.pipeline) for n in graph._nodes.values()]
         assert ["assert_shape"] in ops and ["crop"] not in ops
 
@@ -793,7 +795,7 @@ class TestIdentityElimination:
             Pipeline().source("image_bytes").resize(height=10, width=10)
         )
         graph = upstream.pipe(Pipeline().crop(top=0, left=0, height=10, width=10)).sink(
-            "numpy", return_expr=False, opt_flags=OptFlags.all()
+            "tensor", return_expr=False, opt_flags=OptFlags.all()
         )
         ops = [op_names(n.pipeline) for n in graph._nodes.values()]
         assert ["resize"] in ops and ["crop"] not in ops

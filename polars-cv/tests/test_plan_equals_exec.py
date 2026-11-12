@@ -226,7 +226,7 @@ def test_plan_equals_exec_shape(label, build, mode):
     realized = list(
         polars_cv.numpy_from_struct(
             df.lazy()
-            .select(out=pl.col("out").cv.pipe(pipe).sink("numpy"))
+            .select(out=pl.col("out").cv.pipe(pipe).sink("tensor"))
             .collect()["out"][0]
         ).shape
     )

@@ -90,7 +90,7 @@ class TestJpegScaledDecode:
         # stays >= 100).
         df = pl.DataFrame({"img": [_jpeg(800, 600)]})
         pipe = Pipeline().source("image_bytes", decode_max_size=100)
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(out["out"][0])
         assert arr.shape == (75, 100, 3)
         assert arr.dtype == np.uint8
@@ -100,7 +100,7 @@ class TestJpegScaledDecode:
         # pick 1/4 -> 125x100.
         df = pl.DataFrame({"img": [_jpeg(500, 400)]})
         pipe = Pipeline().source("image_bytes", decode_max_size=100)
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(out["out"][0])
         assert max(arr.shape[0], arr.shape[1]) >= 100
         assert arr.shape == (100, 125, 3)
@@ -108,7 +108,7 @@ class TestJpegScaledDecode:
     def test_assertion_larger_than_image_is_full_decode(self) -> None:
         df = pl.DataFrame({"img": [_jpeg(80, 60)]})
         pipe = Pipeline().source("image_bytes", decode_max_size=1024)
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out["out"][0]).shape == (60, 80, 3)
 
     @pytest.mark.parametrize("decode_max_size", [80, 81, 160, 4096])
@@ -128,7 +128,7 @@ class TestJpegScaledDecode:
 
         def decode(**source_kwargs: int) -> np.ndarray:
             pipe = Pipeline().source("image_bytes", **source_kwargs)
-            out = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            out = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             return numpy_from_struct(out["out"][0])
 
         full = decode()
@@ -142,12 +142,12 @@ class TestJpegScaledDecode:
         jpg = _gray_jpeg(400, 320)
         df = pl.DataFrame({"img": [jpg]})
         full = df.with_columns(
-            out=pl.col("img").cv.pipe(Pipeline().source("image_bytes")).sink("numpy")
+            out=pl.col("img").cv.pipe(Pipeline().source("image_bytes")).sink("tensor")
         )
         scaled = df.with_columns(
             out=pl.col("img")
             .cv.pipe(Pipeline().source("image_bytes", decode_max_size=50))
-            .sink("numpy")
+            .sink("tensor")
         )
         assert numpy_from_struct(full["out"][0]).shape == (320, 400, 1)
         assert numpy_from_struct(scaled["out"][0]).shape == (40, 50, 1)
@@ -155,7 +155,7 @@ class TestJpegScaledDecode:
     def test_png_ignores_assertion(self) -> None:
         df = pl.DataFrame({"img": [_png(200, 150)]})
         pipe = Pipeline().source("image_bytes", decode_max_size=50)
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out["out"][0]).shape == (150, 200, 3)
 
     def test_thumbnail_pipeline_close_to_full_decode(self) -> None:
@@ -170,7 +170,7 @@ class TestJpegScaledDecode:
                 .source("image_bytes", **source_kwargs)
                 .resize(height=48, width=64)
             )
-            out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             return numpy_from_struct(out["out"][0]).astype(np.float64)
 
         full = thumb()
@@ -183,7 +183,7 @@ class TestJpegScaledDecode:
         # source(dtype=...) casting composes with the scaled decode.
         df = pl.DataFrame({"img": [_jpeg(800, 600)]})
         pipe = Pipeline().source("image_bytes", dtype="f32", decode_max_size=100)
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(out["out"][0])
         assert arr.dtype == np.float32
         assert arr.shape == (75, 100, 3)
@@ -195,5 +195,5 @@ class TestJpegScaledDecode:
         pipe = Pipeline().source(
             "file_path", decode_max_size=100, allowed_roots=[str(tmp_path)]
         )
-        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out["out"][0]).shape == (75, 100, 3)

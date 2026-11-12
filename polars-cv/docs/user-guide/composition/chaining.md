@@ -19,7 +19,7 @@ pipe = (
 )
 
 result = df.with_columns(
-    output=pl.col("image").cv.pipe(pipe).sink("numpy")
+    output=pl.col("image").cv.pipe(pipe).sink("tensor")
 )
 ```
 

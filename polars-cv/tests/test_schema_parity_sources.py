@@ -329,7 +329,7 @@ def test_auto_on_binary_still_plans_the_rank_free_sinks() -> None:
         {"img": [None, make_image_png(H, W, 3, seed=1)]}, schema={"img": pl.Binary}
     )
     pipe = Pipeline().source("auto").cast("u8")
-    for sink in ("numpy", "blob", "png"):
+    for sink in ("tensor", "blob", "png"):
         assert_plan_equals_exec(
             binary, pl.col("img").cv.pipe(pipe).sink(sink), name=f"o_{sink}"
         )
@@ -422,7 +422,7 @@ def test_tensor_source_round_trips(pattern: str) -> None:
     out = src.select(
         out=pl.col("img")
         .cv.pipe(Pipeline().source("image_bytes").cast("u8"))
-        .sink("numpy")
+        .sink("tensor")
     )["out"]
     row = out[0]
     df = frame(rows_for(pattern, [row, row, row]), out.dtype)

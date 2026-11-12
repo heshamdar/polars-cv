@@ -113,4 +113,4 @@ show_images(df, "processed", max_rows=5, max_width=300)
 | `max_width` | `int` | `200` | Maximum display width per image (pixels) |
 | `format` | `str` | `"auto"` | Force a specific format instead of auto-detecting |
 
-Supported formats: PNG, JPEG, WebP, TIFF, BMP, GIF, VIEW protocol blobs, and numpy-sink struct columns.
+Supported formats: PNG, JPEG, WebP, TIFF, BMP, GIF, VIEW protocol blobs, and tensor-sink columns.

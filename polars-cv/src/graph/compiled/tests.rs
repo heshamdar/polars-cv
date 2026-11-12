@@ -684,12 +684,20 @@ fn a_blob_row_read_in_place_carries_only_its_bytes() {
         .collect();
     let input = Series::new("b".into(), &blobs);
     let graph = r#"{"version": 2, "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob", "dtype": "u8"}}}}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}}}"#;
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "tensor"}}}}"#;
     let out = CompiledGraph::compile(graph)
         .unwrap()
         .execute(&[input])
         .unwrap();
-    let data = out.struct_().unwrap().field_by_name("data").unwrap();
+    // The tensor sink's column is tagged: its fields are its storage's.
+    let data = out
+        .ext()
+        .unwrap()
+        .storage()
+        .struct_()
+        .unwrap()
+        .field_by_name("data")
+        .unwrap();
     for (i, row) in data.binary().unwrap().iter().enumerate() {
         let row = row.unwrap();
         assert!(row.len() < 2 * 64 * 64, "row {i} holds {} bytes", row.len());
@@ -728,7 +736,7 @@ fn tensor_sinks_copy_each_row_once() {
             format!("[{w}, {h}, {c}]"),
         ),
     ] {
-        let baseline = copies_in_call(&graph(ops, r#"{"format": "numpy"}"#), &input, image_bytes);
+        let baseline = copies_in_call(&graph(ops, r#"{"format": "tensor"}"#), &input, image_bytes);
         for sink in [
             r#"{"format": "list"}"#.to_string(),
             format!(r#"{{"format": "array", "shape": {shape}}}"#),
@@ -738,7 +746,7 @@ fn tensor_sinks_copy_each_row_once() {
                 copies,
                 baseline + 1,
                 "{layout} row, sink {sink}: {copies} image-sized allocations, \
-                     the numpy sink makes {baseline}"
+                     the tensor sink makes {baseline}"
             );
         }
     }
@@ -753,13 +761,21 @@ fn f32_copies_in_call(graph: &str, input: &Series, elems: usize) -> (Series, usi
     })
 }
 
-/// A row's values as f32, whichever numpy-struct field holds them.
+/// A row's values as f32, whichever tensor-struct field holds them.
 fn f32_values(out: &Series, field: Option<&str>) -> Vec<f32> {
     let s = match field {
         Some(name) => out.struct_().unwrap().field_by_name(name).unwrap(),
         None => out.clone(),
     };
-    let data = s.struct_().unwrap().field_by_name("data").unwrap();
+    // The tensor sink's column is tagged: its fields are its storage's.
+    let data = s
+        .ext()
+        .unwrap()
+        .storage()
+        .struct_()
+        .unwrap()
+        .field_by_name("data")
+        .unwrap();
     let bytes = data
         .binary()
         .unwrap()
@@ -797,7 +813,7 @@ fn scalar_ops_run_in_place_on_an_owned_buffer() {
                 "n1": {"input": {"node": "n0"},
                        "ops": [{"op": "scale", "factor": 2.0}]}
             },
-            "outputs": {"_output": {"node": "n1", "sink": {"format": "numpy"}}}
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "tensor"}}}
         }"#;
     let (out, copies) = f32_copies_in_call(chain, &input, elems);
     assert_eq!(f32_values(&out, None), doubled);
@@ -812,8 +828,8 @@ fn scalar_ops_run_in_place_on_an_owned_buffer() {
                 "n1": {"input": {"node": "n0"},
                        "ops": [{"op": "scale", "factor": 2.0}]}
             },
-            "outputs": {"a": {"node": "n0", "sink": {"format": "numpy"}},
-                        "b": {"node": "n1", "sink": {"format": "numpy"}}}
+            "outputs": {"a": {"node": "n0", "sink": {"format": "tensor"}},
+                        "b": {"node": "n1", "sink": {"format": "tensor"}}}
         }"#;
     let (out, copies) = f32_copies_in_call(shared, &input, elems);
     assert_eq!(
@@ -834,7 +850,7 @@ fn scalar_ops_run_in_place_on_an_owned_buffer() {
                 "n1": {"input": {"node": "n0"},
                        "ops": [{"op": "scale", "factor": 2.0}, {"op": "add", "other": "n0"}]}
             },
-            "outputs": {"_output": {"node": "n1", "sink": {"format": "numpy"}}}
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "tensor"}}}
         }"#;
     let (out, _) = f32_copies_in_call(operand, &input, elems);
     let tripled: Vec<f32> = values.iter().map(|&v| v as f32 * 3.0).collect();
@@ -851,7 +867,7 @@ fn scalar_ops_run_in_place_on_an_owned_buffer() {
                              "ops": [{"op": "cast", "dtype": "f32"},
                                      {"op": "assert_shape", "dims": [32, 24, 3]},
                                      {"op": "scale", "factor": 2.0}]}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}}
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "tensor"}}}
         }"#;
     let (out, copies) = f32_copies_in_call(single, &input, elems);
     assert_eq!(f32_values(&out, None), doubled);

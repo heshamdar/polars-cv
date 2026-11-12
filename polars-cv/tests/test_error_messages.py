@@ -183,7 +183,7 @@ def test_rasterize_onto_another_nodes_canvas_checks_its_row(supersample: int) ->
     with pytest.raises(
         pl.exceptions.ComputeError, match="supersample must be between 1 and 16"
     ) as raised:
-        df.select(mask.sink("numpy"))
+        df.select(mask.sink("tensor"))
     assert "panicked" not in str(raised.value)
 
 
@@ -352,7 +352,7 @@ def test_a_failing_row_is_named_as_the_accessors_name_it() -> None:
     frame = pl.DataFrame({"img": [_rgb_png(40, 12), _rgb_png(31, 12)]})
     pipe = _image().crop(left=8, width=24)
     with pytest.raises(pl.exceptions.ComputeError) as err:
-        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+        frame.select(pl.col("img").cv.pipe(pipe).sink("tensor"))
     first = _first_line(err)
     assert "crop window 8..32 on axis 1" in first, first
     assert ROW.search(first) and first.endswith(")"), first
@@ -365,7 +365,7 @@ def test_a_bad_per_row_value_names_its_op_and_parameter() -> None:
     frame = pl.DataFrame({"img": [_rgb_png(31, 12)], "l": [-1]})
     pipe = _image().crop(left=0, width=pl.col("l"))
     with pytest.raises(pl.exceptions.ComputeError) as err:
-        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+        frame.select(pl.col("img").cv.pipe(pipe).sink("tensor"))
     first = _first_line(err)
     assert "crop: width: Parameter column 'l': -1 cannot be negative" in first, first
     assert first.count("crop:") == 1, first
@@ -387,7 +387,7 @@ def test_a_row_is_named_within_its_batch_on_every_engine(engine: str) -> None:
     pipe = _image().crop(left=8, width=24)
     with pl.Config(streaming_chunk_size=8):
         with pytest.raises(pl.exceptions.ComputeError) as err:
-            lf.select(pl.col("img").cv.pipe(pipe).sink("numpy")).collect(engine=engine)
+            lf.select(pl.col("img").cv.pipe(pipe).sink("tensor")).collect(engine=engine)
     first = _first_line(err)
     assert_names_row(first, 50, 51)
     ((index, batch),) = [(int(i), int(n)) for i, n in ROW.findall(first)]
@@ -405,7 +405,7 @@ def test_a_window_bound_past_2_31_suggests_an_unsigned_wrap() -> None:
     )
     pipe = _image().crop(left=pl.col("w") - 32, width=4)
     with pytest.raises(pl.exceptions.ComputeError) as err:
-        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+        frame.select(pl.col("img").cv.pipe(pipe).sink("tensor"))
     first = _first_line(err)
     assert "4294967295" in first
     assert "unsigned subtraction" in first, first
@@ -420,7 +420,7 @@ def test_a_parameter_is_named_as_the_user_wrote_it_not_by_its_wrapper() -> None:
     )
     pipe = _image().resize(height=pl.col("h"), width=4)
     with pytest.raises(pl.exceptions.ComputeError) as err:
-        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+        frame.select(pl.col("img").cv.pipe(pipe).sink("tensor"))
     first = _first_line(err)
     assert "resize: height: Parameter column 'h' has a null value" in first, first
     assert "kind" not in first, first
@@ -434,7 +434,7 @@ def test_an_undecodable_row_says_what_is_wrong_in_words() -> None:
     it read ``Unsupported(UnsupportedError { format: Unknown, kind: ... })``."""
     frame = pl.DataFrame({"img": [b"not an image"]})
     with pytest.raises(pl.exceptions.ComputeError) as err:
-        frame.select(pl.col("img").cv.pipe(_image()).sink("numpy"))
+        frame.select(pl.col("img").cv.pipe(_image()).sink("tensor"))
     first = _first_line(err)
     assert "Failed to decode image: The image format could not be determined" in first
     assert "UnsupportedError" not in first, first
@@ -467,7 +467,7 @@ def test_a_pipeline_with_no_source_is_refused_where_it_meets_its_column() -> Non
     assert "node_" not in str(err.value)
     # A pipeline with no source still continues another: that is what one is.
     continued = pl.col("img").cv.pipe(_image()).pipe(pipe)
-    assert isinstance(continued.sink("numpy"), pl.Expr)
+    assert isinstance(continued.sink("tensor"), pl.Expr)
 
 
 def test_a_null_parameter_names_both_remedies() -> None:
@@ -476,17 +476,17 @@ def test_a_null_parameter_names_both_remedies() -> None:
     )
     pipe = _image().resize(height=pl.col("h"), width=4)
     with pytest.raises(pl.exceptions.ComputeError) as err:
-        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+        frame.select(pl.col("img").cv.pipe(pipe).sink("tensor"))
     first = _first_line(err)
     assert "fill_null" in first, first
     assert 'on_null_param("null")' in first, first
     # And each remedy is one: the row's result is null, or the row has a value.
     nulled = frame.select(
-        out=pl.col("img").cv.pipe(pipe.on_null_param("null")).sink("numpy")
+        out=pl.col("img").cv.pipe(pipe.on_null_param("null")).sink("tensor")
     )
     assert nulled["out"].null_count() == 1
     filled = _image().resize(height=pl.col("h").fill_null(2), width=4)
-    assert frame.select(out=pl.col("img").cv.pipe(filled).sink("numpy")).height == 1
+    assert frame.select(out=pl.col("img").cv.pipe(filled).sink("tensor")).height == 1
 
 
 def test_a_failing_pipeline_is_named_by_its_column_and_sink() -> None:
@@ -496,7 +496,7 @@ def test_a_failing_pipeline_is_named_by_its_column_and_sink() -> None:
     frame = pl.DataFrame({"good": [_rgb_png(4, 4)], "bad": [b"junk"]})
     with pytest.raises(pl.exceptions.ComputeError) as err:
         frame.select(
-            a=pl.col("good").cv.pipe(_image()).sink("numpy"),
+            a=pl.col("good").cv.pipe(_image()).sink("tensor"),
             b=pl.col("bad").cv.pipe(_image()).sink("png"),
         )
     first = _first_line(err)
@@ -509,6 +509,6 @@ def test_a_failing_multi_output_pipeline_names_its_outputs() -> None:
     base = pl.col("bad").cv.pipe(_image()).alias("full")
     small = base.pipe(Pipeline().resize(height=2, width=2)).alias("small")
     with pytest.raises(pl.exceptions.ComputeError) as err:
-        frame.select(small.sink({"full": "png", "small": "numpy"}))
+        frame.select(small.sink({"full": "png", "small": "tensor"}))
     first = _first_line(err)
-    assert "(column 'bad' to outputs 'full' (png), 'small' (numpy))" in first, first
+    assert "(column 'bad' to outputs 'full' (png), 'small' (tensor))" in first, first

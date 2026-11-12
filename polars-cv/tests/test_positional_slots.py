@@ -24,7 +24,7 @@ from tests.conftest import make_image_png, plugin_required
 
 
 def _graph(expr_pipe: Pipeline):
-    return pl.col("img").cv.pipe(expr_pipe).sink("numpy", return_expr=False)
+    return pl.col("img").cv.pipe(expr_pipe).sink("tensor", return_expr=False)
 
 
 def _params(spec: dict) -> list:
@@ -82,7 +82,7 @@ class TestSlotsAcrossPipelines:
             .cv.pipe(pa)
             .alias("x")
             .merge_pipe(pl.col("img").cv.pipe(pb).alias("y"))
-            .sink({"x": "numpy", "y": "numpy"})
+            .sink({"x": "tensor", "y": "tensor"})
             .alias("o")
         )
         heights = [
@@ -103,7 +103,7 @@ class TestSlotsAcrossPipelines:
         spec = json.loads(_graph(pipe)._to_json())
         slots = [p for p in _params(spec) if isinstance(p, dict) and "$slot" in p]
         assert slots == [{"$slot": 1}, {"$slot": 1}]
-        out = self._frame().select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = self._frame().select(pl.col("img").cv.pipe(pipe).sink("tensor"))
         shapes = [numpy_from_struct(r).shape[:2] for r in out["img"].to_list()]
         assert shapes == [(4, 4), (6, 6)]
         assert np.all(np.array(shapes) > 0)

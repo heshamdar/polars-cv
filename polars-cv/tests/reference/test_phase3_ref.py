@@ -34,7 +34,7 @@ def _encode_png(arr: np.ndarray) -> bytes:
 def _run_pipe(pipe: Pipeline, png_bytes: bytes) -> np.ndarray:
     """Execute a pipeline on a single PNG image and return numpy result."""
     df = pl.DataFrame({"img": [png_bytes]})
-    result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+    result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(result.row(0)[0])
 
 

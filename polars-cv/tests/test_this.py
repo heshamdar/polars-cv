@@ -29,7 +29,7 @@ def _column(*arrays: np.ndarray) -> pl.DataFrame:
 
 
 def _run(pipe: Pipeline, *arrays: np.ndarray) -> list[np.ndarray]:
-    out = _column(*arrays).select(pl.col("a").cv.pipe(pipe).sink("numpy"))
+    out = _column(*arrays).select(pl.col("a").cv.pipe(pipe).sink("tensor"))
     return [numpy_from_struct(v) for v in out["a"]]
 
 
@@ -122,7 +122,7 @@ class TestPerRow:
             .rasterize(width=10, height=8)
             .crop(height=this.height // 2, width=this.width - 1)
         )
-        out = frame.select(pl.col("c").cv.pipe(pipe).sink("numpy"))
+        out = frame.select(pl.col("c").cv.pipe(pipe).sink("tensor"))
         assert numpy_from_struct(out.item()).shape[:2] == (4, 9)
 
     def test_an_integer_parameter_rounds_to_nearest(self) -> None:
@@ -145,7 +145,7 @@ class TestPerRow:
         frame = _column(_img(10, 10)).with_columns(t=pl.lit(2))
         img = pl.col("a").cv.pipe(Pipeline().source("list"))
         out = frame.select(
-            img.crop(top=pl.col("t"), height=this.height - 4).sink("numpy").alias("a")
+            img.crop(top=pl.col("t"), height=this.height - 4).sink("tensor").alias("a")
         )
         assert numpy_from_struct(out["a"][0]).shape == (6, 10)
 
@@ -157,7 +157,7 @@ class TestPerRow:
         img = pl.col("a").cv.pipe(Pipeline().source("list"))
         got, want = (
             numpy_from_struct(
-                frame.select(img.background_divide(sigma).sink("numpy"))["a"][0]
+                frame.select(img.background_divide(sigma).sink("tensor"))["a"][0]
             )
             for sigma in (this.height / 4, 5.0)
         )
@@ -363,7 +363,7 @@ def test_the_operators_are_the_engines() -> None:
 def _graph_ops(pipe: Pipeline) -> list[dict]:
     import json
 
-    graph = pl.col("a").cv.pipe(pipe).sink("numpy", return_expr=False)
+    graph = pl.col("a").cv.pipe(pipe).sink("tensor", return_expr=False)
     spec = json.loads(graph._to_json())
     return [op for node in spec["nodes"].values() for op in node.get("ops", [])]
 

@@ -1,4 +1,4 @@
-"""Tests for the ``dtype="f16"`` half-precision numpy/torch sink downcast.
+"""Tests for the ``dtype="f16"`` half-precision tensor sink downcast.
 
 The engine has no native f16 dtype, so f16 is produced purely as an encode-time
 downcast at the sink boundary (halving the output-tensor bytes / H2D transfer).
@@ -19,19 +19,18 @@ class TestF16SinkValidation:
 
     def test_f16_rejected_on_non_tensor_sink(self) -> None:
         expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
-        with pytest.raises(ValueError, match="numpy.*torch"):
+        with pytest.raises(ValueError, match="it applies to: tensor"):
             expr.sink("png", dtype="f16")
 
     def test_non_f16_dtype_rejected(self) -> None:
         expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
         with pytest.raises(ValueError, match="'dtype'.*SinkDType.*f16"):
-            expr.sink("numpy", dtype="u8")
+            expr.sink("tensor", dtype="u8")
 
-    def test_f16_accepted_on_numpy_and_torch(self) -> None:
+    def test_f16_accepted_on_the_tensor_sink(self) -> None:
         # Should build a valid expression without raising.
-        for fmt in ("numpy", "torch"):
-            expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
-            assert expr.sink(fmt, dtype="f16") is not None
+        expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        assert expr.sink("tensor", dtype="f16") is not None
 
 
 @plugin_required
@@ -53,7 +52,7 @@ class TestF16SinkExecution:
         pipe = Pipeline().source("list", dtype="f32")
         out = (
             df.lazy()
-            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16"))
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor", dtype="f16"))
             .collect()
         )
         arr = numpy_from_struct(out["out"][0])
@@ -70,12 +69,12 @@ class TestF16SinkExecution:
         pipe = Pipeline().source("list", dtype="f32")
         f32 = (
             df.lazy()
-            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor"))
             .collect()
         )
         f16 = (
             df.lazy()
-            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16"))
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor", dtype="f16"))
             .collect()
         )
         a32 = numpy_from_struct(f32["out"][0])
@@ -94,12 +93,12 @@ class TestF16SinkExecution:
         pipe = Pipeline().source("list", dtype="f32").transpose([1, 0, 2])
         f32 = (
             df.lazy()
-            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor"))
             .collect()
         )
         f16 = (
             df.lazy()
-            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16"))
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor", dtype="f16"))
             .collect()
         )
         a32 = numpy_from_struct(f32["out"][0])
@@ -157,7 +156,7 @@ class TestF16SinkExecution:
             if transpose:
                 pipe = pipe.transpose([1, 0])
             out = df.with_columns(
-                out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16")
+                out=pl.col("x").cv.pipe(pipe).sink("tensor", dtype="f16")
             )
             for row, value in zip(rows, out["out"], strict=True):
                 # 65520 and 1e10 overflow to infinity, as intended.
@@ -182,7 +181,7 @@ class TestF16SinkExecution:
             {"x": [img.tolist()]}, schema={"x": pl.List(pl.List(pl.UInt16))}
         )
         pipe = Pipeline().source("list", dtype="u16")
-        out = df.with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16"))
+        out = df.with_columns(out=pl.col("x").cv.pipe(pipe).sink("tensor", dtype="f16"))
         got = numpy_from_struct(out["out"][0])
         want = img.astype(np.float32).astype(np.float16)
         np.testing.assert_array_equal(got.view(np.uint16), want.view(np.uint16))

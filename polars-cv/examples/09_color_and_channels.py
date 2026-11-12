@@ -88,10 +88,10 @@ def demo_color_conversion() -> None:
     to_gray = Pipeline().source("image_bytes").grayscale()
 
     result = df.with_columns(
-        hsv=pl.col("image").cv.pipe(to_hsv).sink("numpy"),
-        lab=pl.col("image").cv.pipe(to_lab).sink("numpy"),
-        ycbcr=pl.col("image").cv.pipe(to_ycbcr).sink("numpy"),
-        gray=pl.col("image").cv.pipe(to_gray).sink("numpy"),
+        hsv=pl.col("image").cv.pipe(to_hsv).sink("tensor"),
+        lab=pl.col("image").cv.pipe(to_lab).sink("tensor"),
+        ycbcr=pl.col("image").cv.pipe(to_ycbcr).sink("tensor"),
+        gray=pl.col("image").cv.pipe(to_gray).sink("tensor"),
     )
 
     images = [img]
@@ -119,10 +119,10 @@ def demo_channel_operations() -> None:
     bgr_swap = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
 
     result = df.with_columns(
-        red=pl.col("image").cv.pipe(red_ch).sink("numpy"),
-        green=pl.col("image").cv.pipe(green_ch).sink("numpy"),
-        blue=pl.col("image").cv.pipe(blue_ch).sink("numpy"),
-        bgr=pl.col("image").cv.pipe(bgr_swap).sink("numpy"),
+        red=pl.col("image").cv.pipe(red_ch).sink("tensor"),
+        green=pl.col("image").cv.pipe(green_ch).sink("tensor"),
+        blue=pl.col("image").cv.pipe(blue_ch).sink("tensor"),
+        bgr=pl.col("image").cv.pipe(bgr_swap).sink("tensor"),
     )
 
     images = [img]
@@ -153,12 +153,12 @@ def demo_intensity_adjustments() -> None:
     inverted = Pipeline().source("image_bytes").invert()
 
     result = df.with_columns(
-        contrast_hi=pl.col("image").cv.pipe(contrast_hi).sink("numpy"),
-        contrast_lo=pl.col("image").cv.pipe(contrast_lo).sink("numpy"),
-        gamma_bright=pl.col("image").cv.pipe(gamma_bright).sink("numpy"),
-        gamma_dark=pl.col("image").cv.pipe(gamma_dark).sink("numpy"),
-        bright=pl.col("image").cv.pipe(bright).sink("numpy"),
-        inverted=pl.col("image").cv.pipe(inverted).sink("numpy"),
+        contrast_hi=pl.col("image").cv.pipe(contrast_hi).sink("tensor"),
+        contrast_lo=pl.col("image").cv.pipe(contrast_lo).sink("tensor"),
+        gamma_bright=pl.col("image").cv.pipe(gamma_bright).sink("tensor"),
+        gamma_dark=pl.col("image").cv.pipe(gamma_dark).sink("tensor"),
+        bright=pl.col("image").cv.pipe(bright).sink("tensor"),
+        inverted=pl.col("image").cv.pipe(inverted).sink("tensor"),
     )
 
     images = [img]
@@ -202,7 +202,7 @@ def demo_dynamic_intensity() -> None:
         Pipeline().source("image_bytes").adjust_contrast(factor=pl.col("contrast_val"))
     )
     result = df.with_columns(
-        adjusted=pl.col("image").cv.pipe(pipe).sink("numpy"),
+        adjusted=pl.col("image").cv.pipe(pipe).sink("tensor"),
     )
 
     images = []

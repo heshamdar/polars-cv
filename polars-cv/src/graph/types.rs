@@ -176,7 +176,7 @@ mod row_error_policy_tests {
     fn output(ops: &str) -> Result<OutputSpec, String> {
         let graph = UnifiedGraph::from_json(&format!(
             r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {{"format": "image_bytes"}}}}}}, "ops": {ops}}}}},
-                "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "numpy"}}}}}}}}"#
+                "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "tensor"}}}}}}}}"#
         ))
         .map_err(|e| e.to_string())?;
         crate::graph::resolved_output_specs(&graph, &[])
@@ -225,7 +225,7 @@ mod row_error_policy_tests {
         ] {
             let err = UnifiedGraph::from_json(&format!(
                 r#"{{"version": 2, "nodes": {{}}, "outputs": {{"_output": {{"node": "n0",
-                    "sink": {{"format": "numpy"}}, {extra}}}}}}}"#
+                    "sink": {{"format": "tensor"}}, {extra}}}}}}}"#
             ))
             .unwrap_err()
             .to_string();
@@ -706,7 +706,7 @@ mod parse_tests {
                 }
             },
             "outputs": {
-                "_output": {"node": "_node_0", "sink": {"format": "numpy"}}
+                "_output": {"node": "_node_0", "sink": {"format": "tensor"}}
             }
         }"#;
         let graph = UnifiedGraph::from_json(json).unwrap();
@@ -730,7 +730,7 @@ mod parse_tests {
             },
             "outputs": {
                 "original": {"node": "_node_0", "sink": {"format": "png"}},
-                "processed": {"node": "_node_1", "sink": {"format": "numpy"}}
+                "processed": {"node": "_node_1", "sink": {"format": "tensor"}}
             }
         }"#;
         let graph = UnifiedGraph::from_json(json).unwrap();
@@ -748,7 +748,7 @@ mod parse_tests {
                 "b": {"ops": [], "input": {"node": "a"}}
             },
             "outputs": {
-                "out_a": {"node": "a", "sink": {"format": "numpy"}},
+                "out_a": {"node": "a", "sink": {"format": "tensor"}},
                 "out_b": {"node": "b", "sink": {"format": "png"}}
             }
         }"#;

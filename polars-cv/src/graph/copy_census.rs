@@ -217,7 +217,7 @@ enum Run {
 fn runnable(op: &str, dtype: DType) -> Run {
     let mut refusal = String::new();
     for c in [3, 1] {
-        for sink in [r#"{"format": "numpy"}"#, r#"{"format": "native"}"#] {
+        for sink in [r#"{"format": "tensor"}"#, r#"{"format": "native"}"#] {
             let shape = [H, W, c];
             match copies(
                 &graph(op, "", sink, dtype),

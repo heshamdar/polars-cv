@@ -136,7 +136,7 @@ def test_a_buffer_op_applies_to_a_hash_vector() -> None:
 def test_histogram_buckets_refuse_a_format_they_ignore() -> None:
     """``histogram(output="buckets")`` encodes as ``List(Struct)`` for every
     sink format: ``SinkKind::resolve`` returns ``HistogramBuckets`` before it
-    reads the format, so ``sink("numpy")`` quietly gives the struct column.
+    reads the format, so ``sink("tensor")`` quietly gives the struct column.
     A format the output cannot honour must be refused (or honoured, as a
     ``[bins, 4]`` buffer), never swapped for another. Fixed when ``numpy``
     on buckets either raises or returns the numpy struct."""
@@ -151,11 +151,11 @@ def test_histogram_buckets_refuse_a_format_they_ignore() -> None:
     df = pl.DataFrame({"i": [buf.getvalue()]})
     pipe = Pipeline().source("image_bytes").histogram(bins=4, output="buckets")
     try:
-        out = df.select(pl.col("i").cv.pipe(pipe).sink("numpy")).to_series()
+        out = df.select(pl.col("i").cv.pipe(pipe).sink("tensor")).to_series()
     except (ValueError, pl.exceptions.ComputeError):
         return
     bucket_fields = {"lower_edge", "upper_edge", "count", "normalized"}
     inner = out.dtype.inner if isinstance(out.dtype, pl.List) else out.dtype
     assert not (
         isinstance(inner, pl.Struct) and {f.name for f in inner.fields} == bucket_fields
-    ), f"sink('numpy') silently gave the bucket struct: {out.dtype}"
+    ), f"sink('tensor') silently gave the bucket struct: {out.dtype}"

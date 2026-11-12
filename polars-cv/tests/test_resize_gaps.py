@@ -43,7 +43,7 @@ class TestResizeFilterTypes:
             .source("image_bytes")
             .resize(height=32, width=48, filter=filter_name)
         )
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (32, 48, 3)
 
@@ -68,7 +68,7 @@ class TestResizeScale:
         """scale=2.0 should double both dimensions."""
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").resize_scale(scale=2.0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (128, 128, 3)
 
@@ -76,7 +76,7 @@ class TestResizeScale:
         """scale=0.5 should halve both dimensions."""
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").resize_scale(scale=0.5)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (32, 32, 3)
 
@@ -84,7 +84,7 @@ class TestResizeScale:
         """scale_x and scale_y can differ."""
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").resize_scale(scale_x=0.5, scale_y=2.0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (128, 32, 3)
 
@@ -92,7 +92,7 @@ class TestResizeScale:
         """scale=1.0 should produce identical dimensions."""
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").resize_scale(scale=1.0)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (64, 64, 3)
 
@@ -100,7 +100,7 @@ class TestResizeScale:
         """Very small scale factor should produce a small image (≥ 1px)."""
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = Pipeline().source("image_bytes").resize_scale(scale=0.05)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape[0] >= 1
         assert arr.shape[1] >= 1
@@ -121,7 +121,7 @@ class TestResizeAspectPreserving:
         png = encode_png(img)
         df = pl.DataFrame({"img": [png]})
         pipe = Pipeline().source("image_bytes").resize_to_height(height=50)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape[0] == 50
         assert arr.shape[1] == 100  # 200 * (50/100)
@@ -132,7 +132,7 @@ class TestResizeAspectPreserving:
         png = encode_png(img)
         df = pl.DataFrame({"img": [png]})
         pipe = Pipeline().source("image_bytes").resize_to_width(width=100)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape[1] == 100
         assert arr.shape[0] == 50  # 100 * (100/200)
@@ -143,7 +143,7 @@ class TestResizeAspectPreserving:
         png = encode_png(img)
         df = pl.DataFrame({"img": [png]})
         pipe = Pipeline().source("image_bytes").resize_max(100)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert max(arr.shape[0], arr.shape[1]) == 100
         assert arr.shape == (50, 100, 3)
@@ -154,7 +154,7 @@ class TestResizeAspectPreserving:
         png = encode_png(img)
         df = pl.DataFrame({"img": [png]})
         pipe = Pipeline().source("image_bytes").resize_min(200)
-        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert min(arr.shape[0], arr.shape[1]) == 200
         assert arr.shape == (200, 400, 3)
@@ -187,8 +187,8 @@ class TestResizeFilterQuality:
             .resize(height=128, width=128, filter="bilinear")
         )
 
-        r1 = df.select(out=pl.col("img").cv.pipe(pipe_nearest).sink("numpy"))
-        r2 = df.select(out=pl.col("img").cv.pipe(pipe_bilinear).sink("numpy"))
+        r1 = df.select(out=pl.col("img").cv.pipe(pipe_nearest).sink("tensor"))
+        r2 = df.select(out=pl.col("img").cv.pipe(pipe_bilinear).sink("tensor"))
 
         arr1 = numpy_from_struct(r1.row(0)[0])
         arr2 = numpy_from_struct(r2.row(0)[0])
@@ -226,7 +226,7 @@ class TestResizeChannelLimit:
         df = pl.DataFrame({"x": [img]}, schema={"x": pl.Array(pl.UInt8, (4, 5, 5))})
         pipe = self.RESIZES[op](Pipeline().source("array", dtype="u8"))
         with pytest.raises(pl.exceptions.ComputeError, match="at most 4 channels"):
-            df.with_columns(o=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(o=pl.col("x").cv.pipe(pipe).sink("tensor"))
 
     @pytest.mark.parametrize("op", sorted(RESIZES))
     def test_five_channels_are_refused_per_row(self, op: str) -> None:
@@ -236,4 +236,4 @@ class TestResizeChannelLimit:
         )
         pipe = self.RESIZES[op](Pipeline().source("list", dtype="u8"))
         with pytest.raises(pl.exceptions.ComputeError, match="at most 4 channels"):
-            df.with_columns(o=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(o=pl.col("x").cv.pipe(pipe).sink("tensor"))

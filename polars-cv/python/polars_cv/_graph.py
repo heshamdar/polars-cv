@@ -105,7 +105,7 @@ class GraphOutput:
 
     Attributes:
         node_id: The node whose output to return.
-        format: Output format (e.g., "numpy", "torch", "png").
+        format: Output format (e.g., "tensor", "png").
         params: Additional output parameters.
     """
 
@@ -144,12 +144,12 @@ class PipelineGraph:
         >>> graph = PipelineGraph()
         >>> graph.add_node("img", img_pipeline, pl.col("image"), alias="original")
         >>> graph.add_node("blurred", blur_pipeline, input="img")
-        >>> graph.set_output("mask", "numpy")  # Single output
+        >>> graph.set_output("mask", "tensor")  # Single output
         >>> from polars_cv import OptFlags
         >>> expr = graph.optimize(OptFlags.all()).to_expr()  # Returns fused pl.Expr
         >>>
         >>> # Or for multi-output:
-        >>> graph.set_multi_output({"original": "png", "mask": "numpy"})
+        >>> graph.set_multi_output({"original": "png", "mask": "tensor"})
         >>> expr = graph.optimize(OptFlags.all()).to_expr()  # Struct expression
     """
 
@@ -227,7 +227,7 @@ class PipelineGraph:
 
         Args:
             node_id_or_alias: The node ID or alias whose output to return.
-            sink: The output's sink: a format name (e.g. "numpy", "png") or
+            sink: The output's sink: a format name (e.g. "tensor", "png") or
                 a :class:`polars_cv.Sink` (a format with its parameters).
         """
         # Resolve alias to node_id if needed

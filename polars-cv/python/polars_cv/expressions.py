@@ -39,7 +39,7 @@ class CvNamespace(_PluginNamespace):
 
     Example:
         >>> pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
-        >>> expr = pl.col("image").cv.pipe(pipe).sink("numpy")
+        >>> expr = pl.col("image").cv.pipe(pipe).sink("tensor")
         >>> df.with_columns(processed=expr)
 
     Metadata methods (header-only, no full decode):

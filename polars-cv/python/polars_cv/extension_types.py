@@ -8,7 +8,7 @@ names, and a tagged column keeps that identity through Parquet and IPC.
 ========================  ============================================
 type                      storage
 ========================  ============================================
-``polars_cv.ndarray``     :data:`NUMPY_OUTPUT_SCHEMA` (the numpy/torch sink struct)
+``polars_cv.ndarray``     :data:`NUMPY_OUTPUT_SCHEMA` (the tensor sink struct)
 ``polars_cv.point``       :data:`~polars_cv.geometry.schemas.POINT_SCHEMA`
 ``polars_cv.contour``     :data:`~polars_cv.geometry.schemas.CONTOUR_SCHEMA`
 ``polars_cv.bbox``        :data:`~polars_cv.geometry.schemas.BBOX_SCHEMA`
@@ -16,8 +16,7 @@ type                      storage
 
 Producing and consuming them:
 
-- ``.sink("ndarray")`` emits a ``polars_cv.ndarray`` column; ``sink("numpy")``
-  keeps emitting the plain struct.
+- ``.sink("tensor")`` emits a ``polars_cv.ndarray`` column, always.
 - Any column with the right storage can be tagged with ``.ext.to(PointType())``
   and friends — a zero-copy relabel.
 - Every polars-cv expression accepts a tagged column wherever it accepts the
@@ -52,7 +51,7 @@ import polars as pl
 
 from polars_cv.geometry.schemas import BBOX_SCHEMA, CONTOUR_SCHEMA, POINT_SCHEMA
 
-#: Schema of the numpy/torch sink output struct, and the storage of
+#: Schema of the tensor sink's struct: the storage of
 #: :class:`NdArrayType`. Matches ``output::numpy_output_dtype`` in the Rust
 #: plugin (held to it by the extension-type parity test).
 NUMPY_OUTPUT_SCHEMA = pl.Struct(
@@ -97,9 +96,9 @@ class _PolarsCvType(pl.datatypes.BaseExtension):
 
 
 class NdArrayType(_PolarsCvType):
-    """``polars_cv.ndarray``: a strided N-D array, as the numpy/torch sink struct.
+    """``polars_cv.ndarray``: a strided N-D array, as the tensor sink struct.
 
-    Emitted by ``.sink("ndarray")``; read back with
+    Emitted by ``.sink("tensor")``; read back with
     :func:`polars_cv.numpy_from_struct`.
     """
 

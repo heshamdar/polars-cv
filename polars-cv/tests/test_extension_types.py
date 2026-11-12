@@ -2,7 +2,7 @@
 way into the plugin.
 
 Four types tag the structs polars-cv already emits — ``polars_cv.ndarray``
-(the numpy/torch sink struct), ``polars_cv.point``, ``polars_cv.contour`` and
+(the tensor sink struct), ``polars_cv.point``, ``polars_cv.contour`` and
 ``polars_cv.bbox`` — so a consumer can identify a column by its type instead of
 by sniffing field names.
 

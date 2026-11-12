@@ -148,7 +148,7 @@ Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`,
 
 | Sink Format | Output Type | Encoding |
 |-------------|-------------|----------|
-| `numpy` / `torch` | Struct | Zero-copy struct with `{data, dtype, shape, strides, offset}` |
+| `tensor` | `polars_cv.ndarray` | Zero-copy struct with `{data, dtype, shape, strides, offset}`, tagged (`ExtType::NdArray`) |
 | `png` / `jpeg` / `webp` / `tiff` | Binary | Encode `ViewBuffer` to image format bytes. `encode_sink` (`execute.rs`) rejects non-`u8` for JPEG/WebP before encoding; PNG carries bit depth through (`ImageAdapter::to_dynamic_image` builds 8-bit variants for `U8`, 16-bit for `U16`, and rejects anything else); TIFF handles float |
 | `blob` | Binary | VIEW protocol serialization |
 | `list` | List(...) | Typed nested list preserving dtype |

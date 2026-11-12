@@ -34,7 +34,7 @@ def _sized(*dims: int) -> Pipeline:
 
 
 def _run(df: pl.DataFrame, expr) -> list[np.ndarray]:
-    return numpy_from_column(df.select(expr.sink("numpy")).to_series(), copy=True)
+    return numpy_from_column(df.select(expr.sink("tensor")).to_series(), copy=True)
 
 
 @plugin_required
@@ -70,11 +70,11 @@ class TestShapesMustMatch:
         )
         a = pl.col("a").cv.pipe(Pipeline().source("image_bytes").on_error("null"))
         b = pl.col("b").cv.pipe(Pipeline().source("image_bytes"))
-        out = df.select(a.add(b).sink("numpy")).to_series()
+        out = df.select(a.add(b).sink("tensor")).to_series()
         assert out.is_null().to_list() == [False, True]
         with pytest.raises(Exception, match=r"same shape"):
             plain = pl.col("a").cv.pipe(Pipeline().source("image_bytes"))
-            df.select(plain.add(b).sink("numpy"))
+            df.select(plain.add(b).sink("tensor"))
 
 
 @plugin_required

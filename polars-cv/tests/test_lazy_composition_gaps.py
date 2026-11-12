@@ -167,14 +167,14 @@ class TestSinkReturnExpr:
 
         pipe = Pipeline().source("image_bytes").grayscale()
         expr = pl.col("img").cv.pipe(pipe)
-        graph = expr.sink("numpy", return_expr=False)
+        graph = expr.sink("tensor", return_expr=False)
         assert isinstance(graph, PipelineGraph)
 
     def test_sink_return_expr_true_returns_pl_expr(self) -> None:
         """sink(return_expr=True) should return a pl.Expr (default)."""
         pipe = Pipeline().source("image_bytes").grayscale()
         expr = pl.col("img").cv.pipe(pipe)
-        result = expr.sink("numpy", return_expr=True)
+        result = expr.sink("tensor", return_expr=True)
         assert isinstance(result, pl.Expr)
 
 
@@ -203,7 +203,7 @@ class TestBlendRatioExecution:
         expr1 = pl.col("a").cv.pipe(pipe)
         expr2 = pl.col("b").cv.pipe(pipe)
 
-        result = df.select(out=expr1.blend(expr2).sink("numpy"))
+        result = df.select(out=expr1.blend(expr2).sink("tensor"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (30, 30, 3)
         assert arr.dtype == np.uint8
@@ -228,7 +228,7 @@ class TestBitwiseExecution:
         expr1 = pl.col("a").cv.pipe(pipe)
         expr2 = pl.col("b").cv.pipe(pipe)
 
-        result = df.select(out=expr1.bitwise_and(expr2).sink("numpy"))
+        result = df.select(out=expr1.bitwise_and(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         expected = np.bitwise_and(img1, img2)
         np.testing.assert_array_equal(actual, expected)
@@ -248,7 +248,7 @@ class TestBitwiseExecution:
         expr1 = pl.col("a").cv.pipe(pipe)
         expr2 = pl.col("b").cv.pipe(pipe)
 
-        result = df.select(out=expr1.bitwise_or(expr2).sink("numpy"))
+        result = df.select(out=expr1.bitwise_or(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
         expected = np.bitwise_or(img1, img2)
         np.testing.assert_array_equal(actual, expected)

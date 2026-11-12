@@ -1,4 +1,4 @@
-"""``sink("numpy"|"ndarray"|"torch", compact=True)``: rows that hold only their own bytes.
+"""``sink("tensor"|"ndarray"|"torch", compact=True)``: rows that hold only their own bytes.
 
 By default a tensor sink hands each row's storage over as it lies, so a view
 (a crop, a transpose, a flip, a blob's payload) arrives with the whole buffer
@@ -51,7 +51,7 @@ LAYOUTS = {
     "float": RAW.cast("f32"),
 }
 
-TENSOR_SINKS = ["numpy", "ndarray", "torch"]
+TENSOR_SINKS = ["tensor"]
 
 
 def _fields(column: pl.Series) -> pl.DataFrame:
@@ -106,14 +106,14 @@ def test_compact_rows_hold_exactly_their_elements(layout: str, sink: str) -> Non
 def test_compact_blob_rows_drop_the_header() -> None:
     blobs = _raw_frame().select(raw=pl.col("raw").cv.pipe(RAW).sink("blob"))
     pipe = Pipeline().source("blob")
-    _assert_compact(_sink(blobs, pipe, "numpy", compact=True), "blob")
+    _assert_compact(_sink(blobs, pipe, "tensor", compact=True), "blob")
 
 
 def test_compact_half_precision_rows_are_compact() -> None:
     column = _sink(
         _raw_frame(),
         LAYOUTS["float"].transpose([1, 0, 2]),
-        "numpy",
+        "tensor",
         compact=True,
         dtype="f16",
     )
@@ -128,7 +128,7 @@ def test_compact_rows_that_already_are_stay_in_place(layout: str) -> None:
     inputs = [
         (addr, addr + n) for _, addr, n in filter(None, binary_rows(frame["raw"]))
     ]
-    out = _fields(_sink(frame, LAYOUTS[layout], "numpy", compact=True))["data"]
+    out = _fields(_sink(frame, LAYOUTS[layout], "tensor", compact=True))["data"]
     for i, row in enumerate(binary_rows(out)):
         if row is None:
             continue
@@ -147,7 +147,7 @@ def test_compact_persists_only_the_elements() -> None:
 
     def written(**kwargs: object) -> int:
         buf = io.BytesIO()
-        pl.DataFrame({"o": _sink(frame, pipe, "ndarray", **kwargs)}).write_parquet(
+        pl.DataFrame({"o": _sink(frame, pipe, "tensor", **kwargs)}).write_parquet(
             buf, compression="uncompressed"
         )
         return buf.tell()

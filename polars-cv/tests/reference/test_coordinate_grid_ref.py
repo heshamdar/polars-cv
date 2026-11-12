@@ -43,7 +43,7 @@ def _run(image: np.ndarray, build) -> np.ndarray:
         {"m": [image]}, schema={"m": pl.Array(_POLARS[image.dtype], image.shape)}
     )
     out = df.select(
-        pl.col("m").cv.pipe(build(Pipeline().source("array"))).sink("numpy")
+        pl.col("m").cv.pipe(build(Pipeline().source("array"))).sink("tensor")
     )
     (result,) = numpy_from_column(out.to_series(), copy=True)
     assert result is not None
@@ -118,7 +118,7 @@ def test_a_per_row_normalized_flag() -> None:
     )
     pipe = Pipeline().source("array").coordinate_grid(normalized=pl.col("n"))
     out = numpy_from_column(
-        df.select(pl.col("m").cv.pipe(pipe).sink("numpy")).to_series(), copy=True
+        df.select(pl.col("m").cv.pipe(pipe).sink("tensor")).to_series(), copy=True
     )
     np.testing.assert_array_equal(out[0], _oracle(2, 4))
     np.testing.assert_array_equal(out[1], _oracle(2, 4, normalized=True))

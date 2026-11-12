@@ -46,7 +46,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
     Example:
         >>> preprocess = Pipeline().source("image_bytes").resize(height=100, width=200)
         >>> img = pl.col("image").cv.pipe(preprocess)
-        >>> expr = img.sink("numpy")
+        >>> expr = img.sink("tensor")
     """
 
     # The private instance state, declared once here (other modules read a
@@ -159,7 +159,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         Example:
             >>> base = pl.col("img").cv.pipe(pipe).alias("base")
             >>> gray = base.pipe(Pipeline().grayscale()).alias("gray")
-            >>> expr = gray.sink({"base": "numpy", "gray": "png"})
+            >>> expr = gray.sink({"base": "tensor", "gray": "png"})
         """
         # Create a new LazyPipelineExpr with the alias set
         # This effectively creates a "checkpoint" that can be referenced
@@ -387,7 +387,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             >>> expr = result.sink({
             ...     "gray": "png",
             ...     "contours": "native",
-            ...     "blurred": "numpy"
+            ...     "blurred": "tensor"
             ... })
             ```
         Note:
@@ -495,8 +495,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             >>> # Merge and sink together
             >>> result = img.merge_pipe(gray, stats)
             >>> expr = result.sink({
-            ...     "img": "numpy",
-            ...     "gray": "numpy",
+            ...     "img": "tensor",
+            ...     "gray": "tensor",
             ...     "stat_mean": "native",
             ...     "stat_std": "native",
             ...     "stat_min": "native",
@@ -676,10 +676,10 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         if self._alias:
             print(f"\nThis node is aliased as '{self._alias}'")
         print("\nTo use in DataFrame operations, call .sink(format) first:")
-        print(f"    expr = {self._node_id}.sink('numpy')")
+        print(f"    expr = {self._node_id}.sink('tensor')")
         print("    df.with_columns(result=expr)")
         print("\nFor multi-output, use a dict:")
-        print("    expr = node.sink({'alias1': 'numpy', 'alias2': 'png'})")
+        print("    expr = node.sink({'alias1': 'tensor', 'alias2': 'png'})")
 
 
 # ---------------------------------------------------------------------------

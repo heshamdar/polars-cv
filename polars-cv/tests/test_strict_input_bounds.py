@@ -29,7 +29,7 @@ def _image_frame() -> pl.DataFrame:
 
 def _crop(**kwargs: object) -> np.ndarray:
     pipe = Pipeline().source("array").crop(**kwargs)  # ty: ignore[invalid-argument-type]
-    out = _image_frame().select(o=pl.col("a").cv.pipe(pipe).sink("numpy"))
+    out = _image_frame().select(o=pl.col("a").cv.pipe(pipe).sink("tensor"))
     from polars_cv import numpy_from_struct
 
     return numpy_from_struct(out["o"][0])
@@ -81,7 +81,7 @@ class TestCropBounds:
         df = _image_frame().with_columns(t=pl.lit(-5))
         pipe = Pipeline().source("array").crop(top=pl.col("t"), left=0, height=4)
         with pytest.raises(pl.exceptions.ComputeError, match="negative"):
-            df.select(o=pl.col("a").cv.pipe(pipe).sink("numpy"))
+            df.select(o=pl.col("a").cv.pipe(pipe).sink("tensor"))
 
     def test_an_overrunning_row_is_nulled_under_on_error_null(self) -> None:
         df = pl.concat([_image_frame()] * 2).with_columns(t=pl.Series([0, 15]))
@@ -91,7 +91,7 @@ class TestCropBounds:
             .crop(top=pl.col("t"), left=0, height=10, width=4)
             .on_error("null")
         )
-        out = df.select(o=pl.col("a").cv.pipe(pipe).sink("numpy"))["o"]
+        out = df.select(o=pl.col("a").cv.pipe(pipe).sink("tensor"))["o"]
         assert out[0] is not None
         assert out[1] is None
 

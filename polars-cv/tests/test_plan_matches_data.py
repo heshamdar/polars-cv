@@ -73,7 +73,7 @@ class TestPlanMatchesDataSources:
     def test_image_grayscale_numpy_sink(self, create_test_png) -> None:
         df = pl.DataFrame({"x": [create_test_png(8, 8)]})
         pipe = Pipeline().source("image_bytes").grayscale()
-        _assert_plan_matches_data(df, pl.col("x").cv.pipe(pipe).sink("numpy"))
+        _assert_plan_matches_data(df, pl.col("x").cv.pipe(pipe).sink("tensor"))
 
     def test_image_reshape_2d_list_sink(self, create_test_png) -> None:
         # Image is rank-3 known; reshape to rank 2 must be reflected in the plan.

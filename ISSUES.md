@@ -41,7 +41,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-78 | Metrics | Low | An image missing from `images=` silently gets weight 1.0 |
 | CR-79 | CI | Low | The COCO parity test never runs in CI |
 | CR-80 | Extension types | Feature | Opt-in tagged geometry output (`polars_cv.point` / `.contour` / `.bbox`) |
-| CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
@@ -444,23 +443,15 @@ tagged inputs everywhere. How it works, and why tagging stays opt-in, is in
 - Tests mirror `tests/test_ndarray_sink.py`, plus metrics end to end on
   tagged inputs.
 
-### CR-81 — Tagged by default? **decision**
-
-- Decide from usage whether `sink("numpy")` and the untagged geometry outputs
-  become tagged by default (a major version), or stay as the plain-struct
-  interchange formats. Recommendation: keep both permanently, `numpy` plain
-  and `ndarray` typed, which avoids a flag day. A flip needs CHANGELOG
-  migration notes with the struct-operations table from the AGENTS.md
-  section.
-
 ### CR-82 — `polars_cv.ndarray` metadata **decision**
 
 - Should the type carry `{"dtype": "uint8", "ndim": 3}`? The planner knows
   both at plan time, enabling type-level checks before data flows. The cost:
   metadata is part of dtype equality, so columns of different dtypes stop
   concatenating, and the factory must parse and validate it.
-  Recommendation: no metadata; adding it later is a dtype change, so decide
-  before CR-81.
+  Recommendation: no metadata. CR-81 is decided (the tensor sink is always
+  tagged), so adding metadata is now a change to every tensor column's
+  dtype: decide this before the stable surface is declared (CR-141).
 
 ## Upstream (Polars)
 
@@ -662,6 +653,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-81 | Whether any output becomes tagged by default | Decided (owner, 2026-11-12), unreleased: for tensors, yes. `sink("tensor")` replaces `numpy`, `torch` (byte-identical) and `ndarray`, and always emits `polars_cv.ndarray`; `Sink::Tensor` and `SinkKind::Tensor` are the one variant and kind. The ledger had recommended keeping `numpy` plain. Rows are unchanged (the golden corpus differs only in the column type, 212 cases); tests that used struct operations on the output go through `.ext.storage()`. Source and sink names pair up (`tensor`, `blob`, `list`, `array`); `blob` kept. Geometry outputs stay untagged (CR-80). CR-82 (metadata) is now a change to every tensor column and should be decided before CR-141 |
 | CR-145 | `image`'s default features compiled an AVIF encoder (`ravif`, `rav1e`) no sink reaches | Fixed (unreleased): one `[workspace.dependencies]` entry names the formats, and both crates take it (the plugin crate also declared `image` with defaults, so trimming view-buffer's alone changed nothing: features unify). `avif` is gone, and `tga`, which was compiled and unreachable (no signature, and every decode detects the format from the bytes). `rayon` stays on (one 2048x2048 EXR decodes about 50% slower without it), and its weak feature keeps the uncompiled `ravif` tree in `Cargo.lock`, re-resolved to versions without `core2` and `paste`, so two `deny.toml` ignores are dropped. Every format that decoded still does; DDS, ICO, QOI, farbfeld, PNM, HDR and EXR are now documented and tested (`test_decode_formats.py`: a committed file per feature; the manifest, the files and the docs table compared as sets; watched failing with `qoi` removed). `.so` at `--profile benchmark`: 62.6 MB to 58.9 MB (the fat-LTO release wheel was not measured) |
 | CR-144 | Docs: no sink-choice or augmentation guide; `AGENTS.md` principle 6 and the quickstart had drifted | Fixed (unreleased): `docs/user-guide/augmentation.md` and "Choosing a sink" in the pipelines guide, each quoting marked sections of an example the suite runs (`examples/14_augmentation.py`, `15_choosing_a_sink.py`; `test_every_section_a_guide_quotes_is_in_its_example`); a troubleshooting section in the quickstart; principle 6 and the diagram say Python appends and Rust plans. `benchmarks/README.md` is CR-149 |
 | CR-142 | `sink()` was hand-written with `**kwargs` while `source()` is generated from the same catalogue | Fixed (unreleased): `scripts/gen_ops.py` writes `sink()` (a typed keyword per field, `None` the format's default), the `Sink.<format>` constructors and `SINK_FIELDS`; `_graph.as_sink` is the one reading of what an output may be written as. The `(format, {params})` tuple is removed, not deprecated (owner, 2026-11-12: the API is being stabilised) (`test_sink_signature.py`, watched failing against a catalogue field the generator had not seen; `ty` refuses a wrong keyword or type where the `LazyPipelineExpr` type is known, which `pl.col(...).cv` does not give it) |

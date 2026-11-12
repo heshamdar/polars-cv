@@ -91,7 +91,7 @@ def _assert_matches_per_row_literals(
         # These pipelines leave the source dtype at "auto", which the typed
         # `list` sink cannot plan; the numpy sink carries shape and dtype in
         # the value itself and needs no plan-time dtype.
-        sink="numpy",
+        sink="tensor",
     )
     # Deliberately weaker than the sweep's `assert_values_vary`, which requires
     # *every* row to differ: `convolve2d(border=)` is called here with
@@ -126,7 +126,7 @@ class TestEnumValuesExecutable:
             .source("image_bytes")
             .resize(height=8, width=8, filter=filter_type)
         )
-        _run(pipe, "numpy", image_bytes)
+        _run(pipe, "tensor", image_bytes)
 
     @pytest.mark.parametrize("mode", [m.value for m in PadMode])
     def test_pad_modes(self, image_bytes: bytes, mode: str) -> None:
@@ -135,7 +135,7 @@ class TestEnumValuesExecutable:
             .source("image_bytes")
             .pad(top=2, bottom=2, left=2, right=2, mode=mode)
         )
-        _run(pipe, "numpy", image_bytes)
+        _run(pipe, "tensor", image_bytes)
 
     @pytest.mark.parametrize("position", [p.value for p in PadPosition])
     def test_pad_positions(self, image_bytes: bytes, position: str) -> None:
@@ -144,7 +144,7 @@ class TestEnumValuesExecutable:
             .source("image_bytes")
             .pad_to_size(height=32, width=32, position=position)
         )
-        _run(pipe, "numpy", image_bytes)
+        _run(pipe, "tensor", image_bytes)
 
     @pytest.mark.parametrize("algorithm", [a.value for a in HashAlgorithm])
     def test_hash_algorithms(self, image_bytes: bytes, algorithm: str) -> None:
@@ -169,7 +169,7 @@ class TestEnumValuesExecutable:
         # executor leaves them as Buffer node outputs — to be fixed when the
         # histogram step becomes domain-aware in the GraphStep executor.)
         if output == "quantized":
-            sink = "numpy"
+            sink = "tensor"
         elif output == "buckets":
             sink = "native"
         else:
@@ -191,7 +191,7 @@ class TestEnumValuesExecutable:
         assert {m.value for m in NormalizeMethod} == {"minmax", "zscore"}
         _run(
             Pipeline().source("image_bytes").normalize(method=method),
-            "numpy",
+            "tensor",
             image_bytes,
         )
 
@@ -201,7 +201,7 @@ class TestEnumValuesExecutable:
             .source("image_bytes")
             .normalize_preset(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         )
-        _run(pipe, "numpy", image_bytes)
+        _run(pipe, "tensor", image_bytes)
 
     @pytest.mark.parametrize(
         "to_space", [c.value for c in ColorSpace if c.value != "rgb"]
@@ -212,12 +212,12 @@ class TestEnumValuesExecutable:
             .source("image_bytes")
             .convert_color(from_space="rgb", to_space=to_space)
         )
-        _run(pipe, "numpy", image_bytes)
+        _run(pipe, "tensor", image_bytes)
 
     @pytest.mark.parametrize("dtype", [d.value for d in DType])
     def test_cast_dtypes(self, image_bytes: bytes, dtype: str) -> None:
         pipe = Pipeline().source("image_bytes").cast(dtype)
-        _run(pipe, "numpy", image_bytes)
+        _run(pipe, "tensor", image_bytes)
 
     @pytest.mark.parametrize("interpolation", ["nearest", "bilinear"])
     def test_rotate_interpolations(
@@ -228,7 +228,7 @@ class TestEnumValuesExecutable:
             .source("image_bytes")
             .rotate(angle=30.0, interpolation=interpolation)
         )
-        _run(pipe, "numpy", image_bytes)
+        _run(pipe, "tensor", image_bytes)
 
     @pytest.mark.parametrize("border", ["replicate", "zero", "reflect"])
     def test_convolve_borders(self, image_bytes: bytes, border: str) -> None:
@@ -239,7 +239,7 @@ class TestEnumValuesExecutable:
             .grayscale()
             .convolve2d(kernel=kernel, border=border)
         )
-        _run(pipe, "numpy", image_bytes)
+        _run(pipe, "tensor", image_bytes)
 
     @pytest.mark.parametrize("mode", ["external", "all"])
     def test_extract_contour_modes(self, image_bytes: bytes, mode: str) -> None:
@@ -277,7 +277,7 @@ class TestFillRangeParamsAcceptExpressions:
     def test_rotate_border_value_accepts_expr(self, image_bytes: bytes) -> None:
         df = pl.DataFrame({"image": [image_bytes], "bg": [128.0]})
         pipe = Pipeline().source("image_bytes").rotate(30, border_value=pl.col("bg"))
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("tensor"))
         assert out["r"].null_count() == 0
 
     def test_warp_affine_border_value_accepts_expr(self, image_bytes: bytes) -> None:
@@ -291,7 +291,7 @@ class TestFillRangeParamsAcceptExpressions:
                 border_value=pl.col("bg"),
             )
         )
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("tensor"))
         assert out["r"].null_count() == 0
 
     def test_histogram_range_accepts_expr(self, image_bytes: bytes) -> None:
@@ -536,7 +536,7 @@ class TestEnumParamsAcceptExpressions:
             .resize(height=8, width=8, filter=pl.col("f"))
         )
         with pytest.raises(Exception, match='unknown FilterType "not-a-filter"'):
-            df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("tensor"))
 
     def test_wrong_dtype_for_enum_param_errors(self, image_bytes: bytes) -> None:
         """An integer column routed to an enum param must not silently default."""
@@ -547,7 +547,7 @@ class TestEnumParamsAcceptExpressions:
             .resize(height=8, width=8, filter=pl.col("f"))
         )
         with pytest.raises(Exception, match="String column"):
-            df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("tensor"))
 
     def test_literal_enum_still_validated_at_build_time(self) -> None:
         with pytest.raises(ValueError, match='unknown FilterType "bogus"'):
@@ -571,8 +571,8 @@ class TestLetterboxFilterExposed:
         )
         lanc = Pipeline().source("image_bytes").letterbox(height=32, width=32)
         out = df.with_columns(
-            a=pl.col("image").cv.pipe(near).sink("numpy"),
-            b=pl.col("image").cv.pipe(lanc).sink("numpy"),
+            a=pl.col("image").cv.pipe(near).sink("tensor"),
+            b=pl.col("image").cv.pipe(lanc).sink("tensor"),
         )
         assert out["a"].to_list() != out["b"].to_list()
 
@@ -586,8 +586,8 @@ class TestLetterboxFilterExposed:
             .letterbox(height=32, width=32, filter="lanczos3")
         )
         out = df.with_columns(
-            a=pl.col("image").cv.pipe(default).sink("numpy"),
-            b=pl.col("image").cv.pipe(explicit).sink("numpy"),
+            a=pl.col("image").cv.pipe(default).sink("tensor"),
+            b=pl.col("image").cv.pipe(explicit).sink("tensor"),
         )
         assert out["a"].to_list() == out["b"].to_list()
 
@@ -607,7 +607,7 @@ class TestRotateAndScaleAcceptsExpressions:
             .source("image_bytes")
             .rotate_and_scale(angle=pl.col("a"), center=(8, 8), output_size=(16, 16))
         )
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("tensor"))
         values = out["r"].to_list()
         assert values[0] != values[1]
 
@@ -625,8 +625,8 @@ class TestRotateAndScaleAcceptsExpressions:
             .rotate_and_scale(angle=pl.col("a"), center=(8, 8), output_size=(16, 16))
         )
         out = df.with_columns(
-            a=pl.col("image").cv.pipe(lit).sink("numpy"),
-            b=pl.col("image").cv.pipe(dyn).sink("numpy"),
+            a=pl.col("image").cv.pipe(lit).sink("tensor"),
+            b=pl.col("image").cv.pipe(dyn).sink("tensor"),
         )
         assert out["a"].to_list() == out["b"].to_list()
 
@@ -652,7 +652,7 @@ class TestContourSourceFillAcceptsExpressions:
             .source("contour")
             .rasterize(width=10, height=10, fill_value=pl.col("fv"))
         )
-        out = df.with_columns(r=pl.col("c").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(r=pl.col("c").cv.pipe(pipe).sink("tensor"))
         values = out["r"].to_list()
         assert values[0] != values[1]
 
@@ -712,7 +712,7 @@ class TestFlagParamsAcceptExpressions:
             Pipeline().source("image_bytes").grayscale().threshold(128)
         )
         out = df.with_columns(
-            r=img.apply_mask(mask, invert=pl.col("inv")).sink("numpy")
+            r=img.apply_mask(mask, invert=pl.col("inv")).sink("tensor")
         )["r"].to_list()
         assert out[0] != out[1], "invert did not vary per row"
 

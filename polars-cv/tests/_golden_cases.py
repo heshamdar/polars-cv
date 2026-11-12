@@ -168,7 +168,7 @@ def _image_frame() -> pl.DataFrame:
 
 
 def _sink(pipe: Pipeline) -> str:
-    return "numpy" if pipe.current_domain() == BUFFER else "native"
+    return "tensor" if pipe.current_domain() == BUFFER else "native"
 
 
 def _op_case(method: str, domain: str, kwargs: dict) -> Callable[[], Outcome]:
@@ -207,7 +207,7 @@ def _op_cases() -> list[GoldenCase]:
 def _expr_case(case: Any) -> Callable[[], Outcome]:
     def run() -> Outcome:
         pipe = case.build(pl.col(PARAM))
-        sink = _sink(pipe) if pipe.current_domain() != BUFFER else "numpy"
+        sink = _sink(pipe) if pipe.current_domain() != BUFFER else "tensor"
         return _execute(input_frame(case, case.values), case.column, pipe, sink)
 
     return run

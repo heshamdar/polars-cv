@@ -73,7 +73,7 @@ def gallery(image: bytes) -> list[tuple[str, np.ndarray]]:
         "equalize_histogram()",
     ]
     out = pl.DataFrame({"image": [image]}).select(
-        o=merged.sink(dict.fromkeys(titles, "numpy"))
+        o=merged.sink(dict.fromkeys(titles, "tensor"))
     )
     return [(k, numpy_from_column(out["o"].struct.field(k))[0]) for k in titles]
 
@@ -90,7 +90,7 @@ def per_row(image: bytes) -> list[tuple[str, np.ndarray]]:
     pipe = (
         Pipeline().source("image_bytes").rotate(pl.col("angle")).blur(pl.col("sigma"))
     )
-    out = df.with_columns(result=pl.col("image").cv.pipe(pipe).sink("numpy"))
+    out = df.with_columns(result=pl.col("image").cv.pipe(pipe).sink("tensor"))
     arrays = numpy_from_column(out["result"])
     return [
         (f"angle={a:g}, sigma={s:g}", arr)

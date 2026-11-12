@@ -188,7 +188,7 @@ def _scaled_decode(divisor: int) -> Callable[[_Inputs], Callable[[], Any]]:
         df = i.jpeg
         size = max(1, max(i.height, i.width) // divisor)
         pipe = Pipeline().source("image_bytes", decode_max_size=size)
-        expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+        expr = pl.col("img").cv.pipe(pipe).sink("tensor")
         return lambda: df.select(expr)
 
     return build
@@ -216,7 +216,7 @@ def _streaming_then_eager(i: _Inputs) -> Callable[[], Any]:
     """A streaming run (concurrent morsel calls), then the same pipeline eager
     (one lone call), as in a notebook: the eager call must use the pool."""
     df = i.png
-    expr = pl.col("img").cv.pipe(_heavy()).sink("numpy")
+    expr = pl.col("img").cv.pipe(_heavy()).sink("tensor")
 
     def run() -> Any:
         df.lazy().select(expr).collect(engine="streaming")
@@ -235,7 +235,7 @@ def _uneven_row_groups(i: _Inputs) -> Callable[[], Any]:
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         i.png.write_parquet(tmp, row_group_size=max(1, 2 * i.count // 3))
         tmp.replace(path)
-    expr = pl.col("img").cv.pipe(_heavy()).sink("numpy")
+    expr = pl.col("img").cv.pipe(_heavy()).sink("tensor")
     return lambda: pl.scan_parquet(path).select(expr).collect(engine="streaming")
 
 
@@ -269,8 +269,8 @@ def _u8() -> Pipeline:
 
 
 CASES: tuple[Case, ...] = (
-    Case("codec_png_decode", "image", _pipe("png", _src, "numpy")),
-    Case("codec_jpeg_decode", "image", _pipe("jpeg", _src, "numpy")),
+    Case("codec_png_decode", "image", _pipe("png", _src, "tensor")),
+    Case("codec_jpeg_decode", "image", _pipe("jpeg", _src, "tensor")),
     Case("codec_jpeg_decode_half", "image", _scaled_decode(2)),
     Case("codec_jpeg_decode_quarter", "image", _scaled_decode(4)),
     Case("codec_jpeg_decode_eighth", "image", _scaled_decode(8)),
@@ -288,12 +288,12 @@ CASES: tuple[Case, ...] = (
     Case(
         "blob_f32_to_numpy",
         "image",
-        _pipe("blobs", lambda: Pipeline().source("blob"), "numpy"),
+        _pipe("blobs", lambda: Pipeline().source("blob"), "tensor"),
     ),
     Case(
         "blob_f32_scale_to_numpy",
         "image",
-        _pipe("blobs", lambda: Pipeline().source("blob").scale(2.0), "numpy"),
+        _pipe("blobs", lambda: Pipeline().source("blob").scale(2.0), "tensor"),
     ),
     Case("split_streaming_then_eager", "image", _streaming_then_eager, min_threads=2),
     Case(
@@ -322,7 +322,7 @@ CASES: tuple[Case, ...] = (
             lambda: (
                 pl.col("c")
                 .cv.pipe(Pipeline().source("contour").rasterize(width=32, height=32))
-                .sink("numpy")
+                .sink("tensor")
             )
         ),
     ),

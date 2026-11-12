@@ -9,7 +9,7 @@ Example:
     >>> import polars as pl
     >>>
     >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-    >>> df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
+    >>> df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("tensor"))
 
 Detection and segmentation metrics live in :mod:`polars_cv.metrics`, a layer
 built on this package's public API; importing ``polars_cv`` does not load it.

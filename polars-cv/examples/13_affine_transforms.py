@@ -66,7 +66,7 @@ def main() -> None:
             output_size=(h, w),
         )
     )
-    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_translate).sink("numpy"))
+    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_translate).sink("tensor"))
     translated = numpy_from_struct(res["out"][0])
 
     # --- 2. 45-degree rotation around center ---
@@ -90,12 +90,12 @@ def main() -> None:
             interpolation="bilinear",
         )
     )
-    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_rotate).sink("numpy"))
+    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_rotate).sink("tensor"))
     rotated = numpy_from_struct(res["out"][0])
 
     # --- 3. Shear ---
     pipe_shear = Pipeline().source("image_bytes").shear(sx=0.3, output_size=(h, w))
-    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_shear).sink("numpy"))
+    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_shear).sink("tensor"))
     sheared = numpy_from_struct(res["out"][0])
 
     # --- 4. Rotate-and-scale convenience ---
@@ -109,7 +109,7 @@ def main() -> None:
             output_size=(h, w),
         )
     )
-    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_rs).sink("numpy"))
+    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_rs).sink("tensor"))
     rot_scaled = numpy_from_struct(res["out"][0])
 
     # --- 5. Chained affines (each warp runs in turn, with its own resample) ---
@@ -120,7 +120,7 @@ def main() -> None:
         .warp_affine(matrix=[1, 0, 0, 0, 1, 30], output_size=(h, w))
     )
 
-    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_chained).sink("numpy"))
+    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_chained).sink("tensor"))
     chained = numpy_from_struct(res["out"][0])
 
     # --- Plot ---

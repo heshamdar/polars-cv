@@ -1,5 +1,5 @@
 """
-Reading ``sink("numpy")`` / ``sink("ndarray")`` output back as NumPy arrays.
+Reading ``sink("tensor")`` output back as NumPy arrays.
 
 ``numpy_from_struct`` reads one row, ``numpy_from_column`` a whole column
 without copying; both build the array through :func:`_view`, the one place a
@@ -27,11 +27,10 @@ def numpy_from_struct(
     copy: bool = True,
 ) -> "np.ndarray":
     """
-    Convert numpy sink output struct to a NumPy array.
+    Convert a row of ``sink("tensor")`` output to a NumPy array.
 
-    Reads both ``sink("numpy")`` and ``sink("ndarray")`` output: a row of either
-    is the same dict, and a single-row Series may be the plain struct or the
-    ``polars_cv.ndarray`` type over it.
+    A row is a dict whether or not its column carries the ``polars_cv.ndarray``
+    tag, and a single-row Series may be the plain struct or the type over it.
 
     To read a whole column, use :func:`numpy_from_column`, which views each
     row in the column's own memory instead of copying it through a ``dict``.
@@ -43,7 +42,7 @@ def numpy_from_struct(
     import numpy as np
 
     if row is None:
-        # A null row of the numpy/torch/ndarray sink is a null value.
+        # A null row of the tensor sink is a null value.
         msg = "row is null (a null input or a failed row); it has no array"
         raise ValueError(msg)
 
@@ -55,7 +54,7 @@ def numpy_from_struct(
         strides_list = row.get("strides")
         offset = row.get("offset", 0)
     elif isinstance(row, pl.Series):
-        # A `sink("ndarray")` column is the same struct under a type tag.
+        # A `sink("tensor")` column is the same struct under a type tag.
         if isinstance(row.dtype, NdArrayType):
             row = row.ext.storage()
         # Single-row Series from struct indexing
@@ -244,7 +243,7 @@ def numpy_from_column(
     copy: bool = False,
 ) -> list[np.ndarray | None]:
     """
-    Read every row of a ``sink("numpy")`` / ``sink("ndarray")`` column as a
+    Read every row of a ``sink("tensor")`` column (tagged or not) as a
     NumPy array, without copying.
 
     Each array is a view of the column's own Arrow memory, with the row's

@@ -79,7 +79,7 @@ def render_grid(
 
 
 def extract_result(col: pl.Series) -> np.ndarray:
-    """Extract a 2D numpy array from a polars-cv numpy-sink result."""
+    """Extract a 2D numpy array from a polars-cv tensor-sink result."""
     arr = numpy_from_struct(col[0])
     if arr.ndim == 3 and arr.shape[2] == 1:
         arr = arr[:, :, 0]
@@ -100,10 +100,10 @@ def demo_erode_dilate() -> None:
     dilate_5 = Pipeline().source("image_bytes").grayscale().dilate(ksize=5)
 
     result = df.with_columns(
-        erode_3=pl.col("image").cv.pipe(erode_3).sink("numpy"),
-        erode_5=pl.col("image").cv.pipe(erode_5).sink("numpy"),
-        dilate_3=pl.col("image").cv.pipe(dilate_3).sink("numpy"),
-        dilate_5=pl.col("image").cv.pipe(dilate_5).sink("numpy"),
+        erode_3=pl.col("image").cv.pipe(erode_3).sink("tensor"),
+        erode_5=pl.col("image").cv.pipe(erode_5).sink("tensor"),
+        dilate_3=pl.col("image").cv.pipe(dilate_3).sink("tensor"),
+        dilate_5=pl.col("image").cv.pipe(dilate_5).sink("tensor"),
     )
 
     images = [
@@ -138,9 +138,9 @@ def demo_open_close() -> None:
     )
 
     result = df.with_columns(
-        opened=pl.col("image").cv.pipe(opened).sink("numpy"),
-        closed=pl.col("image").cv.pipe(closed).sink("numpy"),
-        clean=pl.col("image").cv.pipe(clean).sink("numpy"),
+        opened=pl.col("image").cv.pipe(opened).sink("tensor"),
+        closed=pl.col("image").cv.pipe(closed).sink("tensor"),
+        clean=pl.col("image").cv.pipe(clean).sink("tensor"),
     )
 
     images = [
@@ -182,8 +182,8 @@ def demo_gradient() -> None:
     )
 
     result = df.with_columns(
-        grad_3=pl.col("image").cv.pipe(gradient_3).sink("numpy"),
-        grad_5=pl.col("image").cv.pipe(gradient_5).sink("numpy"),
+        grad_3=pl.col("image").cv.pipe(gradient_3).sink("tensor"),
+        grad_5=pl.col("image").cv.pipe(gradient_5).sink("tensor"),
     )
 
     images = [
@@ -242,9 +242,9 @@ def demo_segmentation_workflow() -> None:
     )
 
     result = df.with_columns(
-        thresholded=pl.col("image").cv.pipe(step_threshold).sink("numpy"),
-        cleaned=pl.col("image").cv.pipe(step_clean).sink("numpy"),
-        outlined=pl.col("image").cv.pipe(step_outline).sink("numpy"),
+        thresholded=pl.col("image").cv.pipe(step_threshold).sink("tensor"),
+        cleaned=pl.col("image").cv.pipe(step_clean).sink("tensor"),
+        outlined=pl.col("image").cv.pipe(step_outline).sink("tensor"),
     )
 
     images = [

@@ -58,7 +58,7 @@ class TestOnErrorRaise:
         pipe = Pipeline().source("image_bytes").grayscale()
         df = pl.DataFrame({"img": [_png(), _corrupt_png()]})
         with pytest.raises(pl.exceptions.ComputeError, match="Decode error"):
-            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
 
 @plugin_required
@@ -66,7 +66,7 @@ class TestOnErrorNull:
     def test_corrupt_rows_become_null(self) -> None:
         pipe = Pipeline().source("image_bytes").grayscale().on_error("null")
         df = pl.DataFrame({"img": [_png(), _corrupt_png(), _png(4, 4)]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
@@ -82,7 +82,7 @@ class TestOnErrorNull:
             .on_error("null")
         )
         df = pl.DataFrame({"img": [_png(), _png(), _png()], "h": [8, -1, 4]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         assert list(numpy_from_struct(out["out"][0]).shape) == [8, 8, 3]
         assert out["out"][1] is None
@@ -93,7 +93,7 @@ class TestOnErrorNull:
         df = pl.DataFrame(
             {"img": [_png(), None, _corrupt_png()]}, schema={"img": pl.Binary}
         )
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
         assert out["out"][2] is None
@@ -104,10 +104,10 @@ class TestOnErrorNull:
         df = pl.DataFrame({"img": imgs})
         out = (
             df.lazy()
-            .with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             .collect(engine="streaming")
         )
-        data = out["out"].struct.field("data")
+        data = out["out"].ext.storage().struct.field("data")
         assert data.null_count() == 20
 
     def test_multi_output_failing_row_nulls_all_aliases(self) -> None:
@@ -117,7 +117,7 @@ class TestOnErrorNull:
             .alias("base")
         )
         gray = base.pipe(Pipeline().grayscale()).alias("gray")
-        expr = gray.sink({"base": "numpy", "gray": "numpy"})
+        expr = gray.sink({"base": "tensor", "gray": "tensor"})
 
         df = pl.DataFrame({"img": [_png(), _corrupt_png()]})
         out = df.with_columns(outs=expr)
@@ -135,7 +135,7 @@ class TestOnErrorNullWithMessage:
             Pipeline().source("image_bytes").grayscale().on_error("null_with_message")
         )
         df = pl.DataFrame({"img": [_png(), _corrupt_png()]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         errors = out["out"].struct.field("_error")
         assert errors[0] is None
@@ -153,7 +153,7 @@ class TestOnErrorNullWithMessage:
             Pipeline().source("image_bytes").grayscale().on_error("null_with_message")
         )
         lf = pl.DataFrame({"img": [_png()]}).lazy()
-        lf = lf.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        lf = lf.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         planned = lf.collect_schema()["out"]
         executed = lf.collect()["out"].dtype
         assert planned == executed
@@ -170,7 +170,7 @@ class TestOnErrorComposition:
         )
         merged = a.add(b)
         with pytest.raises(ValueError, match="Conflicting on_error"):
-            merged.sink("numpy")
+            merged.sink("tensor")
 
     def test_policy_set_on_lazy_expr(self) -> None:
         # The policy can be attached anywhere in a lazy chain (it is carried
@@ -180,7 +180,7 @@ class TestOnErrorComposition:
             .cv.pipe(Pipeline().source("image_bytes"))
             .pipe(Pipeline().grayscale())
             .on_error("null")
-            .sink("numpy")
+            .sink("tensor")
         )
         df = pl.DataFrame({"img": [_png(), _corrupt_png()]})
         out = df.with_columns(out=expr)

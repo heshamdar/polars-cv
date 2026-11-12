@@ -23,7 +23,7 @@ def _run(pipe: Pipeline, views: list[str]) -> list[np.ndarray]:
     frame = pl.DataFrame(
         {"a": pl.Series("a", np.stack([IMG] * len(views))), "view": views}
     )
-    out = frame.select(pl.col("a").cv.pipe(pipe).sink("numpy")).to_series()
+    out = frame.select(pl.col("a").cv.pipe(pipe).sink("tensor")).to_series()
     return [numpy_from_struct(row) for row in out]
 
 

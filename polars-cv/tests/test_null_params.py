@@ -70,12 +70,12 @@ class TestOnNullParamValidation:
         # Graphs that do not use the policy must serialize exactly as before,
         # so the compiled-graph cache key is unchanged for existing pipelines.
         pipe = Pipeline().source("image_bytes").grayscale()
-        graph = pl.col("img").cv.pipe(pipe).sink("numpy", return_expr=False)
+        graph = pl.col("img").cv.pipe(pipe).sink("tensor", return_expr=False)
         assert "on_null_param" not in graph._to_dict()
 
     def test_policy_is_serialized_when_set(self) -> None:
         pipe = Pipeline().source("image_bytes").grayscale().on_null_param("null")
-        graph = pl.col("img").cv.pipe(pipe).sink("numpy", return_expr=False)
+        graph = pl.col("img").cv.pipe(pipe).sink("tensor", return_expr=False)
         assert graph._to_dict()["on_null_param"] == "null"
 
 
@@ -91,7 +91,7 @@ class TestDefaultRaises:
         )
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
         with pytest.raises(pl.exceptions.ComputeError, match="has a null value"):
-            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
     def test_error_names_the_column_and_row(self) -> None:
         pipe = (
@@ -101,7 +101,7 @@ class TestDefaultRaises:
         )
         df = pl.DataFrame({"img": [_png()] * 3, "target_h": [4, 4, None]})
         with pytest.raises(pl.exceptions.ComputeError) as excinfo:
-            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         message = str(excinfo.value)
         assert "target_h" in message
         assert_names_row(message, 2, 3)
@@ -117,7 +117,7 @@ class TestOnNullParamNull:
             .on_null_param("null")
         )
         df = pl.DataFrame({"img": [_png()] * 3, "h": [4, None, 16]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         assert list(numpy_from_struct(out["out"][0]).shape) == [4, 4, 3]
         assert out["out"][1] is None
@@ -133,11 +133,11 @@ class TestOnNullParamNull:
             .on_null_param("null")
         )
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
-        dynamic = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        dynamic = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         literal = Pipeline().source("image_bytes").resize(height=4, width=4)
         expected = df.head(1).with_columns(
-            out=pl.col("img").cv.pipe(literal).sink("numpy")
+            out=pl.col("img").cv.pipe(literal).sink("tensor")
         )
         np.testing.assert_array_equal(
             numpy_from_struct(dynamic["out"][0]), numpy_from_struct(expected["out"][0])
@@ -154,7 +154,7 @@ class TestOnNullParamNull:
             {"img": [_png(), _png()], "f": ["nearest", None]},
             schema={"img": pl.Binary, "f": pl.String},
         )
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
 
@@ -170,7 +170,7 @@ class TestOnNullParamNull:
             {"img": [_png(), _png()], "norm": [True, None]},
             schema={"img": pl.Binary, "norm": pl.Boolean},
         )
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
 
@@ -186,7 +186,7 @@ class TestOnNullParamNull:
             .on_null_param("null")
         )
         df = pl.DataFrame({"img": [_png(), _png()], "center": [1.0, None]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
 
@@ -203,8 +203,8 @@ class TestOnNullParamNull:
             {"img": [_png()] * 3, "h": [None, None, None]},
             schema={"img": pl.Binary, "h": pl.Int64},
         )
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
-        assert out["out"].struct.field("data").null_count() == 3
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
+        assert out["out"].ext.storage().struct.field("data").null_count() == 3
 
     def test_streaming_engine(self) -> None:
         pipe = (
@@ -220,10 +220,10 @@ class TestOnNullParamNull:
         )
         out = (
             df.lazy()
-            .with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            .with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
             .collect(engine="streaming")
         )
-        assert out["out"].struct.field("data").null_count() == 20
+        assert out["out"].ext.storage().struct.field("data").null_count() == 20
 
     def test_plan_schema_matches_execution(self) -> None:
         # Per-row parameters cannot affect shape, rank or dtype, so nulling a
@@ -236,7 +236,7 @@ class TestOnNullParamNull:
             .on_null_param("null")
         )
         lf = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]}).lazy()
-        lf = lf.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        lf = lf.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         collected = lf.collect()
         assert lf.collect_schema()["out"] == collected["out"].dtype
         assert collected["out"][1] is None
@@ -255,7 +255,7 @@ class TestScopedToTheAffectedOutput:
         resized = base.pipe(
             Pipeline().resize(height=pl.col("h"), width=pl.col("h"))
         ).alias("resized")
-        expr = resized.sink({"base": "numpy", "resized": "numpy"})
+        expr = resized.sink({"base": "tensor", "resized": "tensor"})
 
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
         out = df.with_columns(outs=expr)
@@ -275,7 +275,7 @@ class TestIndependentOfOnError:
         pipe = Pipeline().source("image_bytes").grayscale().on_null_param("null")
         df = pl.DataFrame({"img": [_png(), _corrupt_png()]})
         with pytest.raises(pl.exceptions.ComputeError, match="Decode error"):
-            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
     def test_null_param_records_no_error_message(self) -> None:
         # A null parameter is not an error, so `null_with_message` leaves
@@ -288,7 +288,7 @@ class TestIndependentOfOnError:
             .on_error("null_with_message")
         )
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
         assert out["out"].struct.field("_error")[1] is None
         assert out["out"].struct.field("_output")[1] is None
@@ -305,7 +305,7 @@ class TestIndependentOfOnError:
         )
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, -1]})
         with pytest.raises(pl.exceptions.ComputeError):
-            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
     def test_does_not_swallow_a_wrong_dtype_param(self) -> None:
         # A String column routed into a numeric parameter is a user error, not
@@ -324,7 +324,7 @@ class TestIndependentOfOnError:
             schema={"img": pl.Binary, "h": pl.String},
         )
         with pytest.raises(pl.exceptions.ComputeError):
-            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
 
     def test_on_error_null_still_covers_null_params(self) -> None:
         # Pre-existing behaviour: `on_error("null")` catches the null-parameter
@@ -336,7 +336,7 @@ class TestIndependentOfOnError:
             .on_error("null")
         )
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
 
@@ -356,7 +356,7 @@ class TestComposition:
         b = pl.col("img").cv.pipe(
             Pipeline().source("image_bytes").grayscale().on_null_param("raise")
         )
-        graph = a.add(b).sink("numpy", return_expr=False)
+        graph = a.add(b).sink("tensor", return_expr=False)
         assert graph._to_dict()["on_null_param"] == "null"
 
     def test_generalized_hoist_still_rejects_on_error_conflicts(self) -> None:
@@ -368,7 +368,7 @@ class TestComposition:
             Pipeline().source("image_bytes").grayscale().on_error("null_with_message")
         )
         with pytest.raises(ValueError, match="Conflicting on_error"):
-            a.add(b).sink("numpy")
+            a.add(b).sink("tensor")
 
     def test_policy_set_on_lazy_expr(self) -> None:
         expr = (
@@ -376,7 +376,7 @@ class TestComposition:
             .cv.pipe(Pipeline().source("image_bytes"))
             .pipe(Pipeline().resize(height=pl.col("h"), width=pl.col("h")))
             .on_null_param("null")
-            .sink("numpy")
+            .sink("tensor")
         )
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
         out = df.with_columns(out=expr)
@@ -394,7 +394,7 @@ class TestFallbackIdiom:
             .resize(height=pl.col("h").fill_null(4), width=pl.col("h").fill_null(4))
         )
         df = pl.DataFrame({"img": [_png(), _png()], "h": [16, None]})
-        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("tensor"))
         assert list(numpy_from_struct(out["out"][0]).shape) == [16, 16, 3]
         assert list(numpy_from_struct(out["out"][1]).shape) == [4, 4, 3]
 
@@ -468,7 +468,7 @@ class TestNullOperandPropagation:
     def test_null_bytes_in_a_merge_operand(self) -> None:
         left = pl.col("a").cv.pipe(Pipeline().source("image_bytes"))
         right = pl.col("b").cv.pipe(Pipeline().source("image_bytes"))
-        expr = left.add(right).sink("numpy")
+        expr = left.add(right).sink("tensor")
 
         df = pl.DataFrame(
             {"a": [_png(), _png()], "b": [_png(), None]},
@@ -488,7 +488,7 @@ class TestNullOperandPropagation:
             .resize(height=pl.col("h"), width=pl.col("h"))
             .on_null_param("null")
         )
-        expr = left.pipe(Pipeline().resize(height=8, width=8)).add(right).sink("numpy")
+        expr = left.pipe(Pipeline().resize(height=8, width=8)).add(right).sink("tensor")
 
         df = pl.DataFrame(
             {"a": [_png(), _png()], "b": [_png(), _png()], "h": [8, None]}
@@ -500,7 +500,7 @@ class TestNullOperandPropagation:
     def test_null_bytes_in_an_apply_mask_operand(self) -> None:
         img = pl.col("a").cv.pipe(Pipeline().source("image_bytes"))
         mask = pl.col("b").cv.pipe(Pipeline().source("image_bytes").grayscale())
-        expr = img.apply_mask(mask).sink("numpy")
+        expr = img.apply_mask(mask).sink("tensor")
 
         df = pl.DataFrame(
             {"a": [_png(), _png()], "b": [_png(), None]},
@@ -517,7 +517,7 @@ class TestNullOperandPropagation:
         a = pl.col("a").cv.pipe(base.channel_select(index=0))
         b = pl.col("b").cv.pipe(base.channel_select(index=1))
         c = pl.col("c").cv.pipe(base.channel_select(index=2))
-        expr = a.channel_merge(b, c).sink("numpy")
+        expr = a.channel_merge(b, c).sink("tensor")
 
         df = pl.DataFrame(
             {"a": [_png()] * 2, "b": [_png(), None], "c": [_png()] * 2},
@@ -545,7 +545,7 @@ class TestNullOperandPropagation:
         expr = (
             left.merge_pipe(right)
             .merge_pipe(other)
-            .sink({"left": "numpy", "right": "numpy", "other": "numpy"})
+            .sink({"left": "tensor", "right": "tensor", "other": "tensor"})
         )
 
         df = pl.DataFrame({"a": [_png()] * 2, "b": [_png()] * 2, "h": [8, None]})
@@ -582,7 +582,7 @@ class TestContourSourceShapeReference:
             {"img": [_png(), None], "cnt": [SQUARE, SQUARE]},
             schema={"img": pl.Binary, "cnt": None},
         )
-        out = df.with_columns(out=mask.sink("numpy"))
+        out = df.with_columns(out=mask.sink("tensor"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
 
@@ -600,14 +600,14 @@ class TestContourSourceShapeReference:
         df = pl.DataFrame(
             {"img": [_png(), _png()], "cnt": [SQUARE, SQUARE], "h": [8, None]}
         )
-        out = df.with_columns(out=mask.sink("numpy"))
+        out = df.with_columns(out=mask.sink("tensor"))
         assert out["out"][0]["data"] is not None
         assert out["out"][1] is None
 
     def test_null_bytes_in_the_shape_branch(self) -> None:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
         mask = pl.col("cnt").cv.pipe(Pipeline().source("contour").rasterize(shape=img))
-        expr = img.apply_mask(mask).sink("numpy")
+        expr = img.apply_mask(mask).sink("tensor")
 
         df = pl.DataFrame(
             {"img": [_png(), None], "cnt": [SQUARE, SQUARE]},
@@ -627,7 +627,7 @@ class TestContourSourceShapeReference:
         mask = pl.col("cnt").cv.pipe(
             Pipeline().source("contour").rasterize(shape=img).on_null_param("null")
         )
-        expr = img.apply_mask(mask).sink("numpy")
+        expr = img.apply_mask(mask).sink("tensor")
 
         df = pl.DataFrame(
             {"img": [_png(), _png()], "cnt": [SQUARE, SQUARE], "h": [8, None]}
@@ -650,7 +650,7 @@ class TestSourceAndSinkParamSites:
             .rasterize(shape=img, fill_value=pl.col("fill"))
             .on_null_param("null")
         )
-        expr = img.apply_mask(mask).sink("numpy")
+        expr = img.apply_mask(mask).sink("tensor")
 
         df = pl.DataFrame(
             {"img": [_png()] * 2, "cnt": [SQUARE, SQUARE], "fill": [255, None]},
@@ -676,7 +676,7 @@ class TestSourceAndSinkParamSites:
             pl.exceptions.ComputeError,
             match=r"'fill': 300 is out of range for u8",
         ):
-            df.with_columns(out=mask.sink("numpy"))
+            df.with_columns(out=mask.sink("tensor"))
 
     def test_null_rasterize_style_on_a_shape_reference(self) -> None:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
@@ -690,7 +690,7 @@ class TestSourceAndSinkParamSites:
                 .rasterize(shape=img, fill_value=pl.col("fill"))
                 .on_null_param("null")
             )
-            .sink("numpy")
+            .sink("tensor")
         )
 
         df = pl.DataFrame(

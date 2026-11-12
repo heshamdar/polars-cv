@@ -154,7 +154,7 @@ def transition_demo(df: pl.DataFrame) -> None:
             .source("contour")
             .rasterize(width=96, height=96, fill_value=255, background=0)
         )
-        .sink("numpy"),
+        .sink("tensor"),
     )
     mask_arr = numpy_from_struct(rasterized["mask"][0], copy=False)
     save_mask(mask_arr, "04_geometry_rasterized_mask.png")

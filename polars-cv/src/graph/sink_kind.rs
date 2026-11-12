@@ -43,15 +43,9 @@ use view_buffer::ops::Domain;
 /// runtime `if`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SinkKind {
-    /// `buffer` × `numpy`/`torch` — the zero-copy struct.
-    NumpyStruct,
-    /// `buffer` × `ndarray` — the same struct, tagged `polars_cv.ndarray`.
-    ///
-    /// Its own kind rather than a flag on `NumpyStruct` because it publishes a
-    /// different dtype: every half has to answer for it, and the compiler says
-    /// so. The rows and the assembled struct are `NumpyStruct`'s exactly; only
-    /// the finished column is relabelled ([`crate::ext_types::ExtType::tag`]).
-    NdArray,
+    /// `buffer` × `tensor` — the zero-copy struct, tagged `polars_cv.ndarray`
+    /// (the finished column is relabelled: [`crate::ext_types::ExtType::tag`]).
+    Tensor,
     /// `buffer` × `png`/`jpeg`/`webp`/`tiff` — re-encoded through an image codec.
     EncodedImage,
     /// `buffer` × `blob` — the self-describing VIEW protocol, no precondition.
@@ -90,8 +84,7 @@ impl SinkKind {
             return Ok(Self::HistogramBuckets);
         }
         match (spec.expected_domain, &spec.sink) {
-            (Domain::Buffer, Sink::Numpy { .. } | Sink::Torch { .. }) => Ok(Self::NumpyStruct),
-            (Domain::Buffer, Sink::NdArray { .. }) => Ok(Self::NdArray),
+            (Domain::Buffer, Sink::Tensor { .. }) => Ok(Self::Tensor),
             (Domain::Buffer, Sink::Png | Sink::Jpeg { .. } | Sink::WebP | Sink::Tiff) => {
                 Ok(Self::EncodedImage)
             }
@@ -157,9 +150,7 @@ mod tests {
     /// Written out rather than derived: this is the correspondence itself, and
     /// a test that re-derived it from `resolve` would agree with any answer.
     const PAIRS: &[(&str, &str, SinkKind)] = &[
-        ("buffer", "numpy", SinkKind::NumpyStruct),
-        ("buffer", "torch", SinkKind::NumpyStruct),
-        ("buffer", "ndarray", SinkKind::NdArray),
+        ("buffer", "tensor", SinkKind::Tensor),
         ("buffer", "png", SinkKind::EncodedImage),
         ("buffer", "jpeg", SinkKind::EncodedImage),
         ("buffer", "webp", SinkKind::EncodedImage),
@@ -234,8 +225,7 @@ mod tests {
     /// the first spelling, and a new variant escaped it silently.
     fn kind_name(kind: SinkKind) -> &'static str {
         match kind {
-            SinkKind::NumpyStruct => "NumpyStruct",
-            SinkKind::NdArray => "NdArray",
+            SinkKind::Tensor => "Tensor",
             SinkKind::EncodedImage => "EncodedImage",
             SinkKind::Blob => "Blob",
             SinkKind::BufferList => "BufferList",
@@ -306,7 +296,7 @@ mod tests {
 
     #[test]
     fn the_encoding_outranks_the_pair() {
-        let mut s = spec("buffer", "numpy");
+        let mut s = spec("buffer", "tensor");
         s.histogram_buckets = true;
         assert_eq!(SinkKind::resolve(&s).unwrap(), SinkKind::HistogramBuckets);
     }

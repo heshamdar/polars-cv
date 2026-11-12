@@ -15,6 +15,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
+import polars_cv
 from polars_cv import Pipeline, Sink, numpy_from_struct
 
 if TYPE_CHECKING:
@@ -85,11 +86,12 @@ class TestMultiOutputSink:
             Pipeline().source("image_bytes").resize(height=50, width=50)
         )
 
-        result = test_df.with_columns(output=base.sink("numpy"))
-        # Numpy sink now returns struct with data, dtype, shape fields
-        assert isinstance(result["output"].dtype, pl.Struct), (
-            f"Expected Struct for numpy sink, got {result['output'].dtype}"
+        result = test_df.with_columns(output=base.sink("tensor"))
+        # Tensor sink returns NdArrayType over a struct with data, dtype, shape fields
+        assert isinstance(result["output"].dtype, polars_cv.NdArrayType), (
+            f"Expected NdArrayType for tensor sink, got {result['output'].dtype}"
         )
+        assert isinstance(result["output"].ext.storage().dtype, pl.Struct)
 
     def test_multi_sink_with_aliases(self, test_df: pl.DataFrame) -> None:
         """Test multi-output sink with aliased expressions."""
@@ -101,7 +103,7 @@ class TestMultiOutputSink:
 
         gray = base.pipe(Pipeline().grayscale()).alias("gray")
 
-        result = gray.sink({"resized": "numpy", "gray": "numpy"})
+        result = gray.sink({"resized": "tensor", "gray": "tensor"})
         df_result = test_df.with_columns(output=result)
 
         assert df_result["output"].dtype == pl.Struct
@@ -116,7 +118,7 @@ class TestMultiOutputSink:
         )
 
         with pytest.raises(ValueError, match="not found"):
-            base.sink({"undefined": "numpy"})
+            base.sink({"undefined": "tensor"})
 
     def test_multi_sink_three_outputs(self, test_df: pl.DataFrame) -> None:
         """Test multi-output with three aliases."""
@@ -131,9 +133,9 @@ class TestMultiOutputSink:
 
         result = thresh.sink(
             {
-                "resized": "numpy",
-                "gray": "numpy",
-                "thresh": "numpy",
+                "resized": "tensor",
+                "gray": "tensor",
+                "thresh": "tensor",
             }
         )
         df_result = test_df.with_columns(output=result)
@@ -169,7 +171,7 @@ class TestMultiOutputFormats:
 
         result = gray.sink(
             {
-                "numpy_out": "numpy",
+                "numpy_out": "tensor",
                 "png_out": "png",
             }
         )
@@ -271,9 +273,9 @@ class TestBranchingPipelines:
 
         result = merged.sink(
             {
-                "base": "numpy",
-                "gray": "numpy",
-                "blur": "numpy",
+                "base": "tensor",
+                "gray": "tensor",
+                "blur": "tensor",
             }
         )
         df_result = test_df.with_columns(output=result)
@@ -299,9 +301,9 @@ class TestBranchingPipelines:
 
         result = merged.sink(
             {
-                "base": "numpy",
-                "gray": "numpy",
-                "blur": "numpy",
+                "base": "tensor",
+                "gray": "tensor",
+                "blur": "tensor",
             }
         )
         df_result = test_df.with_columns(output=result)
@@ -327,7 +329,7 @@ class TestPipeMethod:
         # No source = continuation
         gray = base.pipe(Pipeline().grayscale())
 
-        result = test_df.with_columns(output=gray.sink("numpy"))
+        result = test_df.with_columns(output=gray.sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
 
         # Should be grayscale (1 channel)
@@ -342,7 +344,7 @@ class TestPipeMethod:
         # With source = new root (ignores base's operations)
         new_root = base.pipe(Pipeline().source("image_bytes").grayscale())
 
-        result = test_df.with_columns(output=new_root.sink("numpy"))
+        result = test_df.with_columns(output=new_root.sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
 
         # Should be grayscale of original (100x100), not resized
@@ -359,7 +361,7 @@ class TestPipeMethod:
             .pipe(Pipeline().threshold(128))
         )
 
-        result = test_df.with_columns(output=result_expr.sink("numpy"))
+        result = test_df.with_columns(output=result_expr.sink("tensor"))
         arr = numpy_from_struct(result["output"][0])
 
         assert arr.shape == (50, 50, 1)

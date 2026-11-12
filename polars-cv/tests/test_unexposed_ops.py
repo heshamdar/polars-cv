@@ -224,7 +224,7 @@ class TestMaximumMinimumPolarsCV:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(output=expr1.maximum(expr2).sink("numpy"))
+        result = df.select(output=expr1.maximum(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, expected)
@@ -256,7 +256,7 @@ class TestMaximumMinimumPolarsCV:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        result = df.select(output=expr1.minimum(expr2).sink("numpy"))
+        result = df.select(output=expr1.minimum(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, expected)
@@ -297,7 +297,7 @@ class TestMaximumMinimumPolarsCV:
         expr3 = pl.col("img3").cv.pipe(pipe)
 
         # Chain: minimum(img1, img3) then maximum with img2
-        result = df.select(output=expr1.minimum(expr3).maximum(expr2).sink("numpy"))
+        result = df.select(output=expr1.minimum(expr3).maximum(expr2).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, expected)
@@ -318,7 +318,7 @@ class TestMaximumMinimumPolarsCV:
 
         expr = pl.col("img").cv.pipe(pipe)
 
-        result = df.select(output=expr.maximum(expr).sink("numpy"))
+        result = df.select(output=expr.maximum(expr).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, img1)
@@ -519,7 +519,7 @@ class TestHistogramPolarsCV:
             .histogram(bins=bins, range=(0, 256), output="quantized")
         )
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         # Grayscale output has shape (H, W, 1), squeeze to (H, W)
@@ -661,7 +661,7 @@ class TestChannelMergePolarsCV:
         def sel(index: int) -> pl.Expr:
             return pl.col("img").cv.pipe(base.channel_select(index=index))
 
-        result = df.select(out=sel(0).channel_merge(sel(1), sel(2)).sink("numpy"))
+        result = df.select(out=sel(0).channel_merge(sel(1), sel(2)).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == img.shape
@@ -683,7 +683,7 @@ class TestChannelMergePolarsCV:
         def sel(index: int) -> pl.Expr:
             return pl.col("img").cv.pipe(base.channel_select(index=index))
 
-        result = df.select(out=sel(2).channel_merge(sel(1), sel(0)).sink("numpy"))
+        result = df.select(out=sel(2).channel_merge(sel(1), sel(0)).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, img[:, :, ::-1])
@@ -704,10 +704,10 @@ class TestChannelMergePolarsCV:
         gray = photo.pipe(Pipeline().grayscale())  # [H, W, 1]
 
         rgba = numpy_from_struct(
-            df.select(o=photo.channel_merge(alpha).sink("numpy")).item()
+            df.select(o=photo.channel_merge(alpha).sink("tensor")).item()
         )
         np.testing.assert_array_equal(rgba, np.dstack([img, img[:, :, 1]]))
-        both = alpha.channel_merge(gray, photo).sink("numpy")
+        both = alpha.channel_merge(gray, photo).sink("tensor")
         out = numpy_from_struct(df.select(o=both).item())
         assert out.shape == (*img.shape[:2], 5)
         np.testing.assert_array_equal(out[..., 0], img[:, :, 1])

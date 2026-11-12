@@ -29,7 +29,7 @@ column, with no pipeline to build.
 ```python
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
 
-df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("numpy"))
+df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("tensor"))
 ```
 
 See [Pipeline](pipeline.md) for the operations and

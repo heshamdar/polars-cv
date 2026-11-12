@@ -40,7 +40,7 @@ def _run_affine_pipeline(
 
     png_bytes = encode_fn(image_arr)
     df = pl.DataFrame({"image": [png_bytes]})
-    result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
+    result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(result["output"][0])
 
 

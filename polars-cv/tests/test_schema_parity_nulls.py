@@ -112,7 +112,7 @@ def test_all_layouts_agree_with_one_another() -> None:
     pipe = _base()
     images = _images()
 
-    for sink in ("list", "numpy", "blob", "array"):
+    for sink in ("list", "tensor", "blob", "array"):
         planned: dict[str, pl.DataType] = {}
         for pattern in HOMOGENEOUS_PATTERNS:
             df = frame(rows_for(pattern, images), pl.Binary)
@@ -169,7 +169,7 @@ def test_an_all_null_column_still_collects_to_the_planned_dtype() -> None:
     pipe = _base()
     df = pl.DataFrame({"img": [None, None, None]}, schema={"img": pl.Binary})
 
-    for sink in ("list", "numpy", "blob", "array", "png"):
+    for sink in ("list", "tensor", "blob", "array", "png"):
         series = assert_plan_equals_exec(
             df, pl.col("img").cv.pipe(pipe).sink(sink), name=f"out_{sink}"
         )

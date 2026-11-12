@@ -92,9 +92,9 @@ def demo_convolution() -> None:
     )
 
     result = df.with_columns(
-        emboss=pl.col("image").cv.pipe(emboss).sink("numpy"),
-        edge=pl.col("image").cv.pipe(edge).sink("numpy"),
-        blur=pl.col("image").cv.pipe(blur).sink("numpy"),
+        emboss=pl.col("image").cv.pipe(emboss).sink("tensor"),
+        edge=pl.col("image").cv.pipe(edge).sink("tensor"),
+        blur=pl.col("image").cv.pipe(blur).sink("tensor"),
     )
 
     images = [img]
@@ -128,10 +128,10 @@ def demo_gradient_operators() -> None:
     sharp = Pipeline().source("image_bytes").grayscale().sharpen(strength=2.0)
 
     result = df.with_columns(
-        sobel_x=pl.col("image").cv.pipe(sobel_x).sink("numpy"),
-        sobel_y=pl.col("image").cv.pipe(sobel_y).sink("numpy"),
-        laplacian=pl.col("image").cv.pipe(lap).sink("numpy"),
-        sharpened=pl.col("image").cv.pipe(sharp).sink("numpy"),
+        sobel_x=pl.col("image").cv.pipe(sobel_x).sink("tensor"),
+        sobel_y=pl.col("image").cv.pipe(sobel_y).sink("tensor"),
+        laplacian=pl.col("image").cv.pipe(lap).sink("tensor"),
+        sharpened=pl.col("image").cv.pipe(sharp).sink("tensor"),
     )
 
     images = [img]
@@ -181,9 +181,9 @@ def demo_canny() -> None:
     )
 
     result = df.with_columns(
-        default=pl.col("image").cv.pipe(canny_default).sink("numpy"),
-        tight=pl.col("image").cv.pipe(canny_tight).sink("numpy"),
-        loose=pl.col("image").cv.pipe(canny_loose).sink("numpy"),
+        default=pl.col("image").cv.pipe(canny_default).sink("tensor"),
+        tight=pl.col("image").cv.pipe(canny_tight).sink("tensor"),
+        loose=pl.col("image").cv.pipe(canny_loose).sink("tensor"),
     )
 
     images = [img]
@@ -218,7 +218,7 @@ def demo_histogram_equalization() -> None:
 
     equalized = Pipeline().source("image_bytes").grayscale().equalize_histogram()
     result = df.with_columns(
-        eq=pl.col("image").cv.pipe(equalized).sink("numpy"),
+        eq=pl.col("image").cv.pipe(equalized).sink("tensor"),
     )
 
     eq_arr = numpy_from_struct(result["eq"][0])

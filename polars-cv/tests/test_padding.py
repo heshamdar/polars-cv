@@ -267,7 +267,7 @@ class TestPadPolarsCV:
             Pipeline().source("image_bytes").pad(top=10, bottom=10, left=20, right=20)
         )
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (70, 140, 3)
@@ -289,7 +289,7 @@ class TestPadPolarsCV:
 
         pipe = Pipeline().source("image_bytes").pad(top=10, bottom=10, value=128)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (70, 100, 3)
@@ -308,7 +308,7 @@ class TestPadPolarsCV:
 
         pipe = Pipeline().source("image_bytes").pad(top=5, bottom=5, mode="edge")
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (60, 100, 3)
@@ -330,7 +330,7 @@ class TestPadToSizePolarsCV:
 
         pipe = Pipeline().source("image_bytes").pad_to_size(height=100, width=200)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (100, 200, 3)
@@ -353,7 +353,7 @@ class TestPadToSizePolarsCV:
             .pad_to_size(height=100, width=200)
         )
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (100, 200, 3)
@@ -374,7 +374,7 @@ class TestPadToSizePolarsCV:
             .pad_to_size(height=100, width=200, position="top-left")
         )
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (100, 200, 3)
@@ -400,7 +400,7 @@ class TestLetterboxPolarsCV:
         # Letterbox to 100x100
         pipe = Pipeline().source("image_bytes").letterbox(height=100, width=100)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (100, 100, 3)
@@ -422,7 +422,7 @@ class TestLetterboxPolarsCV:
 
         pipe = Pipeline().source("image_bytes").letterbox(height=100, width=100)
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (100, 100, 3)
@@ -442,7 +442,7 @@ class TestLetterboxPolarsCV:
             Pipeline().source("image_bytes").letterbox(height=100, width=100, value=128)
         )
 
-        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("tensor"))
         actual = numpy_from_struct(result.row(0)[0])
 
         assert actual.shape == (100, 100, 3)

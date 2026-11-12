@@ -195,7 +195,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         return pipe
 
     def _build_pipeline(
-        self, operations: list[OperationParams], sink_format: str = "numpy"
+        self, operations: list[OperationParams], sink_format: str = "tensor"
     ) -> Any:
         """
         Build a polars-cv pipeline from operations.
@@ -211,7 +211,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         return self._append_ops(Pipeline().source("image_bytes"), operations)
 
     def _build_pipeline_blob_source(
-        self, operations: list[OperationParams], sink_format: str = "numpy"
+        self, operations: list[OperationParams], sink_format: str = "tensor"
     ) -> Any:
         """
         Build a polars-cv pipeline with blob source (for in-memory benchmarks).
@@ -271,7 +271,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             List of processed image bytes.
         """
         self._ensure_expressions_registered()
-        pipe = self._build_pipeline_blob_source(operations, sink_format="numpy")
+        pipe = self._build_pipeline_blob_source(operations, sink_format="tensor")
 
         df = pl.DataFrame({"images": blob_images})
 
@@ -541,7 +541,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         Convert one polars-cv output to a NumPy array.
 
         Args:
-            img: A numpy/torch sink struct, a VIEW blob (what
+            img: A tensor sink struct, a VIEW blob (what
                 :meth:`run_pipeline_batch` returns: the ``blob`` sink) or
                 encoded image bytes (PNG/JPEG).
 
@@ -557,7 +557,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             blob = pl.Series("b", [img], dtype=pl.Binary)
             struct = (
                 blob.to_frame()
-                .select(pl.col("b").cv.pipe(Pipeline().source("blob")).sink("numpy"))
+                .select(pl.col("b").cv.pipe(Pipeline().source("blob")).sink("tensor"))
                 .item()
             )
             return numpy_from_struct(struct)
@@ -588,7 +588,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             List of processed image bytes.
         """
         self._ensure_expressions_registered()
-        pipe = self._build_pipeline(operations, sink_format="numpy")
+        pipe = self._build_pipeline(operations, sink_format="tensor")
 
         df = pl.DataFrame({"images": image_bytes_list})
 
@@ -645,7 +645,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             DataFrame with 'processed' column containing results.
         """
         self._ensure_expressions_registered()
-        pipe = self._build_pipeline_blob_source(operations, sink_format="numpy")
+        pipe = self._build_pipeline_blob_source(operations, sink_format="tensor")
 
         if self.streaming:
             result = (

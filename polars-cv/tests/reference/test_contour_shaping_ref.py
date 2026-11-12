@@ -99,7 +99,7 @@ def _mask(contours: list[dict], w: int, h: int, **kw) -> np.ndarray:
     out = _frame(contours).select(
         pl.col("c")
         .cv.pipe(Pipeline().source("contour").rasterize(width=w, height=h, **kw))
-        .sink("numpy")
+        .sink("tensor")
     )
     (mask,) = numpy_from_column(out.to_series(), copy=True)
     assert mask is not None and mask.shape == (h, w, 1)
@@ -636,7 +636,7 @@ def _stroked(
         .stroke(**stroke)
         .rasterize(width=w, height=h, supersample=supersample)
     )
-    out = _frame(contours).select(pl.col("c").cv.pipe(pipe).sink("numpy"))
+    out = _frame(contours).select(pl.col("c").cv.pipe(pipe).sink("tensor"))
     (mask,) = numpy_from_column(out.to_series(), copy=True)
     assert mask is not None and mask.shape == (h, w, 1)
     return mask[:, :, 0]
@@ -789,7 +789,7 @@ class TestStroke:
             .stroke(width=1.5, join=join)
             .rasterize(width=20, height=20, supersample=4)
         )
-        out = _frame([region]).select(pl.col("c").cv.pipe(via_lines).sink("numpy"))
+        out = _frame([region]).select(pl.col("c").cv.pipe(via_lines).sink("tensor"))
         (want,) = numpy_from_column(out.to_series(), copy=True)
         got = _stroked([region], 20, 20, width=1.5, join=join, supersample=4)
         np.testing.assert_array_equal(got, want[:, :, 0])

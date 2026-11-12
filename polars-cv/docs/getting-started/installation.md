@@ -88,7 +88,7 @@ out = df.select(x=pl.col("image").cv.pipe(pipe).sink("array", shape=[224, 224, 3
 batch = torch.from_numpy(out["x"].to_numpy())  # (rows, 224, 224, 3) uint8
 ```
 
-For one tensor per row, the `torch` sink and `numpy_from_struct` are covered
+For one tensor per row, the `tensor` sink and `numpy_from_struct` are covered
 in [Functions](../api/functions.md#numpy-conversion).
 
 ### Documentation (development only)

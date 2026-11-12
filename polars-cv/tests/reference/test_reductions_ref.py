@@ -45,7 +45,7 @@ def _scalar(pipe: Pipeline, arr: np.ndarray) -> float:
 def _array(pipe: Pipeline, arr: np.ndarray) -> np.ndarray:
     """Run a buffer-domain pipeline over a PNG-encoded image; return the array."""
     df = pl.DataFrame({"img": [_png(arr)]})
-    out = df.select(o=pl.col("img").cv.pipe(pipe).sink("numpy"))
+    out = df.select(o=pl.col("img").cv.pipe(pipe).sink("tensor"))
     return numpy_from_struct(out.row(0)[0])
 
 

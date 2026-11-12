@@ -106,8 +106,8 @@ def main() -> None:
     cases["static->f16"] = cases["static->array"]
     sinks = {
         "array": (("array",), {"shape": [args.size, args.size]}),
-        "numpy": (("numpy",), {}),
-        "f16": (("numpy",), {"dtype": "f16"}),
+        "tensor": (("tensor",), {}),
+        "f16": (("tensor",), {"dtype": "f16"}),
     }
     for name, pipe in cases.items():
         if args.only and args.only not in name:

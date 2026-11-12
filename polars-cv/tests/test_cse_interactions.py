@@ -87,7 +87,7 @@ class TestWithNodePasses:
         img = pl.col("image").cv
         a = img.pipe(U8.cast("u8").grayscale()).alias("a")
         b = img.pipe(U8.grayscale()).alias("b")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "tensor"})
         assert graph["outputs"]["a"]["node"] == graph["outputs"]["b"]["node"]
         assert _ops(graph).count("grayscale") == 1
 
@@ -96,7 +96,7 @@ class TestWithNodePasses:
         crop = {"top": 0, "left": 0, "height": 4, "width": 4}
         a = img.pipe(U8.invert().crop(**crop)).alias("a")
         b = img.pipe(U8.crop(**crop).invert()).alias("b")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "tensor"})
         assert graph["outputs"]["a"]["node"] == graph["outputs"]["b"]["node"]
 
     def test_a_pass_off_keeps_its_duplicates_apart(self) -> None:
@@ -104,7 +104,7 @@ class TestWithNodePasses:
         a = img.pipe(U8.cast("u8").grayscale()).alias("a")
         b = img.pipe(U8.grayscale()).alias("b")
         flags = OptFlags.parse("all,-identity_elimination")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"}, flags)
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "tensor"}, flags)
         assert graph["outputs"]["a"]["node"] != graph["outputs"]["b"]["node"]
 
     @plugin_required
@@ -113,7 +113,7 @@ class TestWithNodePasses:
         crop = {"top": 1, "left": 1, "height": 4, "width": 4}
         a = img.pipe(U8.cast("u8").invert().crop(**crop)).alias("a")
         b = img.pipe(U8.crop(**crop).invert()).alias("b")
-        _assert_same_outputs(df, a.merge_pipe(b), {"a": "numpy", "b": "png"})
+        _assert_same_outputs(df, a.merge_pipe(b), {"a": "tensor", "b": "png"})
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +126,14 @@ class TestWithPerRowParameters:
         img = pl.col("image").cv
         a = img.pipe(U8.resize(height=4, width=pl.col("w")).invert()).alias("a")
         b = img.pipe(U8.resize(height=4, width=pl.col("w")).flip_h()).alias("b")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "tensor"})
         assert _ops(graph).count("resize") == 1
 
     def test_a_literal_and_an_expression_are_not_one_op(self) -> None:
         img = pl.col("image").cv
         a = img.pipe(U8.resize(height=4, width=4)).alias("a")
         b = img.pipe(U8.resize(height=4, width=pl.col("w"))).alias("b")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "tensor"})
         assert _ops(graph).count("resize") == 2
 
     @plugin_required
@@ -141,7 +141,7 @@ class TestWithPerRowParameters:
         img = pl.col("image").cv
         a = img.pipe(U8.resize(height=4, width=pl.col("w")).invert()).alias("a")
         b = img.pipe(U8.resize(height=4, width=pl.col("w")).flip_h()).alias("b")
-        _assert_same_outputs(df, a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
+        _assert_same_outputs(df, a.merge_pipe(b), {"a": "tensor", "b": "tensor"})
 
     @plugin_required
     def test_a_null_parameter_in_a_shared_prefix_nulls_every_branch(
@@ -151,7 +151,7 @@ class TestWithPerRowParameters:
         base = U8.on_null_param("null").grayscale().threshold(pl.col("t"))
         a = img.pipe(base.invert()).alias("a")
         b = img.pipe(base.flip_h()).alias("b")
-        fmt = {"a": "numpy", "b": "numpy"}
+        fmt = {"a": "tensor", "b": "tensor"}
         out = df.select(o=a.merge_pipe(b).sink(fmt)).unnest("o")
         assert out["a"].is_null().to_list() == [False, True, False]
         assert out["b"].is_null().to_list() == [False, True, False]
@@ -164,7 +164,7 @@ class TestWithPerRowParameters:
         img = pl.col("image").cv
         a = img.pipe(U8.on_null_param("null").grayscale().threshold(pl.col("t")))
         b = img.pipe(U8.grayscale().invert())
-        fmt = {"a": "numpy", "b": "numpy"}
+        fmt = {"a": "tensor", "b": "tensor"}
         expr = a.alias("a").merge_pipe(b.alias("b"))
         out = df.select(o=expr.sink(fmt)).unnest("o")
         assert out["a"].is_null().to_list() == [False, True, False]
@@ -189,7 +189,7 @@ class TestWithErrorPolicy:
         base = U8.on_error("null")
         a = img.pipe(base.grayscale()).alias("a")
         b = img.pipe(base.flip_v()).alias("b")
-        fmt = {"a": "numpy", "b": "numpy"}
+        fmt = {"a": "tensor", "b": "tensor"}
         out = bad.select(o=a.merge_pipe(b).sink(fmt)).unnest("o")
         assert out["a"].is_null().to_list() == [False, True, False]
         assert out["b"].is_null().to_list() == [False, True, False]
@@ -205,7 +205,7 @@ class TestAcrossColumns:
     def test_the_same_pipeline_on_two_columns_is_two_values(self) -> None:
         a = pl.col("image").cv.pipe(U8.grayscale()).alias("a")
         b = pl.col("other").cv.pipe(U8.grayscale()).alias("b")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "tensor"})
         assert len([n for n in graph["nodes"].values() if "decode" in n["input"]]) == 2
         assert _ops(graph).count("grayscale") == 2
 
@@ -217,7 +217,7 @@ class TestAcrossColumns:
             return a.maximum(b).alias(alias)
 
         expr = brightest("x").merge_pipe(brightest("y"))
-        fmt = {"x": "numpy", "y": "numpy"}
+        fmt = {"x": "tensor", "y": "tensor"}
         graph = _physical(expr, fmt)
         assert graph["outputs"]["x"]["node"] == graph["outputs"]["y"]["node"]
         assert _ops(graph).count("maximum") == 1
@@ -236,21 +236,21 @@ class TestDagShapes:
         left = gray.pipe(Pipeline().blur(1.0))
         right = gray.pipe(Pipeline().invert())
         expr = left.maximum(right).alias("out")
-        graph = _physical(expr, {"out": "numpy"})
+        graph = _physical(expr, {"out": "tensor"})
         # The fork at `gray` keeps it a node; `left` runs into the maximum,
         # `right` (an operand) is a node of its own.
         assert len(graph["nodes"]) == 3
-        _assert_same_outputs(df, expr, {"out": "numpy"})
+        _assert_same_outputs(df, expr, {"out": "tensor"})
 
     def test_an_op_reading_its_own_input(self, df: pl.DataFrame) -> None:
         gray = pl.col("image").cv.pipe(U8.grayscale())
         expr = gray.maximum(gray).alias("out")
-        _assert_same_outputs(df, expr, {"out": "numpy"})
+        _assert_same_outputs(df, expr, {"out": "tensor"})
 
     def test_an_aliased_interior_stays_addressable(self, df: pl.DataFrame) -> None:
         gray = pl.col("image").cv.pipe(U8.grayscale()).alias("gray")
         edges = gray.pipe(Pipeline().blur(1.0).canny()).alias("edges")
-        fmt = {"gray": "numpy", "edges": "png"}
+        fmt = {"gray": "tensor", "edges": "png"}
         graph = _physical(edges.merge_pipe(gray), fmt)
         nodes = graph["nodes"]
         assert [op["op"] for op in nodes[graph["outputs"]["gray"]["node"]]["ops"]] == [
@@ -262,7 +262,7 @@ class TestDagShapes:
         gray = pl.col("image").cv.pipe(U8.grayscale())
         twin = pl.col("image").cv.pipe(U8.grayscale())
         expr = gray.alias("raw").merge_pipe(twin.alias("png"))
-        fmt = {"raw": "numpy", "png": "png"}
+        fmt = {"raw": "tensor", "png": "png"}
         graph = _physical(expr, fmt)
         assert graph["outputs"]["raw"]["node"] == graph["outputs"]["png"]["node"]
         _assert_same_outputs(df, expr, fmt)
@@ -271,9 +271,9 @@ class TestDagShapes:
         a = pl.col("image").cv.pipe(U8.invert())
         b = pl.col("image").cv.pipe(U8.invert())
         expr = a.merge_pipe(b)
-        assert len(_physical(expr, "numpy")["nodes"]) == 1
-        on = df.select(o=expr.sink("numpy")).to_series().to_list()
-        off = df.select(o=expr.sink("numpy", opt_flags=False)).to_series().to_list()
+        assert len(_physical(expr, "tensor")["nodes"]) == 1
+        on = df.select(o=expr.sink("tensor")).to_series().to_list()
+        off = df.select(o=expr.sink("tensor", opt_flags=False)).to_series().to_list()
         assert [numpy_from_struct(x).tobytes() for x in on] == [
             numpy_from_struct(x).tobytes() for x in off
         ]
@@ -311,7 +311,7 @@ def _branching() -> tuple[LazyPipelineExpr, dict]:
     a = img.pipe(small.grayscale()).alias("a")
     b = img.pipe(small.invert()).alias("b")
     c = img.pipe(U8.flip_h()).alias("c")
-    return a.merge_pipe(b, c), {"a": "numpy", "b": "numpy", "c": "numpy"}
+    return a.merge_pipe(b, c), {"a": "tensor", "b": "tensor", "c": "tensor"}
 
 
 class TestDeterminism:
@@ -488,7 +488,7 @@ def test_random_graphs_share_fully_and_compute_the_same(
     others = [_build(steps, i).alias(f"o{k}") for k, i in enumerate(picks[1:], 1)]
     if others:
         expr = expr.merge_pipe(*others)
-    fmt = {f"o{k}": "numpy" for k in range(len(picks))}
+    fmt = {f"o{k}": "tensor" for k in range(len(picks))}
 
     optimised = _physical(expr, fmt)
     _assert_fully_shared(optimised)
@@ -618,7 +618,7 @@ class TestExpressionArguments:
     )
     def test_different_expressions_are_not_shared(self, left, right) -> None:
         expr = _resized(left).alias("a").merge_pipe(_resized(right).alias("b"))
-        graph = _physical(expr, {"a": "numpy", "b": "numpy"})
+        graph = _physical(expr, {"a": "tensor", "b": "tensor"})
         assert _ops(graph).count("resize") == 2
         assert graph["outputs"]["a"]["node"] != graph["outputs"]["b"]["node"]
 
@@ -633,7 +633,7 @@ class TestExpressionArguments:
     )
     def test_the_same_expression_built_twice_is_shared(self, make) -> None:
         expr = _resized(make()).alias("a").merge_pipe(_resized(make()).alias("b"))
-        graph = _physical(expr, {"a": "numpy", "b": "numpy"})
+        graph = _physical(expr, {"a": "tensor", "b": "tensor"})
         assert graph["outputs"]["a"]["node"] == graph["outputs"]["b"]["node"]
 
     def test_a_shared_prefix_stops_at_the_first_different_expression(self) -> None:
@@ -641,7 +641,7 @@ class TestExpressionArguments:
         base = U8.resize(height=4, width=pl.col("w")).invert()
         a = img.pipe(base.threshold(pl.col("t"))).alias("a")
         b = img.pipe(base.threshold(pl.col("t") + 1)).alias("b")
-        graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
+        graph = _physical(a.merge_pipe(b), {"a": "tensor", "b": "tensor"})
         assert _ops(graph).count("resize") == 1
         assert _ops(graph).count("invert") == 1
         assert _ops(graph).count("threshold") == 2
@@ -650,7 +650,7 @@ class TestExpressionArguments:
     def test_each_branch_reads_its_own_expression(self, df: pl.DataFrame) -> None:
         a = _resized(pl.col("w")).alias("a")
         b = _resized(pl.col("w") + 1).alias("b")
-        fmt = {"a": "numpy", "b": "numpy"}
+        fmt = {"a": "tensor", "b": "tensor"}
         out = df.select(o=a.merge_pipe(b).sink(fmt)).unnest("o")
         widths = [
             (numpy_from_struct(x).shape[1], numpy_from_struct(y).shape[1])
@@ -708,7 +708,7 @@ class TestSomeIntermediatesCollected:
         first, *rest = (tree[name] for name in collected)
         # Merge with every branch, so uncollected aliases are reachable too.
         expr = first.merge_pipe(*rest, tree["both"], tree["rgb"])
-        return expr, dict.fromkeys(collected, "numpy")
+        return expr, dict.fromkeys(collected, "tensor")
 
     @pytest.mark.parametrize("collected", COLLECTIONS, ids=lambda c: "+".join(c))
     def test_collected_values_are_nodes_and_the_rest_are_fused(self, collected) -> None:
