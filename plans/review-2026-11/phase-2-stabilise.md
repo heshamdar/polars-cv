@@ -66,9 +66,8 @@ statement of what will not change on purpose.
    taken two breaking changes for the same release, so that the declared
    surface starts clean: the `(format, {params})` tuple is removed, and the
    `numpy`, `torch` and `ndarray` sinks are one, `tensor`, always tagged
-   (CR-81). So this option now reads: declare with the next release. CR-82
-   (metadata on `polars_cv.ndarray`) should be decided first: it would
-   change the dtype of every tensor column.
+   (CR-81), and CR-82 is decided: `polars_cv.ndarray` carries no metadata.
+   So this option now reads: declare with the next release.
 3. **Stay as is until 1.0.**
 
 Recommendation: option 2. It costs one more breaking release and avoids
