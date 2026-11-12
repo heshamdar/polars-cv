@@ -8,7 +8,6 @@ pipeline operations and handles serialization for the Rust backend.
 from __future__ import annotations
 
 import json
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -74,9 +73,8 @@ def as_sink(spec: object, shared: Mapping[str, Any], alias: str | None = None) -
     was given (*shared*) added to its own parameters.
 
     The one reading of what ``sink()`` and ``set_output``/``set_multi_output``
-    accept as an output: a format name (or ``SinkFormat``), a ``Sink``, or the
-    deprecated ``(format, {params})`` tuple. *alias* names the output in a
-    refusal, for a multi-output.
+    accept as an output: a format name (or ``SinkFormat``) or a ``Sink``.
+    *alias* names the output in a refusal, for a multi-output.
 
     Raises:
         TypeError: If *spec* is none of those.
@@ -87,19 +85,6 @@ def as_sink(spec: object, shared: Mapping[str, Any], alias: str | None = None) -
         fmt, own = spec.format, spec.params
     elif isinstance(spec, str):
         fmt, own = (spec.value if isinstance(spec, Enum) else spec), {}
-    elif (
-        isinstance(spec, tuple)
-        and len(spec) == 2
-        and isinstance(spec[0], str)
-        and isinstance(spec[1], dict)
-    ):
-        fmt, own = spec
-        warnings.warn(
-            f"{where}a (format, {{params}}) tuple is deprecated and will be "
-            f"removed in the next release; write {Sink(fmt, own)!r}",
-            DeprecationWarning,
-            stacklevel=4,
-        )
     else:
         msg = f"{where}expected a format name or a Sink, got {spec!r}"
         raise TypeError(msg)

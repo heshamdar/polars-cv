@@ -113,6 +113,9 @@ RULES: tuple[tuple[str, str], ...] = (
     ),
     # Renders a failing row's reference: only an error path reads it.
     ("polars-cv/src/row_ref.rs", _NONE),
+    # Parses the builder's JSON when a graph is compiled or a plan built: once
+    # per query, not per row, and it changes only an error's text.
+    ("polars-cv/src/wire.rs", _NONE),
     ("polars-cv/src/namespaces/**", _GEOM),
     # The one geometry step runner: the pipeline's geometry ops run it too.
     ("polars-cv/src/namespaces/exec.rs", f"{_OPS},{_GEOM}"),

@@ -15,7 +15,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
-from polars_cv import Pipeline, numpy_from_struct
+from polars_cv import Pipeline, Sink, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -201,15 +201,15 @@ class TestPerOutputSinkParams:
         out = test_df.select(
             o=merged.sink(
                 {
-                    "x": ("array", {"shape": [8, 8, 3]}),
-                    "thumb": ("jpeg", {"quality": 5}),
+                    "x": Sink.array(shape=[8, 8, 3]),
+                    "thumb": Sink.jpeg(quality=5),
                 }
             )
         ).unnest("o")
         assert out.schema["x"] == pl.Array(pl.UInt8, (8, 8, 3))
         low = out["thumb"][0]
         high = test_df.select(
-            o=merged.sink({"x": "png", "thumb": ("jpeg", {"quality": 95})})
+            o=merged.sink({"x": "png", "thumb": Sink.jpeg(quality=95)})
         ).unnest("o")["thumb"][0]
         assert low[:2] == b"\xff\xd8"
         # The quality reached the encoder: a lower quality is a smaller file.
@@ -217,7 +217,7 @@ class TestPerOutputSinkParams:
 
     def test_params_reach_only_their_output(self) -> None:
         graph = self._branches().sink(
-            {"x": ("array", {"shape": [8, 8, 3]}), "thumb": ("jpeg", {"quality": 85})},
+            {"x": Sink.array(shape=[8, 8, 3]), "thumb": Sink.jpeg(quality=85)},
             return_expr=False,
         )
         outputs = graph._to_dict()["outputs"]
@@ -235,16 +235,16 @@ class TestPerOutputSinkParams:
     def test_a_param_given_twice_is_refused(self) -> None:
         with pytest.raises(ValueError, match="'quality'.*both"):
             self._branches().sink(
-                {"x": "jpeg", "thumb": ("jpeg", {"quality": 10})}, quality=70
+                {"x": "jpeg", "thumb": Sink.jpeg(quality=10)}, quality=70
             )
 
     def test_a_param_that_does_not_apply_is_still_refused(self) -> None:
         with pytest.raises(ValueError, match="'quality' does not apply"):
-            self._branches().sink({"x": ("png", {"quality": 10}), "thumb": "png"})
+            self._branches().sink({"x": Sink("png", {"quality": 10}), "thumb": "png"})
 
     @pytest.mark.parametrize(
         "spec",
-        [("jpeg",), ("jpeg", {"quality": 1}, "extra"), ("jpeg", [("quality", 1)]), 3],
+        [("jpeg",), ("jpeg", {"quality": 1}), ("jpeg", [("quality", 1)]), 3],
     )
     def test_a_malformed_output_spec_is_refused(self, spec: object) -> None:
         with pytest.raises(TypeError, match="'thumb'"):
