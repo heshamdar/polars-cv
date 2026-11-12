@@ -8,7 +8,7 @@
 | File | Scope |
 |------|-------|
 | [`GLOSSARY.md`](GLOSSARY.md) | One meaning per overloaded word (view, plan, node, step, graph, …) and the type names that use a word another way |
-| [`polars-cv/python/polars_cv/AGENTS.md`](polars-cv/python/polars_cv/AGENTS.md) | Python API — pipeline builder, lazy composition, graph serialization, schema inference |
+| [`polars-cv/python/polars_cv/AGENTS.md`](polars-cv/python/polars_cv/AGENTS.md) | Python API — pipeline builder, lazy composition, graph serialization (schema inference is the Rust `Plan`'s) |
 | [`polars-cv/python/polars_cv/geometry/AGENTS.md`](polars-cv/python/polars_cv/geometry/AGENTS.md) | Geometry subsystem — point/contour/bbox schemas and namespaces |
 | [`polars-cv/python/polars_cv/metrics/AGENTS.md`](polars-cv/python/polars_cv/metrics/AGENTS.md) | Detection metrics — matchers, FROC/LROC/PR curves, bootstrap |
 | [`polars-cv/src/AGENTS.md`](polars-cv/src/AGENTS.md) | Rust plugin — graph execution, source/sink encoding, op dispatch |
@@ -43,7 +43,7 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 
 5. **Composition with low coupling.** Pipeline operations are independent, composable units. `LazyPipelineExpr` allows chaining, merging, and multi-output pipelines without operations knowing about each other.
 
-6. **Python for planning, Rust for execution.** Keep Python focused on pipeline specification, validation, and graph construction. Reserve Rust for performance-critical execution-time work. If something can be done purely in Python (schema inference, validation, utilities), do it there.
+6. **Python appends, Rust plans and executes.** Python is the builder: it records what the user wrote (ops, expressions, node references), composes graphs and serializes them. Every decision about a pipeline is Rust's: `plan::step` runs once per appended op (`Plan.push`) and owns the domain check, the schema fold, the shape and every parameter check, and `.sink()` checks the whole graph with the plugin's own compile (`check_graph`). Python holds no op list to edit and no schema rule of its own. A Python-side special case for an op's schema or validity means the op's Rust contract is incomplete: fix the contract.
 
 7. **Priorities, in order: correctness, ergonomics, maintainability, performance.** Performance is last on purpose — the plugin runs over frames the engine already carries, so a clear, obviously-correct formula beats a fast one. Reject a design on performance grounds only when it is clearly suboptimal (an unnecessary per-row allocation, an O(n) pass where O(1) exists), never to shave constants at the cost of the three above it.
 
@@ -54,14 +54,14 @@ The project has three layers:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Python: polars_cv                                      │
-│  Pipeline builder, expression namespaces, DAG           │
-│  construction, schema inference, validation, lazy       │
+│  Pipeline builder (generated from the catalogues),      │
+│  expression namespaces, DAG construction, lazy          │
 │  composition, geometry/metrics APIs                     │
-├────────────── JSON graph serialization ─────────────────┤
+├──── Plan (planning, per op) · JSON graph (execution) ───┤
 │  Rust: polars-cv (the plugin)                           │
-│  vb_graph expression entry point, graph execution,      │
-│  source decoding, sink encoding, per-row parameter      │
-│  resolution, cloud I/O                                  │
+│  Plan: schema inference and validation as ops are       │
+│  appended; vb_graph: graph execution, source decoding,  │
+│  sink encoding, per-row parameter resolution, cloud I/O │
 ├────────────── Rust crate dependency ────────────────────┤
 │  Rust: view-buffer (the engine)                         │
 │  ViewBuffer, ViewExpr, stride-aware ops, kernel fusion, │
@@ -270,7 +270,9 @@ side channel.
 | A graph policy's wire spelling (`on_error`, `on_null_param`) | Its `NAMED` table, read by `catalog::param::literal_field` (no serde derive on the enum) | `graph_policies_parse_through_their_named_tables`; there is no second spelling to compare |
 | An op's domain transitions (the "Domain:" docstring line) | Its Rust `input_domains`/`output_domain`, read by `catalog_json` over the op's structural choices → `domains` in `op_catalog.json` → the generated line; sugar composes its declared ops' (`@_sugar`, `polars_cv/_domains.py` renders both) | `the_domain_contract_is_read_off_the_op`, `test_sugar_appends_exactly_the_ops_it_declares`, `test_every_public_pipeline_method_has_one_kind` |
 | A parameter's default | `#[param(default = ...)]` on the field: the wire applies it when the field is absent, and the catalogue gives it to the generated signature (an `Option` field declares none) | `an_absent_field_takes_its_declared_default`; the derive refuses an `Option` field with a default |
-| Source/sink formats, and which parameters each reads | One variant per format of the `Source`/`Sink` families in `polars-cv/src/formats/` (`#[derive(Ops)]` → `tests/golden/io_catalog.json` → generated `SourceFormat`/`SinkFormat`); the builder checks what the caller passed with `Plan.with_source` (which also plans the source's state), and `.sink()` checks the whole graph with `check_graph` (the plugin's own compile, planning and `decode::output_schema`) | Deserialization: an unknown format or field is refused, and a field the format does not read names where it applies (`formats::from_wire`); `io_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_param_applicability.py` sweeps parameter × format grids from the catalogue and checks the `quality` claim against the encoders |
+| Source/sink formats, and which parameters each reads | One variant per format of the `Source`/`Sink` families in `polars-cv/src/formats/` (`#[derive(Ops)]` → `tests/golden/io_catalog.json` → generated `SourceFormat`/`SinkFormat`, `source()` and `sink()` with a typed keyword per field, the `Sink.<format>` constructors, and `SOURCE_FIELDS`/`SINK_FIELDS`); what `sink()` accepts as an output (a name, a `Sink`, the deprecated tuple) is read once, by `_graph.as_sink`; the builder checks what the caller passed with `Plan.with_source` (which also plans the source's state), and `.sink()` checks the whole graph with `check_graph` (the plugin's own compile, planning and `decode::output_schema`) | Deserialization: an unknown format or field is refused, and a field the format does not read names where it applies (`formats::from_wire`); `io_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_param_applicability.py` sweeps parameter × format grids from the catalogue and checks the `quality` claim against the encoders; `test_sink_signature.py` holds `sink()`'s keywords and each `Sink` constructor to the catalogue's fields (no `**kwargs`: a misspelled keyword is a `TypeError`, and a type checker sees it), and `format_fields` refuses a field with two types across formats |
+| Parsing JSON the Python builder wrote (a graph, a plan, an op, a source, a geometry call's arguments) | `polars-cv/src/wire.rs`: `wire::from_str`, whose error is the diagnosis without `serde_json`'s `at line L column C` | Clippy: `serde_json::from_str` is a `disallowed-methods` entry in `clippy.toml`, allowed only inside `wire::from_str`; `a_refusal_is_the_diagnosis_without_a_position`; `test_message_hygiene.py` runs a table of deliberate failures and refuses a Rust `Debug` struct, a JSON position or a build-time node id in any message (checker fixtures in the same file) |
+| Which image formats a source decodes | The `image` entry of `[workspace.dependencies]` in the root `Cargo.toml` (named features, no defaults), which both crates take with `workspace = true` | `test_decode_formats.py`: a committed file per feature (`tests/fixtures/formats/`) is decoded through the pipeline, and the feature list, the files and the table in `docs/user-guide/concepts/sources.md` are compared as sets; a crate declaring `image` on its own fails `test_each_crate_takes_the_workspace_entry` |
 | `LazyPipelineExpr`'s method surface | generated by `gen_ops.py`: forwarders from the built `Pipeline` into `_lazy_forwarders.py`, and every `lazy_only` op into `_LazyOpsMixin` | `test_lazy_pipeline_method_parity`, `test_every_lazy_only_op_is_a_generated_lazy_method`, `test_the_committed_catalog_is_the_built_one` |
 | Which builder parameters are positional | Derived, never declared: `gen_ops.positional` (an op's only required field is positional-or-keyword, the rest keyword-only) | `tests/golden/signatures.json` (`test_the_call_surface_matches_the_snapshot`); `test_documented_pipeline_calls_bind` binds every documented `Pipeline()` call; the derive refuses a `#[param(positional)]` key |
 | An output's planned schema | Planned by Rust from the graph itself (`resolved_output_specs`: each node's source state, then `plan::step` per op); the wire output is only `OutputRequest { node, sink }` | `an_output_carries_only_its_node_and_sink` (a `planned`/`expected_*` field is refused), `output_facts_are_planned_from_the_ops` |

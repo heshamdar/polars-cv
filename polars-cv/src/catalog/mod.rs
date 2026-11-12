@@ -415,7 +415,7 @@ mod tests {
         ];
         for text in spellings {
             let op: TypedOp =
-                serde_json::from_str(&format!(r#"{{"op": "threshold", "value": {text}}}"#))
+                crate::wire::from_str(&format!(r#"{{"op": "threshold", "value": {text}}}"#))
                     .unwrap();
             let got = op.fields_json()["value"].as_f64().unwrap();
             let want: f64 = text.parse().unwrap();
@@ -926,7 +926,7 @@ mod tests {
     /// measure over a contour set is one value per member.
     #[test]
     fn the_domain_contract_is_read_off_the_op() {
-        let catalog: serde_json::Value = serde_json::from_str(&catalog_json()).unwrap();
+        let catalog: serde_json::Value = crate::wire::from_str(&catalog_json()).unwrap();
         let domains = |name: &str| -> Vec<(String, String, String)> {
             let op = catalog
                 .as_array()

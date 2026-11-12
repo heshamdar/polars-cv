@@ -251,14 +251,14 @@ def test_a_set_operation_names_its_step_as_every_step_does(op, engine_name):
 
 def _row_error(run) -> str:
     """The refusal *run* raises, without either surface's wrapping: the
-    pipeline's ``Pipeline execution failed:`` / ``Op resolution error:``, the
+    pipeline's ``Pipeline execution failed (...):`` / ``Op resolution error:``, the
     row reference (``tests/_rows.py``), and polars' trailing expression trace."""
     with pytest.raises(pl.exceptions.ComputeError) as raised:
         run()
     message = str(raised.value).split("\n\nThis error occurred")[0]
     message = message.replace("the plugin failed with message: ", "")
-    for wrapper in ("Pipeline execution failed: ", "Op resolution error: "):
-        message = message.replace(wrapper, "")
+    message = re.sub(r"Pipeline execution failed \(.*?\): ", "", message)
+    message = message.replace("Op resolution error: ", "")
     return ROW.sub("", message).rstrip()
 
 
@@ -424,3 +424,91 @@ def test_a_parameter_is_named_as_the_user_wrote_it_not_by_its_wrapper() -> None:
     first = _first_line(err)
     assert "resize: height: Parameter column 'h' has a null value" in first, first
     assert "kind" not in first, first
+
+
+# --- Messages written for the person who built the pipeline (CR-143) ---------
+
+
+def test_an_undecodable_row_says_what_is_wrong_in_words() -> None:
+    """The decoder's error is printed as its message, not as its Rust value:
+    it read ``Unsupported(UnsupportedError { format: Unknown, kind: ... })``."""
+    frame = pl.DataFrame({"img": [b"not an image"]})
+    with pytest.raises(pl.exceptions.ComputeError) as err:
+        frame.select(pl.col("img").cv.pipe(_image()).sink("numpy"))
+    first = _first_line(err)
+    assert "Failed to decode image: The image format could not be determined" in first
+    assert "UnsupportedError" not in first, first
+
+
+@pytest.mark.parametrize(
+    ("sink", "kwargs", "says"),
+    [
+        ("nunpy", {}, "unknown sink format 'nunpy'"),
+        ("png", {"quality": 3}, "'quality' does not apply to the 'png' sink"),
+        ("jpeg", {"quality": "high"}, "'quality': expected an integer"),
+    ],
+)
+def test_a_refused_sink_ends_with_its_diagnosis(
+    sink: str, kwargs: dict, says: str
+) -> None:
+    """The graph is JSON the builder wrote; where in it the parser stopped
+    (``at line 1 column 230``) is not something the user can look up."""
+    with pytest.raises(ValueError, match=re.escape(says)) as err:
+        pl.col("img").cv.pipe(_image()).sink(sink, **kwargs)
+    assert not re.search(r"line \d+ column \d+", str(err.value)), err.value
+
+
+def test_a_pipeline_with_no_source_is_refused_where_it_meets_its_column() -> None:
+    """``.cv.pipe`` is refused, naming ``.source()``. It used to be accepted
+    and refused at ``.sink()`` as ``root node 'node_e16ec35b' has no source``."""
+    pipe = Pipeline().resize(height=4, width=4)
+    with pytest.raises(ValueError, match=r"no source.*\.source\(\)") as err:
+        pl.col("img").cv.pipe(pipe)
+    assert "node_" not in str(err.value)
+    # A pipeline with no source still continues another: that is what one is.
+    continued = pl.col("img").cv.pipe(_image()).pipe(pipe)
+    assert isinstance(continued.sink("numpy"), pl.Expr)
+
+
+def test_a_null_parameter_names_both_remedies() -> None:
+    frame = pl.DataFrame(
+        {"img": [_rgb_png(4, 4)], "h": [None]}, schema_overrides={"h": pl.Int64}
+    )
+    pipe = _image().resize(height=pl.col("h"), width=4)
+    with pytest.raises(pl.exceptions.ComputeError) as err:
+        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+    first = _first_line(err)
+    assert "fill_null" in first, first
+    assert 'on_null_param("null")' in first, first
+    # And each remedy is one: the row's result is null, or the row has a value.
+    nulled = frame.select(
+        out=pl.col("img").cv.pipe(pipe.on_null_param("null")).sink("numpy")
+    )
+    assert nulled["out"].null_count() == 1
+    filled = _image().resize(height=pl.col("h").fill_null(2), width=4)
+    assert frame.select(out=pl.col("img").cv.pipe(filled).sink("numpy")).height == 1
+
+
+def test_a_failing_pipeline_is_named_by_its_column_and_sink() -> None:
+    """Polars names a failing plugin call by its library path and function,
+    the same text for every pipeline in a query; the message says which
+    pipeline it was: the column it decodes, and what it sinks to."""
+    frame = pl.DataFrame({"good": [_rgb_png(4, 4)], "bad": [b"junk"]})
+    with pytest.raises(pl.exceptions.ComputeError) as err:
+        frame.select(
+            a=pl.col("good").cv.pipe(_image()).sink("numpy"),
+            b=pl.col("bad").cv.pipe(_image()).sink("png"),
+        )
+    first = _first_line(err)
+    assert "(column 'bad' to the png sink)" in first, first
+    assert "'good'" not in first, first
+
+
+def test_a_failing_multi_output_pipeline_names_its_outputs() -> None:
+    frame = pl.DataFrame({"bad": [b"junk"]})
+    base = pl.col("bad").cv.pipe(_image()).alias("full")
+    small = base.pipe(Pipeline().resize(height=2, width=2)).alias("small")
+    with pytest.raises(pl.exceptions.ComputeError) as err:
+        frame.select(small.sink({"full": "png", "small": "numpy"}))
+    first = _first_line(err)
+    assert "(column 'bad' to outputs 'full' (png), 'small' (numpy))" in first, first

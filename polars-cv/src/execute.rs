@@ -71,7 +71,7 @@ pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuf
     let buf = match scaled {
         Some(buf) => buf,
         None => ImageAdapter::decode(bytes)
-            .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?,
+            .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {}", e))?,
     };
     // The file's orientation tag, when the source asks for the displayed
     // image: one step after either decoder, so a scaled decode (whose scale
@@ -137,5 +137,5 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &Sink) -> PolarsResult<Vec<u8>> {
         | Sink::Numpy { .. }
         | Sink::Torch { .. } => unreachable!("only an image sink has a codec"),
     };
-    encoded.map_err(|e| polars_err!(ComputeError: "Failed to encode {}: {:?}", codec.name(), e))
+    encoded.map_err(|e| polars_err!(ComputeError: "Failed to encode {}: {}", codec.name(), e))
 }

@@ -6,6 +6,29 @@ resolver = "2"
 # Every `unsafe` block states, in a `// SAFETY:` comment, the invariant it
 # relies on and the code that establishes it. `deny`, so `-D warnings` is not
 # the only thing standing between a bare block and the tree.
+# The one declaration of the `image` crate, which both crates take with
+# `workspace = true`: features unify across the workspace, so a second entry
+# with defaults would compile every codec back in for both.
+#
+# The features are the formats a source decodes, named one by one, plus
+# `rayon`. Left out of `image`'s defaults:
+# - `avif`: an encoder only (`ravif`, which builds `rav1e`). No sink writes
+#   AVIF, and decoding it is another feature (`avif-native`, a C library).
+# - `tga`: Truevision files have no signature, and every decode here detects
+#   the format from the bytes, so no input ever reached that decoder.
+# `rayon` stays: among these formats only OpenEXR uses it, and without it a
+# 2048x2048 EXR decoded in about 255 ms against 170 ms (one row), 945 ms
+# against 880 ms (16 rows, 4 cores; 2026-11-12, `--profile benchmark`). It
+# decodes on rayon's global pool, not polars' pool the rows are split over.
+# `tests/test_decode_formats.py` decodes a committed file per feature and
+# holds this list, those files and the documented table to one another.
+[workspace.dependencies]
+image = { version = "0.25", default-features = false, features = [
+    "bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png",
+    "pnm", "qoi", "tiff", "webp",
+    "rayon",
+] }
+
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "deny"
 

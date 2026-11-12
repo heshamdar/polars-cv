@@ -7,16 +7,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from polars_cv._this import ThisExpr
 
 if TYPE_CHECKING:
     import polars as pl
 
+    from polars_cv._graph import PipelineGraph
+    from polars_cv._optimize import OptFlags
     from polars_cv._types import (
         BoolOrExpr,
         CloudOptions,
@@ -1887,6 +1889,225 @@ SOURCE_FIELDS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: Each sink format's field types, as the catalogue describes them.
+SINK_FIELDS: dict[str, dict[str, Any]] = {
+    "array": {
+        "shape": {
+            "kind": "optional",
+            "inner": {
+                "kind": "list",
+                "inner": {
+                    "kind": "scalar",
+                    "per_row": False,
+                    "py": "int",
+                    "this": False,
+                },
+            },
+        }
+    },
+    "blob": {},
+    "jpeg": {
+        "quality": {"kind": "scalar", "per_row": False, "py": "int", "this": False}
+    },
+    "list": {},
+    "long": {
+        "names": {
+            "kind": "list",
+            "inner": {"kind": "scalar", "per_row": False, "py": "str", "this": False},
+        },
+        "where": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "str", "this": False},
+        },
+    },
+    "native": {},
+    "ndarray": {
+        "dtype": {
+            "kind": "optional",
+            "inner": {
+                "kind": "scalar",
+                "per_row": False,
+                "py": "SinkDType",
+                "this": False,
+                "variants": ["f16", "float16"],
+            },
+        },
+        "compact": {"kind": "scalar", "per_row": False, "py": "bool", "this": False},
+    },
+    "numpy": {
+        "dtype": {
+            "kind": "optional",
+            "inner": {
+                "kind": "scalar",
+                "per_row": False,
+                "py": "SinkDType",
+                "this": False,
+                "variants": ["f16", "float16"],
+            },
+        },
+        "compact": {"kind": "scalar", "per_row": False, "py": "bool", "this": False},
+    },
+    "png": {},
+    "tiff": {},
+    "torch": {
+        "dtype": {
+            "kind": "optional",
+            "inner": {
+                "kind": "scalar",
+                "per_row": False,
+                "py": "SinkDType",
+                "this": False,
+                "variants": ["f16", "float16"],
+            },
+        },
+        "compact": {"kind": "scalar", "per_row": False, "py": "bool", "this": False},
+    },
+    "webp": {},
+}
+
+
+class Sink:
+    """One output's sink: a format and the parameters given for it.
+
+    Accepted wherever ``sink()`` takes a format name, and as a value of its
+    multi-output dict, where each output takes parameters of its own::
+
+        expr.sink({"x": Sink.array(shape=[224, 224, 3]), "thumb": Sink.jpeg(quality=85)})
+
+    Build one with the constructor named after its format. A parameter left
+    out (``None``) is not sent, so the format's own default applies.
+    """
+
+    __slots__ = ("format", "params")
+
+    def __init__(self, format: str, params: Mapping[str, Any]) -> None:
+        self.format = format
+        self.params = {k: v for k, v in params.items() if v is not None}
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Sink) and (self.format, self.params) == (
+            other.format,
+            other.params,
+        )
+
+    __hash__ = None  # type: ignore[assignment]  # holds a dict
+
+    def __repr__(self) -> str:
+        args = ", ".join(f"{k}={v!r}" for k, v in self.params.items())
+        return f"Sink.{self.format}({args})"
+
+    @classmethod
+    def array(cls, *, shape: Sequence[int] | None = None) -> Sink:
+        """A fixed-shape Polars `Array`.
+
+        Args:
+            shape: The output shape; inferred from the planned shape when absent.
+        """
+        return cls("array", {"shape": shape})
+
+    @classmethod
+    def blob(cls) -> Sink:
+        """The self-describing VIEW protocol, as `Binary`."""
+        return cls("blob", {})
+
+    @classmethod
+    def jpeg(cls, *, quality: int | None = None) -> Sink:
+        """Re-encoded as JPEG.
+
+        Args:
+            quality: JPEG quality, 1-100. Only the JPEG encoder takes one.
+        """
+        return cls("jpeg", {"quality": quality})
+
+    @classmethod
+    def list(cls) -> Sink:
+        """A nested Polars `List`."""
+        return cls("list", {})
+
+    @classmethod
+    def long(cls, *, names: Sequence[str], where: str | None = None) -> Sink:
+        """One struct per pixel, row-major: an ``[H, W]`` or ``[H, W, C]``
+        buffer as ``List[Struct{row: u32, col: u32, <names>...}]``, each
+        channel a field of the buffer's dtype.
+
+        Args:
+            names: One field name per channel, in channel order (one for an ``[H, W]``
+                buffer); distinct, and neither ``row`` nor ``col``.
+            where: Keep only the pixels where this named channel is > 0, and leave the
+                channel out of the struct.
+        """
+        return cls("long", {"names": names, "where": where})
+
+    @classmethod
+    def native(cls) -> Sink:
+        """The domain's own Polars type: `Float64` for a scalar, a `List` for a
+        vector, the contour struct for contours.
+        """
+        return cls("native", {})
+
+    @classmethod
+    def ndarray(cls, *, dtype: str | None = None, compact: bool | None = None) -> Sink:
+        """The `polars_cv.ndarray` extension type: a zero-copy tensor struct.
+
+        Args:
+            dtype: Downcast the elements to this dtype at encode time: only half
+                precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any other
+                dtype.
+            compact: Make each row's ``data`` exactly its elements, row-major, at offset
+                zero, instead of the storage the row is a view into (whole, with the
+                strides and offset that read the view out of it). Copies only a row that
+                is not already that. Set it for a column that will be persisted: Parquet
+                and IPC write each row's ``data`` whole.
+        """
+        return cls("ndarray", {"dtype": dtype, "compact": compact})
+
+    @classmethod
+    def numpy(cls, *, dtype: str | None = None, compact: bool | None = None) -> Sink:
+        """A zero-copy tensor struct `numpy_from_struct` reads.
+
+        Args:
+            dtype: Downcast the elements to this dtype at encode time: only half
+                precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any other
+                dtype.
+            compact: Make each row's ``data`` exactly its elements, row-major, at offset
+                zero, instead of the storage the row is a view into (whole, with the
+                strides and offset that read the view out of it). Copies only a row that
+                is not already that. Set it for a column that will be persisted: Parquet
+                and IPC write each row's ``data`` whole.
+        """
+        return cls("numpy", {"dtype": dtype, "compact": compact})
+
+    @classmethod
+    def png(cls) -> Sink:
+        """Re-encoded as PNG."""
+        return cls("png", {})
+
+    @classmethod
+    def tiff(cls) -> Sink:
+        """Re-encoded as TIFF."""
+        return cls("tiff", {})
+
+    @classmethod
+    def torch(cls, *, dtype: str | None = None, compact: bool | None = None) -> Sink:
+        """A zero-copy tensor struct `torch_from_struct` reads.
+
+        Args:
+            dtype: Downcast the elements to this dtype at encode time: only half
+                precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any other
+                dtype.
+            compact: Make each row's ``data`` exactly its elements, row-major, at offset
+                zero, instead of the storage the row is a view into (whole, with the
+                strides and offset that read the view out of it). Copies only a row that
+                is not already that. Set it for a column that will be persisted: Parquet
+                and IPC write each row's ``data`` whole.
+        """
+        return cls("torch", {"dtype": dtype, "compact": compact})
+
+    @classmethod
+    def webp(cls) -> Sink:
+        """Re-encoded as WebP (lossless)."""
+        return cls("webp", {})
+
 
 class _OpsMixin:
     """The generated builder methods ``Pipeline`` inherits."""
@@ -3726,6 +3947,132 @@ class _LazyOpsMixin:
     if TYPE_CHECKING:
 
         def _node_op(self, op: str, values: dict[str, Any]) -> LazyPipelineExpr: ...
+        def _sink(
+            self,
+            format: Any,
+            values: dict[str, Any],
+            return_expr: bool,
+            opt_flags: OptFlags | bool | None,
+        ) -> pl.Expr | PipelineGraph: ...
+
+    @overload
+    def sink(
+        self,
+        format: SinkFormat
+        | str
+        | Sink
+        | Mapping[str, SinkFormat | str | Sink | tuple[str, dict[str, Any]]] = ...,
+        return_expr: Literal[True] = ...,
+        opt_flags: OptFlags | bool | None = ...,
+        *,
+        compact: bool | None = ...,
+        dtype: str | None = ...,
+        names: Sequence[str] | None = ...,
+        quality: int | None = ...,
+        shape: Sequence[int] | None = ...,
+        where: str | None = ...,
+    ) -> pl.Expr: ...
+
+    @overload
+    def sink(
+        self,
+        format: SinkFormat
+        | str
+        | Sink
+        | Mapping[str, SinkFormat | str | Sink | tuple[str, dict[str, Any]]] = ...,
+        *,
+        return_expr: Literal[False],
+        opt_flags: OptFlags | bool | None = ...,
+        compact: bool | None = ...,
+        dtype: str | None = ...,
+        names: Sequence[str] | None = ...,
+        quality: int | None = ...,
+        shape: Sequence[int] | None = ...,
+        where: str | None = ...,
+    ) -> PipelineGraph: ...
+
+    def sink(
+        self,
+        format: SinkFormat
+        | str
+        | Sink
+        | Mapping[str, SinkFormat | str | Sink | tuple[str, dict[str, Any]]] = "native",
+        return_expr: bool = True,
+        opt_flags: OptFlags | bool | None = None,
+        *,
+        compact: bool | None = None,
+        dtype: str | None = None,
+        names: Sequence[str] | None = None,
+        quality: int | None = None,
+        shape: Sequence[int] | None = None,
+        where: str | None = None,
+    ) -> pl.Expr | PipelineGraph:
+        """Finalize the pipeline graph and return a Polars expression.
+
+        Every keyword after ``opt_flags`` is a sink parameter, generated from the
+        typed sinks: ``None`` means the chosen format's own default. One that does
+        not apply to the chosen format is refused, naming the formats it applies to.
+
+        Args:
+            format: The output format: a name, a :class:`polars_cv.SinkFormat` or a
+                :class:`polars_cv.Sink` (a format with its parameters,
+                ``Sink.jpeg(quality=85)``); or, for several outputs, a dict from each
+                alias to one of those, the result being a struct with a field per alias.
+                The keywords given here then apply to every output, and one given both
+                here and on an output's own ``Sink`` is refused. ``array``: A fixed-
+                shape Polars `Array`. ``blob``: The self-describing VIEW protocol, as
+                `Binary`. ``jpeg``: Re-encoded as JPEG. ``list``: A nested Polars
+                `List`. ``long``: One struct per pixel, row-major: an ``[H, W]`` or
+                ``[H, W, C]`` buffer as ``List[Struct{row: u32, col: u32,
+                <names>...}]``, each channel a field of the buffer's dtype. ``native``:
+                The domain's own Polars type: `Float64` for a scalar, a `List` for a
+                vector, the contour struct for contours. ``ndarray``: The
+                `polars_cv.ndarray` extension type: a zero-copy tensor struct.
+                ``numpy``: A zero-copy tensor struct `numpy_from_struct` reads. ``png``:
+                Re-encoded as PNG. ``tiff``: Re-encoded as TIFF. ``torch``: A zero-copy
+                tensor struct `torch_from_struct` reads. ``webp``: Re-encoded as WebP
+                (lossless).
+            return_expr: If True (default), return a ``pl.Expr``; if False, the
+                ``PipelineGraph``.
+            opt_flags: Which plan-time optimizations to apply. ``None`` (default) reads
+                the ``POLARS_CV_OPTIMIZATIONS`` env var, falling back to all-on;
+                ``True``/``False`` are all/none shorthands; an
+                :class:`polars_cv.OptFlags` selects passes individually. Every pass is
+                output-preserving, so this only changes the physical graph
+                (:mod:`polars_cv._optimize`).
+            compact: ``ndarray``, ``numpy``, ``torch``: Make each row's ``data`` exactly
+                its elements, row-major, at offset zero, instead of the storage the row
+                is a view into (whole, with the strides and offset that read the view
+                out of it). Copies only a row that is not already that. Set it for a
+                column that will be persisted: Parquet and IPC write each row's ``data``
+                whole.
+            dtype: ``ndarray``, ``numpy``, ``torch``: Downcast the elements to this
+                dtype at encode time: only half precision (``"f16"``/``"float16"``); use
+                ``.cast(...)`` for any other dtype.
+            names: ``long``: One field name per channel, in channel order (one for an
+                ``[H, W]`` buffer); distinct, and neither ``row`` nor ``col``.
+            quality: ``jpeg``: JPEG quality, 1-100. Only the JPEG encoder takes one.
+            shape: ``array``: The output shape; inferred from the planned shape when
+                absent.
+            where: ``long``: Keep only the pixels where this named channel is > 0, and
+                leave the channel out of the struct.
+
+        Returns:
+            A Polars expression, or the ``PipelineGraph`` if ``return_expr=False``.
+        """
+        return self._sink(
+            format,
+            {
+                "compact": compact,
+                "dtype": dtype,
+                "names": names,
+                "quality": quality,
+                "shape": shape,
+                "where": where,
+            },
+            return_expr,
+            opt_flags,
+        )
 
     def add(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise addition with another array.

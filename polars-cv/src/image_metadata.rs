@@ -2,7 +2,7 @@
 //!
 //! Provides Polars expression functions that extract width, height, channels,
 //! and dtype from image binary data without performing a full decode. Supports
-//! both standard image formats (PNG, JPEG, WebP, TIFF, BMP, GIF) via the
+//! both the image formats the workspace's `image` features decode, via the
 //! `image` crate's header-only reader, and the VIEW binary protocol via
 //! direct header parsing.
 

@@ -175,7 +175,7 @@ impl CloudOptions {
 /// asked to evaluate any more).
 fn parse_token_command(raw: &str) -> Result<Vec<String>, String> {
     const EXAMPLE: &str = r#"["gcloud", "auth", "print-access-token"]"#;
-    let argv: Vec<String> = serde_json::from_str(raw).map_err(|_| {
+    let argv: Vec<String> = crate::wire::from_str(raw).map_err(|_| {
         format!(
             "token_command must be an argument vector such as {EXAMPLE}, got {raw:?}. \
              Shell evaluation of token_command was removed: the command runs as a \

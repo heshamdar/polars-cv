@@ -182,8 +182,8 @@ class CvNamespace(_PluginNamespace):
         The column holds image bytes (``Binary``) or paths (``String``). A
         local path's file is read only as far as its header needs; a remote
         path's object is fetched whole, as ``.cv.read_bytes()`` does. Supports
-        encoded images (PNG, JPEG, WebP, TIFF, BMP, GIF) and VIEW protocol
-        blobs; ``null`` for an unrecognised format or a null input. For more
+        every image format a source decodes (the table under "Image
+        formats" in the sources guide) and VIEW protocol blobs; ``null`` for an unrecognised format or a null input. For more
         than one field, ``.cv.image_info()`` reads each header once.
 
         Args:

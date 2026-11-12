@@ -28,6 +28,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   there is nothing to bump. Drop the ignore when they move to
   `core::pin::pin!`.
 
+- **RUSTSEC-2026-0105 (`core2`) and RUSTSEC-2024-0436 (`paste`) are no longer
+  ignored in `deny.toml` (CR-145).** Both reached the lockfile only through
+  `image`'s AVIF encoder. That encoder is no longer compiled, and the
+  versions of it the lockfile still names (through a weak feature of
+  `image`'s `rayon`) depend on neither crate.
+
 ### Fixed
 
 - **A constant is no longer rounded to f32 before f64 arithmetic (CR-136).**
@@ -85,8 +91,52 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   out-of-range or unparseable tag decodes as stored. `image_info()` reports
   the tag as `orientation` (1 to 8, null when absent), read from the header.
 
+- **`sink()` has a typed keyword per sink parameter, and `Sink` values
+  (CR-142).** `sink()` took `**kwargs`: Rust refused a keyword that did not
+  apply, but an editor or a type checker saw nothing. It is now generated from
+  the sink catalogue as `source()` is: `shape`, `quality`, `dtype`, `compact`,
+  `names` and `where` are keyword-only, typed, and documented with the formats
+  each applies to; `None` (the default) sends nothing, so the format's own
+  default applies. `polars_cv.Sink` is a format with its parameters, one
+  constructor per format taking exactly that format's fields
+  (`Sink.jpeg(quality=85)`, `Sink.array(shape=[224, 224, 3])`), accepted
+  wherever a format name is and as a value of the multi-output dict. The call
+  shape is unchanged: `sink("png")`, `sink("jpeg", quality=85)` and
+  `sink(fmt, False)` bind as before. `SINK_FIELDS` is the generated table of
+  each format's fields. (`pl.col(...).cv` is registered at run time, which
+  type checkers do not follow, so the keywords are checked where the
+  `LazyPipelineExpr` type is known.)
+- **Two guides, each backed by an example the suite runs (CR-144).**
+  "Training-Time Augmentation" (`docs/user-guide/augmentation.md`): seeded per-row parameters as columns, a random-resized-crop, flip, rotation
+  and contrast jitter, how an epoch maps to a query, and what it is not
+  (`examples/14_augmentation.py`). "Choosing a sink" in the pipelines guide:
+  which sink for a batch, ragged rows, a loader, persisting, or another
+  pipeline (`examples/15_choosing_a_sink.py`). The guides quote marked
+  sections of the examples, so an API change breaks the example in CI. The
+  quickstart gains a troubleshooting section (a forgotten `.sink()`, a
+  forgotten `.source()`, a null parameter, an undecodable row), and the
+  sources guide a table of the image formats decoded.
+
+### Deprecated
+
+- **The `(format, {params})` tuple in a multi-output `sink()` (CR-142).**
+  `{"thumb": ("jpeg", {"quality": 85})}` still works in this release and
+  raises a `DeprecationWarning` naming its replacement,
+  `{"thumb": Sink.jpeg(quality=85)}`. It is removed in the next release.
+
 ### Breaking changes
 
+- **A misspelled `sink()` keyword is a `TypeError` (CR-142).** `sink("jpeg",
+  qualtiy=50)` was refused by the plugin with a `ValueError` ("'qualtiy' is
+  not a sink parameter"); Python now refuses it as it refuses any unknown
+  argument. A keyword that exists but does not apply to the chosen format is
+  still a `ValueError` naming where it applies.
+- **`PipelineGraph.set_output` and `set_multi_output` take a sink, not
+  keywords (CR-142).** `set_output(node, "jpeg", quality=85)` is
+  `set_output(node, Sink.jpeg(quality=85))`; a format name alone is unchanged.
+  `set_multi_output` takes a dict of format names or `Sink`s and no longer
+  reads the tuple form or shared keywords, which `sink()` resolves before it
+  (`_graph.as_sink`, the one reading of what an output may be written as).
 - **`image_info()` returns a fifth field, `orientation: Int64` (CR-137).** Its
   struct is `{width, height, channels, dtype, orientation}`; code that names
   the struct's full type, or unnests it into a fixed set of columns, gains a
@@ -179,6 +229,51 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **The `image` crate is built with the formats a source decodes, not its
+  defaults (CR-145).** The defaults compiled an AVIF *encoder* (`ravif`,
+  which builds `rav1e`) that no sink reaches, and a Truevision TGA decoder no
+  input could reach (TGA has no signature, and every decode detects the
+  format from the bytes). Both are gone; nothing that decoded before stops
+  decoding. `image` is now one `[workspace.dependencies]` entry naming its
+  features, taken by both crates: the plugin crate declared it separately
+  with defaults, and features unify, so trimming one crate's entry would have
+  changed nothing. The formats decoded are listed in the sources guide (PNG,
+  JPEG, WebP, TIFF, BMP, GIF, PNM, QOI, ICO, DDS, farbfeld, Radiance HDR,
+  OpenEXR), and `tests/test_decode_formats.py` decodes a committed file of
+  each and holds the manifest, the files and that table to one another. The
+  extension is about 6% smaller: 62.6 MB to 58.9 MB, and the wheel 19.9 MB to
+  18.8 MB, measured on a `--profile benchmark` build (thin LTO; not the
+  fat-LTO release wheel, which was not built). `image`'s `rayon` feature is
+  kept: measured without it, one 2048x2048 OpenEXR decode took about 255 ms
+  against 170 ms, and PNG decode was unchanged.
+- **Messages say what went wrong in the user's words (CR-143).** The text of
+  these errors changes; code that matches on it should match the part that
+  stayed.
+    - A row that will not decode or encode prints the codec's message, not its
+      Rust value: `Failed to decode image: The image format could not be
+      determined`, where it read `Unsupported(UnsupportedError { format:
+      Unknown, kind: Format(Unknown) })`.
+    - A refused sink name or option ends with its diagnosis. It used to end
+      `at line 1 column 230`, a position in the JSON the builder sends the
+      plugin. `wire::from_str` is the one parser of that JSON, and clippy
+      refuses `serde_json::from_str` anywhere else.
+    - **A pipeline with no source is refused by `.cv.pipe()`**, naming
+      `.source()`. It was accepted there and refused at `.sink()` as `root
+      node 'node_e16ec35b' has no source`. A pipeline with no source still
+      continues another (`LazyPipelineExpr.pipe`).
+    - A null in a parameter column names both remedies: `fill_null` on the
+      column, or `Pipeline.on_null_param("null")` (`.on_null("null")` on a
+      geometry accessor).
+    - A failing pipeline is named: `Pipeline execution failed (column 'img'
+      to the png sink): ...`, or `(column 'img' to outputs 'full' (png),
+      'small' (numpy))`. Polars names a failing plugin call by its library
+      path and function, the same text for every pipeline in a query. The
+      name a result is given afterwards (`.alias()`, a `select` keyword) is
+      applied outside the plugin and cannot be reported.
+
+  `tests/test_message_hygiene.py` runs a table of deliberate failures and
+  refuses a Rust `Debug` struct, a JSON position or a build-time node id in
+  any of them.
 - **`IntOrExpr`, `FloatOrExpr` and `BoolOrExpr` are exported from `polars_cv`**:
   the annotations of a parameter that takes a literal or a per-row expression,
   for code that wraps one in a signature of its own. The contour matcher kept

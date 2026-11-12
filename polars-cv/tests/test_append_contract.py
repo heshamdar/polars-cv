@@ -258,7 +258,10 @@ def test_assert_shape_survives_a_continuation() -> None:
 
     # And an assertion mid-chain in a single continuation pipeline.
     mid = (
-        pl.col("img").cv.pipe(Pipeline().assert_shape(channels=3).grayscale())._pipeline
+        pl.col("img")
+        .cv.pipe(base_u8)
+        .pipe(Pipeline().assert_shape(channels=3).grayscale())
+        ._pipeline
     )
     assert mid._state.dims[2] == 1
 

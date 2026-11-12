@@ -8,13 +8,17 @@ pipeline operations and handles serialization for the Rust backend.
 from __future__ import annotations
 
 import json
+import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
 import polars as pl
 
 from polars_cv._graph_passes import GRAPH_PASSES
 from polars_cv._graph_viz import get_graphviz_out
+from polars_cv._ops_generated import Sink
 from polars_cv._types import SlotTable
 
 if TYPE_CHECKING:
@@ -63,6 +67,50 @@ class GraphNode:
                 "exactly one of the two"
             )
             raise ValueError(msg)
+
+
+def as_sink(spec: object, shared: Mapping[str, Any], alias: str | None = None) -> Sink:
+    """The :class:`Sink` an output was asked for, with the keywords ``sink()``
+    was given (*shared*) added to its own parameters.
+
+    The one reading of what ``sink()`` and ``set_output``/``set_multi_output``
+    accept as an output: a format name (or ``SinkFormat``), a ``Sink``, or the
+    deprecated ``(format, {params})`` tuple. *alias* names the output in a
+    refusal, for a multi-output.
+
+    Raises:
+        TypeError: If *spec* is none of those.
+        ValueError: If a parameter is given both on the output and in *shared*.
+    """
+    where = "" if alias is None else f"output '{alias}': "
+    if isinstance(spec, Sink):
+        fmt, own = spec.format, spec.params
+    elif isinstance(spec, str):
+        fmt, own = (spec.value if isinstance(spec, Enum) else spec), {}
+    elif (
+        isinstance(spec, tuple)
+        and len(spec) == 2
+        and isinstance(spec[0], str)
+        and isinstance(spec[1], dict)
+    ):
+        fmt, own = spec
+        warnings.warn(
+            f"{where}a (format, {{params}}) tuple is deprecated and will be "
+            f"removed in the next release; write {Sink(fmt, own)!r}",
+            DeprecationWarning,
+            stacklevel=4,
+        )
+    else:
+        msg = f"{where}expected a format name or a Sink, got {spec!r}"
+        raise TypeError(msg)
+    both = sorted(own.keys() & shared.keys())
+    if both:
+        msg = (
+            f"{where}{', '.join(repr(k) for k in both)} given both on the "
+            "output's own sink and as a keyword; give it once"
+        )
+        raise ValueError(msg)
+    return Sink(fmt, {**shared, **own})
 
 
 @dataclass
@@ -188,14 +236,14 @@ class PipelineGraph:
             raise ValueError(msg)
         self._alias_to_node[alias] = node_id
 
-    def set_output(self, node_id_or_alias: str, format: str, **kwargs: Any) -> None:
+    def set_output(self, node_id_or_alias: str, sink: "str | Sink") -> None:
         """
-        Set the output node and format for single-output mode.
+        Set the output node and its sink for single-output mode.
 
         Args:
             node_id_or_alias: The node ID or alias whose output to return.
-            format: Output format (e.g., "numpy", "torch", "png").
-            **kwargs: Additional output parameters (e.g., quality for jpeg).
+            sink: The output's sink: a format name (e.g. "numpy", "png") or
+                a :class:`polars_cv.Sink` (a format with its parameters).
         """
         # Resolve alias to node_id if needed
         if node_id_or_alias in self._alias_to_node:
@@ -205,53 +253,30 @@ class PipelineGraph:
         else:
             raise ValueError(f"Node or alias '{node_id_or_alias}' not found in graph")
 
-        self._output = GraphOutput(node_id=node_id, format=format, params=kwargs)
+        sink = as_sink(sink, {})
+        self._output = GraphOutput(
+            node_id=node_id, format=sink.format, params=dict(sink.params)
+        )
         self._multi_output = None
 
-    def set_multi_output(
-        self,
-        outputs: "dict[str, str | tuple[str, dict[str, Any]]]",
-        **kwargs: Any,
-    ) -> None:
+    def set_multi_output(self, outputs: "Mapping[str, str | Sink]") -> None:
         """
         Set multiple outputs for multi-output mode.
 
         Args:
-            outputs: Mapping from alias names to an output format, or to
-                ``(format, params)`` for parameters of that output alone
-                (``("jpeg", {"quality": 85})``).
-            **kwargs: Output parameters applied to every output.
+            outputs: Mapping from alias names to each output's sink: a format
+                name, or a :class:`polars_cv.Sink` for parameters of that
+                output alone (``Sink.jpeg(quality=85)``).
 
         Raises:
-            ValueError: If any alias is not found in the graph, or a parameter
-                is given both per output and shared.
-            TypeError: If an output is neither a format nor ``(format, params)``.
+            ValueError: If any alias is not found in the graph.
+            TypeError: If an output is neither a format nor a ``Sink``.
         """
         multi = MultiGraphOutput()
 
         for alias, spec in outputs.items():
-            if isinstance(spec, str):
-                fmt, own = spec, {}
-            elif (
-                isinstance(spec, tuple)
-                and len(spec) == 2
-                and isinstance(spec[0], str)
-                and isinstance(spec[1], dict)
-            ):
-                fmt, own = spec
-            else:
-                msg = (
-                    f"output '{alias}': expected a format string or "
-                    f"(format, {{params}}), got {spec!r}"
-                )
-                raise TypeError(msg)
-            both = sorted(own.keys() & kwargs.keys())
-            if both:
-                msg = (
-                    f"output '{alias}': {', '.join(repr(k) for k in both)} given "
-                    "both for this output and for every output; give it once"
-                )
-                raise ValueError(msg)
+            sink = as_sink(spec, {}, alias)
+            fmt, own = sink.format, dict(sink.params)
 
             # Find the node ID for this alias
             if alias not in self._alias_to_node:
@@ -265,7 +290,7 @@ class PipelineGraph:
                 raise ValueError(msg)
 
             node_id = self._alias_to_node[alias]
-            multi.outputs[alias] = (node_id, fmt, {**kwargs, **own})
+            multi.outputs[alias] = (node_id, fmt, own)
 
         self._multi_output = multi
         self._output = None
@@ -591,7 +616,7 @@ class PipelineGraph:
                 ops, column = run, None
                 input_node = node_of[before]
             else:
-                msg = f"root node {first_node!r} has no source"
+                msg = "a root node's pipeline has no source; start it with `.source()`"
                 raise ValueError(msg)
             for atom in ops:
                 node_id, position = origin[atom]

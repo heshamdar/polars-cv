@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from ._build_info import source_hash_from_tree
 from ._cloud import CloudCredentialError, check_cloud_access
-from ._ops_generated import This, this
+from ._ops_generated import Sink, This, this
 from ._optimize import OptFlags
 from ._this import ThisExpr
 from ._types import (
@@ -167,6 +167,7 @@ def build_info() -> dict[str, str | None]:
 __all__ = [
     "Pipeline",
     "this",
+    "Sink",
     "This",
     "ThisExpr",
     "CvNamespace",

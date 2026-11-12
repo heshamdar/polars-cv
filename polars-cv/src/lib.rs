@@ -22,6 +22,7 @@ mod plan;
 mod read_bytes;
 mod row_ref;
 mod row_split;
+mod wire;
 // The build script's source hash, included as the same file `build.rs` runs so
 // its unit test checks that function, not a copy.
 #[cfg(test)]
@@ -276,8 +277,7 @@ fn _check_cloud_access(
 /// renderer.
 #[pyfunction]
 fn _this_repr(tree_json: &str) -> PyResult<String> {
-    let tree: serde_json::Value = serde_json::from_str(tree_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let tree: serde_json::Value = wire::from_str(tree_json).map_err(py_value_error)?;
     view_buffer::mode::ThisExpr::from_json(&tree)
         .map(|expr| expr.to_string())
         .map_err(pyo3::exceptions::PyValueError::new_err)
@@ -335,8 +335,7 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
 /// its arguments parsed against the function's definition (`namespaces::fns`).
 #[pyfunction]
 fn check_geom_call(function: &str, args_json: &str) -> PyResult<()> {
-    let args: serde_json::Value =
-        serde_json::from_str(args_json).map_err(|e| py_value_error(e.to_string()))?;
+    let args: serde_json::Value = wire::from_str(args_json).map_err(py_value_error)?;
     namespaces::fns::check_call(function, args).map_err(py_value_error)
 }
 

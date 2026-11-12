@@ -114,6 +114,78 @@ pixels = df.select(
 Float buffers cannot be encoded to PNG/JPEG/WebP — `.cast("u8")`/`.cast("u16")`
 first, or sink to `tiff`, which stores floating point directly.
 
+### Choosing a sink
+
+The table says what each sink is. Which to use follows from what happens to
+the column next. Every block below is a section of
+[`examples/15_choosing_a_sink.py`](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/examples/15_choosing_a_sink.py),
+which the test suite runs.
+
+| You want | Sink |
+|----------|------|
+| One array for the whole column (a batch), every row the same shape | `array` |
+| Rows of different shapes, kept as Polars values | `list` |
+| A tensor per row for a data loader | `numpy`, or `torch` |
+| To write tensors to Parquet or IPC and read them back | `ndarray` with `compact=True` |
+| To write images | `png` (lossless, 8- or 16-bit), `jpeg`, `webp`, or `tiff` (floats too) |
+| To hand the result to another pipeline | `blob`, or any tensor sink |
+| A number or a list per row (after a reduction) | `native` (the default) |
+
+**A batch.** `array` gives a fixed-shape `Array` column, which `to_numpy()`
+turns into one `(n, H, W, C)` array without visiting rows in Python. The shape
+must be known when the query is planned; a decoded image's channel count is
+not, so give the sink its shape.
+
+```python
+--8<-- "examples/15_choosing_a_sink.py:array"
+```
+
+**Ragged rows.** `list` nests one `List` level per axis and takes any shape
+per row. It is the slowest sink to build and to read back: use it when Polars
+itself will work on the values, not as a way to reach NumPy.
+
+```python
+--8<-- "examples/15_choosing_a_sink.py:list"
+```
+
+**A tensor per row.** `numpy` and `torch` hand each row's buffer over without
+copying it; `numpy_from_struct` (or the torch equivalent) reads a row.
+
+```python
+--8<-- "examples/15_choosing_a_sink.py:numpy"
+```
+
+**Tensors that persist.** `ndarray` is the same struct tagged with an
+[extension type](extension-types.md), so the column says what it holds after
+a round trip. Add `compact=True` for anything written to disk (above).
+
+```python
+--8<-- "examples/15_choosing_a_sink.py:persist"
+```
+
+**Images that persist.** An encoder. A decode followed by an encode is not
+the file you started with: to copy files unchanged, use
+[`.cv.read_bytes()`](sources.md#reading-bytes-without-decoding).
+
+```python
+--8<-- "examples/15_choosing_a_sink.py:encoded"
+```
+
+**Another pipeline.** A `blob` carries its dtype and shape, so the pipeline
+that reads it declares nothing, and floats survive where an image encoder
+would refuse or quantise them.
+
+```python
+--8<-- "examples/15_choosing_a_sink.py:blob"
+```
+
+**Several at once.** One decode can feed several outputs, each with its own
+sink: see [Multi-Output](../composition/multi-output.md).
+
+```python
+--8<-- "examples/15_choosing_a_sink.py:multi"
+```
+
 ## Chaining Operations
 
 Operations are chained fluently. Most operation parameters accept both literal
