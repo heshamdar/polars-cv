@@ -13,6 +13,7 @@ use view_buffer::ops::Domain;
 use view_buffer::{ViewBuffer, ViewDto, ViewExpr};
 
 use crate::formats::source::Source;
+use crate::formats::Format as _;
 use crate::params::ParamCtx;
 
 use crate::graph::row::{run_step, RowOutputs};
@@ -53,6 +54,49 @@ pub(super) struct ExecState<'a> {
 }
 
 impl CompiledGraph {
+    /// Which pipeline this is, in the user's words, for a failure's message:
+    /// the columns it decodes and what it sinks to (`column 'img' to the
+    /// numpy sink`, or `column 'img' to outputs 'thumb' (jpeg), 'x'
+    /// (numpy)`). Polars names a failing plugin call by its library path
+    /// and function, which is the same text for every pipeline in a query.
+    /// The name a result is given afterwards (`.alias(...)`, a `select`
+    /// keyword) is applied outside the plugin and is not known here.
+    fn described(&self, inputs: &[Series]) -> String {
+        let mut columns: Vec<String> = Vec::new();
+        for column in self.plan.iter().filter_map(|np| np.input.decode()) {
+            let name = format!("'{}'", inputs[column.column].name());
+            if !columns.contains(&name) {
+                columns.push(name);
+            }
+        }
+        let reads = match columns.len() {
+            1 => format!("column {}", columns[0]),
+            _ => format!("columns {}", columns.join(", ")),
+        };
+        if self.graph.is_single_output() {
+            let sink = self
+                .graph
+                .outputs
+                .values()
+                .next()
+                .map(|out| out.sink.name());
+            return format!("{reads} to the {} sink", sink.unwrap_or("?"));
+        }
+        let mut outputs: Vec<String> = self
+            .graph
+            .outputs
+            .iter()
+            .map(|(alias, out)| format!("'{alias}' ({})", out.sink.name()))
+            .collect();
+        outputs.sort();
+        let noun = if outputs.len() == 1 {
+            "output"
+        } else {
+            "outputs"
+        };
+        format!("{reads} to {noun} {}", outputs.join(", "))
+    }
+
     /// Execute the graph on input series.
     ///
     /// Returns:
@@ -113,10 +157,13 @@ impl CompiledGraph {
                 self.execute_rows(&state, rows, range_idx, &plan_cache, &first_failure)
             }))
             .map_err(|payload| {
-                polars_err!(ComputeError : "Pipeline batch failed: {}",
-                    panic_message(payload.as_ref()))
+                polars_err!(ComputeError : "Pipeline batch failed ({}): {}",
+                    self.described(inputs), panic_message(payload.as_ref()))
             })?
-            .map_err(|msg| polars_err!(ComputeError : "Pipeline execution failed: {}", msg))
+            .map_err(|msg| {
+                polars_err!(ComputeError : "Pipeline execution failed ({}): {}",
+                    self.described(inputs), msg)
+            })
         };
         // Held until the columns are built: filling them splits the same way.
         let split = crate::row_split::split();

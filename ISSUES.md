@@ -50,10 +50,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-139 | Review 2026-11 | Decision | `decode_max_size` at scale 1/2 decodes no faster than the full decoder (0.85x to 1.08x); falling through there would return the full size instead of half |
 | CR-140 | Review 2026-11 | Feature | No Windows wheel; Python 3.14 untested |
 | CR-141 | Review 2026-11 | Decision | A stability policy: what the stable surface is, and how it deprecates |
-| CR-142 | Review 2026-11 | Low | `sink()` is hand-written with `**kwargs` while `source()` is generated from the same catalogue |
-| CR-143 | Review 2026-11 | Low | User-facing messages leak a Rust `Debug` value, a JSON position and an internal node id |
-| CR-144 | Review 2026-11 | Low | Docs: no sink-choice or augmentation guide; `AGENTS.md` principle 6 and the quickstart have drifted |
-| CR-145 | Review 2026-11 | Low | `image`'s default features compile an AVIF encoder (`ravif`, `rav1e`) no sink reaches |
 | CR-146 | Review 2026-11 | Low | The crop pushdown stops at neighbourhood ops (`blur` then `crop` filters the whole image) |
 | CR-147 | Review 2026-11 | Feature | `.bbox` has two accessors |
 | CR-148 | Review 2026-11 | Low | No text `explain()` on `LazyPipelineExpr`/`PipelineGraph`; engine-level passes are invisible |
@@ -406,7 +402,7 @@ phase, and is not repeated here:
 - [`plans/review-2026-11/phase-1-first-contact.md`](plans/review-2026-11/phase-1-first-contact.md):
   CR-136, CR-139, CR-138, CR-137, CR-140, in that order.
 - [`plans/review-2026-11/phase-2-stabilise.md`](plans/review-2026-11/phase-2-stabilise.md):
-  CR-145, CR-143, CR-142, CR-144, then CR-141.
+  CR-141, a decision. CR-142 to CR-145 are closed.
 - [`plans/review-2026-11/phase-3-depth.md`](plans/review-2026-11/phase-3-depth.md):
   CR-148, CR-149 (with CR-79), CR-147, CR-146, and CR-118 if decided.
 
@@ -415,7 +411,9 @@ Delete a plan's section when its item closes, and the file when it is empty.
 CR-136, CR-137 and CR-138 are closed and CR-139's scale-1 half is fixed
 (below, and the CHANGELOG); each went in with its tests, watched failing
 first, so none was pinned in `test_known_gaps.py`. What is left of CR-139 is a decision,
-with its measurement in the phase 1 plan.
+with its measurement in the phase 1 plan. Of phase 2, CR-142 to CR-145 are
+closed the same way, and the plan records what the implementation found it
+had wrong; CR-141 is a decision.
 
 Changed or dropped on the second check:
 
@@ -424,9 +422,8 @@ Changed or dropped on the second check:
   as the opt-in and the `image_info()` field; the default stays `"stored"`
   (decided 2026-11-11).
 - **A faster JPEG encoder: withdrawn, no entry.** Decided 2026-09-28 (below).
-- **"Trimming `image` removes an ignored advisory": unproven.** The trim
-  builds and drops `ravif`/`rav1e` from compilation, but `Cargo.lock` is
-  unchanged; check what `cargo deny` reports before touching `deny.toml`.
+- **"Trimming `image` removes an ignored advisory": it removed two**, though
+  not the way the review said. See CR-145 under Closed findings.
 - **CSE in Rust** is CR-118, already a decision here; no second entry.
 
 ## Extension types
@@ -665,6 +662,10 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-145 | `image`'s default features compiled an AVIF encoder (`ravif`, `rav1e`) no sink reaches | Fixed (unreleased): one `[workspace.dependencies]` entry names the formats, and both crates take it (the plugin crate also declared `image` with defaults, so trimming view-buffer's alone changed nothing: features unify). `avif` is gone, and `tga`, which was compiled and unreachable (no signature, and every decode detects the format from the bytes). `rayon` stays on (one 2048x2048 EXR decodes about 50% slower without it), and its weak feature keeps the uncompiled `ravif` tree in `Cargo.lock`, re-resolved to versions without `core2` and `paste`, so two `deny.toml` ignores are dropped. Every format that decoded still does; DDS, ICO, QOI, farbfeld, PNM, HDR and EXR are now documented and tested (`test_decode_formats.py`: a committed file per feature; the manifest, the files and the docs table compared as sets; watched failing with `qoi` removed). `.so` at `--profile benchmark`: 62.6 MB to 58.9 MB (the fat-LTO release wheel was not measured) |
+| CR-144 | Docs: no sink-choice or augmentation guide; `AGENTS.md` principle 6 and the quickstart had drifted | Fixed (unreleased): `docs/user-guide/augmentation.md` and "Choosing a sink" in the pipelines guide, each quoting marked sections of an example the suite runs (`examples/14_augmentation.py`, `15_choosing_a_sink.py`; `test_every_section_a_guide_quotes_is_in_its_example`); a troubleshooting section in the quickstart; principle 6 and the diagram say Python appends and Rust plans. `benchmarks/README.md` is CR-149 |
+| CR-142 | `sink()` was hand-written with `**kwargs` while `source()` is generated from the same catalogue | Fixed (unreleased): `scripts/gen_ops.py` writes `sink()` (a typed keyword per field, `None` the format's default), the `Sink.<format>` constructors and `SINK_FIELDS`; `_graph.as_sink` is the one reading of what an output may be written as. The `(format, {params})` tuple warns for one release (`test_sink_signature.py`, watched failing against a catalogue field the generator had not seen; `ty` refuses a wrong keyword or type where the `LazyPipelineExpr` type is known, which `pl.col(...).cv` does not give it) |
+| CR-143 | User-facing messages leaked a Rust `Debug` value, a JSON position and an internal node id | Fixed (unreleased): codec errors print with `Display`; `wire::from_str` is the one parser of builder JSON and drops `serde_json`'s position (clippy refuses `serde_json::from_str` elsewhere); a sourceless pipeline is refused where it meets its column (`LazyPipelineExpr.__init__`); a null parameter names both remedies; a failing pipeline is named by its column and sink. `test_message_hygiene.py`: a table of deliberate failures, the checker's fixtures the three shipped messages, watched failing against both Rust fixes reverted. Not done: the output name polars gives a result is applied outside the plugin, so it cannot be reported; `LazyPipelineExpr` used as an expression is polars' `TypeError` (polars 2.1 consults no protocol on an unknown object), documented in the quickstart |
 | CR-137 | EXIF orientation could be neither applied nor seen | Added (unreleased): `source(orientation="stored"\|"exif")` on the image sources, default `"stored"` (owner's decision, 2026-11-11: the default does not change), applied after either decoder as flips and a transpose (views); `image_info().orientation`. One reader, `ImageAdapter::orientation`, for decode and header (`test_exif_orientation.py`: all eight tags against `PIL.ImageOps.exif_transpose` for JPEG, PNG, WebP, TIFF). Limit: a PNG whose `eXIf` chunk follows its image data reads as untagged (the `image` crate reads metadata up to the first `IDAT`) |
 | CR-138 | `numpy`/`ndarray`/`torch` sink output could not be read back by any source | Fixed (unreleased): `source("tensor")`, which `auto` routes the sinks' struct to (the whole schema, `output::numpy_output_dtype`), reads each row at its own strides; a `float16` row reads as f32. The row's layout is untrusted: `ViewBuffer::from_polars_buffer_strided` is the only constructor and refuses a view outside its data (`tests/it/tensor_view.rs`, an exhaustive sweep, both bounds watched failing; `test_tensor_source.py`). Dtype is `auto` and rank unknown at planning unless declared (CR-82's question, not answered here) |
 | CR-136 | Scalar constants were `f32` on f64-accumulator data (`Float64`, 32/64-bit integers): wrong from the eighth digit, and past 2^24 | Fixed (unreleased): `ScalarOp` constants and the wire fields of `scale`, `clamp`, `clamp_min`/`max`, `add_constant`/`subtract_constant`, `adjust_contrast`, `adjust_gamma`, the `convolve2d` coefficients and the pad fill values are f64; the f32 passes narrow at use, so f32 and 8/16-bit output is unchanged; `F64Step` is gone (`tests/reference/test_scalar_f64_ref.py`). Left f32 by contract: the normalize family (computes in f32 for every input), `blur(sigma)`, `canny` thresholds, `rotate(angle)`, `resize_scale`. Of those, `sigma` shapes an f64 kernel on f64 data from an f32 value (weights off by ~1e-8 relative): not converted |

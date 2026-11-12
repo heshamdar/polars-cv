@@ -129,12 +129,12 @@ def _flat_list(value: Any) -> list[float]:
 
 def _refusal(error: Exception) -> str:
     """A refusal in the step's own words: without the pipeline's wrapping
-    (``Pipeline execution failed:``, ``Op resolution error:``), the
+    (``Pipeline execution failed (...):``, ``Op resolution error:``), the
     accessor's `` (row n)`` and polars' expression trace."""
     message = str(error).split("\n\nThis error occurred")[0]
     message = message.replace("the plugin failed with message: ", "")
-    for wrapper in ("Pipeline execution failed: ", "Op resolution error: "):
-        message = message.replace(wrapper, "")
+    message = re.sub(r"Pipeline execution failed \(.*?\): ", "", message)
+    message = message.replace("Op resolution error: ", "")
     message = re.sub(r" \(row \d+\)$", "", message)
     return f"{type(error).__name__}: {message}"
 

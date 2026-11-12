@@ -190,19 +190,26 @@ result = df.with_columns(
 
 Keyword arguments to `sink()` apply to every output, and a parameter that does
 not apply to an output's format is refused. To give one output its own
-parameters, write it as `(format, {params})`:
+parameters, write its sink as a `Sink`, which has one constructor per format
+taking that format's parameters:
 
 ```python
+from polars_cv import Sink
+
 result = df.with_columns(
     outputs=merged.sink({
-        "x": ("array", {"shape": [224, 224, 3]}),  # array needs its shape
-        "thumb": ("jpeg", {"quality": 85}),        # jpeg takes a quality
+        "x": Sink.array(shape=[224, 224, 3]),  # array needs its shape
+        "thumb": Sink.jpeg(quality=85),        # jpeg takes a quality
     })
 )
 ```
 
-Naming a parameter both in an output's own params and as a shared keyword is
-refused rather than resolved by precedence.
+A `Sink` is accepted wherever a format name is, so `sink(Sink.jpeg(quality=85))`
+is `sink("jpeg", quality=85)`. Naming a parameter both on an output's own
+`Sink` and as a shared keyword is refused rather than resolved by precedence.
+
+The older `(format, {params})` tuple, `("jpeg", {"quality": 85})`, still works
+in this release and warns; it is removed in the next.
 
 ## Multi-Source Multi-Output
 

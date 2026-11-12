@@ -2443,9 +2443,34 @@
     "None"
    ],
    [
-    "kwargs",
-    "VAR_KEYWORD",
-    ""
+    "compact",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "dtype",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "names",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "quality",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "shape",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "where",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "smooth": [

@@ -257,7 +257,7 @@ impl State {
 /// Unpickle a [`State`] (see `State::__reduce__`).
 #[pyfunction]
 pub(crate) fn _plan_state_from_json(wire: &str) -> PyResult<State> {
-    serde_json::from_str(wire).map_err(|e| py_value_error(e.to_string()))
+    crate::wire::from_str(wire).map_err(py_value_error)
 }
 
 /// The keyword names `assert_shape` gives dimensions 0, 1 and 2.
@@ -814,7 +814,7 @@ impl Plan {
             open: bool,
             ops: Vec<WireOp>,
         }
-        let plan: WirePlan = serde_json::from_str(wire).map_err(|e| e.to_string())?;
+        let plan: WirePlan = crate::wire::from_str(wire)?;
         if plan.open && (plan.source.is_some() || !plan.ops.is_empty()) {
             return Err("only an empty, sourceless plan is open".into());
         }
@@ -966,7 +966,7 @@ pub(crate) fn wire<T: serde::Serialize>(value: &T) -> serde_json::Value {
 }
 
 fn parse_op(op_json: &str) -> PyResult<crate::catalog::TypedOp> {
-    serde_json::from_str(op_json).map_err(|e| py_value_error(e.to_string()))
+    crate::wire::from_str(op_json).map_err(py_value_error)
 }
 
 #[pymethods]
@@ -1003,7 +1003,7 @@ impl Plan {
     /// source starts them in.
     fn with_source(&self, source_json: &str) -> PyResult<Plan> {
         let source: crate::formats::source::Source =
-            serde_json::from_str(source_json).map_err(|e| py_value_error(e.to_string()))?;
+            crate::wire::from_str(source_json).map_err(py_value_error)?;
         let start = source_state(&source);
         let ops = self.ops.iter().map(|p| (p.op.clone(), p.refs.clone()));
         Plan::replanned(Some(source), start, ops).map_err(py_value_error)
@@ -1148,7 +1148,7 @@ impl Plan {
                 .map(|(k, v)| {
                     (
                         k.clone(),
-                        serde_json::from_str(&v._wire()).expect("wire state"),
+                        crate::wire::from_str(&v._wire()).expect("wire state"),
                     )
                 })
                 .collect::<serde_json::Map<_, _>>()
@@ -1156,7 +1156,7 @@ impl Plan {
         };
         let wire = serde_json::json!({
             "source": plan.source,
-            "start": serde_json::from_str::<serde_json::Value>(&plan.start._wire()).expect("wire state"),
+            "start": crate::wire::from_str::<serde_json::Value>(&plan.start._wire()).expect("wire state"),
             "open": plan.open,
             "ops": plan.ops.iter().map(|p| serde_json::json!({"op": p.op, "refs": refs(&p.refs)})).collect::<Vec<_>>(),
         });
@@ -1288,8 +1288,8 @@ mod tests {
         );
         let wire = json!({
             "source": null,
-            "start": serde_json::from_str::<serde_json::Value>(&plan.start._wire()).unwrap(),
-            "ops": [{"op": serde_json::from_str::<serde_json::Value>(&plan.ops_json()[0]).unwrap(), "refs": {}}],
+            "start": crate::wire::from_str::<serde_json::Value>(&plan.start._wire()).unwrap(),
+            "ops": [{"op": crate::wire::from_str::<serde_json::Value>(&plan.ops_json()[0]).unwrap(), "refs": {}}],
         });
         let back = Plan::from_wire(&wire.to_string()).unwrap();
         assert_eq!(back.states(), plan.states());
@@ -1339,7 +1339,7 @@ mod tests {
     fn an_empty_unsourced_plan_survives_its_pickle_wire_still_open() {
         let wire = json!({
             "source": null,
-            "start": serde_json::from_str::<serde_json::Value>(&State::unsourced()._wire()).unwrap(),
+            "start": crate::wire::from_str::<serde_json::Value>(&State::unsourced()._wire()).unwrap(),
             "open": true,
             "ops": [],
         });

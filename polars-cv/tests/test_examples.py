@@ -15,6 +15,7 @@ made of. It runs in the same scheduled lane as the out-of-core tests.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,7 +23,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from ._discovery import _NON_SCRIPT_EXAMPLES, example_files, example_scripts
+from ._discovery import (
+    _NON_SCRIPT_EXAMPLES,
+    doc_pages,
+    example_files,
+    example_scripts,
+)
 from .conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -128,3 +134,33 @@ def test_every_example_is_either_run_or_exempted() -> None:
         f"with a reason."
     )
     assert swept, "example_scripts() found nothing; the sweep is checking nothing"
+
+
+_QUOTE = re.compile(r'--8<-- "examples/([\w.]+):(\w+)"')
+
+
+def test_every_section_a_guide_quotes_is_in_its_example() -> None:
+    """A guide's code is a marked section of an example, not a copy of it.
+
+    ``docs/user-guide/augmentation.md`` and "Choosing a sink" quote
+    ``examples/14_augmentation.py`` and ``15_choosing_a_sink.py`` with
+    ``--8<-- "examples/<file>:<section>"``, so the runner above is what keeps
+    the guide's code working. ``mkdocs build --strict`` fails on a missing
+    file but renders a missing *section* as an empty block, so a renamed
+    marker is checked here.
+    """
+    by_name = {p.name: p.read_text() for p in example_files()}
+    quoted = [
+        (page.name, *hit)
+        for page in doc_pages()
+        for hit in _QUOTE.findall(page.read_text())
+    ]
+    assert quoted, "no guide quotes an example: the pattern is stale"
+    missing = [
+        (page, name, section)
+        for page, name, section in quoted
+        if name not in by_name
+        or f"--8<-- [start:{section}]" not in by_name[name]
+        or f"--8<-- [end:{section}]" not in by_name[name]
+    ]
+    assert not missing, f"guides quote sections that do not exist: {missing}"

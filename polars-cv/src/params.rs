@@ -131,7 +131,11 @@ impl<'a> ParamCol<'a> {
             ctx.flag_null();
         }
         polars_err!(ComputeError:
-            "Parameter column '{}' has a null value", self.series.name()
+            "Parameter column '{}' has a null value. Give the row a value \
+             (`.fill_null(...)` on the column), or null its result instead of \
+             failing: `Pipeline.on_null_param(\"null\")`, or `.on_null(\"null\")` \
+             on a geometry accessor",
+            self.series.name()
         )
     }
 

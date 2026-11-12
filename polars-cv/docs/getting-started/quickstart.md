@@ -28,8 +28,8 @@ result = df.with_columns(
 )
 ```
 
-Naming the source format is optional: `source()` defaults to `"auto"`, which
-infers the decode path from the column's dtype (see
+The `source()` call is required; its argument is not. `source()` defaults to
+`"auto"`, which infers the decode path from the column's dtype (see
 [Sources](../user-guide/concepts/sources.md#the-auto-source-default)). The
 examples below spell it out to show which kind of input they expect.
 
@@ -180,6 +180,39 @@ pipe = (
 
 result = df.with_columns(values=pl.col("image").cv.pipe(pipe).sink("list"))
 ```
+
+## Troubleshooting
+
+**`cannot create expression literal for value of type LazyPipelineExpr`.**
+The pipeline was never finished. `.cv.pipe(...)` returns a pipeline still
+being built, not a Polars expression, and Polars does not know what to do
+with one. End it with `.sink(...)`:
+
+```python
+df.with_columns(out=pl.col("image").cv.pipe(pipe))                 # TypeError
+df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("numpy"))   # an expression
+```
+
+**`this pipeline has no source ...`.** A pipeline applied to a column has to
+say how to decode it, so it starts with `.source()`:
+
+```python
+pl.col("image").cv.pipe(Pipeline().resize(height=224, width=224))           # ValueError
+pl.col("image").cv.pipe(Pipeline().source().resize(height=224, width=224))  # decodes
+```
+
+A pipeline with no source is what continues another one:
+`pl.col("image").cv.pipe(base).pipe(Pipeline().grayscale())`.
+
+**`Parameter column 'h' has a null value`.** A per-row parameter read a null.
+Give the row a value (`pl.col("h").fill_null(224)`), or have the row's result
+be null instead of failing the query: `pipe.on_null_param("null")`. See
+[Parameters & Errors](../user-guide/concepts/parameters.md).
+
+**`Failed to decode image ...`.** The row is not an image in one of the
+[formats a source decodes](../user-guide/concepts/sources.md#image-formats),
+or the file is cut short. The message names the column and the row within its
+batch. `source(on_error="null")` nulls such rows instead of failing.
 
 ## Next Steps
 

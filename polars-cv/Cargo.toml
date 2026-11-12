@@ -91,8 +91,8 @@ rayon = "1.11"
 # stderr: anything that allocates would re-enter it again (`allocator.rs`).
 libc = "0.2"
 
-# Image encoding support
-image = "0.25"
+# Image codecs: the workspace entry names the formats (root `Cargo.toml`).
+image = { workspace = true }
 
 # Serialization. `float_roundtrip`: a literal f64 in the graph JSON parses to
 # the nearest f64, so it equals the same value read from a column

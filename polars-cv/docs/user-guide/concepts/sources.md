@@ -45,6 +45,32 @@ Both `image_bytes` and `file_path` decode images with automatic format and dtype
 
 Decoded images are treated as 3D buffers (`[H, W, C]`).
 
+### Image formats
+
+The format is detected from the bytes, never from a file name. These are the
+formats the build decodes, each named by the feature of the Rust `image` crate
+that reads it; anything else is a decode error (a row error under `on_error`).
+
+| Format | `image` feature | Decodes to |
+|--------|-----------------|------------|
+| PNG | `png` | `u8` or `u16`; grey, grey+alpha, RGB or RGBA |
+| JPEG | `jpeg` | `u8`; grey or RGB |
+| WebP | `webp` | `u8`; RGB or RGBA |
+| TIFF | `tiff` | `u8`, `u16`, `f32` or `f64` |
+| BMP | `bmp` | `u8`; RGB or RGBA |
+| GIF | `gif` | `u8` RGBA; the first frame |
+| PNM (PBM, PGM, PPM, PAM) | `pnm` | `u8` or `u16`; grey or RGB |
+| QOI | `qoi` | `u8`; RGB or RGBA |
+| ICO | `ico` | `u8` RGBA; the largest icon |
+| DDS | `dds` | `u8` RGBA; DXT1, DXT3 and DXT5 only |
+| farbfeld | `ff` | `u16` RGBA |
+| Radiance HDR | `hdr` | `f32` RGB |
+| OpenEXR | `exr` | `f32`; RGB or RGBA |
+
+AVIF, HEIC and JPEG 2000 are not decoded, and neither is Truevision TGA,
+which has no signature to detect. The encoders are the four image sinks:
+`png`, `jpeg`, `webp` and `tiff`.
+
 ```python
 from polars_cv import Pipeline
 

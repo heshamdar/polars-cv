@@ -71,7 +71,7 @@ is computed per row from each image's header.
 from pathlib import Path
 
 import polars as pl
-from polars_cv import Pipeline
+from polars_cv import Pipeline, Sink
 
 df = pl.DataFrame({"path": sorted(str(p) for p in Path("photos").glob("*.jpg"))})
 df = df.with_columns(pl.col("path").cv.image_info(allowed_roots=["photos"]).struct.unnest())  # header only
@@ -90,8 +90,8 @@ thumb = img.pipe(Pipeline().resize_max(128)).alias("thumb")
 
 out = df.with_columns(
     o=x.merge_pipe(thumb).sink({
-        "x": ("array", {"shape": [224, 224, 3]}),
-        "thumb": ("jpeg", {"quality": 85}),
+        "x": Sink.array(shape=[224, 224, 3]),
+        "thumb": Sink.jpeg(quality=85),
     })
 ).unnest("o")
 batch = out["x"].to_numpy()  # (n_images, 224, 224, 3) uint8

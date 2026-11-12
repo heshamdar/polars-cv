@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import TYPE_CHECKING, Any, Literal, overload
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -89,11 +90,21 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             alias: Optional user-defined name for this node (for multi-output).
 
         Raises:
-            ValueError: If the node reads both a column and a node, or neither.
+            ValueError: If the node reads both a column and a node, or neither,
+                or reads a column through a pipeline that has no source.
         """
         if (column is None) == (input is None):
             msg = (
                 "a pipeline node reads a column or another node: exactly one of the two"
+            )
+            raise ValueError(msg)
+        if column is not None and not pipeline._plan.has_source:
+            # Here, where a root is made, rather than at `.sink()`, where the
+            # graph could only name the node by an id the user never chose.
+            msg = (
+                "this pipeline has no source, and a pipeline applied to a "
+                "column decodes it: start it with `.source()`, as in "
+                'Pipeline().source("image_bytes")'
             )
             raise ValueError(msg)
         self._column = column
@@ -202,76 +213,17 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
     # --- Sink (materializes to pl.Expr) ---
 
-    @overload
-    def sink(
+    def _sink(
         self,
-        format: str | dict[str, str | tuple[str, dict[str, Any]]] = ...,
-        return_expr: Literal[True] = ...,
-        opt_flags: OptFlags | bool | None = ...,
-        **kwargs: Any,
-    ) -> pl.Expr: ...
-
-    @overload
-    def sink(
-        self,
-        format: str | dict[str, str | tuple[str, dict[str, Any]]] = ...,
-        *,
-        return_expr: Literal[False],
-        opt_flags: OptFlags | bool | None = ...,
-        **kwargs: Any,
-    ) -> PipelineGraph: ...
-
-    def sink(
-        self,
-        format: str | dict[str, str | tuple[str, dict[str, Any]]] = "native",
-        return_expr: bool = True,
-        opt_flags: "OptFlags | bool | None" = None,
-        **kwargs: Any,
+        format: Any,
+        values: dict[str, Any],
+        return_expr: bool,
+        opt_flags: "OptFlags | bool | None",
     ) -> "pl.Expr | PipelineGraph":
-        """
-        Finalize the pipeline graph and return a Polars expression.
-
-        Args:
-            format: Output format string (e.g., "numpy", "png") or a dict
-                    mapping aliases to formats for multi-output. A dict value
-                    may be ``(format, {params})`` to give that output its own
-                    sink parameters, e.g. ``{"x": ("array", {"shape": [224,
-                    224, 3]}), "thumb": ("jpeg", {"quality": 85})}``. ``"ndarray"``
-                    is the ``"numpy"`` struct tagged with the
-                    ``polars_cv.ndarray`` extension type
-                    (:class:`polars_cv.NdArrayType`).
-            return_expr: If True (default), return a pl.Expr. If False, return the PipelineGraph.
-            opt_flags: Which plan-time optimizations to apply. ``None`` (default)
-                    reads the ``POLARS_CV_OPTIMIZATIONS`` env var, falling back
-                    to all-on; ``True``/``False`` are all/none shorthands; an
-                    :class:`polars_cv.OptFlags` selects passes individually.
-                    Every pass is output-preserving, so this only changes the
-                    physical graph — see :mod:`polars_cv._optimize`.
-            kwargs: Parameters for the sink. ``quality`` for the jpeg sink
-                    (the other encoders take none); ``shape`` for the array
-                    sink; ``dtype="f16"`` for the numpy/torch/ndarray sink to downcast
-                    the output tensor to half precision at the encode boundary
-                    (halving the tensor bytes and H2D transfer). ``dtype`` only
-                    accepts half precision, as ``"f16"`` or ``"float16"`` —
-                    cast inside the pipeline for other
-                    dtypes. ``compact=True`` for the numpy/torch/ndarray sink
-                    makes each row's ``data`` exactly its elements, row-major,
-                    at offset 0, instead of the storage a view reads from
-                    (zero-copy, but written whole by Parquet/IPC); it copies
-                    only a row that is not already compact. ``names=[...]``
-                    (one per channel) and ``where="<name>"`` for the long
-                    sink, which gives ``List[Struct{row, col, <names>...}]``,
-                    one struct per pixel kept (``where``'s channel > 0, and
-                    left out). A keyword that does not apply to the chosen format
-                    is rejected rather than ignored, as is one that is not a
-                    sink parameter at all. With a dict ``format`` these
-                    apply to every output; naming one both here and in an
-                    output's own params is refused.
-
-        Returns:
-            A Polars expression (or PipelineGraph if return_expr=False).
-        """
-        from polars_cv._graph import PipelineGraph
+        """Build, optimize and check the graph ``sink()`` asks for: the one
+        thing the generated ``sink()`` calls. *values* are its sink keywords
+        (``None`` for one not given)."""
+        from polars_cv._graph import PipelineGraph, as_sink
 
         # Collect all nodes in topological order
         all_nodes = self._collect_dependency_graph()
@@ -289,11 +241,14 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         for alias, node_id in self._aliases():
             graph.add_alias(alias, node_id)
 
-        if isinstance(format, dict):
-            # Multi-output: the shared kwargs apply to every alias's sink.
-            graph.set_multi_output(format, **kwargs)
+        # The keywords given: on a dict they apply to every output's sink.
+        shared = {name: value for name, value in values.items() if value is not None}
+        if isinstance(format, Mapping):
+            graph.set_multi_output(
+                {alias: as_sink(spec, shared, alias) for alias, spec in format.items()}
+            )
         else:
-            graph.set_output(self._node_id, format, **kwargs)
+            graph.set_output(self._node_id, as_sink(format, shared))
 
         # The explicit optimization phase: rewrite the logical graph into its
         # physical form before serialization. Both return paths see the same

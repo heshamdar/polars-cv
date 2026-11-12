@@ -362,20 +362,212 @@ def _required(ty: dict[str, Any]) -> dict[str, Any]:
     return ty["inner"] if ty["kind"] == "optional" else ty
 
 
-def source_fields(io: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Each ``source()`` keyword's type: the union of the formats' fields.
+def format_fields(
+    formats: list[dict[str, Any]], kind: str
+) -> dict[str, dict[str, Any]]:
+    """Each ``source()`` or ``sink()`` keyword's type (*kind* names which):
+    the union of the formats' fields.
 
     A keyword is one field name across formats, so the formats declaring it
-    must agree on its type (bar being optional in some).
+    must agree on its type (bar being optional in some): one flat signature
+    has one annotation per keyword, and a second type is refused here.
     """
     types: dict[str, dict[str, Any]] = {}
-    for fmt in io["sources"]:
+    for fmt in formats:
         for field in fmt["fields"]:
             ty = _required(field["type"])
             if types.setdefault(field["name"], ty) != ty:
-                msg = f"source field {field['name']!r} has two types across formats"
+                msg = f"{kind} field {field['name']!r} has two types across formats"
                 raise ValueError(msg)
     return dict(sorted(types.items()))
+
+
+def source_fields(io: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each ``source()`` keyword's type."""
+    return format_fields(io["sources"], "source")
+
+
+def _keyword_docs(formats: list[dict[str, Any]]) -> dict[str, str]:
+    """Each keyword's ``Args:`` text: the formats that take it, with each
+    format's own doc for it (formats sharing a doc are named together)."""
+    by_doc: dict[str, dict[str, list[str]]] = {}
+    for fmt in formats:
+        for field in fmt["fields"]:
+            doc = " ".join(field["doc"].split())
+            by_doc.setdefault(field["name"], {}).setdefault(doc, []).append(fmt["name"])
+    return {
+        name: " ".join(
+            f"{', '.join(f'``{n}``' for n in names)}: {doc}"
+            for doc, names in docs.items()
+        )
+        for name, docs in by_doc.items()
+    }
+
+
+#: What ``sink()`` says before its generated ``Args:``.
+_SINK_DOC = """\
+Finalize the pipeline graph and return a Polars expression.
+
+Every keyword after ``opt_flags`` is a sink parameter, generated from the
+typed sinks: ``None`` means the chosen format's own default. One that does
+not apply to the chosen format is refused, naming the formats it applies to.
+
+Returns:
+    A Polars expression, or the ``PipelineGraph`` if ``return_expr=False``."""
+
+#: ``sink()``'s parameters that are not a sink's fields: (name, annotation,
+#: default, doc). They keep their positions: ``sink("png", False)`` binds.
+_SINK_OWN = (
+    (
+        "return_expr",
+        "bool",
+        "True",
+        "If True (default), return a ``pl.Expr``; if False, the ``PipelineGraph``.",
+    ),
+    (
+        "opt_flags",
+        "OptFlags | bool | None",
+        "None",
+        "Which plan-time optimizations to apply. ``None`` (default) reads the "
+        "``POLARS_CV_OPTIMIZATIONS`` env var, falling back to all-on; "
+        "``True``/``False`` are all/none shorthands; an :class:`polars_cv.OptFlags` "
+        "selects passes individually. Every pass is output-preserving, so this "
+        "only changes the physical graph (:mod:`polars_cv._optimize`).",
+    ),
+)
+
+#: What ``sink()`` takes as its format.
+_SINK_SPEC = "SinkFormat | str | Sink"
+_SINK_ARG = f"{_SINK_SPEC} | Mapping[str, {_SINK_SPEC} | tuple[str, dict[str, Any]]]"
+
+
+def sink_method(io: dict[str, Any]) -> str:
+    """Render ``LazyPipelineExpr.sink()``: its two overloads (an expression,
+    or the graph under ``return_expr=False``) and the method, every typed
+    sink field keyword-only with ``None`` meaning the format's own default.
+
+    The body hands the values to the hand-written ``_sink``, which builds
+    and checks the graph.
+    """
+    sinks = io["sinks"]
+    fields = format_fields(sinks, "sink")
+    docs = _keyword_docs(sinks)
+    formats = " ".join(f"``{f['name']}``: {' '.join(f['doc'].split())}" for f in sinks)
+    desc = {
+        "doc": _SINK_DOC,
+        "fields": [
+            {
+                "name": "format",
+                "doc": "The output format: a name, a :class:`polars_cv.SinkFormat` "
+                "or a :class:`polars_cv.Sink` (a format with its parameters, "
+                "``Sink.jpeg(quality=85)``); or, for several outputs, a dict "
+                "from each alias to one of those, the result being a struct "
+                "with a field per alias. The keywords given here then apply "
+                "to every output, and one given both here and on an output's "
+                f"own ``Sink`` is refused. {formats}",
+            },
+            *({"name": name, "doc": doc} for name, _, _, doc in _SINK_OWN),
+            *({"name": name, "doc": docs[name]} for name in fields),
+        ],
+    }
+    keywords = [
+        f"{name}: {annotation(ty)} | None = None" for name, ty in fields.items()
+    ]
+
+    def signature(return_expr: str, opt_flags: str, *, star_first: bool) -> str:
+        own = [
+            f"return_expr: {return_expr}",
+            f"opt_flags: OptFlags | bool | None {opt_flags}",
+        ]
+        head = ["self", f"format: {_SINK_ARG} = ..."]
+        if star_first:
+            return ", ".join(
+                [*head, "*", *own, *(k.replace("= None", "= ...") for k in keywords)]
+            )
+        return ", ".join(
+            [*head, *own, "*", *(k.replace("= None", "= ...") for k in keywords)]
+        )
+
+    values = ", ".join(f'"{name}": {name}' for name in fields)
+    doc = _indent(docstring(desc), "        ").lstrip()
+    own = ", ".join(f"{name}: {ty} = {default}" for name, ty, default, _ in _SINK_OWN)
+    return (
+        "    @overload\n"
+        f"    def sink({signature('Literal[True] = ...', '= ...', star_first=False)}) -> pl.Expr: ...\n\n"
+        "    @overload\n"
+        f"    def sink({signature('Literal[False]', '= ...', star_first=True)}) -> PipelineGraph: ...\n\n"
+        f"    def sink(self, format: {_SINK_ARG} = 'native', {own}, *, {', '.join(keywords)}) -> pl.Expr | PipelineGraph:\n"
+        f'        """{doc}\n        """\n'
+        f"        return self._sink(format, {{{values}}}, return_expr, opt_flags)\n"
+    )
+
+
+def sink_constructor(fmt: dict[str, Any]) -> str:
+    """Render ``Sink.<format>``: the format's own fields, keyword-only; one
+    the format requires is required, any other defaults to ``None`` (not
+    sent, so the format's own default applies)."""
+    params = ["cls"]
+    if fmt["fields"]:
+        params.append("*")
+    for field in fmt["fields"]:
+        ty = annotation(_required(field["type"]))
+        required = "default" not in field and field["type"]["kind"] != "optional"
+        params.append(
+            f"{field['name']}: {ty}"
+            if required
+            else f"{field['name']}: {ty} | None = None"
+        )
+    values = ", ".join(f'"{f["name"]}": {f["name"]}' for f in fmt["fields"])
+    doc = _indent(
+        docstring({"doc": fmt["doc"], "fields": fmt["fields"]}), "        "
+    ).lstrip()
+    return (
+        "    @classmethod\n"
+        f"    def {fmt['python']}({', '.join(params)}) -> Sink:\n"
+        f'        """{doc}\n        """\n'
+        f'        return cls("{fmt["name"]}", {{{values}}})\n'
+    )
+
+
+_SINK_CLASS = '''\
+class Sink:
+    """One output's sink: a format and the parameters given for it.
+
+    Accepted wherever ``sink()`` takes a format name, and as a value of its
+    multi-output dict, where each output takes parameters of its own::
+
+        expr.sink({"x": Sink.array(shape=[224, 224, 3]), "thumb": Sink.jpeg(quality=85)})
+
+    Build one with the constructor named after its format. A parameter left
+    out (``None``) is not sent, so the format's own default applies.
+    """
+
+    __slots__ = ("format", "params")
+
+    def __init__(self, format: str, params: Mapping[str, Any]) -> None:
+        self.format = format
+        self.params = {k: v for k, v in params.items() if v is not None}
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Sink) and (self.format, self.params) == (
+            other.format,
+            other.params,
+        )
+
+    __hash__ = None  # type: ignore[assignment]  # holds a dict
+
+    def __repr__(self) -> str:
+        args = ", ".join(f"{k}={v!r}" for k, v in self.params.items())
+        return f"Sink.{self.format}({args})"
+
+'''
+
+
+def sink_class(io: dict[str, Any]) -> str:
+    """The ``Sink`` value: one constructor per sink format."""
+    return _SINK_CLASS + "\n".join(
+        sink_constructor(fmt) for fmt in sorted(io["sinks"], key=lambda f: f["name"])
+    )
 
 
 def source_method(io: dict[str, Any]) -> str:
@@ -385,11 +577,7 @@ def source_method(io: dict[str, Any]) -> str:
     Each keyword's ``Args:`` entry says which formats take it, with each
     format's doc for it; the format argument lists every format's doc.
     """
-    by_doc: dict[str, dict[str, list[str]]] = {}
-    for fmt in io["sources"]:
-        for field in fmt["fields"]:
-            doc = " ".join(field["doc"].split())
-            by_doc.setdefault(field["name"], {}).setdefault(doc, []).append(fmt["name"])
+    docs = _keyword_docs(io["sources"])
     fields = source_fields(io)
     formats = " ".join(
         f"``{f['name']}``: {' '.join(f['doc'].split())}" for f in io["sources"]
@@ -398,16 +586,7 @@ def source_method(io: dict[str, Any]) -> str:
         "doc": io["source_doc"],
         "fields": [
             {"name": "format", "doc": f"How to decode the input column. {formats}"},
-            *(
-                {
-                    "name": name,
-                    "doc": " ".join(
-                        f"{', '.join(f'``{n}``' for n in names)}: {doc}"
-                        for doc, names in by_doc[name].items()
-                    ),
-                }
-                for name in fields
-            ),
+            *({"name": name, "doc": docs[name]} for name in fields),
         ],
     }
     params = [
@@ -489,15 +668,26 @@ def _imports(methods: str) -> str:
         if re.search(rf"\b{name}\b", methods)
     )
     lines = []
-    if "Sequence[" in methods:
-        lines.append("from collections.abc import Sequence")
+    abc = [name for name in ("Mapping", "Sequence") if f"{name}[" in methods]
+    if abc:
+        lines.append(f"from collections.abc import {', '.join(abc)}")
     lines.append("from dataclasses import dataclass")
     lines.append("from enum import Enum")
-    lines.append("from typing import TYPE_CHECKING, Any\n")
+    typing = ["TYPE_CHECKING", "Any"]
+    typing += [
+        name for name in ("Literal", "overload") if re.search(rf"\b{name}\b", methods)
+    ]
+    # isort's order: constants, then classes, then functions.
+    typing.sort(key=lambda n: (not n.isupper(), not n[0].isupper(), n))
+    lines.append(f"from typing import {', '.join(typing)}\n")
     # At run time: `This`'s properties build one.
     lines.append("from polars_cv._this import ThisExpr\n\nif TYPE_CHECKING:")
     if "pl.Expr" in methods:
         lines.append("    import polars as pl\n")
+    if "PipelineGraph" in methods:
+        lines.append("    from polars_cv._graph import PipelineGraph")
+    if "OptFlags" in methods:
+        lines.append("    from polars_cv._optimize import OptFlags")
     if aliases:
         lines.append(f"    from polars_cv._types import {', '.join(aliases)}")
     if "LazyPipelineExpr" in methods:
@@ -578,9 +768,14 @@ def render(
     methods = source_method(io) + "\n".join(
         method(op) for op in catalog if op["visibility"] != "lazy_only"
     )
-    lazy_methods = "\n".join(
-        lazy_method(op) for op in catalog if op["visibility"] == "lazy_only"
+    lazy_methods = (
+        sink_method(io)
+        + "\n"
+        + "\n".join(
+            lazy_method(op) for op in catalog if op["visibility"] == "lazy_only"
+        )
     )
+    sink_value = sink_class(io)
     geom_methods = geom_mixins(geom, catalog)
     # Every enum this module defines, by name: `__all__` is read from the same
     # list that writes the classes, which is what `_types` re-exports.
@@ -594,7 +789,9 @@ def render(
     (this_attrs,) = [e for e in enums if e["name"] == "ThisAttr"]
     (this_ops,) = [e for e in enums if e["name"] == "ThisOp"]
     text = (
-        _HEADER.format(imports=_imports(methods + lazy_methods + geom_methods))
+        _HEADER.format(
+            imports=_imports(methods + lazy_methods + geom_methods + sink_value)
+        )
         + "\n\n#: The generated enums, which ``_types`` re-exports.\n"
         + f"__all__ = {enum_names!r}\n"
         + "\n\n"
@@ -633,7 +830,18 @@ def render(
         + json.dumps({op["name"]: op["domains"] for op in catalog})
         + "\n\n"
         + "#: Each ``source()`` keyword's field type, across the formats.\n"
-        + f"SOURCE_FIELDS: dict[str, dict[str, Any]] = {json.dumps(source_fields(io))}\n\n\n"
+        + f"SOURCE_FIELDS: dict[str, dict[str, Any]] = {json.dumps(source_fields(io))}\n\n"
+        + "#: Each sink format's field types, as the catalogue describes them.\n"
+        + "SINK_FIELDS: dict[str, dict[str, Any]] = "
+        + json.dumps(
+            {
+                f["name"]: {x["name"]: x["type"] for x in f["fields"]}
+                for f in io["sinks"]
+            }
+        )
+        + "\n\n\n"
+        + sink_value
+        + "\n\n"
         + "class _OpsMixin:\n"
         + '    """The generated builder methods ``Pipeline`` inherits."""\n\n'
         + "    if TYPE_CHECKING:\n\n"
@@ -643,7 +851,10 @@ def render(
         + "\n\nclass _LazyOpsMixin:\n"
         + '    """The generated ``lazy_only`` op methods ``LazyPipelineExpr`` inherits."""\n\n'
         + "    if TYPE_CHECKING:\n\n"
-        + "        def _node_op(\n            self, op: str, values: dict[str, Any]\n        ) -> LazyPipelineExpr: ...\n\n"
+        + "        def _node_op(\n            self, op: str, values: dict[str, Any]\n        ) -> LazyPipelineExpr: ...\n"
+        + "        def _sink(\n            self,\n            format: Any,\n            values: dict[str, Any],\n"
+        + "            return_expr: bool,\n            opt_flags: OptFlags | bool | None,\n"
+        + "        ) -> pl.Expr | PipelineGraph: ...\n\n"
         + lazy_methods
         + "\n\n"
         + geom_methods

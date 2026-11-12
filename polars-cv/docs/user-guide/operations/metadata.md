@@ -25,8 +25,8 @@ result = df.with_columns(
 | `.cv.image_dtype()` | `String` | Element dtype name (e.g., `"uint8"`, `"float32"`) |
 | `.cv.image_info()` | `Struct` | All four, and the orientation tag, from one header read: `{width, height, channels, dtype, orientation}` |
 
-These methods work on binary columns containing encoded images (PNG, JPEG, TIFF,
-etc.) and on **path** columns. A local file is read only as far as its header
+These methods work on binary columns containing encoded images (every
+[format a source decodes](../concepts/sources.md#image-formats)) and on **path** columns. A local file is read only as far as its header
 needs (a JPEG's frame header may sit behind large EXIF or comment segments, so
 the read grows until it is found). A remote object is read the same way: its
 first 64 KiB (an HTTP `Range` / object-store ranged read), and the whole object

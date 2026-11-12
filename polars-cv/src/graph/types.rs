@@ -351,7 +351,7 @@ impl UnifiedGraph {
     pub fn from_json(json: &str) -> PolarsResult<Self> {
         // The version first, so an older graph is refused by its version
         // rather than by whichever of its fields the parser meets first.
-        let version = serde_json::from_str::<serde_json::Value>(json)
+        let version = crate::wire::from_str::<serde_json::Value>(json)
             .ok()
             .and_then(|graph| graph.get("version")?.as_u64());
         if let Some(v) = version {
@@ -363,7 +363,7 @@ impl UnifiedGraph {
                 );
             }
         }
-        let mut graph: Self = serde_json::from_str(json)
+        let mut graph: Self = crate::wire::from_str(json)
             .map_err(|e| polars_err!(ComputeError : "Failed to parse pipeline graph: {}", e))?;
         graph.check_references()?;
         graph.cached_order = graph.compute_topological_order()?;

@@ -10,4 +10,9 @@ disallowed-methods = [
     { path = "tokio::runtime::Runtime::new", reason = "use polars' ASYNC runtime (clippy.toml)" },
     { path = "tokio::runtime::Builder::new_multi_thread", reason = "use polars' ASYNC runtime (clippy.toml)" },
     { path = "tokio::runtime::Builder::new_current_thread", reason = "use polars' ASYNC runtime (clippy.toml)" },
+    # A serde_json parse error ends in `at line 1 column 203`: a position in
+    # JSON the Python builder wrote, which the user never sees. `wire::from_str`
+    # is the one parser, and returns the diagnosis without it
+    # (`tests/test_message_hygiene.py`).
+    { path = "serde_json::from_str", reason = "use crate::wire::from_str, whose errors carry no JSON position (clippy.toml)" },
 ]

@@ -41,7 +41,7 @@ i_overlay = { version = "4.5.1, < 4.6.0", default-features = false }
 
 # Image codecs, resize and perceptual hashing are unconditional: view-buffer
 # is unpublished and its one consumer always used them.
-image = { version = "0.25" }
+image = { workspace = true }
 tiff = { version = "0.10" }
 fast_image_resize = { version = "6.1" }
 image_hasher = { version = "3.0" }
