@@ -145,8 +145,9 @@ out = (
 )
 ```
 
-`expr.sink(..., return_expr=False).show_graph()` draws the graph that runs
-(it needs `polars-cv[viz]` and Graphviz's `dot`):
+`expr.explain({"cutout": "png", "area": "native"})` prints the graph that
+runs, with each op's planned dtype and shape; `expr.show_graph(...)` draws it
+(that needs `polars-cv[viz]` and Graphviz's `dot`):
 
 ![The optimised graph: one source node reads and resizes the image; one branch converts it to HSV and thresholds the saturation; a second node thresholds the brightness, takes the maximum with the saturation branch, cleans it up and traces the outline's hull; the hull feeds an area node and a rasterize node, whose alpha the photo's channels are merged with into the cutout.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/polars-cv/docs/assets/readme-cutout-graph.svg)
 

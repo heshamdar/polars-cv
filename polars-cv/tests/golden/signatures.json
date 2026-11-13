@@ -1192,6 +1192,13 @@
     "0.0"
    ]
   ],
+  "current_domain": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "densify": [
    [
     "self",
@@ -1301,6 +1308,28 @@
     "axis",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "explain": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "format",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "optimized",
+    "KEYWORD_ONLY",
+    "True"
+   ],
+   [
+    "opt_flags",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "extract_contours": [
@@ -1793,6 +1822,13 @@
    ],
    [
     "policy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "output_dtype": [
+   [
+    "self",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -2400,6 +2436,23 @@
     "output_size",
     "KEYWORD_ONLY",
     ""
+   ]
+  ],
+  "show_graph": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "format",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "opt_flags",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "sign": [

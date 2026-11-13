@@ -21,6 +21,7 @@ mod copy_census;
 
 pub(crate) mod decode;
 pub(crate) mod encode;
+pub(crate) mod explain;
 
 // Re-exports for crate-level access
 pub(crate) use compiled::{get_or_compile, resolved_output_specs};

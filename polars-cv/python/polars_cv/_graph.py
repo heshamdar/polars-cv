@@ -740,6 +740,25 @@ class PipelineGraph:
 
         check_graph(self._to_json())
 
+    def explain(self) -> str:
+        """The graph as the plugin will run it, as text.
+
+        Each node in execution order (``n0``, ``n1``, … as on the wire): what
+        it reads, then each op with the state the planner gives its result
+        (domain, dtype, shape with ``?`` where a size is not known until a
+        row runs). Ops marked ``|`` form one fused segment, which the engine
+        passes named on the last line rewrite as each row's layout is
+        planned. Then each output with its sink and planned Polars dtype.
+
+        Rendered by the plugin from the planning ``check()`` and the schema
+        use, so it cannot describe another graph. Needs no Graphviz (unlike
+        :meth:`show_graph`).
+        """
+        from polars_cv._lib import explain_graph
+
+        names = [str(expr) for expr in self._slot_table().columns]
+        return explain_graph(self._to_json(), names)
+
     def _wire_ids(self) -> dict[str, str]:
         """Each node's id on the wire, keyed by its build-time id.
 

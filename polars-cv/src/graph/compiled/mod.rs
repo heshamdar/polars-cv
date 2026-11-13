@@ -28,6 +28,6 @@ mod run;
 mod tests;
 
 pub(crate) use cache::get_or_compile;
-pub(crate) use compile::resolved_output_specs;
 #[cfg(test)]
 pub(crate) use compile::CompiledGraph;
+pub(crate) use compile::{planned_node_states, resolved_output_specs};

@@ -19,7 +19,10 @@ from polars_cv._lazy_forwarders import _LazyForwardersMixin
 from polars_cv._ops_generated import _LazyOpsMixin
 
 if TYPE_CHECKING:
+    import pydot
+
     from polars_cv._graph import PipelineGraph
+    from polars_cv._ops_generated import Sink, SinkFormat
     from polars_cv._optimize import OptFlags
     from polars_cv._types import FloatOrThisOrExpr
     from polars_cv.pipeline import Pipeline
@@ -266,6 +269,55 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
         # Return the graph
         return graph
+
+    # --- Inspection ---
+
+    def explain(
+        self,
+        format: "SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink]",
+        *,
+        optimized: bool = True,
+        opt_flags: "OptFlags | bool | None" = None,
+    ) -> str:
+        """The graph ``sink(format)`` would run, as text
+        (:meth:`PipelineGraph.explain`).
+
+        Args:
+            format: What :meth:`sink` takes: a format name, a ``Sink`` value
+                for one with settings (``Sink.jpeg(quality=70)``), or a dict
+                of aliases for several outputs.
+            optimized: When ``False``, the graph as written: no optimization
+                pass runs, logical or engine (as ``opt_flags=False``).
+            opt_flags: Which passes run when ``optimized``, as for
+                :meth:`sink`.
+
+        Returns:
+            One line per node, op and output; see
+            :meth:`PipelineGraph.explain`.
+        """
+        flags = opt_flags if optimized else False
+        return self.sink(format, return_expr=False, opt_flags=flags).explain()
+
+    def show_graph(
+        self,
+        format: "SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink]",
+        *,
+        opt_flags: "OptFlags | bool | None" = None,
+    ) -> "pydot.Dot":
+        """Draw the graph ``sink(format)`` would run
+        (:meth:`PipelineGraph.show_graph`; needs the ``viz`` extra and
+        Graphviz's ``dot``). :meth:`explain` gives the same graph as text."""
+        return self.sink(format, return_expr=False, opt_flags=opt_flags).show_graph()
+
+    def current_domain(self) -> str:
+        """This node's planned domain: ``"buffer"``, ``"contour"``,
+        ``"scalar"`` or ``"vector"``."""
+        return self._pipeline._state.domain
+
+    def output_dtype(self) -> str:
+        """This node's planned element dtype (``"u8"``, ``"f32"``, …), or
+        ``"auto"`` when it is known only once a row is decoded."""
+        return self._pipeline._state.dtype
 
     # --- Composition Methods ---
 
