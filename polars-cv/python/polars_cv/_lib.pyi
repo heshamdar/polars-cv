@@ -108,6 +108,10 @@ def check_graph(graph_json: str) -> None:
     """Compile and plan a graph and check every output's sink, as the plugin
     will; raise ``ValueError``."""
 
+def explain_graph(graph_json: str, inputs: list[str]) -> str:
+    """The graph as text, from the plugin's own planning; ``inputs[i]`` names
+    plugin input ``i``. See ``PipelineGraph.explain``."""
+
 def check_geom_call(function: str, args_json: str) -> None:
     """Parse a geometry accessor call's arguments against its function's
     definition; raise ``ValueError``."""

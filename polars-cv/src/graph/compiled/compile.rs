@@ -289,25 +289,7 @@ pub(crate) fn resolved_output_specs(
     graph: &UnifiedGraph,
     input_dtypes: &[DataType],
 ) -> PolarsResult<Vec<(String, OutputSpec)>> {
-    let mut states = crate::plan::Refs::new();
-    for node_id in graph.topological_order() {
-        let node = &graph.nodes[node_id];
-        let mut state = match &node.input {
-            NodeInput::Decode { column, source } => {
-                let state = crate::plan::source_state(source);
-                match input_dtypes.get(*column) {
-                    Some(dt) if source.resolves_from_column() => refine_by_column(state, dt),
-                    _ => state,
-                }
-            }
-            NodeInput::Node(up) => states[up].clone(),
-        };
-        for op in &node.ops {
-            state = crate::plan::step(op, &state, &states)
-                .map_err(|e| polars_err!(ComputeError: "node '{}': {}", node_id, e))?;
-        }
-        states.insert(node_id.clone(), state);
-    }
+    let states = planned_node_states(graph, input_dtypes, |_, _, _| {})?;
 
     let mut specs: Vec<(String, OutputSpec)> = graph
         .outputs
@@ -327,6 +309,40 @@ pub(crate) fn resolved_output_specs(
         .collect();
     specs.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(specs)
+}
+
+/// Plan every node of `graph` in execution order, returning the state each
+/// leaves. `visit(node_id, op_index, state)` sees the state entering a node
+/// (`op_index` `None`) and the state after each of its ops, which is how
+/// [`explain`](crate::graph::explain) renders the plan this function makes
+/// rather than planning it a second time.
+pub(crate) fn planned_node_states(
+    graph: &UnifiedGraph,
+    input_dtypes: &[DataType],
+    mut visit: impl FnMut(&str, Option<usize>, &State),
+) -> PolarsResult<crate::plan::Refs> {
+    let mut states = crate::plan::Refs::new();
+    for node_id in graph.topological_order() {
+        let node = &graph.nodes[node_id];
+        let mut state = match &node.input {
+            NodeInput::Decode { column, source } => {
+                let state = crate::plan::source_state(source);
+                match input_dtypes.get(*column) {
+                    Some(dt) if source.resolves_from_column() => refine_by_column(state, dt),
+                    _ => state,
+                }
+            }
+            NodeInput::Node(up) => states[up].clone(),
+        };
+        visit(node_id, None, &state);
+        for (i, op) in node.ops.iter().enumerate() {
+            state = crate::plan::step(op, &state, &states)
+                .map_err(|e| polars_err!(ComputeError: "node '{}': {}", node_id, e))?;
+            visit(node_id, Some(i), &state);
+        }
+        states.insert(node_id.clone(), state);
+    }
+    Ok(states)
 }
 
 /// A root's state with what its input column reveals: a `List`/`Array`

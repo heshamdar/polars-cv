@@ -239,6 +239,8 @@ _REQUIRED_LIB_HOOKS = (
     # Compile and plan a whole graph and check its sinks, as the plugin will
     # (what `.sink()` runs).
     "check_graph",
+    # The graph as text, rendered from the same planning (`PipelineGraph.explain`).
+    "explain_graph",
 )
 
 

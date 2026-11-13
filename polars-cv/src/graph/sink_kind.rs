@@ -100,7 +100,7 @@ impl SinkKind {
             // to do instead; the generic one cannot.
             (Domain::Buffer, Sink::Native) => polars_bail!(ComputeError:
                 "'native' sink is not defined for buffer outputs; use an explicit \
-                 format (numpy, png, list, array, blob, ...)"
+                 format (tensor, png, list, array, blob, ...)"
             ),
             (domain, sink) => polars_bail!(ComputeError:
                 "Unsupported output combination: domain '{}' with sink format '{}'",

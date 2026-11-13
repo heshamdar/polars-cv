@@ -36,6 +36,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **The refusal of a `native` sink on a buffer named the removed `numpy`
+  sink** among its alternatives; it names `tensor` (CR-81 left it).
+
 - **A constant is no longer rounded to f32 before f64 arithmetic (CR-136).**
   `Float64` and 32/64-bit integer data compute in f64, but every constant was
   an f32 on the wire and in the engine, so `scale(1/3)` on `Float64` gave
@@ -65,6 +68,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   option.
 
 ### Added
+
+- **`explain()` on a lazy expression and on a graph (CR-148).**
+  `expr.explain(format)` (and `PipelineGraph.explain()`) prints the graph
+  `sink(format)` runs: each node in execution order with what it reads, each
+  op with the domain, dtype and shape the planner gives its result (`?`
+  where a size is known only per row), the fused segments the executor runs
+  as one chain (`|`), each output with its planned Polars dtype, and the
+  engine passes that rewrite inside each segment. `optimized=False` prints
+  it as written. It is rendered by the plugin from the planning `check()`
+  and the schema use, and needs no Graphviz. `expr.show_graph(format)`,
+  `expr.output_dtype()` and `expr.current_domain()` are added beside it.
+  Before, only `Pipeline.explain()` existed, showing one pipeline's node
+  passes, and seeing a graph took `sink(..., return_expr=False).show_graph()`
+  with Graphviz installed.
 
 - **`source("tensor")`: the tensor sink can be read back (CR-138).** Its
   output (then the `numpy`, `ndarray` and `torch` sinks') fed no source ("auto source cannot infer a

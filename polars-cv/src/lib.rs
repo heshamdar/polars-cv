@@ -75,6 +75,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_check_cloud_access, m)?)?;
     m.add_function(wrap_pyfunction!(_this_repr, m)?)?;
     m.add_function(wrap_pyfunction!(check_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(explain_graph, m)?)?;
     m.add_function(wrap_pyfunction!(check_geom_call, m)?)?;
     m.add_function(wrap_pyfunction!(geom_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
@@ -352,6 +353,15 @@ fn check_graph(graph_json: &str) -> PyResult<()> {
         checked.map_err(|e| py_value_error(format!("output '{alias}': {e}")))?;
     }
     Ok(())
+}
+
+/// The graph as text (`PipelineGraph.explain()`): each node in execution
+/// order with the planned state after each op, the fused segments, the
+/// outputs with their planned dtypes, and the engine passes that will run.
+/// `inputs[i]` names plugin input `i`.
+#[pyfunction]
+fn explain_graph(graph_json: &str, inputs: Vec<String>) -> PyResult<String> {
+    crate::graph::explain::explain(graph_json, &inputs).map_err(|e| py_value_error(e.to_string()))
 }
 
 /// Whether `dtype` holds an `Array` with a zero-size dimension at any level.

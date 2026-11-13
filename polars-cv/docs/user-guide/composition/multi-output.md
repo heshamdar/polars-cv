@@ -122,9 +122,12 @@ result = df.with_columns(
 )
 ```
 
-`expr.sink(..., return_expr=False).show_graph()` draws the graph that runs;
-pass `opt_flags=False` to `sink` to see it as written. Every output is byte
-for byte the same either way.
+`expr.explain(format)` prints the graph that runs: each node in execution
+order, each op with the dtype and shape the planner gives its result, the
+fused segments (`|`) and the outputs with their Polars dtypes.
+`explain(format, optimized=False)` prints it as written, and
+`expr.show_graph(format)` draws it (with `polars-cv[viz]`). Every output is
+byte for byte the same either way.
 
 ### Across expressions
 
