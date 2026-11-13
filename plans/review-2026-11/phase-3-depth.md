@@ -13,6 +13,11 @@ after the first two phases.
 CR-146, and CR-118 if the owner decides for it. CR-149's refresh runs with
 the next release (below).
 
+**Status:** CR-148 and CR-79 are closed (`ISSUES.md`, Closed findings), and
+CR-149's guard is pinned in `test_known_gaps.py`. CR-148 came out as planned
+after the corrections below; the optimised README cut-out is six nodes and
+one decode against eight and three as written, as first measured.
+
 The working rules at the top of phase 1 apply here unchanged.
 
 ### Re-verification before implementation (2026-11-12, at `42e08b3`)
@@ -36,9 +41,10 @@ what the second reading changed:
   `sink("tensor")` (CR-81), so the harness changes for that release anyway:
   refresh at that release, not on 0.41.x. The staleness guard goes in now as
   a strict xfail, the ledger's mechanism for a verified defect.
-- **CR-147.** `.bbox` reads `List[BBOX_SCHEMA]` (a set of boxes per row),
-  not one box, so every accessor in the table has to say whether it maps
-  over the set. `bbox_from_coords` (`geometry/coords.py`) is already the one
+- **CR-147.** `.bbox`'s two accessors take box sets (`List[BBOX_SCHEMA]`),
+  but its reader, `BBoxColumn`, already reads one box or a set per row
+  (`Arity`), so a new accessor maps over whichever it is given, as the
+  contour accessors do. `bbox_from_coords` (`geometry/coords.py`) is already the one
   conversion *into* `BBOX_SCHEMA`; `from_xyxy`/`from_cxcywh` would be a
   second, and the `to_*` conversions belong beside it as its inverse. `crop`
   takes `u32` offsets and a box is `Float64`, so the `crop(box=)` sugar needs
@@ -65,63 +71,6 @@ files on smooth content) and rejected, and the IJG licence stays out of
 
 ---
 
-## CR-148 — No text `explain()` on the lazy expression
-
-**Re-verified: confirmed.**
-
-### Evidence
-
-`explain()`, `output_dtype()` and `current_domain()` exist on `Pipeline`
-only. `LazyPipelineExpr`, where graphs are built, has a one-line `repr`.
-Seeing a graph takes `sink(..., return_expr=False).show_graph()`, which needs
-the `viz` extra and Graphviz's `dot`. `PipelineGraph`'s public methods are
-`add_alias`, `add_node`, `check`, `optimize`, `set_multi_output`,
-`set_output`, `show_graph`, `to_expr`, `topological_order`.
-
-`Pipeline.explain()` shows node-scope passes only (identity elimination,
-window pushdown). For `flip_h().flip_h()` and for a fusable scalar chain it
-printed the same text optimised and unoptimised; the engine-level rewrites
-(`view_flip_involution`, `scalar_fusion`, `cast_chain_collapse`) are not
-visible anywhere.
-
-### Approach
-
-1. `PipelineGraph.explain() -> str`: the nodes in topological order, each
-   with its input (column or node), its ops, and the planned state leaving
-   it (domain, dtype, shape with unknowns shown), then the outputs with
-   their sinks and planned Polars dtypes. All of this is already computed
-   for `check()`: `resolved_output_specs` plans every node and discards the
-   per-node states. Split out the per-node planning so `check`, the schema
-   and the text read one function, and render it in Rust beside the planner
-   (one `#[pyfunction]` over the graph JSON) so the text cannot disagree
-   with what runs.
-2. `LazyPipelineExpr.explain(format="native", *, optimized=True, **sink_kw)`
-   builds the same graph `sink()` builds and returns its text. With
-   `optimized=False` it shows the graph as written, as `Pipeline.explain`
-   does.
-3. Engine-level passes: show the fused segments the executor will form
-   (`PendingSegment`, `graph/compiled/run.rs`). The grouping is fixed at
-   compile time (re-verified), so the text brackets each segment's ops.
-   What the engine passes do inside a segment is planned per source layout,
-   so name the enabled engine passes once, as applied per segment at run
-   time, so identical text is not read as "nothing was optimised".
-4. `output_dtype`/`current_domain` on the lazy expression: forward to the
-   node's planned state.
-5. Add `LazyPipelineExpr.show_graph(...)`. `sink(return_expr=False)` stays
-   (see the re-verification note); its place on the stable surface is
-   CR-141's question.
-
-### Tests first
-
-- The README cut-out example: the optimised text has fewer nodes and
-  sources than `optimized=False` (CR-109 recorded 8 nodes for it; take the
-  exact counts from the graph, not from this plan).
-- Text names every output alias and its planned dtype, equal to
-  `collect_schema()`.
-- No Graphviz needed: the test runs without the `viz` extra.
-
----
-
 ## CR-149 — Published benchmarks are three releases old
 
 **Re-verified: confirmed. See also the existing CR-79.**
@@ -142,12 +91,12 @@ pycocotools parity test never runs in CI) is open in the ledger.
    update `results/*.json`, the figures and both README tables in one
    commit. Needs COCO val2017, which a web session cannot download: on the
    owner's machine.
-2. Make staleness visible: a test asserts the version recorded in
+2. **Done.** Make staleness visible: a test asserts the version recorded in
    `results/coco-5k.json` (`environment.libraries["polars-cv"]`) is within
    one minor of `polars-cv/pyproject.toml`'s. It fails today (0.38 against
    0.41), so it lands as a strict xfail in `test_known_gaps.py` and the
    refresh turns it into a pass.
-3. Close CR-79 as its ledger entry describes.
+3. **Done.** Close CR-79 as its ledger entry describes.
 4. Add the two cases this review measured that the suite lacks: thread
    scaling at fixed work (row parallelism off against on), and
    multi-output sharing (one graph against separate expressions). These
@@ -176,11 +125,10 @@ input and every user writes the same conversions first.
 ### Approach
 
 Add `BBoxFn` variants (`namespaces/fns.rs`), each a mode-generic definition
-like the existing two, generated into `.bbox`. `.bbox` reads a
-`List[BBOX_SCHEMA]` per row, so each accessor below maps over the set
-(`area()` gives `List[Float64]`, `nms` a filtered set) unless it says
-otherwise; decide before the first one whether a bare `BBOX_SCHEMA` column
-is accepted as a set of one, and apply that once in `BBoxColumn`.
+like the existing two, generated into `.bbox`. `BBoxColumn` reads one box or
+a set per row (`Arity`), so each per-box accessor keeps the arity it is
+given (`area()` on a box column is `Float64`, on a set `List[Float64]`), as
+the contour accessors do; `nms` takes a set.
 
 | Accessor | Notes |
 |---|---|

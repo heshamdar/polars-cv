@@ -102,6 +102,34 @@ def test_a_negative_size_box_is_refused() -> None:
     assert raised, "a box of negative size was accepted"
 
 
+@pytest.mark.structural
+@_gap("CR-149: the published benchmarks report 0.38.0")
+def test_the_published_benchmarks_measure_a_recent_release() -> None:
+    """The cross-library results (``benchmarks/results/coco-5k.json``, which
+    the README's table and figure are made from) record the polars-cv they
+    measured. Fixed when they are re-measured on a release within one minor
+    of the checkout's version (the plan runs that with the release that
+    adopts the ``tensor`` sink)."""
+    import json
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    results = json.loads((root / "benchmarks/results/coco-5k.json").read_text())
+    measured = results["environment"]["libraries"]["polars-cv"]
+    project = tomllib.loads((root / "polars-cv/pyproject.toml").read_text())
+    current = project["project"]["version"]
+
+    def minor(version: str) -> tuple[int, int]:
+        major, minor_, *_ = version.split(".")
+        return int(major), int(minor_)
+
+    (m_major, m_minor), (c_major, c_minor) = minor(measured), minor(current)
+    assert m_major == c_major and c_minor - m_minor <= 1, (
+        f"benchmarks measured {measured}, the checkout is {current}"
+    )
+
+
 @plugin_required
 @_gap("CR-116: the vector domain is a planner gate: buffer ops refuse a hash")
 def test_a_buffer_op_applies_to_a_hash_vector() -> None:

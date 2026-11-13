@@ -1,6 +1,7 @@
 """``evaluate_detections`` against pycocotools' ``COCOeval`` on random data.
 
-Skipped unless pycocotools is installed (it is not a dependency). The data
+pycocotools is in the dev group, so a missing install fails this test rather
+than skipping it: a skip is how the parity claim went unchecked (CR-79). The data
 avoid what the two deliberately do differently: scores are distinct (COCO
 orders tied scores by input order, polars-cv makes a tie one PR point), there
 are no crowd regions, and every box is in COCO's "all" area range.
@@ -87,8 +88,8 @@ def _dataset(seed: int, jitter: float) -> tuple[dict, list[dict]]:
     tolerance="abs 1e-12",
 )
 def test_coco_summary_matches_cocoeval(seed: int, jitter: float) -> None:
-    coco_mod = pytest.importorskip("pycocotools.coco")
-    cocoeval_mod = pytest.importorskip("pycocotools.cocoeval")
+    from pycocotools import coco as coco_mod
+    from pycocotools import cocoeval as cocoeval_mod
 
     gt, dts = _dataset(seed, jitter)
     with contextlib.redirect_stdout(io.StringIO()):
