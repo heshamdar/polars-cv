@@ -94,6 +94,9 @@ dev = [
     # skip, they would fail: the runner asserts exit 0.
     "matplotlib>=3.9.4",
     "pytest-xdist>=3.6",
+    # tests/reference/test_coco_parity_ref.py holds evaluate_detections to
+    # COCOeval; it imports pycocotools rather than skipping without it (CR-79).
+    "pycocotools>=2.0.8",
 ]
 bench = [
     "opencv-python>=4.8",

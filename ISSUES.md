@@ -39,7 +39,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-76 | Metrics | Medium | Negative-size boxes are accepted and silently score as false positives |
 | CR-77 | Metrics | Low | Sweep thresholds compared by exact float equality (`map_75` disappears) |
 | CR-78 | Metrics | Low | An image missing from `images=` silently gets weight 1.0 |
-| CR-79 | CI | Low | The COCO parity test never runs in CI |
 | CR-80 | Extension types | Feature | Opt-in tagged geometry output (`polars_cv.point` / `.contour` / `.bbox`) |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
@@ -50,8 +49,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-141 | Review 2026-11 | Decision | A stability policy: what the stable surface is, and how it deprecates |
 | CR-146 | Review 2026-11 | Low | The crop pushdown stops at neighbourhood ops (`blur` then `crop` filters the whole image) |
 | CR-147 | Review 2026-11 | Feature | `.bbox` has two accessors |
-| CR-148 | Review 2026-11 | Low | No text `explain()` on `LazyPipelineExpr`/`PipelineGraph`; engine-level passes are invisible |
-| CR-149 | Review 2026-11 | Low | The published benchmarks report 0.38.0 |
+| CR-149 | Review 2026-11 | Low | The published benchmarks report 0.38.0 (pinned: `test_known_gaps.py::test_the_published_benchmarks_measure_a_recent_release`) |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -350,20 +348,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
   and fail the query otherwise; (b) keep 1.0 and document it in the
   `weight=` docstrings of `match_detections` / `evaluate_detections`.
 
-## CI
-
-### CR-79 — The COCO parity test never runs in CI
-
-(was FU-04)
-
-- `tests/reference/test_coco_parity_ref.py` skips unless `pycocotools` is
-  importable (`pytest.importorskip`), and nothing installs it, so the
-  CHANGELOG's "agrees with COCOeval to 1e-12" is not checked by CI. Run by
-  hand (`uv run --with pycocotools pytest tests/reference/test_coco_parity_ref.py`)
-  it passed 4/4 at 0.32.0.
-- **Fix:** add `pycocotools` to a dependency group the fast lane installs, or
-  make the reference lane fail rather than skip when it is missing in CI.
-
 ## Downstream proposal (2026-10-22)
 
 A downstream image-analytics user's proposal, reviewed against 0.40.0. Its
@@ -402,9 +386,9 @@ phase, and is not repeated here:
 - [`plans/review-2026-11/phase-2-stabilise.md`](plans/review-2026-11/phase-2-stabilise.md):
   CR-141, a decision. CR-142 to CR-145 are closed.
 - [`plans/review-2026-11/phase-3-depth.md`](plans/review-2026-11/phase-3-depth.md):
-  CR-148, CR-149's guard (with CR-79; the refresh runs with the next
-  release), CR-76 then CR-147, CR-146, and CR-118 if decided. Re-verified
-  2026-11-12 at `42e08b3`; the plan records what that changed.
+  CR-149's refresh (with the next release; its guard is pinned), CR-76 then
+  CR-147, CR-146, and CR-118 if decided. CR-148 and CR-79 are closed.
+  Re-verified 2026-11-12 at `42e08b3`; the plan records what that changed.
 
 Delete a plan's section when its item closes, and the file when it is empty.
 
@@ -644,6 +628,8 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-148 | No text `explain()` on `LazyPipelineExpr`/`PipelineGraph`; engine-level passes were invisible | Fixed (unreleased): `LazyPipelineExpr.explain(format, optimized=)` and `PipelineGraph.explain()`, rendered in Rust (`graph/explain.rs`) from the planner's own per-node states (`planned_node_states`, which `resolved_output_specs` now reads too), the fused segments (a run of `GraphStep::Buffer` steps, fixed at compile time) and the schema's output dtypes; the engine passes are named per segment, since what they rewrite is planned per row layout. `show_graph`, `output_dtype`, `current_domain` on the lazy expression. `sink(return_expr=False)` stays: it is the graph-inspection hook for the tests (`test_explain.py`: node count equals the graph's, output dtypes equal `collect_schema()`, no Graphviz) |
+| CR-79 | The COCO parity test never ran in CI | Fixed (unreleased): `pycocotools` is in the dev group, which every CI test lane syncs, and the test imports it instead of `importorskip`, so a missing install fails (4/4 pass) |
 | CR-82 | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata | Decided (owner, 2026-11-12): no metadata, and it is part of the stable surface. The planner often cannot know either value (an `auto`-dtype image source decodes `u8` or `u16` per file; a `tensor` or `blob` source knows no rank until its rows), one column can hold rows of several dtypes, and metadata enters type equality, so tensor columns of different dtypes would stop concatenating. A column whose dtype and shape are fixed and known has `sink("array")`, which Polars types fully |
 | CR-81 | Whether any output becomes tagged by default | Decided (owner, 2026-11-12), unreleased: for tensors, yes. `sink("tensor")` replaces `numpy`, `torch` (byte-identical) and `ndarray`, and always emits `polars_cv.ndarray`; `Sink::Tensor` and `SinkKind::Tensor` are the one variant and kind. The ledger had recommended keeping `numpy` plain. Rows are unchanged (the golden corpus differs only in the column type, 212 cases); tests that used struct operations on the output go through `.ext.storage()`. Source and sink names pair up (`tensor`, `blob`, `list`, `array`); `blob` kept. Geometry outputs stay untagged (CR-80). CR-82 (metadata) is now a change to every tensor column and should be decided before CR-141 |
 | CR-145 | `image`'s default features compiled an AVIF encoder (`ravif`, `rav1e`) no sink reaches | Fixed (unreleased): one `[workspace.dependencies]` entry names the formats, and both crates take it (the plugin crate also declared `image` with defaults, so trimming view-buffer's alone changed nothing: features unify). `avif` is gone, and `tga`, which was compiled and unreachable (no signature, and every decode detects the format from the bytes). `rayon` stays on (one 2048x2048 EXR decodes about 50% slower without it), and its weak feature keeps the uncompiled `ravif` tree in `Cargo.lock`, re-resolved to versions without `core2` and `paste`, so two `deny.toml` ignores are dropped. Every format that decoded still does; DDS, ICO, QOI, farbfeld, PNM, HDR and EXR are now documented and tested (`test_decode_formats.py`: a committed file per feature; the manifest, the files and the docs table compared as sets; watched failing with `qoi` removed). `.so` at `--profile benchmark`: 62.6 MB to 58.9 MB (the fat-LTO release wheel was not measured) |
