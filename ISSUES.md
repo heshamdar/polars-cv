@@ -402,7 +402,9 @@ phase, and is not repeated here:
 - [`plans/review-2026-11/phase-2-stabilise.md`](plans/review-2026-11/phase-2-stabilise.md):
   CR-141, a decision. CR-142 to CR-145 are closed.
 - [`plans/review-2026-11/phase-3-depth.md`](plans/review-2026-11/phase-3-depth.md):
-  CR-148, CR-149 (with CR-79), CR-147, CR-146, and CR-118 if decided.
+  CR-148, CR-149's guard (with CR-79; the refresh runs with the next
+  release), CR-76 then CR-147, CR-146, and CR-118 if decided. Re-verified
+  2026-11-12 at `42e08b3`; the plan records what that changed.
 
 Delete a plan's section when its item closes, and the file when it is empty.
 

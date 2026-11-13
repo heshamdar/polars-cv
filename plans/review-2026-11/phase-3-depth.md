@@ -9,10 +9,44 @@ and [phase 2](phase-2-stabilise.md).
 **Goal:** widen what the tool does well. Nothing here blocks adoption; do it
 after the first two phases.
 
-**Order:** CR-148, CR-149 (small, independent), CR-147, CR-146, then CR-118
-if the owner decides for it.
+**Order:** CR-148, CR-149's guard with CR-79, then CR-76 and CR-147,
+CR-146, and CR-118 if the owner decides for it. CR-149's refresh runs with
+the next release (below).
 
 The working rules at the top of phase 1 apply here unchanged.
+
+### Re-verification before implementation (2026-11-12, at `42e08b3`)
+
+Phases 1 and 2 have landed except CR-139's remainder and CR-141, both
+decisions. Every finding's evidence below still holds against the code;
+what the second reading changed:
+
+- **CR-148.** Two corrections. Segment boundaries are fixed at compile time
+  (a step is `GraphStep::Buffer` or it is not, `run.rs`), but the engine
+  rewrites inside a segment are planned per source layout (`run_segment`,
+  `CachedPlan`), so the text can show the segments and which engine passes
+  will run over each, not what they rewrite. And `sink(return_expr=False)`
+  is not one use: about twenty test files and the multi-output guide read
+  the `PipelineGraph` through it. It stays; whether it is part of the stable
+  surface is CR-141's list, and no deprecation path exists to put it on
+  (CR-142's tuple was removed outright).
+- **CR-149.** `images.cocodataset.org` does not resolve from a web session,
+  so the refresh runs on the owner's machine. `benchmarks/` pins the
+  published wheel, and the next release replaces `sink("numpy")` with
+  `sink("tensor")` (CR-81), so the harness changes for that release anyway:
+  refresh at that release, not on 0.41.x. The staleness guard goes in now as
+  a strict xfail, the ledger's mechanism for a verified defect.
+- **CR-147.** `.bbox` reads `List[BBOX_SCHEMA]` (a set of boxes per row),
+  not one box, so every accessor in the table has to say whether it maps
+  over the set. `bbox_from_coords` (`geometry/coords.py`) is already the one
+  conversion *into* `BBOX_SCHEMA`; `from_xyxy`/`from_cxcywh` would be a
+  second, and the `to_*` conversions belong beside it as its inverse. `crop`
+  takes `u32` offsets and a box is `Float64`, so the `crop(box=)` sugar needs
+  a stated rounding rule. CR-76 is still open and still comes first.
+- **CR-146.** Unchanged. `hoist_spatial_windows` is now `passes.rs:155`.
+  One addition: a crop out of bounds must still be refused by a message that
+  names the user's crop, not the inserted trim.
+- **CR-118.** Unchanged; CR-141 is still a decision.
 
 ---
 
@@ -56,28 +90,32 @@ visible anywhere.
    with its input (column or node), its ops, and the planned state leaving
    it (domain, dtype, shape with unknowns shown), then the outputs with
    their sinks and planned Polars dtypes. All of this is already computed
-   for `check()`; render it in Rust beside the planner (one `#[pyfunction]`
-   over the graph JSON) so the text cannot disagree with what runs.
+   for `check()`: `resolved_output_specs` plans every node and discards the
+   per-node states. Split out the per-node planning so `check`, the schema
+   and the text read one function, and render it in Rust beside the planner
+   (one `#[pyfunction]` over the graph JSON) so the text cannot disagree
+   with what runs.
 2. `LazyPipelineExpr.explain(format="native", *, optimized=True, **sink_kw)`
    builds the same graph `sink()` builds and returns its text. With
    `optimized=False` it shows the graph as written, as `Pipeline.explain`
    does.
 3. Engine-level passes: show the fused segments the executor will form
-   (`PendingSegment`, `graph/compiled/run.rs`; check first whether the
-   grouping is fixed at compile time or per row). If that is not cheaply
-   available as text,
-   say in the output which passes are engine-level and not shown, so
-   identical text is not read as "nothing was optimised".
+   (`PendingSegment`, `graph/compiled/run.rs`). The grouping is fixed at
+   compile time (re-verified), so the text brackets each segment's ops.
+   What the engine passes do inside a segment is planned per source layout,
+   so name the enabled engine passes once, as applied per segment at run
+   time, so identical text is not read as "nothing was optimised".
 4. `output_dtype`/`current_domain` on the lazy expression: forward to the
    node's planned state.
-5. Then `sink(return_expr=False)` has one remaining use (`show_graph`); add
-   `LazyPipelineExpr.show_graph(...)` and deprecate the flag under CR-141's
-   path.
+5. Add `LazyPipelineExpr.show_graph(...)`. `sink(return_expr=False)` stays
+   (see the re-verification note); its place on the stable surface is
+   CR-141's question.
 
 ### Tests first
 
-- The README cut-out example: `explain()` shows six nodes and one source
-  optimised, eight nodes and three sources with `optimized=False`.
+- The README cut-out example: the optimised text has fewer nodes and
+  sources than `optimized=False` (CR-109 recorded 8 nodes for it; take the
+  exact counts from the graph, not from this plan).
 - Text names every output alias and its planned dtype, equal to
   `collect_schema()`.
 - No Graphviz needed: the test runs without the `viz` extra.
@@ -99,16 +137,22 @@ pycocotools parity test never runs in CI) is open in the ledger.
 
 ### Approach
 
-1. Re-run `benchmarks/` against the published 0.41.x wheel; update
-   `results/*.json`, the figures and both README tables in one commit.
-2. Make staleness visible: `benchmarks/tests` asserts the version recorded in
-   `results/*.json` is within one minor of `pyproject.toml`'s, or the README
-   table carries the version it was measured on in its header (it does in
-   prose today). Prefer the test; watch it fail before the refresh.
+1. Re-run `benchmarks/` against the next published wheel (the release that
+   carries CR-81's `tensor` sink, which the harness has to adopt anyway);
+   update `results/*.json`, the figures and both README tables in one
+   commit. Needs COCO val2017, which a web session cannot download: on the
+   owner's machine.
+2. Make staleness visible: a test asserts the version recorded in
+   `results/coco-5k.json` (`environment.libraries["polars-cv"]`) is within
+   one minor of `polars-cv/pyproject.toml`'s. It fails today (0.38 against
+   0.41), so it lands as a strict xfail in `test_known_gaps.py` and the
+   refresh turns it into a pass.
 3. Close CR-79 as its ledger entry describes.
 4. Add the two cases this review measured that the suite lacks: thread
    scaling at fixed work (row parallelism off against on), and
-   multi-output sharing (one graph against separate expressions).
+   multi-output sharing (one graph against separate expressions). These
+   measure the checkout, so they go to `polars-cv/benchmarks/regression`,
+   not the cross-library tree.
 
 ---
 
@@ -132,12 +176,16 @@ input and every user writes the same conversions first.
 ### Approach
 
 Add `BBoxFn` variants (`namespaces/fns.rs`), each a mode-generic definition
-like the existing two, generated into `.bbox`:
+like the existing two, generated into `.bbox`. `.bbox` reads a
+`List[BBOX_SCHEMA]` per row, so each accessor below maps over the set
+(`area()` gives `List[Float64]`, `nms` a filtered set) unless it says
+otherwise; decide before the first one whether a bare `BBOX_SCHEMA` column
+is accepted as a set of one, and apply that once in `BBoxColumn`.
 
 | Accessor | Notes |
 |---|---|
-| `area()` | scalar per box |
-| `to_xyxy()`, `from_xyxy()`, `to_cxcywh()`, `from_cxcywh()` | one conversion authority; `BBOX_SCHEMA` stays the stored form |
+| `area()` | per box |
+| `to_xyxy()`, `to_cxcywh()` | the inverse of `bbox_from_coords`, beside it in `geometry/coords.py` (plain Polars over the set); `bbox_from_coords(format=)` stays the only way in, so no `from_*`; `BBOX_SCHEMA` stays the stored form |
 | `clip(width=, height=)` | per-row sizes, so `this`-free expressions from `image_info()` |
 | `scale(sx=, sy=)`, `translate(dx=, dy=)` | mirror the contour/point accessors' names and `on_null` |
 | `to_absolute`/`normalize(width=, height=)` | as `.point` and `.contour` have |
@@ -146,7 +194,11 @@ like the existing two, generated into `.bbox`:
 | `nms(scores=, iou_threshold=)` | greedy, per list; reuse `pairwise::bbox_iou_matrix` |
 
 Then a `crop(box=pl.col("bbox"))` convenience on `Pipeline` as `@_sugar`
-over `crop`, declaring the op it lowers to.
+over `crop`, declaring the op it lowers to. It takes one box per row (a
+`BBOX_SCHEMA` struct, not the set), and `crop` takes `u32` offsets, so it
+states its rounding: the smallest pixel window containing the box (floor
+`x`/`y`, ceil the far edges), lowered to `crop_clip` if the box may leave
+the image. Decide which, and say it in the docstring.
 
 Resolve first: negative-size boxes are accepted and score as false positives
 (CR-76, open). Every new accessor needs the same answer, so decide CR-76
@@ -222,6 +274,9 @@ Decode-only for the same images was about 200 ms, so roughly 300 ms of the
 4. The pass refuses to cross when the crop reads `this`, when the op reads
    another node, when the radius is per-row, or when the op sits before an
    `assert_shape` — the same exclusions the pointwise pass has today.
+   A crop out of bounds is still refused, and its message still names the
+   user's crop and window, not the inserted trim (add the case to
+   `test_message_hygiene.py`).
 5. Add the blur-then-crop case to the regression suite and to
    `OptFlags`' documentation.
 
