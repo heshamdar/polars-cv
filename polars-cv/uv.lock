@@ -2848,8 +2848,6 @@ dependencies = [
 [package.optional-dependencies]
 viz = [
     { name = "graphviz" },
-    { name = "networkx" },
-    { name = "pydot" },
 ]
 
 [package.dev-dependencies]
@@ -2875,12 +2873,10 @@ dev = [
     { name = "jupytext" },
     { name = "matplotlib" },
     { name = "maturin" },
-    { name = "networkx" },
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "pre-commit" },
     { name = "pycocotools" },
-    { name = "pydot" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
@@ -2898,10 +2894,8 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "graphviz", marker = "extra == 'viz'", specifier = ">=0.21" },
-    { name = "networkx", marker = "extra == 'viz'", specifier = ">=3.4.2" },
     { name = "numpy", specifier = ">=2.0.2" },
     { name = "polars", specifier = ">=2.0.0,<3.0" },
-    { name = "pydot", marker = "extra == 'viz'", specifier = ">=4.0.1" },
 ]
 provides-extras = ["viz"]
 
@@ -2927,12 +2921,10 @@ dev = [
     { name = "jupytext", specifier = ">=1.18.1" },
     { name = "matplotlib", specifier = ">=3.9.4" },
     { name = "maturin", specifier = ">=1.9.3,<2.0" },
-    { name = "networkx", specifier = ">=3.4.2" },
     { name = "opencv-python", specifier = ">=4.8" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pre-commit", specifier = ">=4.5.1" },
     { name = "pycocotools", specifier = ">=2.0.8" },
-    { name = "pydot", specifier = ">=4.0.1" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "pytest-xdist", specifier = ">=3.6" },
@@ -3242,18 +3234,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/fe/cf/d2d3b9f5699fb1e4615c8e32ff220203e43b248e1dfcc6736ad9057731ca/pycparser-2.23.tar.gz", hash = "sha256:78816d4f24add8f10a06d6f05b4d424ad9e96cfebf68a4ddc99c65c0720d00c2", size = 173734, upload-time = "2025-09-09T13:23:47.91Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/e3/59cd50310fc9b59512193629e1984c1f95e5c8ae6e5d8c69532ccc65a7fe/pycparser-2.23-py3-none-any.whl", hash = "sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934", size = 118140, upload-time = "2025-09-09T13:23:46.651Z" },
-]
-
-[[package]]
-name = "pydot"
-version = "4.0.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyparsing" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/50/35/b17cb89ff865484c6a20ef46bf9d95a5f07328292578de0b295f4a6beec2/pydot-4.0.1.tar.gz", hash = "sha256:c2148f681c4a33e08bf0e26a9e5f8e4099a82e0e2a068098f32ce86577364ad5", size = 162594, upload-time = "2025-06-17T20:09:56.454Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/32/a7125fb28c4261a627f999d5fb4afff25b523800faed2c30979949d6facd/pydot-4.0.1-py3-none-any.whl", hash = "sha256:869c0efadd2708c0be1f916eb669f3d664ca684bc57ffb7ecc08e70d5e93fee6", size = 37087, upload-time = "2025-06-17T20:09:55.25Z" },
 ]
 
 [[package]]

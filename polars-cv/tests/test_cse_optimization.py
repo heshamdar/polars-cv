@@ -379,7 +379,7 @@ class TestCSEEdgeCases:
 
 def _physical(expr, fmt, opt_flags=True) -> dict:
     """The serialized graph ``expr.sink(fmt)`` runs."""
-    return expr.sink(fmt, return_expr=False, opt_flags=opt_flags)._to_dict()
+    return expr.graph(fmt, opt_flags=opt_flags)._to_dict()
 
 
 def _ops(graph: dict) -> list[str]:

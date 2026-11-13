@@ -64,17 +64,13 @@ Issues = "https://github.com/heshamdar/polars-cv/issues"
 # `PipelineGraph.show_graph()` only; imported lazily, and a clear ImportError
 # names this extra when it is missing.
 viz = [
-    "networkx>=3.4.2",
     "graphviz>=0.21",
-    "pydot>=4.0.1",
 ]
 
 [dependency-groups]
 dev = [
     # The `viz` extra, so the graph-visualisation tests run in the dev loop.
-    "networkx>=3.4.2",
     "graphviz>=0.21",
-    "pydot>=4.0.1",
     "pytest>=7.0",
     "opencv-python>=4.8",
     # tests/test_benchmark_adapters.py holds the pyvips adapter to polars-cv.
@@ -154,12 +150,10 @@ markers = [
 source_pkgs = ["polars_cv"]
 omit = [
     # Pure visual-output glue with no headless assertion surface: notebook image
-    # rendering (`show_images`) and DAG visualisation through the optional
-    # networkx/graphviz/pydot backends. Both are exercised by hand and by the
-    # docs, not by the behavioural suite; measuring them would gate the build on
-    # rendering code that produces pictures, not values.
+    # rendering (`show_images`). Exercised by hand and by the docs, not by the
+    # behavioural suite; measuring it would gate the build on rendering code
+    # that produces pictures, not values.
     "*/polars_cv/display.py",
-    "*/polars_cv/_graph_viz.py",
 ]
 
 [tool.coverage.paths]

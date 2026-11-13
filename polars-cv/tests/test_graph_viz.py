@@ -1,76 +1,86 @@
-"""``PipelineGraph.show_graph()`` renders each node's alias, domain and dtype.
+"""``show_graph()`` lays out the plugin's description of the graph.
 
-The visualizer used to read those from the plugin wire format, which carried
-them only for its sake; it now reads them from the Python graph. This pins the
-rendered labels so that move cannot drop them.
+What each box says is held to ``explain()`` by
+``test_explain.py::TestShowGraph`` (one description, two renderings); this
+pins the layout: a box per node led by the id an operand names it by, an edge
+per read (dashed for an op's operand), every output an edge into one ``SINK``
+box, and nothing in the DOT text but display attributes.
 """
 
 from __future__ import annotations
+
+import re
 
 import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests.conftest import plugin_required
 
-pytest.importorskip("networkx")
+pytestmark = plugin_required
+
 pytest.importorskip("graphviz")
-pytest.importorskip("pydot")
 
 
-def test_the_rendered_graph_names_alias_and_dtype() -> None:
-    img = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
-    small = img.pipe(Pipeline().resize(height=8, width=8).cast("f32")).alias("small")
-    graph = small.sink("tensor", return_expr=False)
-    dot = graph.show_graph().source
-    assert "small" in dot
-    assert "f32" in dot
-    assert "buffer" in dot or "resize" in dot
-
-
-def _labels(graph) -> dict[str, str]:
-    """Each rendered node's label, by node name: what a reader sees, not the
-    rest of the DOT text."""
-    import pydot
-
-    (dot,) = pydot.graph_from_dot_data(graph.show_graph().source)
+def _boxes(source: str) -> dict[str, list[str]]:
+    """Each box's lines, by node name."""
     return {
-        n.get_name(): n.get_label().strip('"').replace("\\n", "\n")
-        for n in dot.get_nodes()
-        if n.get_label()
+        name: label.replace('\\"', '"').split(r"\l")[:-1]
+        for name, label in re.findall(
+            r'^\t(\w+) \[label="((?:[^"\\]|\\.)*)"', source, re.M
+        )
     }
 
 
-def test_a_source_node_renders_its_ops() -> None:
-    """A root node holds the decode *and* the ops after it (CSE moves a shared
-    prefix there); the label shows both."""
+def _edges(source: str) -> list[tuple[str, str, str]]:
+    """``(from, to, attributes)`` for each edge."""
+    return re.findall(r"^\t(\w+) -> (\w+)(?: \[(.*)\])?$", source, re.M)
+
+
+def test_each_output_is_an_edge_into_the_sink_box() -> None:
+    img = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+    small = img.pipe(Pipeline().resize(height=8, width=8).cast("f32")).alias("small")
+    source = (
+        small.merge_pipe(img.alias("full"))
+        .show_graph({"small": "tensor", "full": "png"})
+        .source
+    )
+    boxes = _boxes(source)
+    sink = boxes["SINK"]
+    assert sink[0] == "SINK"
+    assert any(line.startswith("small: ") for line in sink)
+    assert any(
+        line.startswith("full: ") and line.endswith(":: binary") for line in sink
+    )
+    into_sink = {(a, attrs) for a, b, attrs in _edges(source) if b == "SINK"}
+    assert {attrs for _, attrs in into_sink} == {"label=small", "label=full"}
+    assert any("f32" in line for lines in boxes.values() for line in lines)
+
+
+def test_a_root_box_holds_its_decode_and_its_ops() -> None:
     gray = pl.col("img").cv.pipe(Pipeline().source("image_bytes").grayscale())
-    (label, _sink) = _labels(gray.sink("tensor", return_expr=False)).values()
-    assert "image_bytes" in label
-    assert "grayscale" in label
+    boxes = _boxes(gray.show_graph("tensor").source)
+    (root,) = (lines for name, lines in boxes.items() if name != "SINK")
+    assert root[0].startswith('n0: decode col("img") as image_bytes(')
+    assert any("grayscale(" in line for line in root[1:])
 
 
-def test_nodes_are_labelled_by_the_id_operands_name() -> None:
-    """An operand is named by its node's wire id, so each node's label leads
-    with that id, and no ``None`` stands in for a missing alias."""
+def test_an_operand_is_a_dashed_edge_from_the_box_it_names() -> None:
     img = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
     gray = img.pipe(Pipeline().grayscale())
-    graph = gray.maximum(img.pipe(Pipeline().grayscale().blur(1.0))).sink(
-        "tensor", return_expr=False
+    both = gray.maximum(img.pipe(Pipeline().grayscale().blur(1.0)))
+    source = both.show_graph("tensor").source
+    boxes = _boxes(source)
+    (reader,) = (
+        n for n, lines in boxes.items() if any("maximum(" in ln for ln in lines)
     )
-    labels = _labels(graph)
-    assert not any("None" in label for label in labels.values())
-    (operand,) = (
-        n["ops"][0]["other"]
-        for n in graph._to_dict()["nodes"].values()
-        if n.get("ops") and n["ops"][0]["op"] == "maximum"
-    )
-    assert labels[operand].splitlines()[0] == operand
-    assert any(f"maximum(other={operand})" in label for label in labels.values())
+    (operand,) = re.findall(r"maximum\(other='(n\d+)'\)", "\n".join(boxes[reader]))
+    assert boxes[operand][0].startswith(f"{operand}: ")
+    assert (operand, reader, "label=maximum style=dashed") in _edges(source)
 
 
 def test_the_dot_source_carries_no_python_reprs() -> None:
-    """Only display attributes reach the DOT text, not the node payloads."""
     small = pl.col("img").cv.pipe(Pipeline().source("image_bytes").grayscale())
-    dot = small.sink("tensor", return_expr=False).show_graph().source
+    dot = small.show_graph("tensor").source
     assert "payload" not in dot
-    assert "ComputeNode" not in dot
+    assert "None" not in dot

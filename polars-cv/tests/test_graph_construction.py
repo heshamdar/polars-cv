@@ -25,7 +25,7 @@ def _img(column: str = "image") -> LazyPipelineExpr:
 
 
 def _wire_nodes(expr: LazyPipelineExpr, fmt, **kwargs) -> dict:
-    return expr.sink(fmt, return_expr=False, **kwargs)._to_dict()["nodes"]
+    return expr.graph(fmt, **kwargs)._to_dict()["nodes"]
 
 
 class TestAliases:
@@ -41,7 +41,7 @@ class TestAliases:
         graph = (
             gray.alias("p")
             .merge_pipe(gray.alias("q"))
-            .sink({"p": "tensor", "q": "png"}, return_expr=False)
+            .graph({"p": "tensor", "q": "png"})
         )
         outputs = graph._to_dict()["outputs"]
         assert set(outputs) == {"p", "q"}
@@ -49,7 +49,7 @@ class TestAliases:
 
     def test_the_same_alias_on_the_same_node_twice_is_one_output(self) -> None:
         gray = _img().pipe(Pipeline().grayscale()).alias("g")
-        graph = gray.merge_pipe(gray).sink({"g": "tensor"}, return_expr=False)
+        graph = gray.merge_pipe(gray).graph({"g": "tensor"})
         assert set(graph._to_dict()["outputs"]) == {"g"}
 
 
@@ -72,7 +72,7 @@ class TestMergePipe:
         graph = (
             a.merge_pipe(b)
             .merge_pipe(c)
-            .sink({"a": "tensor", "b": "tensor", "c": "tensor"}, return_expr=False)
+            .graph({"a": "tensor", "b": "tensor", "c": "tensor"})
         )
         assert set(graph._to_dict()["outputs"]) == {"a", "b", "c"}
 

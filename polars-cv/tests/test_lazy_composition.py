@@ -621,7 +621,7 @@ class TestLazyCompositionExecution:
             Pipeline().source("contour").rasterize(shape=img)
         )
 
-        graph = mask.sink("tensor", return_expr=False)
+        graph = mask.graph("tensor")
         assert img._node_id in graph._nodes, (
             "the shape reference must be part of the graph"
         )
@@ -877,7 +877,15 @@ class TestPipelineGraphRefusals:
     produces, rather than emitting a graph the plugin would misread."""
 
     def _graph(self):
-        return Pipeline().source("image_bytes").grayscale().to_graph(pl.col("img"))
+        from polars_cv._graph import PipelineGraph
+
+        graph = PipelineGraph()
+        graph.add_node(
+            node_id="_node_0",
+            pipeline=Pipeline().source("image_bytes").grayscale(),
+            column=pl.col("img"),
+        )
+        return graph
 
     def test_an_unknown_output_is_refused(self) -> None:
         with pytest.raises(ValueError, match="'nope' not found"):
@@ -891,7 +899,7 @@ class TestPipelineGraphRefusals:
 
     def test_an_unoptimized_graph_is_refused(self) -> None:
         graph = self._graph()
-        graph.set_output("_output", "tensor")
+        graph.set_output("_node_0", "tensor")
         with pytest.raises(RuntimeError, match="optimization phase"):
             graph.to_expr()
 

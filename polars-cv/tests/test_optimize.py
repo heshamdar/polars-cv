@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
@@ -278,29 +279,34 @@ class TestImmutability:
         assert _node_ops(graph) == ["resize"]
 
 
+def _explain(pipe: Pipeline, **kwargs: Any) -> str:
+    return pl.col("img").cv.pipe(pipe).explain("tensor", **kwargs)
+
+
 class TestExplain:
-    """Pipeline.explain surfaces the logical vs physical op chain."""
+    """explain() surfaces the logical vs physical op chain."""
 
     @plugin_required
     def test_logical_shows_unoptimized(self) -> None:
-        text = _removable_op_pipe().explain(optimized=False)
+        text = _explain(_removable_op_pipe(), optimized=False)
         assert "crop" in text
 
     @plugin_required
     def test_optimized_shows_eliminated(self) -> None:
-        text = _removable_op_pipe().explain(optimized=True)
+        text = _explain(_removable_op_pipe(), optimized=True)
         assert "crop" not in text
 
     @plugin_required
     def test_optimized_respects_flags(self) -> None:
-        text = _removable_op_pipe().explain(
-            opt_flags=OptFlags(identity_elimination=False)
+        text = _explain(
+            _removable_op_pipe(), opt_flags=OptFlags(identity_elimination=False)
         )
         assert "crop" in text
 
+    @plugin_required
     def test_explain_does_not_mutate(self) -> None:
         pipe = _removable_op_pipe()
-        pipe.explain(optimized=False)
+        _explain(pipe)
         assert op_names(pipe) == ["resize", "crop"]
 
     @plugin_required
@@ -317,12 +323,12 @@ class TestExplain:
             .cast("u8")
             .cast("u8")
         )
-        text = pipe.explain(optimized=True)
+        text = _explain(pipe, optimized=True)
         assert "crop" not in text
         assert text.count("cast(") == 1
 
         # Gated off, the logical ops survive.
-        off = pipe.explain(opt_flags=OptFlags(identity_elimination=False))
+        off = _explain(pipe, opt_flags=OptFlags(identity_elimination=False))
         assert "crop" in off
         assert off.count("cast(") == 2
 
@@ -351,8 +357,8 @@ class TestToExprRequiresOptimization:
     """``to_expr`` refuses an un-optimized graph — optimization has one site.
 
     Before the fix, the public ``Pipeline.to_graph(col).to_expr()`` route (which
-    never runs ``sink``) emitted an *unoptimized* graph, divergent from
-    ``sink()``. ``to_expr`` now raises unless the optimize phase has run, so the
+    never ran ``sink``; since removed, ``graph()`` optimizes) emitted an
+    *unoptimized* graph, divergent from ``sink()``. ``to_expr`` now raises unless the optimize phase has run, so the
     low-level path cannot silently diverge.
     """
 
@@ -381,11 +387,7 @@ class TestToExprRequiresOptimization:
 
     @plugin_required
     def test_sink_return_graph_is_optimized(self) -> None:
-        graph = (
-            pl.col("img")
-            .cv.pipe(_removable_op_pipe())
-            .sink("tensor", return_expr=False)
-        )
+        graph = pl.col("img").cv.pipe(_removable_op_pipe()).graph("tensor")
         assert graph._optimized is True
         # sink() auto-generates the node id, so read the sole node generically.
         (only_node,) = graph._nodes.values()
@@ -526,7 +528,7 @@ class TestSpatialWindowPushdown:
         )
 
         def op_lists(flags: OptFlags) -> list[list[str]]:
-            graph = expr.sink("tensor", return_expr=False, opt_flags=flags)
+            graph = expr.graph("tensor", opt_flags=flags)
             return [op_names(n.pipeline) for n in graph._nodes.values()]
 
         assert op_lists(OptFlags.all()) == [["crop", "grayscale"]]
@@ -555,28 +557,19 @@ class TestShapeSubpipelineStaging:
 
     @plugin_required
     def test_shape_subpipeline_optimization_respects_opt_flags(self) -> None:
-        # sink(return_expr=False) builds + optimizes the graph without
-        # registering the expr. The shape node id is the shape ref's own node id;
+        # graph() builds + optimizes the graph without registering the expr. The shape node id is the shape ref's own node id;
         # inspect its ops under each flag.
         shape = _shape_ref()
         shape_id = shape._node_id
         contour = Pipeline().source("contour").rasterize(shape=shape)
 
-        on = (
-            pl.col("c")
-            .cv.pipe(contour)
-            .sink("tensor", return_expr=False, opt_flags=OptFlags.all())
-        )
+        on = pl.col("c").cv.pipe(contour).graph("tensor", opt_flags=OptFlags.all())
         assert _shape_node_ops(on, shape_id) == ["resize"]
 
         off = (
             pl.col("c")
             .cv.pipe(contour)
-            .sink(
-                "tensor",
-                return_expr=False,
-                opt_flags=OptFlags(identity_elimination=False),
-            )
+            .graph("tensor", opt_flags=OptFlags(identity_elimination=False))
         )
         assert _shape_node_ops(off, shape_id) == ["resize", "crop"]
 
@@ -780,7 +773,7 @@ class TestIdentityElimination:
             Pipeline()
             .pad(top=0, bottom=0, left=0, right=0)
             .crop(top=0, left=0, height=10, width=10)
-        ).sink("tensor", return_expr=False, opt_flags=OptFlags.all())
+        ).graph("tensor", opt_flags=OptFlags.all())
         ops = [op_names(n.pipeline) for n in graph._nodes.values()]
         assert ["assert_shape"] in ops and ["crop"] not in ops
 
@@ -794,9 +787,9 @@ class TestIdentityElimination:
         upstream = pl.col("image").cv.pipe(
             Pipeline().source("image_bytes").resize(height=10, width=10)
         )
-        graph = upstream.pipe(Pipeline().crop(top=0, left=0, height=10, width=10)).sink(
-            "tensor", return_expr=False, opt_flags=OptFlags.all()
-        )
+        graph = upstream.pipe(
+            Pipeline().crop(top=0, left=0, height=10, width=10)
+        ).graph("tensor", opt_flags=OptFlags.all())
         ops = [op_names(n.pipeline) for n in graph._nodes.values()]
         assert ["resize"] in ops and ["crop"] not in ops
 

@@ -33,7 +33,7 @@ U8 = Pipeline().source("image_bytes", dtype="u8")
 
 def _physical(expr: LazyPipelineExpr, fmt: Any, opt_flags: Any = True) -> dict:
     """The serialized graph ``expr.sink(fmt)`` runs."""
-    return expr.sink(fmt, return_expr=False, opt_flags=opt_flags)._to_dict()
+    return expr.graph(fmt, opt_flags=opt_flags)._to_dict()
 
 
 def _ops(graph: dict) -> list[str]:
@@ -318,13 +318,13 @@ class TestDeterminism:
     def test_the_same_expression_built_twice_serializes_the_same(self) -> None:
         """Polars' own CSE and the compiled-graph cache key on the JSON."""
         (x, fmt), (y, _) = _branching(), _branching()
-        jx = x.sink(fmt, return_expr=False)._to_json()
-        jy = y.sink(fmt, return_expr=False)._to_json()
+        jx = x.graph(fmt)._to_json()
+        jy = y.graph(fmt)._to_json()
         assert jx == jy
 
     def test_optimizing_twice_changes_nothing(self) -> None:
         expr, fmt = _branching()
-        graph = expr.sink(fmt, return_expr=False)
+        graph = expr.graph(fmt)
         once = graph._to_json()
         graph.optimize(OptFlags.all())
         assert graph._to_json() == once

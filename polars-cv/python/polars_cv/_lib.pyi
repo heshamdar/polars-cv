@@ -112,6 +112,10 @@ def explain_graph(graph_json: str, inputs: list[str]) -> str:
     """The graph as text, from the plugin's own planning; ``inputs[i]`` names
     plugin input ``i``. See ``PipelineGraph.explain``."""
 
+def describe_graph(graph_json: str, inputs: list[str]) -> str:
+    """The same description as JSON (nodes, ops, states, outputs, passes),
+    which ``PipelineGraph.show_graph`` draws."""
+
 def check_geom_call(function: str, args_json: str) -> None:
     """Parse a geometry accessor call's arguments against its function's
     definition; raise ``ValueError``."""

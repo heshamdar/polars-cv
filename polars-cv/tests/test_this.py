@@ -363,7 +363,7 @@ def test_the_operators_are_the_engines() -> None:
 def _graph_ops(pipe: Pipeline) -> list[dict]:
     import json
 
-    graph = pl.col("a").cv.pipe(pipe).sink("tensor", return_expr=False)
+    graph = pl.col("a").cv.pipe(pipe).graph("tensor")
     spec = json.loads(graph._to_json())
     return [op for node in spec["nodes"].values() for op in node.get("ops", [])]
 

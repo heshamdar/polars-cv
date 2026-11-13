@@ -34,7 +34,7 @@ _SINKS: dict[str, dict[str, dict[str, Any]]] = {
     ]
 }
 #: `sink()`'s own parameters, which are not a sink's fields.
-_OWN = ("self", "format", "return_expr", "opt_flags")
+_OWN = ("self", "format", "opt_flags")
 
 
 def _gen_ops() -> Any:
@@ -70,8 +70,9 @@ class TestTheSignatureIsTheCatalogue:
         assert inspect.Parameter.VAR_POSITIONAL not in kinds
 
     def test_the_leading_parameters_keep_their_positions(self) -> None:
-        # `sink()` is the most-called method: `sink("png", False)` still binds.
-        assert tuple(inspect.signature(LazyPipelineExpr.sink).parameters)[:4] == _OWN
+        # `sink()` is the most-called method: `format` stays first; `opt_flags`
+        # is keyword-only, so the old `sink("png", False)` (`return_expr`) raises.
+        assert tuple(inspect.signature(LazyPipelineExpr.sink).parameters)[:3] == _OWN
 
     def test_every_format_has_a_constructor_taking_exactly_its_fields(self) -> None:
         constructors = {
@@ -133,9 +134,8 @@ class TestSinkValues:
         assert Sink.jpeg(quality=85) != Sink.jpeg(quality=84)
 
     def test_each_output_takes_its_own_sink(self) -> None:
-        graph = _branches().sink(
-            {"x": Sink.array(shape=[8, 8, 3]), "thumb": Sink.jpeg(quality=85)},
-            return_expr=False,
+        graph = _branches().graph(
+            {"x": Sink.array(shape=[8, 8, 3]), "thumb": Sink.jpeg(quality=85)}
         )
         assert _sinks(graph) == {
             "x": {"format": "array", "shape": [8, 8, 3]},
@@ -143,13 +143,14 @@ class TestSinkValues:
         }
 
     def test_a_sink_value_is_accepted_wherever_a_format_is(self) -> None:
-        by_value = _one().sink(Sink.jpeg(quality=40), return_expr=False)
-        by_keyword = _one().sink("jpeg", quality=40, return_expr=False)
-        by_enum = _one().sink(SinkFormat.JPEG, quality=40, return_expr=False)
-        assert by_value._to_json() == by_keyword._to_json() == by_enum._to_json()
-        mixed = _branches().sink(
-            {"x": SinkFormat.PNG, "thumb": Sink.jpeg()}, return_expr=False
-        )
+        # `meta.eq` compares the plugin call's kwargs, the graph JSON
+        # included (it tells quality 40 from 41).
+        by_value = _one().sink(Sink.jpeg(quality=40))
+        by_keyword = _one().sink("jpeg", quality=40)
+        by_enum = _one().sink(SinkFormat.JPEG, quality=40)
+        assert by_value.meta.eq(by_keyword) and by_value.meta.eq(by_enum)
+        assert by_value.meta.eq(_one().graph(Sink.jpeg(quality=40)).to_expr())
+        mixed = _branches().graph({"x": SinkFormat.PNG, "thumb": Sink.jpeg()})
         assert _sinks(mixed) == {"x": {"format": "png"}, "thumb": {"format": "jpeg"}}
 
     def test_every_constructor_builds_a_sink_rust_accepts(self) -> None:

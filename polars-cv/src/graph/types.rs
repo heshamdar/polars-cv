@@ -339,6 +339,10 @@ pub struct UnifiedGraph {
     cached_order: Vec<String>,
 }
 
+/// The field `on_error="null_with_message"` adds to the result: each failing
+/// row's message (`String`).
+pub(crate) const ERROR_FIELD: &str = "_error";
+
 /// The graph wire-format version this build reads. Version 2 gave each node
 /// one `input`; a version-1 graph's node fields are not read.
 pub(crate) const GRAPH_VERSION: u32 = 2;
@@ -445,6 +449,17 @@ impl UnifiedGraph {
     /// Check if this is a single-output graph (returns Binary instead of Struct).
     pub fn is_single_output(&self) -> bool {
         self.outputs.len() == 1 && self.outputs.contains_key("_output")
+    }
+    /// Whether the plugin returns a struct, a field per output: several
+    /// outputs, or any under `on_error="null_with_message"`, which adds
+    /// [`ERROR_FIELD`]. The one decision the schema, the executed series and
+    /// the graph's description read.
+    pub(crate) fn returns_struct(&self) -> bool {
+        !self.is_single_output() || self.adds_error_field()
+    }
+    /// Whether the result carries [`ERROR_FIELD`] (`null_with_message`).
+    pub(crate) fn adds_error_field(&self) -> bool {
+        self.on_error == RowErrorPolicy::NullWithMessage
     }
     /// Get cached topological order.
     /// The order is computed once during parsing and reused for all executions.

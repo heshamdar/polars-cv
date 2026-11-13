@@ -2,7 +2,7 @@
 
 `PipelineGraph.explain()` is rendered in Rust from the same planning
 `check()` and the schema read, so these tests hold the text to the graph
-(`sink(return_expr=False)`) and to `collect_schema()`, never to a copy of
+(`expr.graph(format)`, the one `sink()` runs) and to `collect_schema()`, never to a copy of
 the planner in Python.
 """
 
@@ -42,6 +42,14 @@ def _cutout():
 CUTOUT_SINKS = {"cutout": "png", "area": "native"}
 
 
+def _shown(dtype: pl.DataType) -> str:
+    """A dtype as the description writes it: polars' own short form (its
+    ``Display``, as ``LazyFrame.explain`` prints), where an extension type is
+    ``ext[name]``."""
+    short = dtype._string_repr()
+    return f"ext[{short}]" if isinstance(dtype, pl.BaseExtension) else short
+
+
 def _decodes(text: str) -> int:
     return len(re.findall(r"^n\d+: decode ", text, re.MULTILINE))
 
@@ -51,7 +59,7 @@ class TestNodes:
     def test_every_node_of_the_graph_once_in_execution_order(self, optimized):
         expr = _cutout()
         flags = None if optimized else False
-        graph = expr.sink(CUTOUT_SINKS, return_expr=False, opt_flags=flags)
+        graph = expr.graph(CUTOUT_SINKS, opt_flags=flags)
         text = expr.explain(CUTOUT_SINKS, optimized=optimized)
         assert len(NODE_LINE.findall(text)) == len(graph._nodes)
         # Execution order: a node is listed after every node it reads.
@@ -131,7 +139,7 @@ class TestOutputs:
                 for ln in text.splitlines()
                 if ln.startswith(f"output '{field.name}'")
             )
-            assert line.endswith(f":: {field.dtype._string_repr()}"), line
+            assert line.endswith(f":: {_shown(field.dtype)}"), line
 
     def test_a_single_output_is_its_sink_and_dtype(self):
         pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=4, width=4)
@@ -141,7 +149,7 @@ class TestOutputs:
         text = expr.explain("array")
         (line,) = [ln for ln in text.splitlines() if ln.startswith("output")]
         assert line.startswith("output: n0 as array")
-        assert line.endswith(f":: {dtype._string_repr()}")
+        assert line.endswith(f":: {_shown(dtype)}")
 
     def test_a_sink_with_settings_is_given_as_a_sink_value(self):
         pipe = Pipeline().source("image_bytes", dtype="u8")
@@ -153,7 +161,36 @@ class TestOutputs:
         pipe = Pipeline().source("list")
         text = pl.col("x").cv.pipe(pipe).explain("list")
         (line,) = [ln for ln in text.splitlines() if ln.startswith("output")]
-        assert line.endswith(":: from the input column")
+        assert line.endswith(":: set by the input column")
+
+    @pytest.mark.parametrize("sink", ["png", "blob", "tensor"])
+    def test_an_output_the_column_cannot_change_is_typed(self, sink):
+        # The column fills in the list source's dtype and rank, but none of
+        # these sinks' types depends on either.
+        pipe = Pipeline().source("list").cast("u8")
+        expr = pl.col("x").cv.pipe(pipe)
+        frame = pl.LazyFrame(schema={"x": pl.List(pl.List(pl.UInt8))})
+        dtype = frame.select(expr.sink(sink)).collect_schema().dtypes()[0]
+        (line,) = [
+            ln for ln in expr.explain(sink).splitlines() if ln.startswith("output")
+        ]
+        assert line.endswith(f":: {_shown(dtype)}")
+
+    def test_null_with_message_is_a_struct_with_its_error_field(self):
+        pipe = (
+            Pipeline().source("image_bytes", dtype="u8").on_error("null_with_message")
+        )
+        expr = pl.col("img").cv.pipe(pipe)
+        frame = pl.LazyFrame(schema={"img": pl.Binary})
+        (dtype,) = frame.select(expr.sink("png")).collect_schema().dtypes()
+        lines = [
+            ln for ln in expr.explain("png").splitlines() if ln.startswith("output")
+        ]
+        assert [f.name for f in dtype.fields] == ["_output", "_error"]
+        assert len(lines) == len(dtype.fields)
+        for field, line in zip(dtype.fields, lines, strict=True):
+            assert line.startswith(f"output '{field.name}'")
+            assert line.endswith(f":: {_shown(field.dtype)}")
 
 
 class TestLazyState:
@@ -166,7 +203,67 @@ class TestLazyState:
 
 
 def test_explain_needs_no_graphviz(monkeypatch):
-    monkeypatch.setitem(sys.modules, "pydot", None)
-    monkeypatch.setitem(sys.modules, "networkx", None)
+    monkeypatch.setitem(sys.modules, "graphviz", None)
     pipe = Pipeline().source("image_bytes", dtype="u8")
     assert pl.col("img").cv.pipe(pipe).explain("tensor").startswith("n0: ")
+
+
+class TestTheGraph:
+    """`graph()` is the one way to the graph: `sink()` runs it, `explain()`
+    and `show_graph()` describe it."""
+
+    def test_sink_is_the_graphs_expression(self):
+        expr = _cutout()
+        assert expr.sink(CUTOUT_SINKS).meta.eq(expr.graph(CUTOUT_SINKS).to_expr())
+
+    def test_sinks_keywords_apply_as_a_sink_value_does(self):
+        expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+        assert expr.sink("jpeg", quality=70).meta.eq(
+            expr.graph(Sink.jpeg(quality=70)).to_expr()
+        )
+
+    def test_sink_returns_an_expression_and_its_old_graph_slot_is_refused(self):
+        expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+        with pytest.raises(TypeError):
+            expr.sink("png", False)  # was return_expr=False
+        with pytest.raises(TypeError, match="return_expr"):
+            expr.sink("png", return_expr=False)
+
+    def test_opt_flags_beside_optimized_false_is_refused(self):
+        expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+        with pytest.raises(ValueError, match="optimized=False"):
+            expr.explain("png", optimized=False, opt_flags=True)
+
+    def test_without_a_fused_segment_no_engine_pass_line(self):
+        pipe = Pipeline().source("image_bytes", dtype="u8").perceptual_hash()
+        text = pl.col("img").cv.pipe(pipe).explain()
+        assert not any(ln.startswith("engine passes") for ln in text.splitlines())
+
+
+class TestShowGraph:
+    def test_the_drawing_holds_every_line_explain_prints(self):
+        """Both render one description: each node's and op's text, state
+        included, is in a box, and every output is in the SINK box."""
+        graphviz = pytest.importorskip("graphviz")
+        expr = _cutout()
+        source = expr.show_graph(CUTOUT_SINKS).source
+        text = expr.explain(CUTOUT_SINKS)
+        for line in text.splitlines():
+            if line.startswith(("engine passes", "policies")):
+                continue
+            if line.startswith("output '"):
+                # In the SINK box: `name: node as sink :: dtype`.
+                name, rest = line.removeprefix("output '").split("': ", 1)
+                line = f"{name}: {rest}"
+            else:
+                head, state = line.split("  -> ")
+                line = f"{head.strip()}  -> {state}"
+            assert graphviz.escape(line).replace('"', '\\"') in source, line
+
+    def test_without_graphviz_it_names_the_extra(self, monkeypatch):
+        import polars_cv._graph_viz as viz
+
+        monkeypatch.setattr(viz, "_VIZ_AVAILABLE", False)
+        expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+        with pytest.raises(ImportError, match=r"polars-cv\[viz\]"):
+            expr.show_graph("png")

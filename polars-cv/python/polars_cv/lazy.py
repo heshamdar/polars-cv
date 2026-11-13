@@ -19,7 +19,7 @@ from polars_cv._lazy_forwarders import _LazyForwardersMixin
 from polars_cv._ops_generated import _LazyOpsMixin
 
 if TYPE_CHECKING:
-    import pydot
+    import graphviz
 
     from polars_cv._graph import PipelineGraph
     from polars_cv._ops_generated import Sink, SinkFormat
@@ -214,26 +214,48 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                 node_id=_generate_node_id(),
             )
 
-    # --- Sink (materializes to pl.Expr) ---
+    # --- The graph: sink() runs it, explain()/show_graph() show it ---
 
-    def _sink(
+    def graph(
+        self,
+        format: "SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink]" = "native",
+        *,
+        optimized: bool = True,
+        opt_flags: "OptFlags | bool | None" = None,
+    ) -> "PipelineGraph":
+        """The graph ``sink(format)`` runs: built, optimized and checked.
+
+        The one place a graph is built: :meth:`sink` turns it into the
+        expression, and :meth:`explain` and :meth:`show_graph` describe it.
+
+        Args:
+            format: What :meth:`sink` takes: a format name, a ``Sink`` for
+                one with settings (``Sink.jpeg(quality=70)``), or a dict from
+                each output's alias to one of those.
+            optimized: ``False`` gives the graph as written: no optimization
+                pass runs, logical or engine.
+            opt_flags: Which passes run, as for :meth:`sink`. Refused with
+                ``optimized=False``, which already says none do.
+
+        Raises:
+            ValueError: ``opt_flags`` with ``optimized=False``, or a graph
+                the plugin would refuse (as :meth:`sink` raises it).
+        """
+        return self._graph(format, {}, _flags(optimized, opt_flags))
+
+    def _graph(
         self,
         format: Any,
-        values: dict[str, Any],
-        return_expr: bool,
+        shared: dict[str, Any],
         opt_flags: "OptFlags | bool | None",
-    ) -> "pl.Expr | PipelineGraph":
-        """Build, optimize and check the graph ``sink()`` asks for: the one
-        thing the generated ``sink()`` calls. *values* are its sink keywords
-        (``None`` for one not given)."""
+    ) -> "PipelineGraph":
+        """Build, optimize and check the graph; *shared* are sink keywords
+        that apply to every output (``sink()``'s; ``None`` for one not given)."""
         from polars_cv._graph import PipelineGraph, as_sink
+        from polars_cv._optimize import resolve_opt_flags
 
-        # Collect all nodes in topological order
-        all_nodes = self._collect_dependency_graph()
-
-        # Build the fused pipeline graph with alias information
         graph = PipelineGraph()
-        for node in all_nodes:
+        for node in self._collect_dependency_graph():
             graph.add_node(
                 node_id=node._node_id,
                 pipeline=node._pipeline,
@@ -244,70 +266,53 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         for alias, node_id in self._aliases():
             graph.add_alias(alias, node_id)
 
-        # The keywords given: on a dict they apply to every output's sink.
-        shared = {name: value for name, value in values.items() if value is not None}
+        given = {name: value for name, value in shared.items() if value is not None}
         if isinstance(format, Mapping):
             graph.set_multi_output(
-                {alias: as_sink(spec, shared, alias) for alias, spec in format.items()}
+                {alias: as_sink(spec, given, alias) for alias, spec in format.items()}
             )
         else:
-            graph.set_output(self._node_id, as_sink(format, shared))
+            graph.set_output(self._node_id, as_sink(format, given))
 
-        # The explicit optimization phase: rewrite the logical graph into its
-        # physical form before serialization. Both return paths see the same
-        # optimized graph.
-        from polars_cv._optimize import resolve_opt_flags
-
+        # The optimization phase rewrites the logical graph into the one that
+        # runs; then it is refused here, where it is written, by the code the
+        # plugin runs (compiled, planned, every output's sink checked).
         graph.optimize(resolve_opt_flags(opt_flags))
-        # Refused here, where it is written, by the code the plugin runs: the
-        # graph is compiled and planned, and every output's sink checked.
         graph.check()
-
-        if return_expr:
-            # Register and return the fused expression
-            return graph.to_expr()
-
-        # Return the graph
         return graph
 
-    # --- Inspection ---
+    def _sink(
+        self,
+        format: Any,
+        values: dict[str, Any],
+        opt_flags: "OptFlags | bool | None",
+    ) -> pl.Expr:
+        """The expression for the graph ``sink()`` asks for: the one thing the
+        generated ``sink()`` calls. *values* are its sink keywords."""
+        return self._graph(format, values, opt_flags).to_expr()
 
     def explain(
         self,
-        format: "SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink]",
+        format: "SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink]" = "native",
         *,
         optimized: bool = True,
         opt_flags: "OptFlags | bool | None" = None,
     ) -> str:
-        """The graph ``sink(format)`` would run, as text
-        (:meth:`PipelineGraph.explain`).
-
-        Args:
-            format: What :meth:`sink` takes: a format name, a ``Sink`` value
-                for one with settings (``Sink.jpeg(quality=70)``), or a dict
-                of aliases for several outputs.
-            optimized: When ``False``, the graph as written: no optimization
-                pass runs, logical or engine (as ``opt_flags=False``).
-            opt_flags: Which passes run when ``optimized``, as for
-                :meth:`sink`.
-
-        Returns:
-            One line per node, op and output; see
-            :meth:`PipelineGraph.explain`.
-        """
-        flags = opt_flags if optimized else False
-        return self.sink(format, return_expr=False, opt_flags=flags).explain()
+        """The graph ``sink(format)`` runs, as text: ``graph(...).explain()``
+        (see :meth:`PipelineGraph.explain`). Arguments as for :meth:`graph`."""
+        return self.graph(format, optimized=optimized, opt_flags=opt_flags).explain()
 
     def show_graph(
         self,
-        format: "SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink]",
+        format: "SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink]" = "native",
         *,
+        optimized: bool = True,
         opt_flags: "OptFlags | bool | None" = None,
-    ) -> "pydot.Dot":
-        """Draw the graph ``sink(format)`` would run
-        (:meth:`PipelineGraph.show_graph`; needs the ``viz`` extra and
-        Graphviz's ``dot``). :meth:`explain` gives the same graph as text."""
-        return self.sink(format, return_expr=False, opt_flags=opt_flags).show_graph()
+    ) -> "graphviz.Digraph":
+        """The graph ``sink(format)`` runs, drawn: ``graph(...).show_graph()``
+        (see :meth:`PipelineGraph.show_graph`; needs the ``viz`` extra and
+        Graphviz's ``dot``). Arguments as for :meth:`graph`."""
+        return self.graph(format, optimized=optimized, opt_flags=opt_flags).show_graph()
 
     def current_domain(self) -> str:
         """This node's planned domain: ``"buffer"``, ``"contour"``,
@@ -315,8 +320,9 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         return self._pipeline._state.domain
 
     def output_dtype(self) -> str:
-        """This node's planned element dtype (``"u8"``, ``"f32"``, …), or
-        ``"auto"`` when it is known only once a row is decoded."""
+        """This node's planned element dtype (``"u8"``, ``"f32"``, …);
+        ``"auto_float"`` when it is known only to be a float, ``"auto"`` when
+        it is known only once a row is decoded."""
         return self._pipeline._state.dtype
 
     # --- Composition Methods ---
@@ -747,21 +753,32 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
 #: ``Pipeline`` methods that are intentionally NOT chainable lazy operations:
 #: ``source`` starts a chain rather than continuing one, and the rest are
-#: builder/planner introspection helpers.
+#: builder/planner introspection, which ``LazyPipelineExpr`` writes itself for
+#: a node (``current_domain``, ``output_dtype``) rather than forwarding.
 PIPELINE_ONLY_METHODS = frozenset(
     {
         "source",
         "validate",
         "has_source",
-        "to_graph",
         "current_domain",
         "output_dtype",
-        # Introspection, not a chainable op: returns a str rendering, and
-        # optimization is a graph-level phase a single lazy expr cannot stand in
-        # for, so it is not forwarded onto LazyPipelineExpr.
-        "explain",
     }
 )
+
+
+def _flags(
+    optimized: bool, opt_flags: "OptFlags | bool | None"
+) -> "OptFlags | bool | None":
+    """``graph()``'s two settings as one: ``optimized=False`` is no pass at
+    all, so an ``opt_flags`` beside it would be ignored, and is refused."""
+    if optimized:
+        return opt_flags
+    if opt_flags is not None:
+        msg = (
+            "opt_flags selects passes, and optimized=False runs none; pass one of them"
+        )
+        raise ValueError(msg)
+    return False
 
 
 def _chainable_pipeline_ops() -> list[str]:

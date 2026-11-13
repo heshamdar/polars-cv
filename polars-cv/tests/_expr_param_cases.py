@@ -1104,12 +1104,7 @@ CASES: list[ExprCase] = [
 #: Expression-eligible parameters that :data:`CASES` deliberately does not
 #: sweep, with the reason. The coverage ratchet accepts a key here *instead of*
 #: a case, so an entry is a documented decision rather than a silent gap.
-NOT_SWEPT: dict[str, str] = {
-    # `to_graph` is graph plumbing, not an operation parameter: `column` names
-    # the input the graph reads and is supplied by `.cv.pipe()` for every
-    # pipeline the sweep builds.
-    "to_graph.column": "the graph's root input column, not an op parameter",
-}
+NOT_SWEPT: dict[str, str] = {}
 
 
 def literal_cases() -> list[ExprCase]:

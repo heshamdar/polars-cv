@@ -34,7 +34,7 @@ The **user-facing Python layer**. Responsible for:
 | `_types.py` | `SlotTable` (a graph's plugin inputs), `CloudOptions`, the `IntOrExpr`-style aliases (and `IntOrThisOrExpr`/`FloatOrThisOrExpr` for a parameter whose type takes `this`); the enums (`DType`, `Domain`, …) come from `_ops_generated.py` |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_lib.pyi` | Hand-written type stub for the compiled `_lib` (only the FFI the package imports by name). **Checked against the built extension, both directions, by `tests/test_lib_stub_parity.py`** (comparison in `tests/_stub_parity.py`, fixtures in `test_stub_parity_fixtures.py`): names, parameter names/kinds/order/defaults and member kinds must match, and every name `_lib` exports must be stubbed or listed in that test's `UNSTUBBED` with a reason. Change a `#[pyfunction]`/`#[pyclass]` signature and this file together |
-| `_graph_viz.py` | Graph visualization (networkx/graphviz) |
+| `_graph_viz.py` | `show_graph()`: lays out the plugin's graph description (`describe_graph`) with `graphviz` |
 | `display.py` | `show_images()` — notebook image rendering, format detection, VIEW/numpy to PNG |
 | `_this.py` | `ThisExpr` — `polars_cv.this` arithmetic (`{"$this": tree}` on the wire); `repr` is the engine's `Display` (`_lib._this_repr`), and `This`/`this` are generated from Rust's `ThisAttr` |
 | `_cloud.py` | `check_cloud_access()` / `CloudCredentialError` — a remote path's credential exercised once, through the same store a read opens |

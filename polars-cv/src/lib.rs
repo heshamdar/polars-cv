@@ -76,6 +76,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_this_repr, m)?)?;
     m.add_function(wrap_pyfunction!(check_graph, m)?)?;
     m.add_function(wrap_pyfunction!(explain_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(describe_graph, m)?)?;
     m.add_function(wrap_pyfunction!(check_geom_call, m)?)?;
     m.add_function(wrap_pyfunction!(geom_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
@@ -355,13 +356,22 @@ fn check_graph(graph_json: &str) -> PyResult<()> {
     Ok(())
 }
 
-/// The graph as text (`PipelineGraph.explain()`): each node in execution
-/// order with the planned state after each op, the fused segments, the
-/// outputs with their planned dtypes, and the engine passes that will run.
+/// The graph as text (`PipelineGraph.explain()`): the
+/// [`Description`](crate::graph::explain::Description)'s `Display`.
 /// `inputs[i]` names plugin input `i`.
 #[pyfunction]
 fn explain_graph(graph_json: &str, inputs: Vec<String>) -> PyResult<String> {
-    crate::graph::explain::explain(graph_json, &inputs).map_err(|e| py_value_error(e.to_string()))
+    crate::graph::explain::describe(graph_json, &inputs)
+        .map(|d| d.to_string())
+        .map_err(|e| py_value_error(e.to_string()))
+}
+
+/// The same description as JSON, which `PipelineGraph.show_graph()` draws.
+#[pyfunction]
+fn describe_graph(graph_json: &str, inputs: Vec<String>) -> PyResult<String> {
+    let description = crate::graph::explain::describe(graph_json, &inputs)
+        .map_err(|e| py_value_error(e.to_string()))?;
+    Ok(serde_json::to_string(&description).expect("a description serializes"))
 }
 
 /// Whether `dtype` holds an `Array` with a zero-size dimension at any level.
@@ -419,8 +429,7 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
     // The null_with_message error policy appends a reserved `_error` field,
     // which forces struct output even for single-output graphs. This mirrors
     // the execution path exactly (same compiled graph, same resolved specs).
-    let with_message = graph.on_error == crate::graph::RowErrorPolicy::NullWithMessage;
-    if graph.is_single_output() && !with_message {
+    if !graph.returns_struct() {
         // Single output mode - return typed field based on domain/sink/dtype
         let (_, spec) = resolved
             .first()
@@ -434,9 +443,9 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
             let dtype = crate::graph::dtype_for_output(spec)?;
             fields.push(Field::new(PlSmallStr::from(alias.as_str()), dtype));
         }
-        if with_message {
+        if graph.adds_error_field() {
             fields.push(Field::new(
-                PlSmallStr::from_static("_error"),
+                PlSmallStr::from_static(crate::graph::types::ERROR_FIELD),
                 DataType::String,
             ));
         }

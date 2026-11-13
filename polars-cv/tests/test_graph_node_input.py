@@ -22,7 +22,7 @@ pytestmark = plugin_required
 
 
 def _graph(expr):  # noqa: ANN001, ANN202
-    return expr.sink("tensor", return_expr=False)
+    return expr.graph("tensor")
 
 
 def test_a_wire_node_is_its_input_and_its_ops() -> None:

@@ -1,195 +1,87 @@
+"""Draw a graph from the plugin's description of it.
+
+The description (``_lib.describe_graph``) is the one ``PipelineGraph.explain``
+prints: the nodes in execution order, each op with its planned state and
+whether it runs fused, the outputs with their planned dtypes. This module only
+lays it out, so the drawing and the text cannot disagree; nothing here reads
+the Python graph or the wire.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 try:
-    import networkx as nx
-    from graphviz import Source
-    from networkx.drawing.nx_pydot import to_pydot
+    import graphviz
 
     _VIZ_AVAILABLE = True
 except ImportError:
     _VIZ_AVAILABLE = False
 
 if TYPE_CHECKING:
-    from polars_cv._graph import PipelineGraph
+    import graphviz
+
+#: The one node every output edge ends at.
+SINK = "SINK"
 
 
-class NodeKind(str, Enum):
-    SOURCE = "source"
-    COMPUTE = "compute"
-    OUTPUT = "output"
+def _label(lines: list[str]) -> str:
+    """Left-justified lines, each escaped so its text reads literally."""
+    return "".join(graphviz.escape(line) + r"\l" for line in lines)
 
 
-@dataclass(frozen=True)
-class BaseNode:
-    node_id: str
-    kind: NodeKind
+def draw(description: dict[str, Any]) -> graphviz.Digraph:
+    """The graph *description* describes, as a ``graphviz.Digraph``.
 
-
-@dataclass(frozen=True)
-class ComputeNode(BaseNode):
-    alias: Optional[str]
-    ops: List[Dict[str, Any]]
-    domain: str
-    dtype: str
-    dependencies: List[str]
-    source_format: Optional[str] = None  # only set for sources
-
-
-@dataclass(frozen=True)
-class OutputNode(BaseNode):
-    outputs: Dict[str, Dict[str, Any]]  # alias -> sink spec
-
-
-@dataclass
-class LogicalGraph:
-    nodes: Dict[str, ComputeNode] = field(default_factory=dict)
-    output: Optional[OutputNode] = None
-
-
-OUTPUT_NODE_ID = "__output__"
-
-
-def parse_logical_graph(pipeline_graph: PipelineGraph) -> LogicalGraph:
-    """The display graph: ops and wiring from the serialized spec, and each
-    node's alias and planned domain/dtype from the Python graph itself (the
-    plugin wire format carries no display metadata)."""
-    spec = pipeline_graph._to_dict()
-    graph = LogicalGraph()
-    # The spec names nodes by their wire ids; the Python nodes go by build ids.
-    wire = pipeline_graph._wire_ids()
-    by_wire = {wire[node_id]: node_id for node_id in pipeline_graph._nodes}
-
-    # Parse compute + source nodes
-    for node_id, payload in spec["nodes"].items():
-        decode = payload["input"].get("decode")
-        is_source = decode is not None
-        build_id = by_wire[node_id]
-        node = pipeline_graph._nodes[build_id]
-        dependencies = [wire[d] for d in pipeline_graph._dependencies(build_id)]
-
-        graph.nodes[node_id] = ComputeNode(
-            node_id=node_id,
-            kind=NodeKind.SOURCE if is_source else NodeKind.COMPUTE,
-            alias=node.alias,
-            ops=payload.get("ops", []),
-            domain=node.pipeline.current_domain(),
-            dtype=node.pipeline.output_dtype(),
-            dependencies=dependencies,
-            source_format=decode["source"]["format"] if is_source else None,
-        )
-
-    # Parse outputs as a single container
-    graph.output = OutputNode(
-        node_id=OUTPUT_NODE_ID,
-        kind=NodeKind.OUTPUT,
-        outputs=spec["outputs"],
-    )
-
-    return graph
-
-
-def build_dag(graph: LogicalGraph) -> nx.DiGraph:
-    g = nx.DiGraph()
-
-    # Add compute/source nodes
-    for node in graph.nodes.values():
-        g.add_node(node.node_id, payload=node)
-
-        for dependency in node.dependencies:
-            g.add_edge(dependency, node.node_id)
-
-    # Add output container
-    output_node = graph.output
-    assert output_node is not None
-
-    g.add_node(output_node.node_id, payload=output_node)
-
-    for alias, out in output_node.outputs.items():
-        g.add_edge(out["node"], output_node.node_id, alias=alias)
-
-    return g
-
-
-## Visualization
-
-
-def _wire_label(value: Any) -> str:
-    """A field's display value: ``Expr`` for a slot, the literal otherwise.
-
-    A field is its bare value (a list element by element); a per-row one is
-    ``{"$slot": n}``. A node operand is its wire id, the name its node's label
-    leads with.
-    """
-    if isinstance(value, dict):
-        if value.keys() == {"$slot"}:
-            return "Expr"
-        return "{" + ", ".join(f"{k}: {_wire_label(v)}" for k, v in value.items()) + "}"
-    if isinstance(value, list):
-        return "[" + ", ".join(_wire_label(v) for v in value) + "]"
-    return str(value)
-
-
-def _op_line(op: Dict[str, Any]) -> str:
-    """One op as it is called: ``name(field=value, ...)``."""
-    fields = ", ".join(f"{k}={_wire_label(v)}" for k, v in op.items() if k != "op")
-    return f"{op['op']}({fields})"
-
-
-def style_node(payload: BaseNode) -> Dict[str, Any]:
-    """The DOT attributes a node renders with. A compute node's label leads
-    with its wire id (what an operand names it by), then its alias if it has
-    one, its ops and its planned dtype; a root also names its source format."""
-    if isinstance(payload, ComputeNode):
-        lines = [payload.node_id]
-        if payload.kind == NodeKind.SOURCE:
-            lines[0] = f"SOURCE {payload.node_id}"
-            lines.append(f"source: {payload.source_format}")
-        if payload.alias is not None:
-            lines.append(f"alias: {payload.alias}")
-        lines.extend(_op_line(op) for op in payload.ops)
-        lines.append(f"output_type: {payload.dtype}")
-        style = {"style": "bold"} if payload.kind == NodeKind.SOURCE else {}
-        return {"shape": "box", **style, "label": "\n".join(lines)}
-
-    if isinstance(payload, OutputNode):
-        lines = ["SINK"]
-        for alias, spec in payload.outputs.items():
-            lines.append(f"• {alias} ({spec['sink']['format']})")
-        return {
-            "shape": "box",
-            "style": "bold",
-            "label": "\n".join(lines),
-        }
-
-    raise ValueError(payload)
-
-
-def visualize_dag(g: nx.DiGraph):
-    """The DAG as DOT: each node carries only its display attributes, not the
-    payload it was styled from."""
-    for _, data in g.nodes(data=True):
-        data.update(style_node(data.pop("payload")))
-
-    return to_pydot(g)
-
-
-def get_graphviz_out(graph: PipelineGraph) -> Source:
-    """
-    Returns a Graphviz object for the given pipeline graph.
+    One box per node, its lines those ``explain`` prints: led by its wire id
+    (the name an operand reads it by) and what it reads, then each op with its planned state (``|`` marks
+    the fused ones, as in ``explain``); a root is bold. A solid edge is a
+    node's input, a dashed one an op reading another node. Every output is an
+    edge into the ``SINK`` box, which lists each with its sink and dtype.
     """
     if not _VIZ_AVAILABLE:
-        raise ImportError(
-            "Graph visualization requires 'networkx', 'graphviz', and 'pydot'. "
-            "Install them with: pip install 'polars-cv[viz]'"
+        msg = (
+            "Graph drawing requires the 'graphviz' package (and Graphviz's "
+            "`dot` program to render it). Install it with: "
+            "pip install 'polars-cv[viz]'"
         )
-    logical = parse_logical_graph(graph)
-    dag = build_dag(logical)
-    dot = visualize_dag(dag)
+        raise ImportError(msg)
 
-    graphviz_object = Source(dot.to_string())
+    dot = graphviz.Digraph(
+        "polars_cv", node_attr={"shape": "box", "fontname": "monospace"}
+    )
+    for node in description["nodes"]:
+        source = node["input"].get("decode")
+        reads = (
+            f"decode {source['column']} as {source['source']}"
+            if source is not None
+            else f"reads {node['input']['node']}"
+        )
+        lines = [f"{node['id']}: {reads}  -> {node['state']}"]
+        lines += [
+            f"{'|' if op['fused'] else ' '} {op['label']}  -> {op['state']}"
+            for op in node["ops"]
+        ]
+        dot.node(node["id"], _label(lines), style="bold" if source else "solid")
+        if source is None:
+            dot.edge(node["input"]["node"], node["id"])
+        for op in node["ops"]:
+            for other in op["reads"]:
+                name = op["label"].split("(", 1)[0]
+                dot.edge(other, node["id"], label=graphviz.escape(name), style="dashed")
 
-    return graphviz_object
+    lines = ["SINK"]
+    for out in description["outputs"]:
+        name = out["name"] or "output"
+        dtype = out["dtype"] or "set by the input column"
+        where = (
+            f"{out['node']} as {out['sink']}"
+            if out["node"]
+            else "each failing row's message"
+        )
+        lines.append(f"{name}: {where} :: {dtype}")
+    dot.node(SINK, _label(lines), style="bold")
+    for out in description["outputs"]:
+        if out["node"]:
+            dot.edge(out["node"], SINK, label=graphviz.escape(out["name"] or ""))
+    return dot

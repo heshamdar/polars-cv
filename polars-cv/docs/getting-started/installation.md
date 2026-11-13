@@ -63,7 +63,8 @@ for every option, including federated Google credentials and token commands.
 
 ### Graph Visualization
 
-`show_graph()` needs the `viz` extra and Graphviz's `dot` program, which
+`show_graph()` needs the `viz` extra and Graphviz's `dot` program (`explain()`
+prints the same graph as text and needs neither), which
 pip cannot install:
 
 ```bash

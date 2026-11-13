@@ -153,10 +153,11 @@ runs, with each op's planned dtype and shape; `expr.show_graph(...)` draws it
 
 Written out, this is eight nodes with three decodes; it runs as six with one.
 The optimiser computes each distinct value once: the three pipelines built from `base` share one read
-and resize (the `SOURCE` node), and each linear run of steps that nothing else
+and resize (node `n0`), and each linear run of steps that nothing else
 reads becomes a single node, so the brightness threshold runs straight through
-`maximum` to the hull in one. Pass `opt_flags=False` to `sink` to see the
-graph as written; the outputs are byte for byte the same. The whole graph is
+`maximum` to the hull in one (`|` marks the ops that run fused).
+`explain(..., optimized=False)` shows the graph as written; the outputs are
+byte for byte the same. The whole graph is
 one Polars expression: it runs in the lazy and streaming engines, per row,
 with `min_saturation` read from each row's column, and returns the PNG and the
 outline's area together.

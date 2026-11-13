@@ -115,7 +115,7 @@ def test_auto_source_table_names_real_source_formats() -> None:
 _FOREIGN_METHODS: "dict[str, str]" = {}
 
 #: Every class a documented method may belong to: the builder, its lazy twin,
-#: the graph `to_graph()` returns and the `OptFlags` that optimizes it, the
+#: the graph `graph()` returns and the `OptFlags` that optimizes it, the
 #: `Sink` whose constructors an output is written with (`Sink.jpeg(...)`), and
 #: the four expression namespaces (`.cv`, `.point`, `.contour`, `.bbox`).
 #:

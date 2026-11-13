@@ -131,9 +131,7 @@ def main() -> None:
     print(f"wrote {figure} (outline area {out['area'].item()[0]:g} px)")
 
     graph = args.out_dir / "readme-cutout-graph.svg"
-    graph.write_bytes(
-        expr.sink(SINKS, return_expr=False).show_graph().pipe(format="svg")
-    )
+    graph.write_bytes(expr.show_graph(SINKS).pipe(format="svg"))
     print(f"wrote {graph}")
 
 
