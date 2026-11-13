@@ -80,6 +80,25 @@ crate::naming::named_variants!(CoordOrder: "Order of a point's coordinates in a 
     "yx" => Yx,
 });
 
+/// The layout of a box's four numbers in a plain list. A stored box is
+/// always [`BoundingBox`]'s `{x, y, width, height}`; this names the others it
+/// is read from (`bbox_from_coords`) and written as (`.bbox.to_coords`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxFormat {
+    /// `x_min, y_min, x_max, y_max`.
+    Xyxy,
+    /// `x_min, y_min, width, height` (COCO).
+    Xywh,
+    /// `x_centre, y_centre, width, height` (YOLO).
+    Cxcywh,
+}
+
+crate::naming::named_variants!(BoxFormat: "Layout of a box's four numbers in a plain list (``polars_cv.geometry.bbox_from_coords``, ``.bbox.to_coords``, the metrics' ``box_format=``).\n\n- XYXY: ``x_min, y_min, x_max, y_max``.\n- XYWH: ``x_min, y_min, width, height`` (COCO).\n- CXCYWH: ``x_centre, y_centre, width, height`` (YOLO)." {
+    "xyxy" => Xyxy,
+    "xywh" => Xywh,
+    "cxcywh" => Cxcywh,
+});
+
 impl CoordOrder {
     /// The point of a `[first, second]` pair in this order.
     pub fn point(self, [first, second]: [f64; 2]) -> Point {
@@ -188,6 +207,75 @@ impl BoundingBox {
     /// Returns the area of the bounding box.
     pub fn area(&self) -> f64 {
         self.width * self.height
+    }
+
+    /// The box's four numbers in `format`.
+    pub fn coords(&self, format: BoxFormat) -> [f64; 4] {
+        let Self {
+            x,
+            y,
+            width: w,
+            height: h,
+        } = *self;
+        match format {
+            BoxFormat::Xyxy => [x, y, x + w, y + h],
+            BoxFormat::Xywh => [x, y, w, h],
+            BoxFormat::Cxcywh => [x + w / 2.0, y + h / 2.0, w, h],
+        }
+    }
+
+    /// Every coordinate scaled about the origin: `x` and `width` by `sx`,
+    /// `y` and `height` by `sy` (a resize of the image the box is on).
+    /// `None` for a negative factor, which would give a negative size.
+    pub fn scaled(&self, sx: f64, sy: f64) -> Option<Self> {
+        (sx >= 0.0 && sy >= 0.0)
+            .then(|| Self::new(self.x * sx, self.y * sy, self.width * sx, self.height * sy))
+    }
+
+    /// The box moved by `(dx, dy)`.
+    pub fn translated(&self, dx: f64, dy: f64) -> Self {
+        Self::new(self.x + dx, self.y + dy, self.width, self.height)
+    }
+
+    /// The part of the box inside `[0, width] x [0, height]`. A box wholly
+    /// outside keeps no area: it becomes a zero-size box on the nearest edge.
+    pub fn clipped(&self, width: f64, height: f64) -> Self {
+        let (x0, x1) = (
+            self.x.clamp(0.0, width),
+            (self.x + self.width).clamp(0.0, width),
+        );
+        let (y0, y1) = (
+            self.y.clamp(0.0, height),
+            (self.y + self.height).clamp(0.0, height),
+        );
+        Self::new(x0, y0, x1 - x0, y1 - y0)
+    }
+
+    /// The box grown by `amount` on every side (shrunk for a negative one).
+    /// `None` when a shrink would leave a negative size.
+    pub fn padded(&self, amount: f64) -> Option<Self> {
+        let (w, h) = (self.width + 2.0 * amount, self.height + 2.0 * amount);
+        (w >= 0.0 && h >= 0.0).then(|| Self::new(self.x - amount, self.y - amount, w, h))
+    }
+
+    /// The box scaled by `factor` about its centre. `None` for a negative
+    /// factor.
+    pub fn expanded(&self, factor: f64) -> Option<Self> {
+        let c = self.center();
+        let (w, h) = (self.width * factor, self.height * factor);
+        (factor >= 0.0).then(|| Self::new(c.x - w / 2.0, c.y - h / 2.0, w, h))
+    }
+
+    /// The box's corners as a ring from the top-left, down the left edge
+    /// first.
+    pub fn corners(&self) -> Vec<Point> {
+        let (x1, y1) = (self.x + self.width, self.y + self.height);
+        vec![
+            Point::new(self.x, self.y),
+            Point::new(self.x, y1),
+            Point::new(x1, y1),
+            Point::new(x1, self.y),
+        ]
     }
 
     /// Whether `p` lies strictly inside the box: not on its edges.
@@ -575,5 +663,66 @@ mod tests {
         let contour = Contour::with_holes(exterior, vec![hole]);
         assert!(contour.has_holes());
         assert_eq!(contour.holes.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod bbox_tests {
+    use super::*;
+
+    fn b() -> BoundingBox {
+        BoundingBox::new(10.0, 20.0, 30.0, 40.0)
+    }
+
+    #[test]
+    fn coords_in_each_format() {
+        assert_eq!(b().coords(BoxFormat::Xyxy), [10.0, 20.0, 40.0, 60.0]);
+        assert_eq!(b().coords(BoxFormat::Xywh), [10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(b().coords(BoxFormat::Cxcywh), [25.0, 40.0, 30.0, 40.0]);
+    }
+
+    #[test]
+    fn transforms_keep_a_box_a_box() {
+        assert_eq!(
+            b().scaled(2.0, 0.5),
+            Some(BoundingBox::new(20.0, 10.0, 60.0, 20.0))
+        );
+        assert_eq!(b().scaled(-1.0, 1.0), None);
+        assert_eq!(
+            b().translated(-10.0, 5.0),
+            BoundingBox::new(0.0, 25.0, 30.0, 40.0)
+        );
+        assert_eq!(
+            b().padded(5.0),
+            Some(BoundingBox::new(5.0, 15.0, 40.0, 50.0))
+        );
+        assert_eq!(
+            b().padded(-15.0),
+            Some(BoundingBox::new(25.0, 35.0, 0.0, 10.0))
+        );
+        assert_eq!(b().padded(-15.5), None);
+        assert_eq!(
+            b().expanded(2.0),
+            Some(BoundingBox::new(-5.0, 0.0, 60.0, 80.0))
+        );
+        assert_eq!(b().expanded(-1.0), None);
+    }
+
+    #[test]
+    fn clipping_keeps_the_part_inside_and_a_box_outside_collapses() {
+        assert_eq!(
+            b().clipped(25.0, 100.0),
+            BoundingBox::new(10.0, 20.0, 15.0, 40.0)
+        );
+        let outside = BoundingBox::new(-50.0, -50.0, 10.0, 10.0).clipped(25.0, 25.0);
+        assert_eq!(outside, BoundingBox::new(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(b().clipped(1000.0, 1000.0), b());
+    }
+
+    #[test]
+    fn corners_are_a_ring_of_the_boxs_area() {
+        let ring = Contour::new(b().corners());
+        assert_eq!(BoundingBox::from_points(&ring.exterior), Some(b()));
+        assert!((crate::geometry::measures::area(&ring, false) - b().area()).abs() < 1e-9);
     }
 }

@@ -1,6 +1,6 @@
 {
- "generated": "2026-11-11",
- "commit": "996c2ad",
+ "generated": "2026-11-13",
+ "commit": "4d0096a",
  "versions": {
   "polars-cv": "0.41.0",
   "polars": "2.1.0",
@@ -218,6 +218,18 @@
    "tolerance": "exact",
    "tests": 1,
    "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.dnn.NMSBoxes` (Rect2d), random clustered boxes",
+   "file": "tests/reference/test_bbox_ref.py",
+   "ops": [
+    "bbox.nms"
+   ],
+   "tolerance": "exact (kept indices, in order)",
+   "tests": 30,
+   "passed": 30,
    "failed": 0,
    "skipped": 0
   },

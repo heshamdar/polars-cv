@@ -13,13 +13,17 @@ after the first two phases.
 CR-146; CR-118 is not scheduled. CR-149's refresh runs with
 the next release (below).
 
-**Status:** CR-148, CR-79 and CR-76 are closed (`ISSUES.md`, Closed findings), and
+**Status:** CR-148, CR-79, CR-76 and CR-147 are closed (`ISSUES.md`, Closed findings), and
 CR-149's guard is pinned in `test_benchmark_freshness.py`. CR-148 went further than
 its plan after review (owner, 2026-11-13): `expr.graph(format)` is the one way
 to a graph, `explain()` and `show_graph()` render one Rust description of it,
 and `sink(return_expr=False)`, `Pipeline.explain` and `Pipeline.to_graph` are
 removed. A sink with settings is a `Sink` value, not keywords. The optimised README cut-out is six nodes and
-one decode against eight and three as written, as first measured.
+one decode against eight and three as written, as first measured. CR-147
+followed the corrected plan (owner, 2026-11-13: `crop_box` clips to the
+image, the full accessor set): conversions are `.bbox.to_coords(format)`, the
+inverse of `bbox_from_coords`, both reading one Rust `BoxFormat`; `nms`
+returns kept positions; `crop` was taken, so the sugar is `crop_box`.
 
 The working rules at the top of phase 1 apply here unchanged.
 
@@ -106,66 +110,6 @@ pycocotools parity test never runs in CI) is open in the ledger.
    multi-output sharing (one graph against separate expressions). These
    measure the checkout, so they go to `polars-cv/benchmarks/regression`,
    not the cross-library tree.
-
----
-
-## CR-147 — `.bbox` has two accessors
-
-**Re-verified: confirmed. No recorded reason for the size.**
-
-### Evidence
-
-`geom_catalog.json`: 35 contour accessors, 17 point, 2 bbox
-(`bbox_pairwise_iou`, `bbox_correspond`). `BBOX_SCHEMA` is
-`Struct{x, y, width, height: Float64}`. The geometry `AGENTS.md` describes
-`.bbox` as existing for `BBoxMatcher`. Boxes are the commonest annotation
-type, and the README's own second example computes a crop box by hand.
-
-A box is four floats, so most of this is expressible as plain Polars struct
-arithmetic. That is the argument for *not* adding it; the argument for is
-that the per-row crop feature, the tool's differentiator, takes boxes as
-input and every user writes the same conversions first.
-
-### Approach
-
-Add `BBoxFn` variants (`namespaces/fns.rs`), each a mode-generic definition
-like the existing two, generated into `.bbox`. `BBoxColumn` reads one box or
-a set per row (`Arity`), so each per-box accessor keeps the arity it is
-given (`area()` on a box column is `Float64`, on a set `List[Float64]`), as
-the contour accessors do; `nms` takes a set.
-
-| Accessor | Notes |
-|---|---|
-| `area()` | per box |
-| `to_xyxy()`, `to_cxcywh()` | the inverse of `bbox_from_coords`, beside it in `geometry/coords.py` (plain Polars over the set); `bbox_from_coords(format=)` stays the only way in, so no `from_*`; `BBOX_SCHEMA` stays the stored form |
-| `clip(width=, height=)` | per-row sizes, so `this`-free expressions from `image_info()` |
-| `scale(sx=, sy=)`, `translate(dx=, dy=)` | mirror the contour/point accessors' names and `on_null` |
-| `to_absolute`/`normalize(width=, height=)` | as `.point` and `.contour` have |
-| `pad(px=)` / `expand(ratio=)` | the "crop with context" case |
-| `to_contour()` | bridges to the 35 contour accessors and to `rasterize` |
-| `nms(scores=, iou_threshold=)` | greedy, per list; reuse `pairwise::bbox_iou_matrix` |
-
-Then a `crop(box=pl.col("bbox"))` convenience on `Pipeline` as `@_sugar`
-over `crop`, declaring the op it lowers to. It takes one box per row (a
-`BBOX_SCHEMA` struct, not the set), and `crop` takes `u32` offsets, so it
-states its rounding: the smallest pixel window containing the box (floor
-`x`/`y`, ceil the far edges), lowered to `crop_clip` if the box may leave
-the image. Decide which, and say it in the docstring.
-
-Resolved first: CR-76 is closed. The bbox reader every accessor goes
-through refuses a negative size and reads a zero one, so a new accessor
-inherits that answer and needs no check of its own.
-
-### Tests first
-
-- Each accessor against a NumPy definition; `nms` against
-  `torchvision.ops.nms` or `cv2.dnn.NMSBoxes` on random boxes, in the parity
-  report.
-- Round trips between the four formats are exact on integer boxes.
-- Null boxes, empty lists, and a null per-row parameter under each
-  `on_null` policy: these go through the shared `GeomParams` path, so the
-  existing arity and null sweeps should pick the new functions up from the
-  catalogue without per-function tests. Check that they do.
 
 ---
 

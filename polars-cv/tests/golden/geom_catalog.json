@@ -1,6 +1,43 @@
 [
   {
     "namespace": "bbox",
+    "name": "bbox_area",
+    "python": "area",
+    "visibility": "public",
+    "doc": "The box's area, ``width * height``.\n\nReturns:\n    ``Float64``, or a list of them for a box-set column.",
+    "fields": []
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_clip",
+    "python": "clip",
+    "visibility": "public",
+    "doc": "The part of the box inside a ``width`` x ``height`` image. A box wholly\noutside becomes a zero-size box on the nearest edge.\n\nReturns:\n    A box, or a list of them for a box-set column.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Image width; at least 0 (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Image height; at least 0 (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
     "name": "bbox_correspond",
     "python": "correspond",
     "visibility": "public",
@@ -38,6 +75,100 @@
   },
   {
     "namespace": "bbox",
+    "name": "bbox_expand",
+    "python": "expand",
+    "visibility": "public",
+    "doc": "Scale the box by ``factor`` about its centre (``1.2`` adds 10% on\neach side). A negative factor is refused.\n\nReturns:\n    A box, or a list of them for a box-set column.",
+    "fields": [
+      {
+        "name": "factor",
+        "doc": "Size factor, at least 0 (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_nms",
+    "python": "nms",
+    "visibility": "public",
+    "doc": "Greedy non-maximum suppression over each row's box set: visit the\nboxes by decreasing score (equal scores by position), keeping each\nwhose IoU with every box kept so far is at most ``iou_threshold`` —\nthe rule of torchvision's ``nms`` and OpenCV's ``NMSBoxes``.\n\nReturns the kept boxes' positions rather than the boxes, so the other\nper-box columns (labels, scores) can be taken the same way:\n``pl.col(\"labels\").list.gather(kept)``.\n\nReturns:\n    ``List(UInt32)``: the kept positions, highest score first.",
+    "fields": [
+      {
+        "name": "scores",
+        "doc": "Each box's score: a list per row, one finite value per box.",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "iou_threshold",
+        "doc": "Suppress a box whose IoU with a kept one is above this, in [0, 1]\n(literal or expression).",
+        "default": 0.5,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_normalize",
+    "python": "normalize",
+    "visibility": "public",
+    "doc": "Convert pixel coordinates to the normalized [0, 1] range of a\n``width`` x ``height`` image.\n\nReturns:\n    A box, or a list of them for a box-set column.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Image width; positive (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Image height; positive (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_pad",
+    "python": "pad",
+    "visibility": "public",
+    "doc": "Grow the box by ``amount`` pixels on every side (shrink it for a\nnegative ``amount``): the context around a crop. A shrink past zero\nsize is refused.\n\nReturns:\n    A box, or a list of them for a box-set column.",
+    "fields": [
+      {
+        "name": "amount",
+        "doc": "Pixels added to each side (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
     "name": "bbox_pairwise_iou",
     "python": "pairwise_iou",
     "visibility": "public",
@@ -48,6 +179,125 @@
         "doc": "Ground-truth bounding-box set expression.",
         "type": {
           "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_scale",
+    "python": "scale",
+    "visibility": "public",
+    "doc": "Scale the box's coordinates about the image origin, as resizing the\nimage by ``(sx, sy)`` moves it. A negative factor is refused.\n\nReturns:\n    A box, or a list of them for a box-set column.",
+    "fields": [
+      {
+        "name": "sx",
+        "doc": "Horizontal factor, at least 0 (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      },
+      {
+        "name": "sy",
+        "doc": "Vertical factor, at least 0 (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_to_absolute",
+    "python": "to_absolute",
+    "visibility": "public",
+    "doc": "Convert normalized coordinates to pixel coordinates of a ``width`` x\n``height`` image.\n\nReturns:\n    A box, or a list of them for a box-set column.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Image width; at least 0 (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Image height; at least 0 (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_to_contour",
+    "python": "to_contour",
+    "visibility": "public",
+    "doc": "The box as a closed contour (its four corners), for the ``.contour``\naccessors and ``rasterize``.\n\nReturns:\n    A contour, or a list of them for a box-set column.",
+    "fields": []
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_to_coords",
+    "python": "to_coords",
+    "visibility": "public",
+    "doc": "The box's four numbers in ``format``: the inverse of\n:func:`polars_cv.geometry.bbox_from_coords`.\n\nReturns:\n    ``Array(Float64, 4)``, or a list of them for a box-set column.",
+    "fields": [
+      {
+        "name": "format",
+        "doc": "``\"xyxy\"``, ``\"xywh\"`` or ``\"cxcywh\"`` (:class:`polars_cv.geometry.BoxFormat`);\nrequired, since the three cannot be told apart from the numbers\n(literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "BoxFormat",
+          "this": false,
+          "variants": [
+            "xyxy",
+            "xywh",
+            "cxcywh"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_translate",
+    "python": "translate",
+    "visibility": "public",
+    "doc": "Move the box by ``(dx, dy)``.\n\nReturns:\n    A box, or a list of them for a box-set column.",
+    "fields": [
+      {
+        "name": "dx",
+        "doc": "Horizontal offset (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
+        }
+      },
+      {
+        "name": "dy",
+        "doc": "Vertical offset (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float",
+          "this": true
         }
       }
     ]

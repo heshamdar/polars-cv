@@ -149,6 +149,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     # --- not comparable by this harness -----------------------------------
     "assert_shape": None,  # sets hints directly; covered by its own test
     "label_reduce": None,  # takes a contour *column*, not a plain value
+    "crop_box": None,  # takes a box *column*; test_bbox_accessors.py::TestCropBox
     "on_error": None,  # graph-level policy, appends no op
     "on_null_param": None,  # graph-level policy, appends no op
 }

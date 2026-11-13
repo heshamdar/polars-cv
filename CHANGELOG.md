@@ -83,6 +83,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`.bbox` measures, conversions and transforms, `nms`, and
+  `Pipeline.crop_box` (CR-147).** `.bbox` had two accessors (`pairwise_iou`,
+  `correspond`). It now has, per box and keeping the column's arity (one box
+  per row, or a set): `area()`, `to_coords(format)` (the inverse of
+  `bbox_from_coords`), `to_contour()`, `translate(dx, dy)`, `scale(sx, sy)`
+  (about the image origin), `normalize`/`to_absolute(width, height)`,
+  `clip(width, height)`, `pad(amount)` and `expand(factor)`, each parameter a
+  literal or a per-row expression. `nms(scores, iou_threshold=0.5)` runs
+  greedy non-maximum suppression over each row's set and returns the kept
+  positions, highest score first, so labels and scores follow with
+  `list.gather`; it agrees exactly with OpenCV's `NMSBoxes` in the parity
+  report. `Pipeline.crop_box(box)` crops each row's image to the smallest
+  whole-pixel window containing its box, clipped to the image
+  (`crop_clip`). Every box is read through one reader, so each refuses what
+  CR-76 refuses. `polars_cv.geometry.BoxFormat` is now an enum generated from
+  the Rust definition (it was a `Literal` alias); `"xyxy"`, `"xywh"` and
+  `"cxcywh"` are accepted as before.
+
 - **`explain()` and `show_graph()` on a lazy expression, from one
   description of the graph (CR-148).** `expr.explain(format)` prints the
   graph `sink(format)` runs: each node in execution order with what it reads,

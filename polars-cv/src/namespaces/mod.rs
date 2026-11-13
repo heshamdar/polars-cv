@@ -4,6 +4,7 @@
 
 pub(crate) mod accessor;
 pub(crate) mod arity;
+pub(crate) mod bbox;
 pub(crate) mod columns;
 pub(crate) mod construct;
 pub(crate) mod contour;

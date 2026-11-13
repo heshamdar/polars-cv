@@ -26,6 +26,9 @@ from ._contour import (
     _SourceHandle,
 )
 
+#: The box formats, as the refusals name them (read from the enum).
+_FORMATS = ", ".join(repr(f.value) for f in BoxFormat)
+
 _ACCEPTED = (
     "a BBOX_SCHEMA struct column; a List/Array of 4 numbers or a tuple of 4 "
     "column names, with box_format=; a CONTOUR_SCHEMA column (polygons); or a "
@@ -38,7 +41,7 @@ def match_detections(
     ground_truth: pl.DataFrame | pl.LazyFrame,
     *,
     geometry: Geometry = "bbox",
-    box_format: BoxFormat | None = None,
+    box_format: str | BoxFormat | None = None,
     image_id: str = COL_IMAGE_ID,
     class_id: str | None = COL_CLASS_ID,
     score: str = "score",
@@ -110,7 +113,7 @@ def match_detections(
         if box_format is None:
             raise ValueError(
                 f"geometry {cols} names coordinate columns: pass box_format= "
-                "('xyxy', 'xywh' or 'cxcywh') to say what they hold"
+                f"({_FORMATS}) to say what they hold"
             )
         preds = preds.with_columns(
             bbox_from_coords(cols, format=box_format).alias("_box")
@@ -217,7 +220,7 @@ def _geometry_kind(
     if kind == "coords" and box_format is None:
         raise ValueError(
             f"geometry {geometry!r} holds four numbers per object: pass "
-            "box_format= ('xyxy', 'xywh' or 'cxcywh') to say which"
+            f"box_format= ({_FORMATS}) to say which"
         )
     if kind != "coords" and box_format is not None:
         raise ValueError(

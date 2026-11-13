@@ -151,6 +151,7 @@ registry!(
     crate::core::dtype::DType,
     crate::geometry::contour::Winding,
     crate::geometry::contour::CoordOrder,
+    crate::geometry::contour::BoxFormat,
     crate::geometry::contour::BorderArc,
     crate::ops::binary::BinaryOp,
     crate::ops::Domain,

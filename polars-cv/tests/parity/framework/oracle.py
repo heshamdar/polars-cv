@@ -2693,6 +2693,11 @@ EXEMPT: dict[str, str] = {
         "(test_expression_op_params.py covers it)"
     ),
     "on_error": "a graph policy, not an operation (test_on_error.py)",
+    "crop_box": (
+        "reads a box column, a second input the single-column harness does not "
+        "build; it lowers to crop_clip (covered here), and "
+        "test_bbox_accessors.py::TestCropBox holds its windows to NumPy slicing"
+    ),
     "close": (
         "takes an open line, and the suite's contours are traced regions "
         "(extract_contours); test_open_contours_pipeline.py covers it, and "

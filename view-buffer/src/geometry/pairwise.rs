@@ -123,6 +123,30 @@ pub fn bbox_iou_matrix(a: &[BoundingBox], b: &[BoundingBox]) -> Vec<Vec<f64>> {
         .collect()
 }
 
+/// Greedy non-maximum suppression: the indices of the boxes kept, highest
+/// score first.
+///
+/// Visits the boxes by decreasing score (equal scores by index), keeping each
+/// one whose IoU with every box already kept is at most `iou_threshold`, the
+/// rule torchvision's `nms` and OpenCV's `NMSBoxes` apply. The caller checks
+/// that `scores` is one finite value per box.
+pub fn bbox_nms(boxes: &[BoundingBox], scores: &[f64], iou_threshold: f64) -> Vec<usize> {
+    debug_assert_eq!(boxes.len(), scores.len());
+    let mut order: Vec<usize> = (0..boxes.len()).collect();
+    // Stable, so equal scores keep index order.
+    order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+    let mut kept: Vec<usize> = Vec::new();
+    for i in order {
+        if kept
+            .iter()
+            .all(|&k| bbox_iou(&boxes[i], &boxes[k]) <= iou_threshold)
+        {
+            kept.push(i);
+        }
+    }
+    kept
+}
+
 /// A one-to-one correspondence between two sets, aligned with the left set.
 ///
 /// There is deliberately no `left_idx`: entry `i` describes left element `i`,
@@ -1269,5 +1293,33 @@ mod duplicate_tests {
         let c = greedy_assign(&m, 0.5, Some(&[1, 0]));
         assert_eq!(c.right_idx, vec![None, Some(0)]);
         assert_eq!(c.duplicate, vec![true, false]);
+    }
+}
+
+#[cfg(test)]
+mod nms_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_lower_scores_are_suppressed_and_the_rest_kept_by_score() {
+        let boxes = [
+            BoundingBox::new(0.0, 0.0, 10.0, 10.0), // 0: kept, top score
+            BoundingBox::new(1.0, 1.0, 10.0, 10.0), // 1: IoU 0.68 with 0
+            BoundingBox::new(50.0, 50.0, 5.0, 5.0), // 2: alone
+            BoundingBox::new(5.0, 0.0, 10.0, 10.0), // 3: IoU 1/3 with 0
+        ];
+        let scores = [0.9, 0.8, 0.3, 0.7];
+        assert_eq!(bbox_nms(&boxes, &scores, 0.5), vec![0, 3, 2]);
+        assert_eq!(bbox_nms(&boxes, &scores, 0.3), vec![0, 2]);
+        // At the threshold exactly, a box is kept: only IoU above it suppresses.
+        let third = bbox_iou(&boxes[0], &boxes[3]);
+        assert_eq!(bbox_nms(&boxes, &scores, third), vec![0, 3, 2]);
+    }
+
+    #[test]
+    fn equal_scores_are_visited_by_index_and_nothing_in_gives_nothing() {
+        let same = [BoundingBox::new(0.0, 0.0, 4.0, 4.0); 3];
+        assert_eq!(bbox_nms(&same, &[0.5, 0.5, 0.5], 0.5), vec![0]);
+        assert!(bbox_nms(&[], &[], 0.5).is_empty());
     }
 }

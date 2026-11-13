@@ -298,6 +298,13 @@ class _LazyForwardersMixin:
             self._continuation().crop(top=top, left=left, height=height, width=width)
         )
 
+    def crop_box(self, box: pl.Expr) -> LazyPipelineExpr:
+        """Crop each row's image to its box (one ``BBOX_SCHEMA`` struct per row).
+
+        Lazy form of :meth:`Pipeline.crop_box` on this expression's output.
+        """
+        return self.pipe(self._continuation().crop_box(box=box))
+
     def crop_clip(
         self,
         *,

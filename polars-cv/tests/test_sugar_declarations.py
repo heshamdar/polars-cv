@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
+import polars as pl
 import pytest
 
 from polars_cv import Pipeline
@@ -63,6 +64,7 @@ _SUGAR_PROBES: list[tuple[str, Callable[[], Pipeline], Callable[[], Pipeline]]] 
     ("flip_h", _image, lambda: _image().flip_h()),
     ("median_filter", _image, lambda: _image().median_filter()),
     ("flip_v", _image, lambda: _image().flip_v()),
+    ("crop_box", _image, lambda: _image().crop_box(pl.col("box"))),
     ("laplacian", _image, lambda: _image().laplacian()),
     ("sobel", _image, lambda: _image().sobel()),
     ("sharpen", _image, lambda: _image().sharpen()),
