@@ -707,7 +707,7 @@ fn a_blob_row_read_in_place_carries_only_its_bytes() {
 
 /// A `list` or `array` sink copies each row's values once, into the
 /// column's flat values buffer, whatever the row's layout: it costs one
-/// values-sized allocation more than the zero-copy `numpy` sink over the
+/// values-sized allocation more than the zero-copy `tensor` sink over the
 /// same graph, never a per-row intermediate. (f64 elements, so a list's
 /// offsets — one 8-byte offset per innermost list — stay below the
 /// values' size and only copies of the values are counted.)

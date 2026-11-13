@@ -56,8 +56,8 @@ pub(super) struct ExecState<'a> {
 impl CompiledGraph {
     /// Which pipeline this is, in the user's words, for a failure's message:
     /// the columns it decodes and what it sinks to (`column 'img' to the
-    /// numpy sink`, or `column 'img' to outputs 'thumb' (jpeg), 'x'
-    /// (numpy)`). Polars names a failing plugin call by its library path
+    /// tensor sink`, or `column 'img' to outputs 'thumb' (jpeg), 'x'
+    /// (tensor)`). Polars names a failing plugin call by its library path
     /// and function, which is the same text for every pipeline in a query.
     /// The name a result is given afterwards (`.alias(...)`, a `select`
     /// keyword) is applied outside the plugin and is not known here.

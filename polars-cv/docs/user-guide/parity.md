@@ -13,9 +13,7 @@ Every test declares what it compares and the tolerance it asserts
 declaration fails collection, so nothing is checked that this page does not
 list, and nothing is listed that is not checked. A declared test that never
 runs polars-cv fails, so a reference checked against itself cannot pass as
-coverage. CI runs these tests on every push, except the pycocotools check,
-which needs a package polars-cv does not depend on (CR-79 in `ISSUES.md`);
-this page is regenerated with it installed.
+coverage. CI runs every one of these tests on every push.
 
 ## By reference
 
@@ -263,7 +261,7 @@ Where the differences come from (from `benchmarks/bench/parity.py`):
 
 ```bash
 cd polars-cv
-uv run --no-sync --with pycocotools python scripts/parity_report.py
+uv run --no-sync python scripts/parity_report.py
 ```
 
 It runs the reference suite, refuses to write anything if a test fails or is

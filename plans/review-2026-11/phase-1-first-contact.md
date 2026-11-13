@@ -3,7 +3,7 @@
 Implementation plan for the first group of findings from the external review
 of 0.41.0 (commit `c0d77d5`, 2026-11-11). The ledger entries are CR-136 to
 CR-140 in the root [`ISSUES.md`](../../ISSUES.md); this file holds the detail.
-Phases [2](phase-2-stabilise.md) and [3](phase-3-depth.md) follow.
+Phase 2 (complete) and [phase 3](phase-3-depth.md) follow.
 
 **Goal:** remove the five things that make a first evaluation fail. Nothing
 here adds an op.

@@ -517,7 +517,7 @@ fn codec_kernels(c: &mut Criterion) {
     }
 }
 
-/// The half-precision tensor sink's conversion (`sink("numpy", dtype="f16")`).
+/// The half-precision tensor sink's conversion (`sink("tensor", dtype="f16")`).
 /// `f16_per_element_*` is the plugin's former row conversion, verbatim (cast
 /// to f32, pack, then `f16::from_f32` and a 2-byte `extend_from_slice` per
 /// element); `f16_bits_*` is `ViewBuffer::to_f16_bits`, which replaced it.

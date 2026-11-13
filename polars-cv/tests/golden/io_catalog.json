@@ -65,7 +65,7 @@
       "name": "auto",
       "python": "auto",
       "visibility": "public",
-      "doc": "Infer the decode path from the column's Polars dtype: String → file_path,\nList/Array → list/array, Binary → blob if VIEW-tagged else image_bytes,\nthe numpy/ndarray/torch sink struct → tensor.",
+      "doc": "Infer the decode path from the column's Polars dtype: String → file_path,\nList/Array → list/array, Binary → blob if VIEW-tagged else image_bytes,\nthe `tensor` sink's struct → tensor.",
       "fields": [
         {
           "name": "dtype",
@@ -531,7 +531,7 @@
       "name": "tensor",
       "python": "tensor",
       "visibility": "public",
-      "doc": "The struct the `numpy`, `ndarray` and `torch` sinks write, read where\nit lies at its own shape, strides and offset. A `float16` row reads\nas f32.",
+      "doc": "The struct the `tensor` sink writes, read where it lies at its own\nshape, strides and offset. A `float16` row reads\nas f32.",
       "fields": [
         {
           "name": "dtype",
