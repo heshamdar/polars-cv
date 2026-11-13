@@ -82,14 +82,27 @@ Set-level detection helpers also live here and operate on `CONTOUR_SET_SCHEMA`:
 
 ### `.bbox` (BBoxNamespace)
 
-Registered on `pl.Expr` for columns containing `List[BBOX_SCHEMA]`. Methods:
+Registered on `pl.Expr` for `BBOX_SCHEMA` columns, one box or a set per row
+(`Arity::of_bboxes`: any list is a set). Every box is read through
+`BBoxColumn`, which refuses a null, non-finite or negative-size field (CR-76).
+Methods:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
 - `correspond(other, threshold, order)` -> `CORRESPONDENCE_SCHEMA`
+- `nms(scores, iou_threshold)` -> `List[UInt32]`: kept positions in a set,
+  highest score first (`pairwise::bbox_nms`)
+- per box, keeping the column's arity: `area`, `to_coords(format)`,
+  `to_contour`, `translate`, `scale`, `normalize`, `to_absolute`, `clip`,
+  `pad`, `expand` (`namespaces/bbox.rs`, the `bbox_accessor!` macro over
+  `BoundingBox`'s methods)
 
-These delegate to Rust functions `bbox_pairwise_iou` and `bbox_correspond`,
-which compute box IoU analytically (`pairwise::bbox_iou_matrix`) and share the
-contour matcher's row drivers (`pairwise_rows`, `correspond_rows`), so the
-greedy matching policy lives in one place. Used by `BBoxMatcher` in the metrics subsystem.
+`bbox_pairwise_iou` and `bbox_correspond` compute box IoU analytically
+(`pairwise::bbox_iou_matrix`) and share the contour matcher's row drivers
+(`pairwise_rows`, `correspond_rows`), so the greedy matching policy lives in
+one place. Used by `BBoxMatcher` in the metrics subsystem.
+`Pipeline.crop_box(box)` is sugar over `crop_clip` that reads the box through
+`.bbox.to_coords("xyxy")`, so it inherits the same refusals. The box layouts
+are `BoxFormat` (Rust, generated into Python), which `bbox_from_coords` and
+the metrics' `box_format=` read.
 
 ### `.point` (PointNamespace)
 

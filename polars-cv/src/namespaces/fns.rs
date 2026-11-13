@@ -13,7 +13,7 @@
 //! and the Python accessor methods are generated from [`geom_catalog`].
 
 use serde::Serialize;
-use view_buffer::geometry::contour::{BorderArc, CoordOrder, Winding};
+use view_buffer::geometry::contour::{BorderArc, BoxFormat, CoordOrder, Winding};
 use view_buffer::geometry::label::LabelRegionMode;
 use view_buffer::mode::{ColumnRef, Exec, Mode, OpDesc, Wire, WireOps};
 use view_buffer::ops::Reduction;
@@ -603,6 +603,134 @@ pub enum BBoxFn<M: Mode = Exec> {
         /// Optional per-row list of indices giving the visit sequence, a
         /// permutation of ``0..n``. Defaults to natural order.
         order: Option<ColumnRef>,
+    },
+    /// The box's area, ``width * height``.
+    ///
+    /// Returns:
+    ///     ``Float64``, or a list of them for a box-set column.
+    #[op(name = "bbox_area", python = "area", sample = {})]
+    Area,
+    /// The box's four numbers in ``format``: the inverse of
+    /// :func:`polars_cv.geometry.bbox_from_coords`.
+    ///
+    /// Returns:
+    ///     ``Array(Float64, 4)``, or a list of them for a box-set column.
+    #[op(name = "bbox_to_coords", python = "to_coords", sample = {"format": "cxcywh"})]
+    ToCoords {
+        /// ``"xyxy"``, ``"xywh"`` or ``"cxcywh"`` (:class:`polars_cv.geometry.BoxFormat`);
+        /// required, since the three cannot be told apart from the numbers
+        /// (literal or expression).
+        format: M::V<BoxFormat>,
+    },
+    /// The box as a closed contour (its four corners), for the ``.contour``
+    /// accessors and ``rasterize``.
+    ///
+    /// Returns:
+    ///     A contour, or a list of them for a box-set column.
+    #[op(name = "bbox_to_contour", python = "to_contour", sample = {})]
+    ToContour,
+    /// Move the box by ``(dx, dy)``.
+    ///
+    /// Returns:
+    ///     A box, or a list of them for a box-set column.
+    #[op(name = "bbox_translate", python = "translate", sample = {"dx": 2.0, "dy": -1.0})]
+    Translate {
+        /// Horizontal offset (literal or expression).
+        dx: M::V<f64>,
+        /// Vertical offset (literal or expression).
+        dy: M::V<f64>,
+    },
+    /// Scale the box's coordinates about the image origin, as resizing the
+    /// image by ``(sx, sy)`` moves it. A negative factor is refused.
+    ///
+    /// Returns:
+    ///     A box, or a list of them for a box-set column.
+    #[op(name = "bbox_scale", python = "scale", sample = {"sx": 2.0, "sy": 0.5})]
+    Scale {
+        /// Horizontal factor, at least 0 (literal or expression).
+        sx: M::V<f64>,
+        /// Vertical factor, at least 0 (literal or expression).
+        sy: M::V<f64>,
+    },
+    /// Convert pixel coordinates to the normalized [0, 1] range of a
+    /// ``width`` x ``height`` image.
+    ///
+    /// Returns:
+    ///     A box, or a list of them for a box-set column.
+    #[op(name = "bbox_normalize", python = "normalize",
+         sample = {"width": 640.0, "height": 480.0})]
+    Normalize {
+        /// Image width; positive (literal or expression).
+        width: M::V<f64>,
+        /// Image height; positive (literal or expression).
+        height: M::V<f64>,
+    },
+    /// Convert normalized coordinates to pixel coordinates of a ``width`` x
+    /// ``height`` image.
+    ///
+    /// Returns:
+    ///     A box, or a list of them for a box-set column.
+    #[op(name = "bbox_to_absolute", python = "to_absolute",
+         sample = {"width": 640.0, "height": 480.0})]
+    ToAbsolute {
+        /// Image width; at least 0 (literal or expression).
+        width: M::V<f64>,
+        /// Image height; at least 0 (literal or expression).
+        height: M::V<f64>,
+    },
+    /// The part of the box inside a ``width`` x ``height`` image. A box wholly
+    /// outside becomes a zero-size box on the nearest edge.
+    ///
+    /// Returns:
+    ///     A box, or a list of them for a box-set column.
+    #[op(name = "bbox_clip", python = "clip", sample = {"width": 640.0, "height": 480.0})]
+    Clip {
+        /// Image width; at least 0 (literal or expression).
+        width: M::V<f64>,
+        /// Image height; at least 0 (literal or expression).
+        height: M::V<f64>,
+    },
+    /// Grow the box by ``amount`` pixels on every side (shrink it for a
+    /// negative ``amount``): the context around a crop. A shrink past zero
+    /// size is refused.
+    ///
+    /// Returns:
+    ///     A box, or a list of them for a box-set column.
+    #[op(name = "bbox_pad", python = "pad", sample = {"amount": 8.0})]
+    Pad {
+        /// Pixels added to each side (literal or expression).
+        amount: M::V<f64>,
+    },
+    /// Scale the box by ``factor`` about its centre (``1.2`` adds 10% on
+    /// each side). A negative factor is refused.
+    ///
+    /// Returns:
+    ///     A box, or a list of them for a box-set column.
+    #[op(name = "bbox_expand", python = "expand", sample = {"factor": 1.2})]
+    Expand {
+        /// Size factor, at least 0 (literal or expression).
+        factor: M::V<f64>,
+    },
+    /// Greedy non-maximum suppression over each row's box set: visit the
+    /// boxes by decreasing score (equal scores by position), keeping each
+    /// whose IoU with every box kept so far is at most ``iou_threshold`` —
+    /// the rule of torchvision's ``nms`` and OpenCV's ``NMSBoxes``.
+    ///
+    /// Returns the kept boxes' positions rather than the boxes, so the other
+    /// per-box columns (labels, scores) can be taken the same way:
+    /// ``pl.col("labels").list.gather(kept)``.
+    ///
+    /// Returns:
+    ///     ``List(UInt32)``: the kept positions, highest score first.
+    #[op(name = "bbox_nms", python = "nms",
+         sample = {"scores": {"$slot": 1}, "iou_threshold": 0.5})]
+    Nms {
+        /// Each box's score: a list per row, one finite value per box.
+        scores: ColumnRef,
+        /// Suppress a box whose IoU with a kept one is above this, in [0, 1]
+        /// (literal or expression).
+        #[param(default = 0.5)]
+        iou_threshold: M::V<f64>,
     },
 }
 

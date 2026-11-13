@@ -29,7 +29,9 @@ On `.contour`: `normalize`, `to_absolute`, `translate`, `scale` (`sx`, `sy` and
 `correspond(threshold=)` and `correspond_by_coverage(tolerance=, threshold=,
 sample_step=)`. On `.point`: `normalize`, `to_absolute`, `translate`, `scale`,
 `rotate(angle=)`, `interpolate(t=)` and `to_coords(order=)`. On `.bbox`:
-`correspond(threshold=)`.
+`correspond(threshold=)`, `nms(iou_threshold=)`, `to_coords(format=)`,
+`translate`, `scale`, `normalize`, `to_absolute`, `clip`, `pad` and
+`expand`.
 
 An aggregation broadcasts, matching Polars' own semantics — `pl.col("w").max()`
 produces one value applied to every row.
@@ -504,7 +506,60 @@ df.with_columns(
 
 ## Bounding Boxes
 
-The `.bbox` namespace operates on `List[BBOX_SCHEMA]` columns for detection tasks.
+The `.bbox` namespace reads a `BBOX_SCHEMA` column (`x, y, width, height`)
+holding one box per row or a set (`List[BBOX_SCHEMA]`), and each per-box
+accessor keeps that arity, as `.contour` does. Every box is read the same way:
+a null, non-finite or negative-size field is refused (a negative size usually
+means corner data read as corner-and-size), and a zero-size box is read.
+
+### Measuring, converting and transforming
+
+```python
+from polars_cv import Pipeline
+
+df.with_columns(
+    area=pl.col("bbox").bbox.area(),
+    xyxy=pl.col("bbox").bbox.to_coords("xyxy"),   # inverse of bbox_from_coords
+    outline=pl.col("bbox").bbox.to_contour(),     # for .contour and rasterize
+    # Into the image, with 16 px of context, in [0, 1] coordinates:
+    context=pl.col("bbox")
+    .bbox.pad(16)
+    .bbox.clip(width=pl.col("w"), height=pl.col("h"))
+    .bbox.normalize(width=pl.col("w"), height=pl.col("h")),
+)
+```
+
+`scale(sx, sy)` scales about the image origin (what resizing the image does to
+its boxes); `expand(factor)` scales about the box's centre; `pad(amount)` adds
+`amount` pixels to every side. Each takes a literal or an expression per row.
+
+### Cropping to a box
+
+`Pipeline.crop_box(box)` crops each row's image to its box: the smallest
+whole-pixel window containing it, clipped to the image as `crop_clip` clips.
+
+```python
+crops = df.with_columns(
+    crop=pl.col("image").cv.pipe(
+        Pipeline().source("image_bytes").crop_box(pl.col("bbox").bbox.pad(8))
+    ).sink("png")
+)
+```
+
+### Non-maximum suppression
+
+`nms(scores, iou_threshold=0.5)` runs greedy suppression over each row's box
+set — the rule of torchvision's `nms` and OpenCV's `NMSBoxes`, held to the
+latter in the parity report — and returns the kept *positions*, highest score
+first, so the other per-box columns follow with `list.gather`:
+
+```python
+kept = pl.col("boxes").bbox.nms(pl.col("scores"), iou_threshold=0.5)
+df.with_columns(
+    boxes=pl.col("boxes").list.gather(kept),
+    labels=pl.col("labels").list.gather(kept),
+)
+```
 
 ### Pairwise IoU
 

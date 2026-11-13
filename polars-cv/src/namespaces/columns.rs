@@ -576,12 +576,7 @@ impl<'a> BBoxColumn<'a> {
         let spellings: [&[&'static str]; 4] =
             std::array::from_fn(|i| std::slice::from_ref(&BBOX_FIELD_NAMES[i]));
         let dtype = series.dtype();
-        // A bbox is never a list, so any list is a set of them (unlike a
-        // contour column, whose list may be one contour's ring).
-        let arity = match dtype {
-            DataType::List(_) => Arity::Set,
-            _ => Arity::Single,
-        };
+        let arity = Arity::of_bboxes(dtype);
         let chunks = Chunks::new(series, |chunk| {
             let rows = match (arity, dtype) {
                 (Arity::Set, DataType::List(elem)) => {

@@ -35,6 +35,7 @@ __all__ = [
     "ApproxMethod",
     "BorderArc",
     "BorderMode",
+    "BoxFormat",
     "ColorSpace",
     "CoordOrder",
     "DType",
@@ -102,6 +103,19 @@ class BorderMode(str, Enum):
     REPLICATE = "replicate"
     ZERO = "zero"
     REFLECT = "reflect"
+
+
+class BoxFormat(str, Enum):
+    """Layout of a box's four numbers in a plain list (``polars_cv.geometry.bbox_from_coords``, ``.bbox.to_coords``, the metrics' ``box_format=``).
+
+    - XYXY: ``x_min, y_min, x_max, y_max``.
+    - XYWH: ``x_min, y_min, width, height`` (COCO).
+    - CXCYWH: ``x_centre, y_centre, width, height`` (YOLO).
+    """
+
+    XYXY = "xyxy"
+    XYWH = "xywh"
+    CXCYWH = "cxcywh"
 
 
 class ColorSpace(str, Enum):
@@ -5381,6 +5395,28 @@ class _BBoxOpsMixin:
         def _call(self, function: str, values: dict[str, Any]) -> pl.Expr: ...
         def _pipeline_op(self, op: str, other: pl.Expr) -> pl.Expr: ...
 
+    def area(self) -> pl.Expr:
+        """The box's area, ``width * height``.
+
+
+        Returns:
+            ``Float64``, or a list of them for a box-set column.
+        """
+        return self._call("bbox_area", {})
+
+    def clip(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
+        """The part of the box inside a ``width`` x ``height`` image. A box wholly
+        outside becomes a zero-size box on the nearest edge.
+
+        Args:
+            width: Image width; at least 0 (literal or expression).
+            height: Image height; at least 0 (literal or expression).
+
+        Returns:
+            A box, or a list of them for a box-set column.
+        """
+        return self._call("bbox_clip", {"width": width, "height": height})
+
     def correspond(
         self,
         other: pl.Expr,
@@ -5407,6 +5443,66 @@ class _BBoxOpsMixin:
             "bbox_correspond", {"other": other, "threshold": threshold, "order": order}
         )
 
+    def expand(self, factor: FloatOrExpr) -> pl.Expr:
+        """Scale the box by ``factor`` about its centre (``1.2`` adds 10% on
+        each side). A negative factor is refused.
+
+        Args:
+            factor: Size factor, at least 0 (literal or expression).
+
+        Returns:
+            A box, or a list of them for a box-set column.
+        """
+        return self._call("bbox_expand", {"factor": factor})
+
+    def nms(self, scores: pl.Expr, *, iou_threshold: FloatOrExpr = 0.5) -> pl.Expr:
+        """Greedy non-maximum suppression over each row's box set: visit the
+        boxes by decreasing score (equal scores by position), keeping each
+        whose IoU with every box kept so far is at most ``iou_threshold`` —
+        the rule of torchvision's ``nms`` and OpenCV's ``NMSBoxes``.
+
+        Returns the kept boxes' positions rather than the boxes, so the other
+        per-box columns (labels, scores) can be taken the same way:
+        ``pl.col("labels").list.gather(kept)``.
+
+        Args:
+            scores: Each box's score: a list per row, one finite value per box.
+            iou_threshold: Suppress a box whose IoU with a kept one is above this, in
+                [0, 1] (literal or expression).
+
+        Returns:
+            ``List(UInt32)``: the kept positions, highest score first.
+        """
+        return self._call(
+            "bbox_nms", {"scores": scores, "iou_threshold": iou_threshold}
+        )
+
+    def normalize(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
+        """Convert pixel coordinates to the normalized [0, 1] range of a
+        ``width`` x ``height`` image.
+
+        Args:
+            width: Image width; positive (literal or expression).
+            height: Image height; positive (literal or expression).
+
+        Returns:
+            A box, or a list of them for a box-set column.
+        """
+        return self._call("bbox_normalize", {"width": width, "height": height})
+
+    def pad(self, amount: FloatOrExpr) -> pl.Expr:
+        """Grow the box by ``amount`` pixels on every side (shrink it for a
+        negative ``amount``): the context around a crop. A shrink past zero
+        size is refused.
+
+        Args:
+            amount: Pixels added to each side (literal or expression).
+
+        Returns:
+            A box, or a list of them for a box-set column.
+        """
+        return self._call("bbox_pad", {"amount": amount})
+
     def pairwise_iou(self, other: pl.Expr) -> pl.Expr:
         """Compute the full pairwise IoU matrix between two bounding-box sets.
 
@@ -5417,3 +5513,65 @@ class _BBoxOpsMixin:
             A nested list (`List[List[Float64]]`) representing an N x M IoU matrix.
         """
         return self._call("bbox_pairwise_iou", {"other": other})
+
+    def scale(self, sx: FloatOrExpr, sy: FloatOrExpr) -> pl.Expr:
+        """Scale the box's coordinates about the image origin, as resizing the
+        image by ``(sx, sy)`` moves it. A negative factor is refused.
+
+        Args:
+            sx: Horizontal factor, at least 0 (literal or expression).
+            sy: Vertical factor, at least 0 (literal or expression).
+
+        Returns:
+            A box, or a list of them for a box-set column.
+        """
+        return self._call("bbox_scale", {"sx": sx, "sy": sy})
+
+    def to_absolute(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
+        """Convert normalized coordinates to pixel coordinates of a ``width`` x
+        ``height`` image.
+
+        Args:
+            width: Image width; at least 0 (literal or expression).
+            height: Image height; at least 0 (literal or expression).
+
+        Returns:
+            A box, or a list of them for a box-set column.
+        """
+        return self._call("bbox_to_absolute", {"width": width, "height": height})
+
+    def to_contour(self) -> pl.Expr:
+        """The box as a closed contour (its four corners), for the ``.contour``
+        accessors and ``rasterize``.
+
+
+        Returns:
+            A contour, or a list of them for a box-set column.
+        """
+        return self._call("bbox_to_contour", {})
+
+    def to_coords(self, format: str | pl.Expr) -> pl.Expr:
+        """The box's four numbers in ``format``: the inverse of
+        :func:`polars_cv.geometry.bbox_from_coords`.
+
+        Args:
+            format: ``"xyxy"``, ``"xywh"`` or ``"cxcywh"``
+                (:class:`polars_cv.geometry.BoxFormat`); required, since the three
+                cannot be told apart from the numbers (literal or expression).
+
+        Returns:
+            ``Array(Float64, 4)``, or a list of them for a box-set column.
+        """
+        return self._call("bbox_to_coords", {"format": format})
+
+    def translate(self, dx: FloatOrExpr, dy: FloatOrExpr) -> pl.Expr:
+        """Move the box by ``(dx, dy)``.
+
+        Args:
+            dx: Horizontal offset (literal or expression).
+            dy: Vertical offset (literal or expression).
+
+        Returns:
+            A box, or a list of them for a box-set column.
+        """
+        return self._call("bbox_translate", {"dx": dx, "dy": dy})

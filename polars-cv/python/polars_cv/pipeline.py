@@ -538,6 +538,39 @@ class Pipeline(_OpsMixin):
         """
         return self.flip(axes=[0], when=when)
 
+    @_sugar("crop_clip")
+    def crop_box(self, box: pl.Expr) -> "Pipeline":
+        """
+        Crop each row's image to its box (one ``BBOX_SCHEMA`` struct per row).
+
+        The window is the smallest whole-pixel one containing the box: its
+        left and top edges rounded down, its right and bottom edges rounded
+        up. It is a ``crop_clip``, so a box reaching past the image keeps the
+        part inside; a box with no pixel inside the image (or of zero size on
+        a pixel edge) is refused. The box is read as every ``.bbox`` accessor
+        reads one, so a null, non-finite or negative-size field is refused,
+        and a null box follows ``on_null_param``.
+
+        Args:
+            box: A ``BBOX_SCHEMA`` expression, e.g. ``pl.col("bbox")`` (or
+                ``.bbox.pad(8)`` of one, for context around it).
+
+        Returns:
+            New Pipeline with the crop appended.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").crop_box(pl.col("bbox"))
+        """
+        corners = box.bbox.to_coords("xyxy")  # ty: ignore[missing-attribute]
+        x0, y0, x1, y1 = (corners.arr.get(i) for i in range(4))
+        left, top = x0.floor(), y0.floor()
+        return self.crop_clip(
+            top=top.cast(pl.Int64),
+            left=left.cast(pl.Int64),
+            height=(y1.ceil() - top).cast(pl.Int64),
+            width=(x1.ceil() - left).cast(pl.Int64),
+        )
+
     @_sugar("rank_filter")
     def median_filter(
         self, size: IntOrThisOrExpr = 3, *, border: str | pl.Expr = "replicate"

@@ -96,6 +96,8 @@ def _contour_df() -> pl.DataFrame:
                 None,
                 [{"x": 2.0, "y": 2.0, "width": 5.0, "height": 5.0}],
             ],
+            # One score per box of `baset`, for `nms`.
+            "bscores": [None, [0.5], [0.25]],
         },
         schema={
             "a": CONTOUR_SCHEMA,
@@ -109,6 +111,7 @@ def _contour_df() -> pl.DataFrame:
             "bset": CONTOUR_SET_SCHEMA,
             "baset": pl.List(BBOX_SCHEMA),
             "bbset": pl.List(BBOX_SCHEMA),
+            "bscores": pl.List(pl.Float64),
         },
     )
 
@@ -239,7 +242,23 @@ BBOX_CASES: dict[str, object] = {
     "correspond": lambda: pl.col("baset").bbox.correspond(
         pl.col("bbset"), threshold=0.5
     ),
+    "nms": lambda: pl.col("baset").bbox.nms(pl.col("bscores"), iou_threshold=0.5),
+    # The per-box accessors, on one box per row (`ba`, nulls first);
+    # `test_bbox_accessors_over_a_box_set` sweeps them over `baset`.
+    "area": lambda: pl.col("ba").bbox.area(),
+    "to_coords": lambda: pl.col("ba").bbox.to_coords("xyxy"),
+    "to_contour": lambda: pl.col("ba").bbox.to_contour(),
+    "translate": lambda: pl.col("ba").bbox.translate(dx=1.0, dy=2.0),
+    "scale": lambda: pl.col("ba").bbox.scale(sx=2.0, sy=2.0),
+    "normalize": lambda: pl.col("ba").bbox.normalize(width=8.0, height=8.0),
+    "to_absolute": lambda: pl.col("ba").bbox.to_absolute(width=8.0, height=8.0),
+    "clip": lambda: pl.col("ba").bbox.clip(width=3.0, height=3.0),
+    "pad": lambda: pl.col("ba").bbox.pad(1.0),
+    "expand": lambda: pl.col("ba").bbox.expand(2.0),
 }
+
+#: `.bbox` accessors that already read a set per row.
+BBOX_SET_LEVEL = {"pairwise_iou", "correspond", "nms"}
 BBOX_EXEMPT = {
     "on_null": "a policy setter, not an expression",
     "on_error": "a policy setter, not an expression",
@@ -859,3 +878,15 @@ def test_a_set_operation_documents_the_accessor_it_is() -> None:
     column operand and an expression result, with no pipeline ``Domain:``."""
     doc = ContourNamespace.union.__doc__
     assert "Returns:" in doc and "Domain:" not in doc
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(set(BBOX_CASES) - BBOX_SET_LEVEL))
+def test_bbox_accessors_over_a_box_set(name: str) -> None:
+    """Every per-box `.bbox` accessor declares, and produces, `List(elem)` for
+    a box-set column, as the contour and point accessors do."""
+    sets = _contour_df().with_columns(ba=pl.col("baset"))
+    series = assert_plan_equals_exec(sets, BBOX_CASES[name]())
+    assert isinstance(series.dtype, pl.List), (
+        f"{name} over a box-set column planned {series.dtype}, not a list"
+    )

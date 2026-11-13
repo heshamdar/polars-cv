@@ -46,7 +46,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-139 | Review 2026-11 | Decision | `decode_max_size` at scale 1/2 decodes no faster than the full decoder (0.85x to 1.08x); falling through there would return the full size instead of half |
 | CR-140 | Review 2026-11 | Feature | No Windows wheel; Python 3.14 untested |
 | CR-146 | Review 2026-11 | Low | The crop pushdown stops at neighbourhood ops (`blur` then `crop` filters the whole image) |
-| CR-147 | Review 2026-11 | Feature | `.bbox` has two accessors |
 | CR-149 | Review 2026-11 | Low | The published benchmarks report 0.38.0 (pinned: `test_benchmark_freshness.py`, a strict xfail) |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
@@ -371,8 +370,8 @@ phase, and is not repeated here:
   is in git history (`plans/review-2026-11/phase-2-stabilise.md`, removed
   2026-11-13).
 - [`plans/review-2026-11/phase-3-depth.md`](plans/review-2026-11/phase-3-depth.md):
-  CR-149's refresh (with the next release; its guard is pinned), CR-147,
-  CR-146; CR-118 is not scheduled. CR-148, CR-79 and CR-76 are closed.
+  CR-149's refresh (with the next release; its guard is pinned), and
+  CR-146; CR-118 is not scheduled. CR-148, CR-79, CR-76 and CR-147 are closed.
   Re-verified 2026-11-12 at `42e08b3`; the plan records what that changed.
 
 Delete a plan's section when its item closes, and the file when it is empty.
@@ -612,6 +611,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-147 | `.bbox` had two accessors | Added (unreleased): `area`, `to_coords(format)`, `to_contour`, `translate`, `scale`, `normalize`, `to_absolute`, `clip`, `pad`, `expand` per box (`namespaces/bbox.rs`, `bbox_accessor!` over `BoundingBox`'s methods; the arity is `Arity::of_bboxes`, which `BBoxColumn` reads too), `nms` over a set (`pairwise::bbox_nms`, kept positions; exact against OpenCV `NMSBoxes`, `tests/reference/test_bbox_ref.py`), and `Pipeline.crop_box` as `@_sugar` over `crop_clip` reading the box through `.bbox.to_coords`. `BoxFormat` is one Rust enum (`named_variants!`), generated into Python, which `bbox_from_coords` and the metrics read. Format conversions stay `bbox_from_coords` in and `to_coords` out: no `from_*` accessors (`test_bbox_accessors.py`, the `.bbox` schema sweeps in both arities) |
 | CR-76 | Negative-size boxes were accepted and silently scored as false positives | Fixed (unreleased): the bbox reader (`BBoxColumn`, `bbox_at`), which every box consumer goes through, refuses a negative width or height as it refuses a non-finite field, naming the format to check; a zero size is a degenerate box and is read. No internal producer relied on a negative size (the full suite passes). `a_bbox_of_negative_size_is_refused_and_one_of_zero_size_is_read`; `test_match_detections.py::TestBoxes::test_corner_data_read_as_corner_and_size_is_refused` (the former strict xfail) |
 | CR-141 | A stability policy: what the stable surface is, and how it deprecates | Decided (owner, 2026-11-13): no stable API until 1.0. Every name, signature and the wire stay free to change in a minor release, each break listed in the CHANGELOG with a migration guide, as now; no deprecation path is built. The README's "pin a minor version" stands and says so |
 | CR-148 | No text `explain()` on `LazyPipelineExpr`/`PipelineGraph`; engine-level passes were invisible | Fixed (unreleased), then rebuilt on review: one description of the graph (`graph/explain.rs`, `describe`), built from the planner's own per-node states (`planned_node_states`, which `resolved_output_specs` reads too), the fused segments (a run of `GraphStep::Buffer` steps, fixed at compile time), the schema's output types and the struct decision the schema and execution share (`UnifiedGraph::returns_struct`, `ERROR_FIELD`); `explain()` prints it and `show_graph()` draws it (graphviz only; networkx and pydot dropped). `expr.graph(format)` is the one way to a graph; `sink(return_expr=False)`, `Pipeline.explain` and `Pipeline.to_graph` are removed (owner, 2026-11-13). Output types equal `collect_schema()`, `_error` included; an output the column decides says so only when the schema cannot type it from the plan (`test_explain.py`, `test_graph_viz.py`) |

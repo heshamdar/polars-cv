@@ -31,7 +31,7 @@ def evaluate_detections(
     ground_truth: pl.DataFrame | pl.LazyFrame,
     *,
     geometry: str | Sequence[str] = "bbox",
-    box_format: BoxFormat | None = None,
+    box_format: str | BoxFormat | None = None,
     image_id: str = COL_IMAGE_ID,
     class_id: str | None = COL_CLASS_ID,
     score: str = "score",

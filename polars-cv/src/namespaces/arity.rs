@@ -84,6 +84,16 @@ impl Arity {
         }
     }
 
+    /// Read the arity of a *box* column: a box is never a list, so any
+    /// `List` is a set of them. (A box struct has `x` and `y`, so
+    /// [`Arity::of`] would read a box set as one contour's ring.)
+    pub(crate) fn of_bboxes(dtype: &DataType) -> Self {
+        match dtype {
+            DataType::List(_) => Arity::Set,
+            _ => Arity::Single,
+        }
+    }
+
     /// Wrap a per-contour result type for a column of this arity.
     pub(crate) fn wrap(self, elem: DataType) -> DataType {
         match self {

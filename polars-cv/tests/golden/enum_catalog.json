@@ -43,6 +43,15 @@
     ]
   },
   {
+    "name": "BoxFormat",
+    "doc": "Layout of a box's four numbers in a plain list (``polars_cv.geometry.bbox_from_coords``, ``.bbox.to_coords``, the metrics' ``box_format=``).\n\n- XYXY: ``x_min, y_min, x_max, y_max``.\n- XYWH: ``x_min, y_min, width, height`` (COCO).\n- CXCYWH: ``x_centre, y_centre, width, height`` (YOLO).",
+    "variants": [
+      "xyxy",
+      "xywh",
+      "cxcywh"
+    ]
+  },
+  {
     "name": "ColorSpace",
     "doc": "Supported color spaces for ``convert_color``.",
     "variants": [

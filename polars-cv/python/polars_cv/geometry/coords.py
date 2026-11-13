@@ -10,12 +10,11 @@ not hold exactly two non-null, finite numbers is an error naming its row.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal, get_args
 
 import polars as pl
 
 import polars_cv._plugin as _plugin
-from polars_cv._ops_generated import CoordOrder
+from polars_cv._ops_generated import BoxFormat, CoordOrder
 
 
 def _order(order: str | CoordOrder) -> str:
@@ -85,28 +84,33 @@ def contour_set_from_coords(
     )
 
 
-#: Box layouts: corners (Pascal VOC, torchvision), corner + size (COCO), and
-#: centre + size (YOLO). Coordinates are in the same units as the image (or
-#: all normalised); ``BBOX_SCHEMA`` is corner + size.
-BoxFormat = Literal["xyxy", "xywh", "cxcywh"]
+def _box_format(format: str | BoxFormat) -> BoxFormat:  # noqa: A002
+    try:
+        return BoxFormat(format)
+    except ValueError:
+        names = [f.value for f in BoxFormat]
+        msg = f"format must be one of {names}, got {format!r}"
+        raise ValueError(msg) from None
 
 
 def bbox_from_coords(
     coords: str | pl.Expr | Sequence[str | pl.Expr],
     *,
-    format: BoxFormat,  # noqa: A002 — the conventional name for a box layout
+    format: str | BoxFormat,  # noqa: A002 — the conventional name for a box layout
 ) -> pl.Expr:
     """A box (``BBOX_SCHEMA``: ``x, y, width, height``) from four coordinates.
 
     Args:
         coords: Either one column holding four numbers per row (``List`` or
             ``Array(_, 4)``), or four columns / expressions in layout order.
-        format: The layout of the four numbers (required — the three are
-            indistinguishable from the data):
+        format: The layout of the four numbers, a :class:`polars_cv.geometry.BoxFormat`
+            (required — the three are indistinguishable from the data):
 
             * ``"xyxy"``: ``x_min, y_min, x_max, y_max``;
             * ``"xywh"``: ``x_min, y_min, width, height`` (COCO);
             * ``"cxcywh"``: ``x_centre, y_centre, width, height`` (YOLO).
+
+            ``.bbox.to_coords(format)`` is the inverse.
 
     Returns:
         A ``BBOX_SCHEMA`` expression named after the first input column; a
@@ -117,10 +121,7 @@ def bbox_from_coords(
         ValueError: An unknown ``format``, or a sequence of other than four
             columns.
     """
-    formats = get_args(BoxFormat)
-    if format not in formats:
-        msg = f"format must be one of {list(formats)}, got {format!r}"
-        raise ValueError(msg)
+    layout = _box_format(format)
     if isinstance(coords, (str, pl.Expr)):
         packed = (pl.col(coords) if isinstance(coords, str) else coords).cast(
             pl.Array(pl.Float64, 4)
@@ -134,9 +135,9 @@ def bbox_from_coords(
             raise ValueError(msg)
         a, b, c, d = (e.cast(pl.Float64) for e in cols)
         name, valid = cols[0], pl.lit(True)
-    if format == "xyxy":
+    if layout is BoxFormat.XYXY:
         fields = (a, b, c - a, d - b)
-    elif format == "xywh":
+    elif layout is BoxFormat.XYWH:
         fields = (a, b, c, d)
     else:
         fields = (a - c / 2.0, b - d / 2.0, c, d)

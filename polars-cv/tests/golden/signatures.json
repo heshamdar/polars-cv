@@ -1,5 +1,29 @@
 {
  "BBoxNamespace": {
+  "area": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "clip": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "correspond": [
    [
     "self",
@@ -20,6 +44,52 @@
     "order",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "expand": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "factor",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "nms": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "scores",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "iou_threshold",
+    "KEYWORD_ONLY",
+    "0.5"
+   ]
+  ],
+  "normalize": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ]
   ],
   "on_error": [
@@ -46,6 +116,18 @@
     ""
    ]
   ],
+  "pad": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "amount",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "pairwise_iou": [
    [
     "self",
@@ -54,6 +136,76 @@
    ],
    [
     "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "scale": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "sx",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "sy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "to_absolute": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "to_contour": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "to_coords": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "format",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "translate": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dx",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dy",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -1131,6 +1283,18 @@
     "width",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "crop_box": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "box",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ]
   ],
   "crop_clip": [
@@ -3191,6 +3355,18 @@
     "width",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "crop_box": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "box",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ]
   ],
   "crop_clip": [

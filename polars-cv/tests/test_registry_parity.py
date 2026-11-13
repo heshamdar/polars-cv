@@ -30,6 +30,16 @@ from tests.conftest import plugin_required
 pytestmark = pytest.mark.structural
 
 
+#: The Rust files that declare the namespace plugin functions.
+_NAMESPACE_SOURCES = (
+    "namespaces/contour.rs",
+    "namespaces/point.rs",
+    "namespaces/bbox.rs",
+    "image_metadata.rs",
+    "read_bytes.rs",
+)
+
+
 @requires_checkout
 def test_namespace_plugin_symbols_match_registrations():
     """The namespace plugin surface is connected in BOTH directions.
@@ -74,18 +84,14 @@ def test_namespace_plugin_symbols_match_registrations():
     declarations = (
         # `#[polars_expr(...)]` immediately preceding `pub fn <name>` / `fn <name>`.
         r"#\[polars_expr[^\]]*\]\s*(?:pub\s+)?fn\s+([a-z_0-9]+)",
-        # `contour_accessor! { ... <arm> fn <name> / <out_ty> ... }` and
+        # `contour_accessor! { ... <arm> fn <name> / <out_ty> ... }`,
+        # `bbox_accessor! { map fn <name> / <out_ty> ... }` and
         # `op_accessors! { op fn <name> / <out_ty> => ...; }`, each expanding
         # to exactly that pair. The arm names are matched explicitly so a new
         # arm has to be added here rather than quietly going unscanned.
         r"(?:^|\n)\s*(?:map|zip|op)\s+fn\s+([a-z_0-9]+)\s*/",
     )
-    for rs in (
-        "namespaces/contour.rs",
-        "namespaces/point.rs",
-        "image_metadata.rs",
-        "read_bytes.rs",
-    ):
+    for rs in _NAMESPACE_SOURCES:
         text = (src / rs).read_text()
         for pattern in declarations:
             registered |= set(re.findall(pattern, text))
@@ -95,13 +101,7 @@ def test_namespace_plugin_symbols_match_registrations():
     # rather than trusting their union.
     for pattern in declarations:
         assert any(
-            re.findall(pattern, (src / rs).read_text())
-            for rs in (
-                "namespaces/contour.rs",
-                "namespaces/point.rs",
-                "image_metadata.rs",
-                "read_bytes.rs",
-            )
+            re.findall(pattern, (src / rs).read_text()) for rs in _NAMESPACE_SOURCES
         ), f"declaration pattern matched nothing, so it covers nothing: {pattern}"
 
     missing = sorted(called - registered)

@@ -31,7 +31,7 @@ from typing import Any, Callable
 import polars as pl
 
 from polars_cv import Pipeline
-from polars_cv.geometry.schemas import CONTOUR_SET_SCHEMA
+from polars_cv.geometry.schemas import BBOX_SCHEMA, CONTOUR_SET_SCHEMA
 
 # --- Input columns the cases draw from -------------------------------------
 
@@ -307,6 +307,19 @@ CASES: list[ExprCase] = [
     ),
     ExprCase("flip_h", "when", lambda v: rgb().flip_h(when=v), (True, False)),
     ExprCase("flip_v", "when", lambda v: rgb().flip_v(when=v), (True, False)),
+    ExprCase(
+        "crop_box",
+        "box",
+        lambda v: rgb().crop_box(v),
+        (
+            {"x": 0.0, "y": 0.0, "width": 4.0, "height": 4.0},
+            {"x": 1.5, "y": 2.0, "width": 5.0, "height": 3.0},
+            {"x": 2.0, "y": 1.0, "width": 2.0, "height": 6.0},
+        ),
+        dtype=BBOX_SCHEMA,
+        # A box is an operand column, with no literal spelling.
+        literal=False,
+    ),
     ExprCase(
         "crop",
         "top",
