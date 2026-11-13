@@ -83,26 +83,6 @@ def test_a_swept_threshold_reports_its_metrics() -> None:
 
 
 @plugin_required
-@_gap("CR-76: negative-size boxes are accepted and score as false positives")
-def test_a_negative_size_box_is_refused() -> None:
-    """``xywh`` data passed as ``"xyxy"`` gives boxes of negative size, which
-    the bbox reader accepts and the matcher scores as 0-IoU false positives.
-    Fixed when the reader refuses ``width < 0`` / ``height < 0`` as it refuses
-    a non-finite field."""
-    from polars_cv.metrics import match_detections
-
-    swapped = _PREDS.with_columns(
-        pl.Series("bbox", [[10.0, 10.0, 0.0, 0.0], [30.0, 30.0, 20.0, 20.0]])
-    )
-    raised = False
-    try:
-        match_detections(swapped, _GTS, box_format="xyxy").detections.collect()
-    except (pl.exceptions.ComputeError, ValueError):
-        raised = True
-    assert raised, "a box of negative size was accepted"
-
-
-@plugin_required
 @_gap("CR-116: the vector domain is a planner gate: buffer ops refuse a hash")
 def test_a_buffer_op_applies_to_a_hash_vector() -> None:
     """A perceptual hash is a 1-D array of u8 bytes, so a rank-1 buffer op

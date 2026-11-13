@@ -13,7 +13,7 @@ after the first two phases.
 CR-146; CR-118 is not scheduled. CR-149's refresh runs with
 the next release (below).
 
-**Status:** CR-148 and CR-79 are closed (`ISSUES.md`, Closed findings), and
+**Status:** CR-148, CR-79 and CR-76 are closed (`ISSUES.md`, Closed findings), and
 CR-149's guard is pinned in `test_benchmark_freshness.py`. CR-148 went further than
 its plan after review (owner, 2026-11-13): `expr.graph(format)` is the one way
 to a graph, `explain()` and `show_graph()` render one Rust description of it,
@@ -152,9 +152,9 @@ states its rounding: the smallest pixel window containing the box (floor
 `x`/`y`, ceil the far edges), lowered to `crop_clip` if the box may leave
 the image. Decide which, and say it in the docstring.
 
-Resolve first: negative-size boxes are accepted and score as false positives
-(CR-76, open). Every new accessor needs the same answer, so decide CR-76
-before adding ten more places for it to matter.
+Resolved first: CR-76 is closed. The bbox reader every accessor goes
+through refuses a negative size and reads a zero one, so a new accessor
+inherits that answer and needs no check of its own.
 
 ### Tests first
 

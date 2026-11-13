@@ -36,7 +36,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-74 | Fetch | Low | A fetched body outlives a row that never reads it (until the call ends) |
 | CR-75 | Fetch | Low | `s3a://`, `gcs://`, `azure://`, `adl://` are not recognised as remote |
 | CR-135 | Fetch | Low | A header read that fails for any reason but not-found/permission retries as a whole-object read |
-| CR-76 | Metrics | Medium | Negative-size boxes are accepted and silently score as false positives |
 | CR-77 | Metrics | Low | Sweep thresholds compared by exact float equality (`map_75` disappears) |
 | CR-78 | Metrics | Low | An image missing from `images=` silently gets weight 1.0 |
 | CR-80 | Extension types | Feature | Opt-in tagged geometry output (`polars_cv.point` / `.contour` / `.bbox`) |
@@ -302,23 +301,6 @@ stands is correct.
 
 ## Metrics
 
-### CR-76 — Negative-size boxes are accepted and silently score as false positives
-
-(was FU-01) Pinned: `test_known_gaps.py::test_a_negative_size_box_is_refused`.
-
-- **Location:** `geometry/coords.py::bbox_from_coords`; the bbox reader in
-  `src/geom_columns.rs` (`BBoxColumn`).
-- **Evidence:** `bbox_from_coords([[10, 10, 0, 0]], format="xyxy")` gives
-  `{x: 10, y: 10, width: -10, height: -10}` with no error, and through
-  `match_detections(..., box_format="xyxy")` it scores as a 0-IoU false
-  positive. The usual cause is xywh data passed as `"xyxy"`, which the
-  required `format=` exists to catch. The reader refuses non-finite fields
-  but not negative sizes (re-checked 2026-10-08).
-- **Fix:** have the reader refuse `width < 0` / `height < 0` as it refuses
-  non-finite fields (decide whether zero is allowed), after checking that no
-  internal producer relies on negative sizes. Add the error to the
-  `geom_columns.rs` tests and a `match_detections` test with swapped corners.
-
 ### CR-77 — Sweep thresholds compared by exact float equality
 
 (was FU-02) Pinned: `test_known_gaps.py::test_a_swept_threshold_reports_its_metrics`.
@@ -389,8 +371,8 @@ phase, and is not repeated here:
   is in git history (`plans/review-2026-11/phase-2-stabilise.md`, removed
   2026-11-13).
 - [`plans/review-2026-11/phase-3-depth.md`](plans/review-2026-11/phase-3-depth.md):
-  CR-149's refresh (with the next release; its guard is pinned), CR-76 then
-  CR-147, CR-146; CR-118 is not scheduled. CR-148 and CR-79 are closed.
+  CR-149's refresh (with the next release; its guard is pinned), CR-147,
+  CR-146; CR-118 is not scheduled. CR-148, CR-79 and CR-76 are closed.
   Re-verified 2026-11-12 at `42e08b3`; the plan records what that changed.
 
 Delete a plan's section when its item closes, and the file when it is empty.
@@ -630,6 +612,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-76 | Negative-size boxes were accepted and silently scored as false positives | Fixed (unreleased): the bbox reader (`BBoxColumn`, `bbox_at`), which every box consumer goes through, refuses a negative width or height as it refuses a non-finite field, naming the format to check; a zero size is a degenerate box and is read. No internal producer relied on a negative size (the full suite passes). `a_bbox_of_negative_size_is_refused_and_one_of_zero_size_is_read`; `test_match_detections.py::TestBoxes::test_corner_data_read_as_corner_and_size_is_refused` (the former strict xfail) |
 | CR-141 | A stability policy: what the stable surface is, and how it deprecates | Decided (owner, 2026-11-13): no stable API until 1.0. Every name, signature and the wire stay free to change in a minor release, each break listed in the CHANGELOG with a migration guide, as now; no deprecation path is built. The README's "pin a minor version" stands and says so |
 | CR-148 | No text `explain()` on `LazyPipelineExpr`/`PipelineGraph`; engine-level passes were invisible | Fixed (unreleased), then rebuilt on review: one description of the graph (`graph/explain.rs`, `describe`), built from the planner's own per-node states (`planned_node_states`, which `resolved_output_specs` reads too), the fused segments (a run of `GraphStep::Buffer` steps, fixed at compile time), the schema's output types and the struct decision the schema and execution share (`UnifiedGraph::returns_struct`, `ERROR_FIELD`); `explain()` prints it and `show_graph()` draws it (graphviz only; networkx and pydot dropped). `expr.graph(format)` is the one way to a graph; `sink(return_expr=False)`, `Pipeline.explain` and `Pipeline.to_graph` are removed (owner, 2026-11-13). Output types equal `collect_schema()`, `_error` included; an output the column decides says so only when the schema cannot type it from the plan (`test_explain.py`, `test_graph_viz.py`) |
 | CR-79 | The COCO parity test never ran in CI | Fixed (unreleased): `pycocotools` is in the dev group, which every CI test lane syncs, and the test imports it instead of `importorskip`, so a missing install fails (4/4 pass) |

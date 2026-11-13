@@ -539,8 +539,23 @@ impl<'a> PointColumn<'a> {
 }
 
 /// Bbox `k` of an array of bbox structs.
+///
+/// A negative size is refused, as a non-finite field is: it is no box, and
+/// it comes from corner data (`xyxy`) read as corner-and-size or the
+/// reverse, which every reader would otherwise score or crop as if it were
+/// meant (CR-76). A zero size is a degenerate box, and is read.
 fn bbox_at(fields: &Fields<'_, 4>, k: usize) -> Result<BoundingBox, String> {
-    values(fields, k, "bbox").map(|[x, y, w, h]| BoundingBox::new(x, y, w, h))
+    let [x, y, w, h] = values(fields, k, "bbox")?;
+    for (name, size) in [("width", w), ("height", h)] {
+        if size < 0.0 {
+            return Err(format!(
+                "a bbox has a negative {name} ({size}); a bbox is \
+                 {{x, y, width, height}}, so check the format its coordinates \
+                 were read in (`bbox_from_coords(format=)`, `box_format=`)"
+            ));
+        }
+    }
+    Ok(BoundingBox::new(x, y, w, h))
 }
 
 /// A bbox column's rows: one `{x, y, width, height}` struct per row, or a
@@ -1014,6 +1029,29 @@ mod tests {
         assert_eq!(column.row(0).unwrap(), Some(vec![expected]));
         assert_eq!(column.row(1).unwrap(), None);
         assert!(column.single(0).is_err(), "a set has no single bbox");
+    }
+
+    /// A negative size is no box: the usual cause is corner data (`xyxy`)
+    /// read as corner-and-size, or the reverse, which scored every such box
+    /// as a 0-IoU false positive (CR-76). A zero size is a degenerate box,
+    /// which annotation sets do hold, and is read.
+    #[test]
+    fn a_bbox_of_negative_size_is_refused_and_one_of_zero_size_is_read() {
+        for (w, h, field) in [(-10.0, 4.0, "width"), (3.0, -0.5, "height")] {
+            let col = bboxes(
+                ["x", "y", "width", "height"],
+                [&[Some(1.0)], &[Some(2.0)], &[Some(w)], &[Some(h)]],
+            );
+            let err = BBoxColumn::new(&col).single(0).unwrap_err().to_string();
+            assert!(err.contains(&format!("negative {field}")), "{err}");
+            assert!(err.contains("format"), "names the likely cause: {err}");
+        }
+        let col = bboxes(
+            ["x", "y", "width", "height"],
+            [&[Some(1.0)], &[Some(2.0)], &[Some(0.0)], &[Some(0.0)]],
+        );
+        let zero = BoundingBox::new(1.0, 2.0, 0.0, 0.0);
+        assert_eq!(BBoxColumn::new(&col).single(0).unwrap(), Some(zero));
     }
 
     #[test]
