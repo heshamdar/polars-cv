@@ -70,12 +70,12 @@ class TestOnNullParamValidation:
         # Graphs that do not use the policy must serialize exactly as before,
         # so the compiled-graph cache key is unchanged for existing pipelines.
         pipe = Pipeline().source("image_bytes").grayscale()
-        graph = pl.col("img").cv.pipe(pipe).sink("tensor", return_expr=False)
+        graph = pl.col("img").cv.pipe(pipe).graph("tensor")
         assert "on_null_param" not in graph._to_dict()
 
     def test_policy_is_serialized_when_set(self) -> None:
         pipe = Pipeline().source("image_bytes").grayscale().on_null_param("null")
-        graph = pl.col("img").cv.pipe(pipe).sink("tensor", return_expr=False)
+        graph = pl.col("img").cv.pipe(pipe).graph("tensor")
         assert graph._to_dict()["on_null_param"] == "null"
 
 
@@ -356,7 +356,7 @@ class TestComposition:
         b = pl.col("img").cv.pipe(
             Pipeline().source("image_bytes").grayscale().on_null_param("raise")
         )
-        graph = a.add(b).sink("tensor", return_expr=False)
+        graph = a.add(b).graph("tensor")
         assert graph._to_dict()["on_null_param"] == "null"
 
     def test_generalized_hoist_still_rejects_on_error_conflicts(self) -> None:

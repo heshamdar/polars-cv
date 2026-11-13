@@ -2,7 +2,7 @@
 Tests filling gaps in lazy composition coverage.
 
 Covers: blend composition structure, merge_pipe with 3+ branches,
-statistics with custom include lists, sink(return_expr=False), and
+statistics with custom include lists, graph() against sink(), and
 bitwise operation composition.
 """
 
@@ -154,27 +154,27 @@ class TestStatisticsVariants:
 
 
 # ---------------------------------------------------------------------------
-# sink(return_expr=False)
+# graph() and sink()
 # ---------------------------------------------------------------------------
 
 
-class TestSinkReturnExpr:
-    """Test sink() with return_expr=False."""
+class TestGraphAndSink:
+    """`graph()` gives the graph; `sink()` always the expression."""
 
-    def test_sink_return_expr_false_returns_graph(self) -> None:
-        """sink(return_expr=False) should return a PipelineGraph, not pl.Expr."""
+    def test_graph_returns_the_graph(self) -> None:
+        """graph() returns a PipelineGraph, not pl.Expr."""
         from polars_cv._graph import PipelineGraph
 
         pipe = Pipeline().source("image_bytes").grayscale()
         expr = pl.col("img").cv.pipe(pipe)
-        graph = expr.sink("tensor", return_expr=False)
+        graph = expr.graph("tensor")
         assert isinstance(graph, PipelineGraph)
 
-    def test_sink_return_expr_true_returns_pl_expr(self) -> None:
-        """sink(return_expr=True) should return a pl.Expr (default)."""
+    def test_sink_returns_pl_expr(self) -> None:
+        """sink() returns a pl.Expr."""
         pipe = Pipeline().source("image_bytes").grayscale()
         expr = pl.col("img").cv.pipe(pipe)
-        result = expr.sink("tensor", return_expr=True)
+        result = expr.sink("tensor")
         assert isinstance(result, pl.Expr)
 
 

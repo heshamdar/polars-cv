@@ -108,18 +108,14 @@ Optimizations are one explicit phase that `.sink()` runs. Choose passes with
 variable, and inspect them with `Pipeline.explain(optimized=True)`.
 
 - **`to_graph()` takes its column**, and `PipelineGraph.set_root_column()` is
-  gone: write `pipe.to_graph(pl.col("image"))`.
+  gone.
 - **`PipelineGraph.to_expr()` needs an optimized graph.** It raises
-  `RuntimeError` otherwise. `.sink()` does this for you; on the low-level path,
-  optimize first:
+  `RuntimeError` otherwise. `.sink()` does this for you; on the low-level
+  `to_graph()` path, optimize first.
 
-```python
-import polars as pl
-from polars_cv import OptFlags, Pipeline
-
-pipe = Pipeline().source("image_bytes").grayscale()
-expr = pipe.to_graph(pl.col("image")).optimize(OptFlags.all()).to_expr()
-```
+`Pipeline.explain()` and `to_graph()` were removed in a later release: a
+pipeline's graph is `pl.col("image").cv.pipe(pipe).graph(format)`, already
+optimized, and `.explain(format)` describes it (see the CHANGELOG).
 
 - **The `affine_fusion` pass is gone.** Consecutive `rotate`/`warp_affine`/
   `shear`/`rotate_and_scale` ops each resample in turn. Composing them changed

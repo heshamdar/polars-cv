@@ -74,19 +74,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
-- **`explain()` on a lazy expression and on a graph (CR-148).**
-  `expr.explain(format)` (and `PipelineGraph.explain()`) prints the graph
-  `sink(format)` runs: each node in execution order with what it reads, each
-  op with the domain, dtype and shape the planner gives its result (`?`
-  where a size is known only per row), the fused segments the executor runs
-  as one chain (`|`), each output with its planned Polars dtype, and the
-  engine passes that rewrite inside each segment. `optimized=False` prints
-  it as written. It is rendered by the plugin from the planning `check()`
-  and the schema use, and needs no Graphviz. `expr.show_graph(format)`,
-  `expr.output_dtype()` and `expr.current_domain()` are added beside it.
-  Before, only `Pipeline.explain()` existed, showing one pipeline's node
-  passes, and seeing a graph took `sink(..., return_expr=False).show_graph()`
-  with Graphviz installed.
+- **`explain()` and `show_graph()` on a lazy expression, from one
+  description of the graph (CR-148).** `expr.explain(format)` prints the
+  graph `sink(format)` runs: each node in execution order with what it reads,
+  each op with the domain, dtype and shape the planner gives its result (`?`
+  where a size is known only per row), the fused segments the executor runs as
+  one chain (`|`), each output with its planned Polars dtype (`_error`
+  included under `on_error="null_with_message"`; "set by the input column"
+  where the column decides it), and the engine passes that rewrite inside
+  each segment. `optimized=False` prints it as written. `expr.show_graph(format)`
+  draws the same description, so the two cannot disagree: the plugin builds
+  it (`describe_graph`) from the planning `check()` runs and the schema's
+  output types. `explain()` needs no Graphviz. `expr.graph(format)` returns
+  the graph itself, and `output_dtype()` / `current_domain()` give a node's
+  planned state.
 
 - **`source("tensor")`: the tensor sink can be read back (CR-138).** Its
   output (then the `numpy`, `ndarray` and `torch` sinks') fed no source ("auto source cannot infer a
@@ -140,6 +141,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   sources guide a table of the image formats decoded.
 
 ### Breaking changes
+
+- **Graph inspection has one way in: `expr.graph(format)` (CR-148).** It
+  returns the optimized, checked graph `sink(format)` runs; `explain()` and
+  `show_graph()` on the expression describe it. What changed:
+    - `sink(..., return_expr=False)` is removed: `sink()` always returns an
+      expression. Write `expr.graph(format, opt_flags=...)`; a sink with
+      settings is a `Sink` value (`expr.graph(Sink.jpeg(quality=70))`).
+    - `sink()`'s `opt_flags` is keyword-only, so the old positional
+      `sink("png", False)` raises `TypeError` rather than meaning
+      `opt_flags=False`.
+    - `Pipeline.explain()` and `Pipeline.to_graph(column)` are removed: a
+      pipeline runs once it is bound to a column, so its graph is
+      `pl.col(c).cv.pipe(pipe).graph(format)` and its text
+      `.explain(format)`. `repr(pipe)` still shows the chain as written.
+    - `PipelineGraph.show_graph()` returns a `graphviz.Digraph` (it returned a
+      `graphviz.Source` while annotated `pydot.Dot`), and the `viz` extra is
+      `graphviz` alone: `networkx` and `pydot` are no longer used.
+    - `explain(optimized=False, opt_flags=...)` is refused: the two disagree.
 
 - **One tensor sink: `sink("tensor")` replaces `numpy`, `torch` and
   `ndarray`, and its column is always typed `polars_cv.ndarray` (CR-81).**

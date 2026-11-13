@@ -16,12 +16,11 @@ from typing import TYPE_CHECKING, Any, Callable
 import polars as pl
 
 from polars_cv._graph_passes import GRAPH_PASSES
-from polars_cv._graph_viz import get_graphviz_out
 from polars_cv._ops_generated import Sink
 from polars_cv._types import SlotTable
 
 if TYPE_CHECKING:
-    import pydot
+    import graphviz
 
     from polars_cv._optimize import OptFlags
     from polars_cv.pipeline import Pipeline
@@ -687,9 +686,9 @@ class PipelineGraph:
 
         # Serialization only serializes. Optimization (every logical pass) is
         # the explicit `optimize(flags)` phase — the single site, invoked by
-        # `.sink()`. `to_expr()` refuses an un-optimized graph rather than
-        # silently emitting one: that is how the sink-free `to_graph().to_expr()`
-        # route (which does not run `sink`) is kept from diverging from `sink()`.
+        # `LazyPipelineExpr.graph()` (which `.sink()` runs). `to_expr()` refuses
+        # an un-optimized graph rather than silently emitting one, so a graph
+        # built by hand cannot diverge from `sink()`.
         if not self._optimized:
             raise RuntimeError(
                 "PipelineGraph.to_expr() requires the optimization phase to run "
@@ -748,16 +747,24 @@ class PipelineGraph:
         (domain, dtype, shape with ``?`` where a size is not known until a
         row runs). Ops marked ``|`` form one fused segment, which the engine
         passes named on the last line rewrite as each row's layout is
-        planned. Then each output with its sink and planned Polars dtype.
+        planned. Then each output (each struct field, ``_error`` included)
+        with its sink and planned Polars dtype.
 
-        Rendered by the plugin from the planning ``check()`` and the schema
-        use, so it cannot describe another graph. Needs no Graphviz (unlike
-        :meth:`show_graph`).
+        Described by the plugin from the planning ``check()`` runs and the
+        schema's output types, so it cannot describe another graph; the
+        planning is done without the input columns' types, which polars
+        supplies only when the query is planned, so a source that takes its
+        dtype or sizes from its column shows them unknown, and an output whose
+        type the column decides says so. :meth:`show_graph` draws the same
+        description.
         """
         from polars_cv._lib import explain_graph
 
-        names = [str(expr) for expr in self._slot_table().columns]
-        return explain_graph(self._to_json(), names)
+        return explain_graph(self._to_json(), self._input_names())
+
+    def _input_names(self) -> list[str]:
+        """Each plugin input's expression, as the description names it."""
+        return [str(expr) for expr in self._slot_table().columns]
 
     def _wire_ids(self) -> dict[str, str]:
         """Each node's id on the wire, keyed by its build-time id.
@@ -881,9 +888,17 @@ class PipelineGraph:
 
         return order
 
-    def show_graph(self) -> pydot.Dot:
-        """Build dot representation of graph."""
-        return get_graphviz_out(self)  # ty: ignore[invalid-return-type]
+    def show_graph(self) -> "graphviz.Digraph":
+        """The graph as the plugin will run it, drawn: the description
+        :meth:`explain` prints, laid out (a box per node, an edge per read,
+        every output into one ``SINK`` box). Needs the ``viz`` extra, and
+        Graphviz's ``dot`` to render the result."""
+        import json
+
+        from polars_cv._graph_viz import draw
+        from polars_cv._lib import describe_graph
+
+        return draw(json.loads(describe_graph(self._to_json(), self._input_names())))
 
 
 #: Each graph-scope pass :mod:`polars_cv._graph_passes` declares, by name: its

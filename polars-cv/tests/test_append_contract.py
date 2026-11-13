@@ -75,7 +75,8 @@ def test_a_derived_pipeline_keeps_every_setting_and_shares_no_list() -> None:
     assert len(derived._exprs) == 2
     assert len(base._exprs) == 1
     assert len(base._plan) == 1
-    graph_node = base.to_graph(pl.col("img"))._nodes["_node_0"].pipeline
+    (node,) = pl.col("img").cv.pipe(base).graph("tensor")._nodes.values()
+    graph_node = node.pipeline
     assert graph_node._on_error == "null"
 
 

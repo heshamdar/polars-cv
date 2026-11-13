@@ -114,7 +114,7 @@ class TestTheWireIsClosed:
         return (
             pl.col("img")
             .cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
-            .sink("png", return_expr=False)
+            .graph("png")
             ._to_json()
         )
 
@@ -139,7 +139,7 @@ class TestTheWireIsClosed:
         spec = json.loads(
             pl.col("img")
             .cv.pipe(Pipeline().source("contour").rasterize(width=4, height=4))
-            .sink("tensor", return_expr=False)
+            .graph("tensor")
             ._to_json()
         )
         for node in spec["nodes"].values():

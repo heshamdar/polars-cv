@@ -784,7 +784,7 @@ class TestExtractContoursAndLabelReduceEnums:
                 .source("image_bytes")
                 .grayscale()
                 .label_reduce(
-                    contours=contours.sink("native", return_expr=True),
+                    contours=contours.sink("native"),
                     reduction=reduction,
                 )
             )

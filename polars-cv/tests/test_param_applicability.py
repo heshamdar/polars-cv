@@ -183,10 +183,10 @@ def test_a_sink_parameter_is_rejected_by_every_format_that_ignores_it(
     """
     kwargs = _SINK_REQUIRED.get(fmt, {}) | {name: _SINK_SAMPLES[name]}
     if name in _SINK_FIELDS[fmt]:
-        _sinkable().sink(fmt, return_expr=False, **kwargs)
+        _sinkable().sink(fmt, **kwargs)
         return
     with pytest.raises(ValueError, match=f"'{name}' does not apply .*it applies to"):
-        _sinkable().sink(fmt, return_expr=False, **kwargs)
+        _sinkable().sink(fmt, **kwargs)
 
 
 @plugin_required
@@ -201,9 +201,9 @@ def test_a_misspelled_sink_keyword_is_rejected() -> None:
     refuses it as before.
     """
     with pytest.raises(TypeError, match="unexpected keyword argument 'qualtiy'"):
-        _sinkable().sink("jpeg", return_expr=False, qualtiy=50)  # ty: ignore[unknown-argument]
+        _sinkable().sink("jpeg", qualtiy=50)  # ty: ignore[unknown-argument]
     with pytest.raises(ValueError, match="'qualtiy' is not a sink parameter"):
-        _sinkable().sink(polars_cv.Sink("jpeg", {"qualtiy": 50}), return_expr=False)
+        _sinkable().sink(polars_cv.Sink("jpeg", {"qualtiy": 50}))
 
 
 @plugin_required
@@ -215,7 +215,7 @@ def test_the_sink_wire_rejects_an_unknown_field() -> None:
     reads. Same mechanism as `test_graph_node_rejects_unknown_fields`.
     """
     df = pl.DataFrame({"i": [b""]})
-    graph = _sinkable().sink("png", return_expr=False)
+    graph = _sinkable().graph("png")
     spec = json.loads(graph._to_json())
     for output in spec["outputs"].values():
         output["sink"]["definitely_not_a_field"] = 1
@@ -258,7 +258,7 @@ def test_the_quality_declaration_matches_what_the_encoders_do() -> None:
     pipe = pl.col("i").cv.pipe(Pipeline().source("image_bytes"))
 
     def encoded(fmt: str, quality: int) -> bytes:
-        graph = pipe.sink(fmt, return_expr=False)
+        graph = pipe.graph(fmt)
         spec = json.loads(graph._to_json())
         for output in spec["outputs"].values():
             output["sink"]["quality"] = quality

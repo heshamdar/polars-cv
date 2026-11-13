@@ -14,10 +14,11 @@ CR-146; CR-118 is not scheduled. CR-149's refresh runs with
 the next release (below).
 
 **Status:** CR-148 and CR-79 are closed (`ISSUES.md`, Closed findings), and
-CR-149's guard is pinned in `test_benchmark_freshness.py`. CR-148 differs from its
-plan in one way: `explain(format)` takes `format` with no default (`sink()`'s
-default, `native`, is refused for a buffer) and no sink keywords (a sink
-with settings is a `Sink` value). The optimised README cut-out is six nodes and
+CR-149's guard is pinned in `test_benchmark_freshness.py`. CR-148 went further than
+its plan after review (owner, 2026-11-13): `expr.graph(format)` is the one way
+to a graph, `explain()` and `show_graph()` render one Rust description of it,
+and `sink(return_expr=False)`, `Pipeline.explain` and `Pipeline.to_graph` are
+removed. A sink with settings is a `Sink` value, not keywords. The optimised README cut-out is six nodes and
 one decode against eight and three as written, as first measured.
 
 The working rules at the top of phase 1 apply here unchanged.

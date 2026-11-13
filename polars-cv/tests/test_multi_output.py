@@ -218,21 +218,19 @@ class TestPerOutputSinkParams:
         assert len(low) < len(high)
 
     def test_params_reach_only_their_output(self) -> None:
-        graph = self._branches().sink(
-            {"x": Sink.array(shape=[8, 8, 3]), "thumb": Sink.jpeg(quality=85)},
-            return_expr=False,
+        graph = self._branches().graph(
+            {"x": Sink.array(shape=[8, 8, 3]), "thumb": Sink.jpeg(quality=85)}
         )
         outputs = graph._to_dict()["outputs"]
         assert outputs["x"]["sink"] == {"format": "array", "shape": [8, 8, 3]}
         assert outputs["thumb"]["sink"] == {"format": "jpeg", "quality": 85}
 
     def test_shared_kwargs_still_apply_to_every_output(self) -> None:
-        graph = self._branches().sink(
-            {"x": "jpeg", "thumb": "jpeg"}, quality=70, return_expr=False
+        shared = self._branches().sink({"x": "jpeg", "thumb": "jpeg"}, quality=70)
+        each = self._branches().graph(
+            {"x": Sink.jpeg(quality=70), "thumb": Sink.jpeg(quality=70)}
         )
-        outputs = graph._to_dict()["outputs"]
-        assert outputs["x"]["sink"] == {"format": "jpeg", "quality": 70}
-        assert outputs["thumb"]["sink"] == {"format": "jpeg", "quality": 70}
+        assert shared.meta.eq(each.to_expr())
 
     def test_a_param_given_twice_is_refused(self) -> None:
         with pytest.raises(ValueError, match="'quality'.*both"):

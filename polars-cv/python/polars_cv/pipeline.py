@@ -40,9 +40,7 @@ from polars_cv._types import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from polars_cv._graph import PipelineGraph
     from polars_cv._lib import Plan, PlanState
-    from polars_cv._optimize import OptFlags
     from polars_cv._types import SlotOf
     from polars_cv.lazy import LazyPipelineExpr
 
@@ -1142,52 +1140,6 @@ class Pipeline(_OpsMixin):
 
     # --- Graph Conversion ---
 
-    def to_graph(self, column: pl.Expr) -> "PipelineGraph":
-        """
-        Convert this linear pipeline to a graph representation.
-
-        This is the unified execution path - all pipelines are converted to
-        graphs before execution. A Pipeline becomes a single node in the graph.
-
-        For multi-output with intermediate checkpoints, use LazyPipelineExpr
-        composition with .pipe() and .alias() instead.
-
-        Args:
-            column: The input column expression.
-
-        Returns:
-            PipelineGraph representation of this pipeline.
-
-        Example:
-            ```python
-            >>> from polars_cv import OptFlags
-            >>> pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
-            >>> graph = pipe.to_graph(pl.col("image"))
-            >>> expr = graph.optimize(OptFlags.all()).to_expr()
-            ```
-
-            ``to_expr()`` requires the optimization phase to have run — call
-            ``graph.optimize(flags)`` first (or use the higher-level
-            ``LazyPipelineExpr.sink``, which does it for you).
-        """
-        from polars_cv._graph import PipelineGraph
-
-        graph = PipelineGraph()
-
-        # Create single node with all operations
-        node_id = "_node_0"
-        graph.add_node(
-            node_id=node_id,
-            pipeline=self._clone(),
-            column=column,
-            alias="_output",  # Implicit terminal alias
-        )
-        graph._alias_to_node["_output"] = node_id
-
-        return graph
-
-    # --- Graph Composition Support ---
-
     def _add_node_op(
         self,
         op_name: str,
@@ -1309,49 +1261,3 @@ class Pipeline(_OpsMixin):
             params = ", ".join(f"{k}={v}" for k, v in op.items() if v is not None)
             parts.append(f"{name}({params})")
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
-
-    def explain(
-        self,
-        *,
-        optimized: bool = True,
-        opt_flags: "OptFlags | bool | None" = None,
-    ) -> str:
-        """Render the pipeline's op chain, logical or physical.
-
-        Mirrors Polars' ``.explain(optimized=...)``: the same pipeline can be
-        inspected before and after the plan-time optimization phase, so a user
-        sees the physical graph differ while the output stays identical.
-
-        Args:
-            optimized: When ``False``, render the op chain exactly as written
-                (the logical plan). When ``True`` (default), render it after the
-                optimization passes selected by ``opt_flags``.
-            opt_flags: Which passes to apply when ``optimized`` is ``True`` —
-                same coercion as :meth:`LazyPipelineExpr.sink` (``None`` reads
-                the env default). Every node-scope logical pass runs, in
-                :data:`polars_cv._optimize.OPTIMIZATION_PASSES` order — identity
-                elimination, then spatial-window pushdown. Graph-scope CSE is
-                inert for a single ``Pipeline`` (it only shares a prefix once
-                sibling pipelines meet in a graph), and engine-tier passes are
-                Rust lowering with no effect on the logical op chain; both are
-                skipped.
-
-        Returns:
-            A one-line ``Pipeline().…`` rendering of the chain.
-        """
-        from polars_cv._optimize import OPTIMIZATION_PASSES, resolve_opt_flags
-
-        if not optimized:
-            return repr(self)
-        flags = resolve_opt_flags(opt_flags)
-        physical = self._clone()
-        # Drive the node passes from the one registry `optimize()` uses, so a new
-        # pass is applied here automatically and this never drifts from `.sink()`
-        # (which is exactly how identity elimination went missing when it was
-        # hand-listed). Only logical, node-scope passes change the op chain this
-        # renders: graph-tier passes (CSE) are inert for a lone pipeline, and
-        # engine-tier passes are Rust lowering with no effect on the logical ops.
-        for spec in OPTIMIZATION_PASSES:
-            if spec.tier == "logical" and flags.enabled(spec.name):
-                physical._run_node_pass(spec.name)
-        return repr(physical)

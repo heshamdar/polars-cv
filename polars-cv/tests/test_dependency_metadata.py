@@ -23,7 +23,7 @@ pytestmark = pytest.mark.structural
 
 _PKG = Path(__file__).resolve().parents[1]
 _PYPROJECT = tomllib.loads((_PKG / "pyproject.toml").read_text())
-_VIZ = ("networkx", "graphviz", "pydot")
+_VIZ = ("graphviz",)
 
 
 def _floors_module():
@@ -155,7 +155,7 @@ def test_the_package_works_without_the_viz_extra() -> None:
         df = pl.DataFrame({{"a": [[1.0, 2.0]]}}).cast({{"a": pl.Array(pl.Float32, 2)}})
         assert df.select(pl.col("a").cv.pipe(pipe).sink("list"))["a"][0].to_list() == [2.0, 4.0]
         try:
-            pipe.to_graph(pl.col("a")).show_graph()
+            pl.col("a").cv.pipe(pipe).show_graph("list")
         except ImportError as e:
             print(e)
         """

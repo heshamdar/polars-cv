@@ -186,8 +186,7 @@ impl CompiledGraph {
             error_messages.extend(range_messages);
         }
 
-        let with_message = self.graph.on_error == RowErrorPolicy::NullWithMessage;
-        if self.graph.is_single_output() && !with_message {
+        if !self.graph.returns_struct() {
             let (_, spec) = &state.resolved_outputs[0];
             // Take ownership of the row results so the encoder can move each
             // row's bytes/buffers into Arrow instead of copying them.
@@ -200,9 +199,9 @@ impl CompiledGraph {
                     build_series_from_spec(PlSmallStr::from_str(alias), spec, data, Some(&split))?;
                 fields.push(field_series);
             }
-            if with_message {
+            if self.graph.adds_error_field() {
                 fields.push(Series::new(
-                    PlSmallStr::from_static("_error"),
+                    PlSmallStr::from_static(crate::graph::types::ERROR_FIELD),
                     error_messages,
                 ));
             }

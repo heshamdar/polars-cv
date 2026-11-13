@@ -1319,7 +1319,7 @@
    [
     "format",
     "POSITIONAL_OR_KEYWORD",
-    ""
+    "'native'"
    ],
    [
     "optimized",
@@ -1412,6 +1412,28 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "graph": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "format",
+    "POSITIONAL_OR_KEYWORD",
+    "'native'"
+   ],
+   [
+    "optimized",
+    "KEYWORD_ONLY",
+    "True"
+   ],
+   [
+    "opt_flags",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "grayscale": [
@@ -2447,7 +2469,12 @@
    [
     "format",
     "POSITIONAL_OR_KEYWORD",
-    ""
+    "'native'"
+   ],
+   [
+    "optimized",
+    "KEYWORD_ONLY",
+    "True"
    ],
    [
     "opt_flags",
@@ -2486,13 +2513,8 @@
     "'native'"
    ],
    [
-    "return_expr",
-    "POSITIONAL_OR_KEYWORD",
-    "True"
-   ],
-   [
     "opt_flags",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
@@ -3322,23 +3344,6 @@
     "axis",
     "POSITIONAL_OR_KEYWORD",
     ""
-   ]
-  ],
-  "explain": [
-   [
-    "self",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ],
-   [
-    "optimized",
-    "KEYWORD_ONLY",
-    "True"
-   ],
-   [
-    "opt_flags",
-    "KEYWORD_ONLY",
-    "None"
    ]
   ],
   "extract_contours": [
@@ -4469,18 +4474,6 @@
   "to_bgr": [
    [
     "self",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ]
-  ],
-  "to_graph": [
-   [
-    "self",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ],
-   [
-    "column",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]

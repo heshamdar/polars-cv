@@ -24,7 +24,7 @@ from tests.conftest import make_image_png, plugin_required
 
 
 def _graph(expr_pipe: Pipeline):
-    return pl.col("img").cv.pipe(expr_pipe).sink("tensor", return_expr=False)
+    return pl.col("img").cv.pipe(expr_pipe).graph("tensor")
 
 
 def _params(spec: dict) -> list:

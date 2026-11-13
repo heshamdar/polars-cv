@@ -16,7 +16,7 @@ use crate::graph::step::GraphStep;
 use smallvec::SmallVec;
 
 use crate::graph::decode::dtype_from_polars_leaf;
-use crate::graph::types::{NodeInput, OutputSpec, RowErrorPolicy, UnifiedGraph};
+use crate::graph::types::{NodeInput, OutputSpec, UnifiedGraph};
 use crate::plan::State;
 
 /// The exact graph JSON a graph was compiled from. Stored on the compiled
@@ -146,7 +146,7 @@ impl CompiledGraph {
 
         // `_error` is reserved for the error-message field of the
         // null_with_message policy; an output alias would collide with it.
-        if graph.on_error == RowErrorPolicy::NullWithMessage && graph.outputs.contains_key("_error")
+        if graph.adds_error_field() && graph.outputs.contains_key(crate::graph::types::ERROR_FIELD)
         {
             return Err(polars_err!(ComputeError:
                 "Output alias '_error' is reserved when on_error='null_with_message'"
@@ -289,7 +289,7 @@ pub(crate) fn resolved_output_specs(
     graph: &UnifiedGraph,
     input_dtypes: &[DataType],
 ) -> PolarsResult<Vec<(String, OutputSpec)>> {
-    let states = planned_node_states(graph, input_dtypes, |_, _, _| {})?;
+    let states = planned_node_states(graph, input_dtypes, |_, _, _| Ok(()))?;
 
     let mut specs: Vec<(String, OutputSpec)> = graph
         .outputs
@@ -313,13 +313,14 @@ pub(crate) fn resolved_output_specs(
 
 /// Plan every node of `graph` in execution order, returning the state each
 /// leaves. `visit(node_id, op_index, state)` sees the state entering a node
-/// (`op_index` `None`) and the state after each of its ops, which is how
-/// [`explain`](crate::graph::explain) renders the plan this function makes
+/// (`op_index` `None`) and the state after each of its ops (an error it
+/// returns stops the planning), which is how
+/// [`explain`](crate::graph::explain) describes the plan this function makes
 /// rather than planning it a second time.
 pub(crate) fn planned_node_states(
     graph: &UnifiedGraph,
     input_dtypes: &[DataType],
-    mut visit: impl FnMut(&str, Option<usize>, &State),
+    mut visit: impl FnMut(&str, Option<usize>, &State) -> PolarsResult<()>,
 ) -> PolarsResult<crate::plan::Refs> {
     let mut states = crate::plan::Refs::new();
     for node_id in graph.topological_order() {
@@ -334,11 +335,11 @@ pub(crate) fn planned_node_states(
             }
             NodeInput::Node(up) => states[up].clone(),
         };
-        visit(node_id, None, &state);
+        visit(node_id, None, &state)?;
         for (i, op) in node.ops.iter().enumerate() {
             state = crate::plan::step(op, &state, &states)
                 .map_err(|e| polars_err!(ComputeError: "node '{}': {}", node_id, e))?;
-            visit(node_id, Some(i), &state);
+            visit(node_id, Some(i), &state)?;
         }
         states.insert(node_id.clone(), state);
     }

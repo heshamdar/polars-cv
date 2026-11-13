@@ -120,19 +120,24 @@ class TestPipelineRepr:
         assert "sink" not in repr_str
 
 
-class TestToGraphPreservesPlannedState:
-    """to_graph() must carry the pipeline's incrementally tracked
-    domain/dtype/ndim into the graph node, not re-derive them by folding
-    all ops on top of the already-final state (which double-applies ops).
+def _graph_node(pipe: Pipeline):
+    """The one node of *pipe*'s graph, bound to a column."""
+    (node,) = pl.col("img").cv.pipe(pipe).graph("tensor")._nodes.values()
+    return node
+
+
+class TestTheGraphPreservesPlannedState:
+    """The graph must carry the pipeline's incrementally tracked
+    domain/dtype/ndim into its node, not re-derive them by folding all ops on
+    top of the already-final state (which double-applies ops).
     """
 
     def test_axis_reduction_ndim_preserved(self) -> None:
-        """A single axis reduction: ndim 3 -> 2 must survive to_graph."""
+        """A single axis reduction: ndim 3 -> 2 must survive into the graph."""
         pipe = Pipeline().source("image_bytes", dtype="u8").reduce_max(axis=0)
         assert planned(pipe).ndim == 2
 
-        graph = pipe.to_graph(pl.col("img"))
-        node = graph._nodes["_node_0"]
+        node = _graph_node(pipe)
         assert planned(node.pipeline).ndim == planned(pipe).ndim
         assert planned(node.pipeline).dtype == planned(pipe).dtype
         assert planned(node.pipeline).domain == planned(pipe).domain
@@ -148,8 +153,7 @@ class TestToGraphPreservesPlannedState:
         )
         assert planned(pipe).ndim == 1
 
-        graph = pipe.to_graph(pl.col("img"))
-        node = graph._nodes["_node_0"]
+        node = _graph_node(pipe)
         assert planned(node.pipeline).ndim == planned(pipe).ndim
         assert planned(node.pipeline).dtype == planned(pipe).dtype
         assert planned(node.pipeline).domain == planned(pipe).domain
@@ -157,8 +161,7 @@ class TestToGraphPreservesPlannedState:
     def test_plain_image_pipeline_state_preserved(self) -> None:
         """Non-reducing pipeline: state must match exactly too."""
         pipe = Pipeline().source("image_bytes").resize(height=32, width=32).grayscale()
-        graph = pipe.to_graph(pl.col("img"))
-        node = graph._nodes["_node_0"]
+        node = _graph_node(pipe)
         assert planned(node.pipeline).ndim == planned(pipe).ndim
         assert planned(node.pipeline).dtype == planned(pipe).dtype
         assert planned(node.pipeline).domain == planned(pipe).domain

@@ -412,18 +412,17 @@ Every keyword after ``opt_flags`` is a sink parameter, generated from the
 typed sinks: ``None`` means the chosen format's own default. One that does
 not apply to the chosen format is refused, naming the formats it applies to.
 
+:meth:`explain`, :meth:`show_graph` and :meth:`graph` show the graph this
+runs.
+
 Returns:
-    A Polars expression, or the ``PipelineGraph`` if ``return_expr=False``."""
+    A Polars expression."""
 
 #: ``sink()``'s parameters that are not a sink's fields: (name, annotation,
-#: default, doc). They keep their positions: ``sink("png", False)`` binds.
+#: default, doc). Keyword-only, like the fields: the second positional slot
+#: was ``return_expr``, so ``sink("png", False)`` is a ``TypeError`` rather
+#: than a call that now means something else.
 _SINK_OWN = (
-    (
-        "return_expr",
-        "bool",
-        "True",
-        "If True (default), return a ``pl.Expr``; if False, the ``PipelineGraph``.",
-    ),
     (
         "opt_flags",
         "OptFlags | bool | None",
@@ -442,9 +441,9 @@ _SINK_ARG = f"{_SINK_SPEC} | Mapping[str, {_SINK_SPEC}]"
 
 
 def sink_method(io: dict[str, Any]) -> str:
-    """Render ``LazyPipelineExpr.sink()``: its two overloads (an expression,
-    or the graph under ``return_expr=False``) and the method, every typed
-    sink field keyword-only with ``None`` meaning the format's own default.
+    """Render ``LazyPipelineExpr.sink()``: ``format``, then ``opt_flags`` and
+    every typed sink field keyword-only, ``None`` meaning the format's own
+    default.
 
     The body hands the values to the hand-written ``_sink``, which builds
     and checks the graph.
@@ -474,31 +473,13 @@ def sink_method(io: dict[str, Any]) -> str:
         f"{name}: {annotation(ty)} | None = None" for name, ty in fields.items()
     ]
 
-    def signature(return_expr: str, opt_flags: str, *, star_first: bool) -> str:
-        own = [
-            f"return_expr: {return_expr}",
-            f"opt_flags: OptFlags | bool | None {opt_flags}",
-        ]
-        head = ["self", f"format: {_SINK_ARG} = ..."]
-        if star_first:
-            return ", ".join(
-                [*head, "*", *own, *(k.replace("= None", "= ...") for k in keywords)]
-            )
-        return ", ".join(
-            [*head, *own, "*", *(k.replace("= None", "= ...") for k in keywords)]
-        )
-
     values = ", ".join(f'"{name}": {name}' for name in fields)
     doc = _indent(docstring(desc), "        ").lstrip()
     own = ", ".join(f"{name}: {ty} = {default}" for name, ty, default, _ in _SINK_OWN)
     return (
-        "    @overload\n"
-        f"    def sink({signature('Literal[True] = ...', '= ...', star_first=False)}) -> pl.Expr: ...\n\n"
-        "    @overload\n"
-        f"    def sink({signature('Literal[False]', '= ...', star_first=True)}) -> PipelineGraph: ...\n\n"
-        f"    def sink(self, format: {_SINK_ARG} = 'native', {own}, *, {', '.join(keywords)}) -> pl.Expr | PipelineGraph:\n"
+        f"    def sink(self, format: {_SINK_ARG} = 'native', *, {own}, {', '.join(keywords)}) -> pl.Expr:\n"
         f'        """{doc}\n        """\n'
-        f"        return self._sink(format, {{{values}}}, return_expr, opt_flags)\n"
+        f"        return self._sink(format, {{{values}}}, opt_flags)\n"
     )
 
 
@@ -853,8 +834,8 @@ def render(
         + "    if TYPE_CHECKING:\n\n"
         + "        def _node_op(\n            self, op: str, values: dict[str, Any]\n        ) -> LazyPipelineExpr: ...\n"
         + "        def _sink(\n            self,\n            format: Any,\n            values: dict[str, Any],\n"
-        + "            return_expr: bool,\n            opt_flags: OptFlags | bool | None,\n"
-        + "        ) -> pl.Expr | PipelineGraph: ...\n\n"
+        + "            opt_flags: OptFlags | bool | None,\n"
+        + "        ) -> pl.Expr: ...\n\n"
         + lazy_methods
         + "\n\n"
         + geom_methods

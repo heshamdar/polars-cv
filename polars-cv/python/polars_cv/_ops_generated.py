@@ -10,14 +10,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any
 
 from polars_cv._this import ThisExpr
 
 if TYPE_CHECKING:
     import polars as pl
 
-    from polars_cv._graph import PipelineGraph
     from polars_cv._optimize import OptFlags
     from polars_cv._types import (
         BoolOrExpr,
@@ -3895,39 +3894,8 @@ class _LazyOpsMixin:
             self,
             format: Any,
             values: dict[str, Any],
-            return_expr: bool,
             opt_flags: OptFlags | bool | None,
-        ) -> pl.Expr | PipelineGraph: ...
-
-    @overload
-    def sink(
-        self,
-        format: SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink] = ...,
-        return_expr: Literal[True] = ...,
-        opt_flags: OptFlags | bool | None = ...,
-        *,
-        compact: bool | None = ...,
-        dtype: str | None = ...,
-        names: Sequence[str] | None = ...,
-        quality: int | None = ...,
-        shape: Sequence[int] | None = ...,
-        where: str | None = ...,
-    ) -> pl.Expr: ...
-
-    @overload
-    def sink(
-        self,
-        format: SinkFormat | str | Sink | Mapping[str, SinkFormat | str | Sink] = ...,
-        *,
-        return_expr: Literal[False],
-        opt_flags: OptFlags | bool | None = ...,
-        compact: bool | None = ...,
-        dtype: str | None = ...,
-        names: Sequence[str] | None = ...,
-        quality: int | None = ...,
-        shape: Sequence[int] | None = ...,
-        where: str | None = ...,
-    ) -> PipelineGraph: ...
+        ) -> pl.Expr: ...
 
     def sink(
         self,
@@ -3935,21 +3903,23 @@ class _LazyOpsMixin:
         | str
         | Sink
         | Mapping[str, SinkFormat | str | Sink] = "native",
-        return_expr: bool = True,
-        opt_flags: OptFlags | bool | None = None,
         *,
+        opt_flags: OptFlags | bool | None = None,
         compact: bool | None = None,
         dtype: str | None = None,
         names: Sequence[str] | None = None,
         quality: int | None = None,
         shape: Sequence[int] | None = None,
         where: str | None = None,
-    ) -> pl.Expr | PipelineGraph:
+    ) -> pl.Expr:
         """Finalize the pipeline graph and return a Polars expression.
 
         Every keyword after ``opt_flags`` is a sink parameter, generated from the
         typed sinks: ``None`` means the chosen format's own default. One that does
         not apply to the chosen format is refused, naming the formats it applies to.
+
+        :meth:`explain`, :meth:`show_graph` and :meth:`graph` show the graph this
+        runs.
 
         Args:
             format: The output format: a name, a :class:`polars_cv.SinkFormat` or a
@@ -3972,8 +3942,6 @@ class _LazyOpsMixin:
                 the column back. Polars' struct operations need the storage:
                 ``.ext.storage().struct.field("shape")``. ``webp``: Re-encoded as WebP
                 (lossless).
-            return_expr: If True (default), return a ``pl.Expr``; if False, the
-                ``PipelineGraph``.
             opt_flags: Which plan-time optimizations to apply. ``None`` (default) reads
                 the ``POLARS_CV_OPTIMIZATIONS`` env var, falling back to all-on;
                 ``True``/``False`` are all/none shorthands; an
@@ -3997,7 +3965,7 @@ class _LazyOpsMixin:
                 leave the channel out of the struct.
 
         Returns:
-            A Polars expression, or the ``PipelineGraph`` if ``return_expr=False``.
+            A Polars expression.
         """
         return self._sink(
             format,
@@ -4009,7 +3977,6 @@ class _LazyOpsMixin:
                 "shape": shape,
                 "where": where,
             },
-            return_expr,
             opt_flags,
         )
 

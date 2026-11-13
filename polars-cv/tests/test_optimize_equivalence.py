@@ -199,8 +199,8 @@ def _built_graph(pipes_by_alias: dict[str, Pipeline], flags: OptFlags):  # type:
     aliases = list(pipes_by_alias)
     exprs = [pl.col("image").cv.pipe(pipes_by_alias[a]).alias(a) for a in aliases]
     first, *rest = exprs
-    return first.merge_pipe(*rest).sink(
-        {a: "tensor" for a in aliases}, return_expr=False, opt_flags=flags
+    return first.merge_pipe(*rest).graph(
+        {a: "tensor" for a in aliases}, opt_flags=flags
     )
 
 
@@ -397,11 +397,7 @@ class TestSpatialPushdownEquivalence:
             graph = (
                 pl.col("image")
                 .cv.pipe(pipe)
-                .sink(
-                    "tensor",
-                    return_expr=False,
-                    opt_flags=OptFlags(spatial_window_pushdown=flag),
-                )
+                .graph("tensor", opt_flags=OptFlags(spatial_window_pushdown=flag))
             )
             (node,) = graph._nodes.values()
             return op_names(node.pipeline)
