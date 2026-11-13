@@ -36,6 +36,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **A box of negative size is refused instead of scoring as a false positive
+  (CR-76).** `xywh` data passed as `box_format="xyxy"` (or to
+  `bbox_from_coords(format="xyxy")`) gives boxes of negative width or
+  height, which matched nothing, so `match_detections` and the metrics
+  counted each as a 0-IoU false positive and said nothing. Every `.bbox`
+  accessor and metric reads boxes through one reader, which now refuses a
+  negative size, naming the format to check. A box of zero size is still
+  read (annotation sets hold degenerate boxes).
+
 - **Three error messages told users to use the removed `numpy` sink**
   (a `native` sink on a buffer, an image codec on a buffer that is not
   image-shaped, an `auto` source whose rank is unknown to an `array` sink),

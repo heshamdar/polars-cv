@@ -81,6 +81,44 @@ class TestGroupObjects:
 
 @plugin_required
 class TestBoxes:
+    def test_corner_data_read_as_corner_and_size_is_refused(self) -> None:
+        """xywh boxes passed as ``"xyxy"`` give negative sizes; they scored as
+        0-IoU false positives with nothing said (CR-76). The bbox reader
+        refuses a negative size, naming the format to check."""
+        swapped = PREDS.with_columns(
+            pl.Series(
+                "box",
+                [
+                    [10, 10, 0, 0],
+                    [50, 50, 60, 60],
+                    [20, 0, 30, 10],
+                    [0, 0, 8, 8],
+                    [0, 0, 5, 5],
+                ],
+            )
+        )
+        with pytest.raises(pl.exceptions.ComputeError, match="negative width.*format"):
+            match_detections(
+                swapped, GTS, geometry="box", box_format="xyxy"
+            ).detections.collect()
+
+    def test_a_box_of_zero_size_is_matched(self) -> None:
+        """A degenerate box is read, and overlaps nothing."""
+        point = PREDS.with_columns(
+            pl.Series(
+                "box",
+                [
+                    [3, 3, 3, 3],
+                    [50, 50, 60, 60],
+                    [20, 0, 30, 10],
+                    [0, 0, 8, 8],
+                    [0, 0, 5, 5],
+                ],
+            )
+        )
+        table = match_detections(point, GTS, geometry="box", box_format="xyxy")
+        assert table.detections.collect().height == PREDS.height
+
     def test_every_layout_gives_the_same_table(self) -> None:
         xyxy = match_detections(PREDS, GTS, geometry="box", box_format="xyxy")
         xywh = match_detections(
