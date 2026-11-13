@@ -1,6 +1,6 @@
 //! Output encoding for the tensor sink with zero-copy support.
 //!
-//! This module provides zero-copy output encoding for numpy and torch sink formats.
+//! This module provides zero-copy output encoding for the `tensor` sink.
 //! Instead of prepending a header to binary data (which requires copying), we return
 //! a Struct with separate fields that enable strided numpy array creation.
 //!

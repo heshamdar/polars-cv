@@ -288,7 +288,8 @@ Thread counts, morsel sizing and memory budgets are covered in
 > [parity report](https://heshamdar.github.io/polars-cv/user-guide/parity/):
 > every op is checked in CI against an independent implementation.
 
-polars-cv is 0.x: a minor release may break the API. Breaking changes are
+polars-cv is 0.x, and there is no stable API until 1.0: a minor release may
+break any of it. Breaking changes are
 listed in the [changelog](https://github.com/heshamdar/polars-cv/blob/main/CHANGELOG.md),
 each with a [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration/).
 Pin a minor version (`polars-cv~=0.41.0`) if you depend on it. Outputs are

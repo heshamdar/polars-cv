@@ -114,7 +114,7 @@ pub enum Source {
     },
     /// Infer the decode path from the column's Polars dtype: String → file_path,
     /// List/Array → list/array, Binary → blob if VIEW-tagged else image_bytes,
-    /// the numpy/ndarray/torch sink struct → tensor.
+    /// the `tensor` sink's struct → tensor.
     #[op(name = "auto", sample = {"allowed_roots": ["/srv"], "decode_max_size": 64})]
     Auto {
         /// Asserted element dtype (a decoded image is cast to it).
@@ -220,8 +220,8 @@ pub enum Source {
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
     },
-    /// The struct the `numpy`, `ndarray` and `torch` sinks write, read where
-    /// it lies at its own shape, strides and offset. A `float16` row reads
+    /// The struct the `tensor` sink writes, read where it lies at its own
+    /// shape, strides and offset. A `float16` row reads
     /// as f32.
     #[op(name = "tensor", sample = {})]
     Tensor {

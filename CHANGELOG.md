@@ -36,8 +36,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
-- **The refusal of a `native` sink on a buffer named the removed `numpy`
-  sink** among its alternatives; it names `tensor` (CR-81 left it).
+- **Three error messages told users to use the removed `numpy` sink**
+  (a `native` sink on a buffer, an image codec on a buffer that is not
+  image-shaped, an `auto` source whose rank is unknown to an `array` sink),
+  and the `tensor` source's refusal named `numpy`, `ndarray` and `torch`.
+  They name `tensor` (CR-81 left them). `test_sink_names_in_text.py` refuses
+  a sink name the catalogue does not have in any message, docstring or
+  guide.
 
 - **A constant is no longer rounded to f32 before f64 arithmetic (CR-136).**
   `Float64` and 32/64-bit integer data compute in f64, but every constant was

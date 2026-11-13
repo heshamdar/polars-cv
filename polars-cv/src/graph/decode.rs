@@ -228,7 +228,7 @@ fn binary_array_row_buffer(
     let view = arr.views()[i];
     if in_place(bytes) && view.length > View::MAX_INLINE_SIZE {
         // Sliced to the row: the data buffer is shared by the column's rows,
-        // and whatever holds this buffer downstream (a numpy sink's `data`)
+        // and whatever holds this buffer downstream (a tensor sink's `data`)
         // must hold this row's bytes, not every row's.
         let start = view.offset as usize;
         let buffer = arr.data_buffers()[view.buffer_idx as usize]
@@ -239,8 +239,7 @@ fn binary_array_row_buffer(
     Some((aligned_copy(bytes), 0, bytes.len()))
 }
 
-/// Row `row` of a tensor struct column (what the `numpy`, `ndarray` and
-/// `torch` sinks write): a view over the row's `data` at its own `shape`,
+/// Row `row` of a tensor struct column (what the `tensor` sink writes): a view over the row's `data` at its own `shape`,
 /// `strides` and `offset`, read where the bytes lie when its elements are
 /// aligned there, else over an aligned copy. `None` for a null row.
 ///
@@ -256,8 +255,7 @@ pub(crate) fn decode_tensor_row(series: &Series, row: usize) -> Result<Option<Vi
     let storage = crate::output::numpy_output_dtype();
     if series.dtype() != &storage {
         return Err(format!(
-            "expected the tensor struct ({storage:?}), as sink(\"numpy\"), sink(\"ndarray\") \
-             and sink(\"torch\") write it, got {:?}",
+            "expected the tensor struct ({storage:?}), as sink(\"tensor\") writes it, got {:?}",
             series.dtype()
         ));
     }

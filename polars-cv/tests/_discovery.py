@@ -276,6 +276,15 @@ def repo_file(relative: str) -> Path:
     return path
 
 
+def benchmark_results() -> list[Path]:
+    """The cross-library benchmark results the README's table and figures are
+    made from (``benchmarks/results/coco-*.json`` at the repository root)."""
+    return discovered(
+        sorted((REPO_ROOT / "benchmarks" / "results").glob("coco-*.json")),
+        "benchmark results",
+    )
+
+
 def script_files() -> list[Path]:
     """Every ``.py`` under ``polars-cv/scripts/`` and the root ``scripts/``."""
     return discovered(

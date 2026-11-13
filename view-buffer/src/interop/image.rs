@@ -133,7 +133,7 @@ impl ImageCodec {
                 return Err(format!(
                     "{} encoding needs an image-shaped buffer ([H, W] or [H, W, C]), \
                      but this is {rank}-dimensional. Reshape before the sink, or use \
-                     a `numpy`/`list`/`array` sink for non-image data.",
+                     a `tensor`/`list`/`array` sink for non-image data.",
                     self.name()
                 ));
             }

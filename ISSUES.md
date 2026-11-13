@@ -42,14 +42,13 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-80 | Extension types | Feature | Opt-in tagged geometry output (`polars_cv.point` / `.contour` / `.bbox`) |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
-| CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
+| CR-118 | Graph | Design | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
 | CR-129 | Params | Feature | A parameter from another node's values per row (`mask_node.p1` feeding any op) |
 | CR-139 | Review 2026-11 | Decision | `decode_max_size` at scale 1/2 decodes no faster than the full decoder (0.85x to 1.08x); falling through there would return the full size instead of half |
 | CR-140 | Review 2026-11 | Feature | No Windows wheel; Python 3.14 untested |
-| CR-141 | Review 2026-11 | Decision | A stability policy: what the stable surface is, and how it deprecates |
 | CR-146 | Review 2026-11 | Low | The crop pushdown stops at neighbourhood ops (`blur` then `crop` filters the whole image) |
 | CR-147 | Review 2026-11 | Feature | `.bbox` has two accessors |
-| CR-149 | Review 2026-11 | Low | The published benchmarks report 0.38.0 (pinned: `test_known_gaps.py::test_the_published_benchmarks_measure_a_recent_release`) |
+| CR-149 | Review 2026-11 | Low | The published benchmarks report 0.38.0 (pinned: `test_benchmark_freshness.py`, a strict xfail) |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -240,7 +239,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Pinned by** `test_known_gaps.py::test_a_buffer_op_applies_to_a_hash_vector`
   (strict xfail: `invert()` on a hash gives each byte's u8 NOT) and
   `test_known_gaps.py::test_histogram_buckets_refuse_a_format_they_ignore`
-  (strict xfail: `sink("numpy")` on buckets must not give the struct).
+  (strict xfail: `sink("tensor")` on buckets must not give the struct).
 - **Payoff:** `hash_similarity()` could count agreeing bits in the plugin
   instead of sinking the XOR beside its popcount; hashes, histograms and
   boxes take the scalar ops like any array; after step 2, the executor's
@@ -250,7 +249,10 @@ against `main` at `e788d72` that day, and their full text is in git history).
 
 ### CR-118 — CSE re-derives a per-op graph from the per-node wire
 
-**decision**
+No longer waiting on a decision: CR-141 (decided 2026-11-13) keeps the
+whole API, the wire included, free to change until 1.0, so the cost below
+is only the work. Not scheduled; the owner's priority is that CSE as it
+stands is correct.
 
 - **Evidence:** `PipelineGraph._optimize_common_subexpressions` (~200 lines)
   value-numbers every op of every node (an "atom" per op), shares equal
@@ -261,7 +263,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Option:** send a flat list of op values (`{op, input, operands}`) and do
   value numbering and run fusion in Rust beside the planner, leaving the
   Python builder an appender. Large: it moves the optimiser across the FFI
-  and changes the wire again. CR-117 (closed) left the node form with one
+  and changes the wire again (free to, until 1.0). CR-117 (closed) left the node form with one
   input declaration, so this is the next step if the per-op form is wanted.
 
 ## Fetch
@@ -382,12 +384,13 @@ the code and against the Decisions section before it was entered. The detail
 phase, and is not repeated here:
 
 - [`plans/review-2026-11/phase-1-first-contact.md`](plans/review-2026-11/phase-1-first-contact.md):
-  CR-136, CR-139, CR-138, CR-137, CR-140, in that order.
-- [`plans/review-2026-11/phase-2-stabilise.md`](plans/review-2026-11/phase-2-stabilise.md):
-  CR-141, a decision. CR-142 to CR-145 are closed.
+  CR-139's remainder (a decision) and CR-140; CR-136 to CR-138 are closed.
+- Phase 2 is complete: CR-141 decided, CR-142 to CR-145 closed. Its plan
+  is in git history (`plans/review-2026-11/phase-2-stabilise.md`, removed
+  2026-11-13).
 - [`plans/review-2026-11/phase-3-depth.md`](plans/review-2026-11/phase-3-depth.md):
   CR-149's refresh (with the next release; its guard is pinned), CR-76 then
-  CR-147, CR-146, and CR-118 if decided. CR-148 and CR-79 are closed.
+  CR-147, CR-146; CR-118 is not scheduled. CR-148 and CR-79 are closed.
   Re-verified 2026-11-12 at `42e08b3`; the plan records what that changed.
 
 Delete a plan's section when its item closes, and the file when it is empty.
@@ -396,8 +399,7 @@ CR-136, CR-137 and CR-138 are closed and CR-139's scale-1 half is fixed
 (below, and the CHANGELOG); each went in with its tests, watched failing
 first, so none was pinned in `test_known_gaps.py`. What is left of CR-139 is a decision,
 with its measurement in the phase 1 plan. Of phase 2, CR-142 to CR-145 are
-closed the same way, and the plan records what the implementation found it
-had wrong; CR-141 is a decision.
+closed the same way, and CR-141 is decided (Closed findings).
 
 Changed or dropped on the second check:
 
@@ -408,7 +410,7 @@ Changed or dropped on the second check:
 - **A faster JPEG encoder: withdrawn, no entry.** Decided 2026-09-28 (below).
 - **"Trimming `image` removes an ignored advisory": it removed two**, though
   not the way the review said. See CR-145 under Closed findings.
-- **CSE in Rust** is CR-118, already a decision here; no second entry.
+- **CSE in Rust** is CR-118, already in this ledger; no second entry.
 
 ## Extension types
 
@@ -628,6 +630,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-141 | A stability policy: what the stable surface is, and how it deprecates | Decided (owner, 2026-11-13): no stable API until 1.0. Every name, signature and the wire stay free to change in a minor release, each break listed in the CHANGELOG with a migration guide, as now; no deprecation path is built. The README's "pin a minor version" stands and says so |
 | CR-148 | No text `explain()` on `LazyPipelineExpr`/`PipelineGraph`; engine-level passes were invisible | Fixed (unreleased): `LazyPipelineExpr.explain(format, optimized=)` and `PipelineGraph.explain()`, rendered in Rust (`graph/explain.rs`) from the planner's own per-node states (`planned_node_states`, which `resolved_output_specs` now reads too), the fused segments (a run of `GraphStep::Buffer` steps, fixed at compile time) and the schema's output dtypes; the engine passes are named per segment, since what they rewrite is planned per row layout. `show_graph`, `output_dtype`, `current_domain` on the lazy expression. `sink(return_expr=False)` stays: it is the graph-inspection hook for the tests (`test_explain.py`: node count equals the graph's, output dtypes equal `collect_schema()`, no Graphviz) |
 | CR-79 | The COCO parity test never ran in CI | Fixed (unreleased): `pycocotools` is in the dev group, which every CI test lane syncs, and the test imports it instead of `importorskip`, so a missing install fails (4/4 pass) |
 | CR-82 | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata | Decided (owner, 2026-11-12): no metadata, and it is part of the stable surface. The planner often cannot know either value (an `auto`-dtype image source decodes `u8` or `u16` per file; a `tensor` or `blob` source knows no rank until its rows), one column can hold rows of several dtypes, and metadata enters type equality, so tensor columns of different dtypes would stop concatenating. A column whose dtype and shape are fixed and known has `sink("array")`, which Polars types fully |

@@ -4,18 +4,20 @@ Implementation plan for the third group of findings from the external review
 of 0.41.0 (commit `c0d77d5`, 2026-11-11). Ledger entries CR-146 to CR-149,
 plus the existing CR-118 and CR-79, in the root
 [`ISSUES.md`](../../ISSUES.md). Follows [phase 1](phase-1-first-contact.md)
-and [phase 2](phase-2-stabilise.md).
+and phase 2 (complete; its plan is in git history).
 
 **Goal:** widen what the tool does well. Nothing here blocks adoption; do it
 after the first two phases.
 
 **Order:** CR-148, CR-149's guard with CR-79, then CR-76 and CR-147,
-CR-146, and CR-118 if the owner decides for it. CR-149's refresh runs with
+CR-146; CR-118 is not scheduled. CR-149's refresh runs with
 the next release (below).
 
 **Status:** CR-148 and CR-79 are closed (`ISSUES.md`, Closed findings), and
-CR-149's guard is pinned in `test_known_gaps.py`. CR-148 came out as planned
-after the corrections below; the optimised README cut-out is six nodes and
+CR-149's guard is pinned in `test_benchmark_freshness.py`. CR-148 differs from its
+plan in one way: `explain(format)` takes `format` with no default (`sink()`'s
+default, `native`, is refused for a buffer) and no sink keywords (a sink
+with settings is a `Sink` value). The optimised README cut-out is six nodes and
 one decode against eight and three as written, as first measured.
 
 The working rules at the top of phase 1 apply here unchanged.
@@ -23,7 +25,7 @@ The working rules at the top of phase 1 apply here unchanged.
 ### Re-verification before implementation (2026-11-12, at `42e08b3`)
 
 Phases 1 and 2 have landed except CR-139's remainder and CR-141, both
-decisions. Every finding's evidence below still holds against the code;
+decisions, and CR-140 (a Windows wheel, Python 3.14), which is not started. Every finding's evidence below still holds against the code;
 what the second reading changed:
 
 - **CR-148.** Two corrections. Segment boundaries are fixed at compile time
@@ -52,7 +54,8 @@ what the second reading changed:
 - **CR-146.** Unchanged. `hoist_spatial_windows` is now `passes.rs:155`.
   One addition: a crop out of bounds must still be refused by a message that
   names the user's crop, not the inserted trim.
-- **CR-118.** Unchanged; CR-141 is still a decision.
+- **CR-118.** Unchanged. (Since decided: CR-141 keeps everything free to
+  change until 1.0, and CR-118 is not scheduled.)
 
 ---
 
@@ -91,7 +94,7 @@ pycocotools parity test never runs in CI) is open in the ledger.
    update `results/*.json`, the figures and both README tables in one
    commit. Needs COCO val2017, which a web session cannot download: on the
    owner's machine.
-2. **Done.** Make staleness visible: a test asserts the version recorded in
+2. **Done** (`tests/test_benchmark_freshness.py`, every `coco-*.json`). Make staleness visible: a test asserts the version recorded in
    `results/coco-5k.json` (`environment.libraries["polars-cv"]`) is within
    one minor of `polars-cv/pyproject.toml`'s. It fails today (0.38 against
    0.41), so it lands as a strict xfail in `test_known_gaps.py` and the
@@ -173,7 +176,7 @@ before adding ten more places for it to matter.
 
 `blur(sigma=2.0).crop(top=10, left=10, height=32, width=32)` over 400 JPEGs
 took 503 ms with optimisation on and 494 ms off, and `explain()` printed the
-same plan both ways. `hoist_spatial_windows` (`polars-cv/src/passes.rs:149`)
+same plan both ways. `hoist_spatial_windows` (`polars-cv/src/passes.rs:155`)
 moves a crop left across a run of ops whose rule is
 `SpatialDependency::Pointwise` and stops at anything else.
 `SpatialDependency::Neighborhood(NeighborhoodSupport)` already carries each
@@ -245,7 +248,7 @@ record which ops are exact; a partial result is still correct.
 
 ---
 
-## CR-118 — CSE in Rust  **decision** (existing entry)
+## CR-118 — CSE in Rust  (existing entry; not scheduled)
 
 **Re-verified: the ledger already holds this, with the option and its cost.**
 
@@ -257,11 +260,11 @@ changes that analysis. Two additions:
 - Measured benefit of CSE as it stands: three outputs from one graph ran in
   400 ms against 782 ms with optimisation off. It works; this is about where
   it lives, not whether.
-- If CR-141 declares a stable surface, the per-node wire is private and can
-  change freely, which removes the main cost CR-118 names. Decide CR-141
-  first.
+- CR-141 is decided (2026-11-13): nothing is stable until 1.0, so the wire
+  may change freely and the cost CR-118 names is only the work. The owner's
+  priority is that CSE as it stands is correct; this is not scheduled.
 
-No new ledger entry. If the owner decides for it, the plan is the option
+No new ledger entry. If it is taken up, the plan is the option
 CR-118 already describes, with one guard added: the eager/lazy parity sweep
 (`tests/test_append_contract.py`) and the CSE interaction tests
 (`test_cse_interactions.py`, `test_cse_optimization.py`) run unchanged

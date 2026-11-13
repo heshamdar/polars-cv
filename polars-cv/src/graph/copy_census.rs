@@ -213,7 +213,7 @@ enum Run {
 }
 
 /// The sink and channel count an op runs with: three channels unless it only
-/// takes one, and the numpy sink unless its output is not a buffer.
+/// takes one, and the tensor sink unless its output is not a buffer.
 fn runnable(op: &str, dtype: DType) -> Run {
     let mut refusal = String::new();
     for c in [3, 1] {

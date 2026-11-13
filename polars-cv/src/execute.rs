@@ -96,7 +96,7 @@ pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuf
 /// Encode the result buffer to a binary sink format.
 ///
 /// Handles the byte-producing sinks only: `png`/`jpeg`/`webp`/`tiff`/`blob`.
-/// The other sink formats never reach this function — `numpy`/`torch` are
+/// The other sink formats never reach this function — `tensor` is
 /// encoded as zero-copy structs (`crate::output`) and `list`/`array` as typed
 /// nested values, both directly in `graph::encode::encode_node_output` (the
 /// sole caller).

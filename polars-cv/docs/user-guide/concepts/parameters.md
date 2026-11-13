@@ -33,7 +33,7 @@ schema is computed when the query is planned and must match what executes.
 - **Sizes may be per-row.** `resize(height=pl.col("h"))` is fine; that axis is
   then unknown at plan time, which the schema says (a `List` level rather than
   an `Array` one). An `array` sink needs a known shape, so pair a per-row size
-  with the `list` or `numpy` sink, or follow it with a fixed-size op.
+  with the `list` or `tensor` sink, or follow it with a fixed-size op.
 - **Non-structural enums and flags may be per-row**: a resize `filter`,
   `interpolation`, `pad(mode=)`, `convolve2d(border=, normalize=)`, a
   morphology `footprint`, `distance_transform(signed=)`, and so on.

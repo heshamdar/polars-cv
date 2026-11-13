@@ -127,7 +127,7 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
                      binary column decides between an image and a VIEW blob by \
                      inspecting the bytes, so the rank is only settled during \
                      execution. Name the source explicitly \
-                     (e.g. `source(\"image_bytes\")`), or use a `numpy` sink, \
+                     (e.g. `source(\"image_bytes\")`), or use a `tensor` sink, \
                      which does not encode the rank in its Polars dtype."
                 );
             };
@@ -463,7 +463,7 @@ fn element_count(buf: &ViewBuffer) -> usize {
 // strides, whatever its layout — into the flat buffer.
 //
 // They never build one `AnyValue` per *element*: that is ~34-40x slower than
-// the numpy sink, and an irregular column (every rank >= 2 list sink, any array
+// the tensor sink, and an irregular column (every rank >= 2 list sink, any array
 // sink with a null row) must not need it.
 // There is no slow path to fall back to: an irregular row is either
 // representable here (ragged list rows, null rows) or an error.
@@ -1117,7 +1117,7 @@ pub(super) fn histogram_struct_dtype() -> DataType {
 /// The tensor sinks (`list`, `array`) are built straight from one flat values
 /// buffer — never element by element through `AnyValue`, which made a rank-3
 /// `list` sink ~34x, and an `array` sink with a single null row ~40x, slower
-/// than the zero-copy numpy sink.
+/// than the zero-copy tensor sink.
 #[cfg(test)]
 mod tensor_sink_tests {
     use super::{
