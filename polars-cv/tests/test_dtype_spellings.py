@@ -248,7 +248,6 @@ def test_dtype_name_for_covers_the_whole_table() -> None:
     reachable from some Polars type, or a column the engine can hold has no way
     to be named at a source.
     """
-    import polars as pl
 
     from polars_cv import dtype_name_for
 
@@ -266,33 +265,3 @@ def test_dtype_name_for_covers_the_whole_table() -> None:
         "dtype_name_for cannot name every dtype_table! row: "
         f"unreachable={sorted(expected - reached)}"
     )
-
-
-def test_contour_source_accepts_boolean_masks() -> None:
-    """A ``List(Boolean)`` mask is the documented shape for ``gt_col``.
-
-    Regression guard. It briefly raised, on the theory that Boolean is not a
-    buffer element type and declaring one was a silent lie. The source decoder
-    *casts* rather than reinterprets (``convert_row_values`` in graph/decode.rs),
-    so the declared dtype was always honest and boolean masks worked; the
-    rejection broke them.
-    """
-    from polars_cv.metrics._cv._contour import _detect_source_info
-
-    info = _detect_source_info({"mask": pl.List(pl.List(pl.Boolean))}, "mask")
-    assert info.kwargs["dtype"] == "u8"
-
-    # And through the public accessor the matcher now reads it from.
-    from polars_cv import dtype_name_for
-
-    assert dtype_name_for(pl.Boolean) == "u8"
-
-
-def test_contour_source_rejects_types_with_no_buffer_meaning() -> None:
-    """Types whose cast would fail or lose meaning must still be refused up
-    front, rather than becoming an f32 source that fails later and deeper."""
-    from polars_cv.metrics._cv._contour import _detect_source_info
-
-    for leaf in (pl.String, pl.Duration):
-        with pytest.raises(ValueError, match="no meaningful buffer"):
-            _detect_source_info({"mask": pl.List(pl.List(leaf))}, "mask")

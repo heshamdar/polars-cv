@@ -53,7 +53,8 @@ FROCSensitivity(1.0).by_group(table, "scanner")
 
 A carried column is a grouping key like `group_id`. Missing columns, unnamed
 literals, repeated names and names `image_metadata` defines itself are
-refused. See [Metrics](operations/metrics.md).
+refused. See [polars-eval](https://github.com/heshamdar/polars-eval), where
+the metrics now live.
 
 ## Behaviour you get for free
 

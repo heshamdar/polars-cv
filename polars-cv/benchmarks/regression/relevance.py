@@ -133,7 +133,6 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/python/polars_cv/display.py", _NONE),
     ("polars-cv/python/polars_cv/_graph_viz.py", _NONE),
     ("polars-cv/python/polars_cv/geometry/**", _GEOM),
-    ("polars-cv/python/polars_cv/metrics/**", _NONE),  # pure polars; unbenchmarked
 )
 
 

@@ -98,11 +98,11 @@ Methods:
 `bbox_pairwise_iou` and `bbox_correspond` compute box IoU analytically
 (`pairwise::bbox_iou_matrix`) and share the contour matcher's row drivers
 (`pairwise_rows`, `correspond_rows`), so the greedy matching policy lives in
-one place. Used by `BBoxMatcher` in the metrics subsystem.
+one place. polars-eval's `BBoxMatcher` is built on them.
 `Pipeline.crop_box(box)` is sugar over `crop_clip` that reads the box through
 `.bbox.to_coords("xyxy")`, so it inherits the same refusals. The box layouts
-are `BoxFormat` (Rust, generated into Python), which `bbox_from_coords` and
-the metrics' `box_format=` read.
+are `BoxFormat` (Rust, generated into Python), which `bbox_from_coords`
+reads.
 
 ### `.point` (PointNamespace)
 

@@ -36,7 +36,8 @@ out = df.with_columns(gray=pl.col("path").cv.pipe(pipe).sink("tensor"))
   graph, with shared steps computed once.
 - **Beyond pixels.** Contours, points and boxes as columns
   (`.contour` / `.point` / `.bbox`), drawing primitives, perceptual hashes,
-  reductions, and detection metrics (COCO AP, FROC, bootstrap intervals).
+  and reductions. Detection metrics (COCO AP, FROC, bootstrap intervals) built
+  on them are in [polars-eval](https://github.com/heshamdar/polars-eval).
 - **Checked outputs.** Results are held to NumPy, SciPy, OpenCV and
   `imagehash` in CI.
 
@@ -51,5 +52,5 @@ out = df.with_columns(gray=pl.col("path").cv.pipe(pipe).sink("tensor"))
 | Find an operation | [Image Operations](user-guide/operations/image-ops.md), [Geometry](user-guide/operations/geometry.md), [API Reference](api/pipeline.md) |
 | Get several results from one decode | [Multi-Output](user-guide/composition/multi-output.md) |
 | Draw shapes, masks and fields | [Drawing](user-guide/drawing.md) |
-| Evaluate a detector | [Detection Metrics](user-guide/operations/metrics.md) |
+| Evaluate a detector | [polars-eval](https://github.com/heshamdar/polars-eval) |
 | Upgrade | [Migration Guides](user-guide/migration.md), [Changelog](changelog.md) |

@@ -85,14 +85,11 @@ dev = [
     "pre-commit>=4.5.1",
     "pytest-cov>=5.0",
     "hypothesis>=6.100",
-    # Ten of the thirteen runnable examples plot their results, and
-    # `test_examples_run` executes all thirteen. Without this they would not
+    # Most of the examples plot their results, and `test_examples_run`
+    # executes every one. Without this they would not
     # skip, they would fail: the runner asserts exit 0.
     "matplotlib>=3.9.4",
     "pytest-xdist>=3.6",
-    # tests/reference/test_coco_parity_ref.py holds evaluate_detections to
-    # COCOeval; it imports pycocotools rather than skipping without it.
-    "pycocotools>=2.0.8",
 ]
 bench = [
     "opencv-python>=4.8",

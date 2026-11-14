@@ -62,7 +62,7 @@ def test_committed_report_matches_the_collected_declarations(tmp_path: Path) -> 
     committed = {_key(g) for g in _script().load()[0]["groups"]}
     assert collected == committed, (
         "tests/reference/ declarations differ from docs/assets/parity/reference.json; "
-        "regenerate with `uv run --no-sync --with pycocotools python "
+        "regenerate with `uv run --no-sync python "
         f"scripts/parity_report.py`.\nonly collected: {sorted(collected - committed)}"
         f"\nonly committed: {sorted(committed - collected)}"
     )
@@ -122,9 +122,7 @@ def test_a_bad_declaration_is_refused(mark, message: str) -> None:
         _parity.declaration(_item(mark))
 
 
-@pytest.mark.parametrize(
-    "op", ["resize", "contour.area", "cv.image_info", "metrics.evaluate_detections"]
-)
+@pytest.mark.parametrize("op", ["resize", "contour.area", "cv.image_info"])
 def test_each_op_spelling_resolves(op: str) -> None:
     _parity.declaration(_item(_mark(**{**GOOD, "ops": [op]})))
 

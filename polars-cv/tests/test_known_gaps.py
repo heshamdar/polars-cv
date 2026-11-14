@@ -47,41 +47,6 @@ def _gap(reason: str) -> pytest.MarkDecorator:
     return pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
 
 
-# Two detections on one image, each overlapping its ground-truth box.
-_PREDS = pl.DataFrame(
-    {
-        "image_id": ["a", "a"],
-        "class_id": ["c", "c"],
-        "score": [0.9, 0.8],
-        "bbox": [[0.0, 0.0, 10.0, 10.0], [20.0, 20.0, 10.0, 10.0]],
-    }
-)
-_GTS = pl.DataFrame(
-    {
-        "image_id": ["a", "a"],
-        "class_id": ["c", "c"],
-        "bbox": [[0.0, 0.0, 10.0, 11.0], [20.0, 20.0, 10.0, 14.0]],
-    }
-)
-
-
-@plugin_required
-@_gap("issue #216: sweep thresholds are compared by exact float equality")
-def test_a_swept_threshold_reports_its_metrics() -> None:
-    """``np.arange(0.5, 0.96, 0.05)`` stores 0.75 as ``0.7500000000000002``, so
-    the report drops ``map_75``. Fixed when a sweep normalises its thresholds
-    once where it is built, and this report names ``map_75``."""
-    from polars_cv.metrics import evaluate_detections
-
-    report = evaluate_detections(
-        _PREDS,
-        _GTS,
-        box_format="xywh",
-        iou_thresholds=list(np.arange(0.5, 0.96, 0.05)),
-    )
-    assert "map_75" in report.metrics
-
-
 @plugin_required
 @_gap("issue #211: the vector domain is a planner gate: buffer ops refuse a hash")
 def test_a_buffer_op_applies_to_a_hash_vector() -> None:

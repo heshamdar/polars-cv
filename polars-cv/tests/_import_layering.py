@@ -17,10 +17,7 @@ What it enforces, on the *static top-level import graph*:
     (and the root always eventually does). ``from polars_cv._x import y`` and
     ``from ._x import y`` name the submodule and are fine. ``__init__.py`` is
     the root and is exempt, as is the ``__init__`` of a subpackage importing
-    its own siblings. So is a :data:`DOWNSTREAM` package: it is a *consumer*
-    of the root's public API, which it must import from the root, and the
-    root never imports it (``tests._metrics_boundary`` rule (a)) -- were it
-    to, rule (a) here reports the cycle.
+    its own siblings.
 
 The graph has one edge per import statement run at import time: module-level
 statements, including those inside ``try``/``if``/``with`` blocks and class
@@ -53,10 +50,6 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 ROOT = "polars_cv"
-
-#: Packages that consume the root rather than being re-exported by it, exempt
-#: from rule (b). ``tests._metrics_boundary`` reads its package from here.
-DOWNSTREAM: tuple[str, ...] = ("polars_cv.metrics",)
 
 
 def read_modules(
@@ -120,19 +113,8 @@ def _base(module: str, is_package: bool, node: ast.ImportFrom) -> str | None:
     return ".".join([*package[:keep], *(node.module.split(".") if node.module else [])])
 
 
-def within(module: str, package: str) -> bool:
-    """Whether ``module`` is ``package`` or inside it."""
-    return module == package or module.startswith(package + ".")
-
-
-def _consumer(name: str, downstream: tuple[str, ...]) -> bool:
-    return any(within(name, d) for d in downstream)
-
-
 def analyse(
-    modules: Mapping[str, tuple[str, bool]],
-    root: str = ROOT,
-    downstream: tuple[str, ...] = DOWNSTREAM,
+    modules: Mapping[str, tuple[str, bool]], root: str = ROOT
 ) -> tuple[dict[str, set[str]], list[str]]:
     """The import graph, and the rule-(b) violations found while building it."""
     graph: dict[str, set[str]] = {name: set() for name in modules}
@@ -157,7 +139,7 @@ def analyse(
                 names_root |= base == root
                 for alias in node.names:
                     add(name, f"{base}.{alias.name}")
-            if names_root and name != root and not _consumer(name, downstream):
+            if names_root and name != root:
                 root_imports.append(
                     f"{name}:{node.lineno}: imports the package root "
                     f"(`{ast.unparse(node)}`); import the submodule instead"
@@ -202,12 +184,8 @@ def cycles(graph: Mapping[str, set[str]]) -> list[list[str]]:
     return sorted(found)
 
 
-def violations(
-    modules: Mapping[str, tuple[str, bool]],
-    root: str = ROOT,
-    downstream: tuple[str, ...] = DOWNSTREAM,
-) -> list[str]:
+def violations(modules: Mapping[str, tuple[str, bool]], root: str = ROOT) -> list[str]:
     """Every layering violation in ``modules``, as printable lines."""
-    graph, root_imports = analyse(modules, root, downstream)
+    graph, root_imports = analyse(modules, root)
     out = [f"import cycle: {' <-> '.join(c)}" for c in cycles(graph)]
     return out + root_imports

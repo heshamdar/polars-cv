@@ -10,7 +10,6 @@
 | [`GLOSSARY.md`](GLOSSARY.md) | One meaning per overloaded word (view, plan, node, step, graph, …) and the type names that use a word another way |
 | [`polars-cv/python/polars_cv/AGENTS.md`](polars-cv/python/polars_cv/AGENTS.md) | Python API — pipeline builder, lazy composition, graph serialization (schema inference is the Rust `Plan`'s) |
 | [`polars-cv/python/polars_cv/geometry/AGENTS.md`](polars-cv/python/polars_cv/geometry/AGENTS.md) | Geometry subsystem — point/contour/bbox schemas and namespaces |
-| [`polars-cv/python/polars_cv/metrics/AGENTS.md`](polars-cv/python/polars_cv/metrics/AGENTS.md) | Detection metrics — matchers, FROC/LROC/PR curves, bootstrap |
 | [`polars-cv/src/AGENTS.md`](polars-cv/src/AGENTS.md) | Rust plugin — graph execution, source/sink encoding, op dispatch |
 | [`view-buffer/AGENTS.md`](view-buffer/AGENTS.md) | Kernel library (the engine) — ViewBuffer, ViewExpr, operations, execution |
 | [`polars-cv/tests/AGENTS.md`](polars-cv/tests/AGENTS.md) | Testing conventions and fixtures |
@@ -56,7 +55,7 @@ The project has three layers:
 │  Python: polars_cv                                      │
 │  Pipeline builder (generated from the catalogues),      │
 │  expression namespaces, DAG construction, lazy          │
-│  composition, geometry/metrics APIs                     │
+│  composition, geometry APIs                             │
 ├──── Plan (planning, per op) · JSON graph (execution) ───┤
 │  Rust: polars-cv (the plugin)                           │
 │  Plan: schema inference and validation as ops are       │
@@ -109,8 +108,7 @@ what a null in a per-row expression parameter means. `.cv` deliberately has no
 │   │   └── AGENTS.md
 │   ├── python/polars_cv/           # Python package
 │   │   ├── AGENTS.md
-│   │   ├── geometry/AGENTS.md
-│   │   └── metrics/AGENTS.md
+│   │   └── geometry/AGENTS.md
 │   ├── tests/                      # Python tests (pytest)
 │   │   └── AGENTS.md
 │   ├── benchmarks/                 # Regression suite over the checkout
@@ -137,7 +135,6 @@ See root [`CONTRIBUTING.md`](CONTRIBUTING.md) for the release process and CI, an
 |---|---|
 | Adding a new image operation | Root → Python API → Rust Plugin → view-buffer |
 | Working on pipeline builder or lazy composition | Root → Python API |
-| Working on detection metrics | Root → Python API → Metrics |
 | Working on geometry (points, contours) | Root → Geometry |
 | Working on graph execution or sources/sinks | Root → Rust Plugin |
 | Working on view-buffer ops or ViewExpr | Root → view-buffer |
@@ -374,20 +371,13 @@ side channel.
 | Where the suite's shared fixtures live (the plugin probe, PNG factories, image data) | `tests/conftest.py` (`plugin_required`, `create_test_png`, `encode_png`, `sample_image_bytes`) | `test_no_local_plugin_available_definitions`, `test_no_local_png_factories`, `test_no_unguarded_local_image_data_fixtures` (`test_suite_conformance.py`) |
 | Whether a channel count carries alpha (2 = gray + alpha, 4 = RGBA) | `view_buffer::ops::color::has_alpha` / `color_channels`, read by the resamplers' premultiply, the shape rule's carried alpha, grayscale and the colour conversions | Source scan: `test_only_the_declaration_tests_for_alpha` (fixtures in `test_alpha_authority.py`) reports a channel-count comparison restating the rule |
 | The package's import layering (`__init__` re-exports; nothing in core imports the root) | Named modules hold implementations; `__init__.py` re-exports them | `test_no_import_cycle_and_no_root_import` (scanner `tests/_import_layering.py`, fixtures in `test_import_layering_fixtures.py`); `test_each_module_imports_alone` imports each module in a fresh process |
-| The metrics boundary: core never imports `polars_cv.metrics`; its generic modules use Polars only; its CV tier uses polars-cv's public API only | The layout: `metrics/_cv/` is the CV tier (`CV_PACKAGE`), `metrics/__init__.py` the facade, every other module generic; `PUBLIC_SURFACES` (`polars_cv`, `polars_cv.geometry`, names from their `__all__`); the downstream package (`_import_layering.DOWNSTREAM`) | `test_metrics_boundary_holds` (scanner `tests/_metrics_boundary.py`, fixtures in `test_metrics_boundary_fixtures.py`); at run time `test_importing_polars_cv_does_not_load_metrics` and `test_the_generic_tier_runs_without_polars_cv` |
-| Which engine a query collects on | polars' default (`engine="auto"`) or the user's affinity, forwarded where a caller chose one (`DetectionTable.collect(engine=...)`); the package never passes a literal engine | `test_the_package_never_chooses_an_engine` (`test_engine_choice.py`, with fixtures); in the suite, `test_no_test_pins_the_in_memory_engine` (`test_engine_pin_guard.py`): only the lane's engine, or both side by side |
+| Which engine a query collects on | polars' default (`engine="auto"`) or the user's affinity, forwarded where a caller chose one; the package never passes a literal engine | `test_the_package_never_chooses_an_engine` (`test_engine_choice.py`, with fixtures); in the suite, `test_no_test_pins_the_in_memory_engine` (`test_engine_pin_guard.py`): only the lane's engine, or both side by side |
 | Per-row work inside a query | The Rust plugin; the package runs no Python UDF (`map_batches`, `map_elements`, `map_groups`) | `test_the_package_has_no_python_udfs` (AST scan, fixtures in `test_no_python_udfs.py`) |
-| How a keyed join in the metrics treats a null key | As a key (`nulls_equal=True`) | `test_every_metrics_join_matches_null_keys` (`tests/_join_ratchet.py`, fixtures in `test_join_ratchet.py`) |
 | How tests read planner state (a pipeline's source, ops, planned states, expressions) | `tests/_plan_view.py`, the one seam over `Plan` and `_exprs` | `test_tests_read_planner_state_only_through_the_seam` (textual scan, fixtures in `test_plan_view_seam.py`); `test_every_exemption_names_a_real_file` |
 | How an error names its row | `polars-cv/src/row_ref.rs`, attached by the code that owns each row loop | `test_rows_are_named_only_through_row_ref` (`tests/_row_ref_scan.py`, fixtures in `test_row_ref_guard.py`) rejects a hand-rolled `(row {})` |
 | The uv version CI installs | `.tool-versions` at the repo root, read by every `setup-uv` step (and no `python` entry, which would override each job's matrix) | `test_every_setup_uv_step_installs_the_pinned_uv`, `test_tool_versions_pins_an_exact_uv` (fixtures in `test_ci_tool_pins.py`) |
 | Which license files the published sdist carries | `scripts/check_sdist.py`, run by `publish.yml` on the sdist before any upload | `test_publish_checks_the_sdist_before_uploading` and the archive fixtures in `test_sdist_metadata.py`; `test_sdist_build.py` builds one and runs the check |
-| That every example script still runs | `polars-cv/examples/`, run by `test_examples.py` (slow lane); a helper imported rather than run is exempted with its reason | `test_every_example_is_either_run_or_exempted`, `test_non_script_exemptions_are_real_and_needed`, `test_examples_run` |
-| A detection metric's estimator (one value per group, per bootstrap replicate) | `metrics/_statistics.py`: a `Statistic` (`by_group(table, keys)`); the function form (`average_precision`, `froc_auc`, …) is its ungrouped reading and `bootstrap_ci` its per-replicate one | `tests/test_statistics.py::test_every_public_metric_is_classified` (a public function taking a `DetectionTable` must be a `Statistic`'s reading or declared otherwise, and agrees with it); grouped-equals-filtered for every statistic |
-| A per-group ordered scan (running sum/max, lag, row index, first/last) or a reproducible sum in the metrics | `metrics/_grouped_scan.py`: `grouped_scan` (one sort, then `.over(keys)` windows on it), `bracket` (the nearest knot at or below / above, per group: the as-of join) and `exact_sums` / `exact_mean` (Int128 fixed point) | `tests/test_streaming_plans.py`: every public metrics plan, and every plan an eager metric collects, is read from its physical streaming graph, and any node polars marks as an in-memory engine fallback not in `KNOWN_FALLBACKS` fails; a window is accepted only straight after the sort on its keys, so a `.over()` scan elsewhere or a sort inside `agg` fails |
-| AP integration (all-points step rule, 11/101-point grids) | `metrics/_metrics/_precision_recall.py::ap_from_points`, which the scalar curve AP, the grouped AP and every bootstrap reach | `TestAllPointsAPStepRule`/`TestNPointAP` against independent references (pycocotools' accumulate); `tests/reference/test_coco_parity_ref.py` end to end |
-| Matching output: per-detection rows, class/threshold carried, metadata, sweeps | `metrics/_matching/_table.py` (`matched_table`, `explode_matches`), the one tail of every matcher | `tests/test_iou_sweep.py` (multi-class rows keep their class; a sweep's slices equal single matchings) |
-| Which groupings of a `DetectionTable` are meaningful (a sweep's thresholds kept apart) | `DetectionTable.frames(keys)`, the one read every metric makes (`.detections`/`.image_metadata` are `frames()`) | Runtime: a sweep read without `iou_threshold` among the keys raises; `TestSweepTable::test_pooling_the_thresholds_is_refused` |
+| That every example script still runs | `polars-cv/examples/`, every file run by `test_examples.py` (slow lane) | `test_examples_run` |
 
 The former exception — the op spec riding its params on `#[serde(flatten)]`, which
 cannot refuse an unknown key — is gone: every op is a variant of a `#[derive(Ops)]` family, whose wire
