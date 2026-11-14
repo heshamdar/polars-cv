@@ -5,6435 +5,1703 @@ All notable changes to **polars-cv** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+polars-cv is 0.x: a minor release may break the API, and each one that does
+has a [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration/).
+Entries up to 0.41.0 were condensed in November 2026; their full original text
+is in the git history of this file.
+
 ## [Unreleased]
+
+Graph inspection is unified under `expr.graph()`/`explain()`, the tensor sink
+is now one `sink("tensor")` that can be read back, and `sink()` gains typed
+keywords. Path reads now require `allowed_roots`.
+
+### Breaking changes
+
+- `sink(..., return_expr=False)` is removed; write
+  `expr.graph(format, opt_flags=...)`, or `expr.graph(Sink.jpeg(quality=70))`
+  for a sink with settings.
+- `sink()`'s `opt_flags` is keyword-only: `sink("png", False)` now raises
+  `TypeError`.
+- `Pipeline.explain()` and `Pipeline.to_graph(column)` are removed; use
+  `pl.col(c).cv.pipe(pipe).graph(format)` or `.explain(format)`.
+- `explain(optimized=False, opt_flags=...)` is refused, as the two disagree.
+- `PipelineGraph.show_graph()` returns a `graphviz.Digraph`, and the `viz` extra
+  is `graphviz` alone (`networkx` and `pydot` are no longer used).
+- `sink("numpy")`, `sink("torch")` and `sink("ndarray")` are now
+  `sink("tensor")` (likewise `Sink.tensor(...)`, `SinkFormat.TENSOR`); rows,
+  bytes and strides are unchanged, and the column is always typed
+  `polars_cv.ndarray`.
+- Polars struct operations do not see through the `polars_cv.ndarray` tag; go
+  through `pl.col("x").ext.storage().struct.field("shape")` or
+  `df.with_columns(pl.col("x").ext.storage()).unnest("x")`.
+- A tensor dtype check is `isinstance(dtype, polars_cv.NdArrayType)`. To
+  concatenate with a plain-struct column from an earlier release, tag the old
+  one with `pl.col("x").ext.to(polars_cv.NdArrayType())`.
+- `show_images(format="numpy")` is now `format="tensor"`.
+- The `(format, {params})` tuple in a multi-output `sink()` is removed:
+  `{"thumb": ("jpeg", {"quality": 85})}` is `{"thumb": Sink.jpeg(quality=85)}`
+  (the tuple raises `TypeError`).
+- A misspelled `sink()` keyword is now a `TypeError` rather than a `ValueError`.
+- `PipelineGraph.set_output(node, "jpeg", quality=85)` is
+  `set_output(node, Sink.jpeg(quality=85))`; `set_multi_output` takes a dict of
+  format names or `Sink`s and no longer reads shared keywords.
+- `image_info()` returns a fifth field, `orientation: Int64`; code that unnests
+  it into a fixed set of columns gains a column.
+- The metrics are no longer re-exported from `polars_cv`:
+  `from polars_cv import froc_auc` becomes `from polars_cv.metrics import froc_auc`.
+- `Pipeline.thumbnail(max_size)` is removed; use
+  `.source("image_bytes", decode_max_size=64)` instead of
+  `.source("image_bytes").thumbnail(64)`.
+- `extract_contours` accepts only a single-channel `u8` mask and raises
+  otherwise (it previously traced garbage from other dtypes or channel counts);
+  apply `.threshold()` or `.cast("u8")`, `.grayscale()` or `.channel_select()`
+  first.
+- `CloudOptions.token_command` is now a non-empty `list[str]` run without a
+  shell; a string raises `TypeError`. Write
+  `token_command=["my-broker", "get-token"]`, or `["sh", "-c", "a | b"]` if you
+  need shell syntax.
+- Path reads are default-deny: `source("file_path")`, an `auto` source over a
+  `String` column, `.cv.read_bytes()` and the path-column metadata methods fail
+  without `allowed_roots`, remote URLs included. Name the permitted directories
+  and URI prefixes, or pass `allowed_roots=["*"]` for paths you trust.
+- `polars_cv.lazy.region_stats` is now `polars_cv.masks.region_stats` (still
+  importable from `polars_cv`).
 
 ### Security
 
-- **`zstd-sys` 2.0.16 → 2.1.2**, for RUSTSEC-2026-0410 (the wasm32 allocator
-  shim wrote to address 0 on allocation failure; polars-cv does not target
-  wasm32).
-- **RUSTSEC-2026-0391, -0398 and -0403 are ignored in `deny.toml` until polars
-  moves off zstd 0.13.** Their fixes need `zstd` ≥ 0.14.3 / `zstd-safe` ≥
-  8.2.0, and `polars-arrow` 0.55.2 (the newest published) requires `zstd ^0.13`.
-  None is reachable from the plugin: zstd enters only through polars'
-  parquet/IPC readers, which the plugin never calls; the `seekable` feature
-  (-0398) is not enabled; and polars decodes through `read::Decoder` and the
-  bulk API, which -0403 does not affect. Drop the ignores with the next polars
-  bump.
-
-- **RUSTSEC-2026-0441 (`pin-utils` is unmaintained) is ignored in `deny.toml`.**
-  It is not a vulnerability: the crate's repository was archived. It reaches
-  the workspace only through `futures-util` 0.3.31 and `hyper` 1.8.1 (polars,
-  `object_store`, `reqwest`), whose newest releases still depend on it, so
-  there is nothing to bump. Drop the ignore when they move to
-  `core::pin::pin!`.
-
-- **RUSTSEC-2026-0105 (`core2`) and RUSTSEC-2024-0436 (`paste`) are no longer
-  ignored in `deny.toml` (CR-145).** Both reached the lockfile only through
-  `image`'s AVIF encoder. That encoder is no longer compiled, and the
-  versions of it the lockfile still names (through a weak feature of
-  `image`'s `rayon`) depend on neither crate.
-
-### Fixed
-
-- **A box of negative size is refused instead of scoring as a false positive
-  (CR-76).** `xywh` data passed as `box_format="xyxy"` (or to
-  `bbox_from_coords(format="xyxy")`) gives boxes of negative width or
-  height, which matched nothing, so `match_detections` and the metrics
-  counted each as a 0-IoU false positive and said nothing. Every `.bbox`
-  accessor and metric reads boxes through one reader, which now refuses a
-  negative size, naming the format to check. A box of zero size is still
-  read (annotation sets hold degenerate boxes).
-
-- **Three error messages told users to use the removed `numpy` sink**
-  (a `native` sink on a buffer, an image codec on a buffer that is not
-  image-shaped, an `auto` source whose rank is unknown to an `array` sink),
-  and the `tensor` source's refusal named `numpy`, `ndarray` and `torch`.
-  They name `tensor` (CR-81 left them). `test_sink_names_in_text.py` refuses
-  a sink name the catalogue does not have in any message, docstring or
-  guide.
-
-- **A constant is no longer rounded to f32 before f64 arithmetic (CR-136).**
-  `Float64` and 32/64-bit integer data compute in f64, but every constant was
-  an f32 on the wire and in the engine, so `scale(1/3)` on `Float64` gave
-  `0.3333333432674408`, `clamp_min(0.3)` *raised* `0.30000000000000004`, and
-  on `Int64` `add_constant(16777217)` was off by one (f32 holds integers to
-  2^24). The constants of `scale`, `clamp`, `clamp_min`, `clamp_max`,
-  `add_constant`, `subtract_constant`, `adjust_contrast` and `adjust_gamma`,
-  the `convolve2d` coefficients (and the filters built on it) and the fill
-  `value` of `pad`, `pad_to_size`, `letterbox` and `crop_pad` are now f64, as
-  given, from a literal or a `Float64` column alike; they match NumPy exactly
-  (`tests/reference/test_scalar_f64_ref.py`). **Output changes on `Float64`,
-  `Int32`, `UInt32`, `Int64` and `UInt64` data only.** `Float32` and 8/16-bit
-  data compute in f32 with the constant narrowed where it is used, the f32 it
-  always was: the golden corpus and every reference test are unchanged. (One
-  edge: an integer fill value is now truncated from the f64 given, where the
-  f32 rounding could first carry a value like `0.99999999` up to `1`.) The
-  normalize family (`normalize_preset`, `normalize_range`) computes in f32
-  for every input and keeps f32 parameters, as do `blur`'s `sigma`, `canny`'s
-  thresholds and `rotate`'s `angle`.
-- **`decode_max_size` at or above the image's size is the full decode
-  (CR-139).** Every JPEG with the option set went through the scaled decoder,
-  including at scale 1, where it has nothing to skip: about 30% slower than
-  the full decoder, with pixels up to 10 levels different. A row whose scale
-  factor is 1 now takes the full decoder, so the option changes nothing
-  until it reduces something. **Output changes** for a JPEG smaller than
-  twice its `decode_max_size`: it is now what the source gives without the
-  option.
+- `zstd-sys` 2.0.16 to 2.1.2, for RUSTSEC-2026-0410 (wasm32 only; not a target
+  of polars-cv).
+- RUSTSEC-2026-0391, -0398, -0403 (`zstd`) and RUSTSEC-2026-0441 (`pin-utils`,
+  unmaintained) are ignored in `deny.toml`: none is reachable from the plugin,
+  and the fixes await a polars bump.
+- RUSTSEC-2026-0105 (`core2`) and RUSTSEC-2024-0436 (`paste`) no longer apply;
+  they came in only through `image`'s AVIF encoder, which is no longer built.
 
 ### Added
 
-- **`.bbox` measures, conversions and transforms, `nms`, and
-  `Pipeline.crop_box` (CR-147).** `.bbox` had two accessors (`pairwise_iou`,
-  `correspond`). It now has, per box and keeping the column's arity (one box
-  per row, or a set): `area()`, `to_coords(format)` (the inverse of
-  `bbox_from_coords`), `to_contour()`, `translate(dx, dy)`, `scale(sx, sy)`
-  (about the image origin), `normalize`/`to_absolute(width, height)`,
-  `clip(width, height)`, `pad(amount)` and `expand(factor)`, each parameter a
-  literal or a per-row expression. `nms(scores, iou_threshold=0.5)` runs
-  greedy non-maximum suppression over each row's set and returns the kept
-  positions, highest score first, so labels and scores follow with
-  `list.gather`; it agrees exactly with OpenCV's `NMSBoxes` in the parity
-  report. `Pipeline.crop_box(box)` crops each row's image to the smallest
-  whole-pixel window containing its box, clipped to the image
-  (`crop_clip`). Every box is read through one reader, so each refuses what
-  CR-76 refuses. `polars_cv.geometry.BoxFormat` is now an enum generated from
-  the Rust definition (it was a `Literal` alias); `"xyxy"`, `"xywh"` and
+- `.bbox` accessors `area()`, `to_coords(format)`, `to_contour()`,
+  `translate(dx, dy)`, `scale(sx, sy)`, `normalize`/`to_absolute(width, height)`,
+  `clip(width, height)`, `pad(amount)` and `expand(factor)`, each taking a
+  literal or per-row expression.
+- `.bbox.nms(scores, iou_threshold=0.5)` returns the kept positions of each
+  row's set, highest score first; it matches OpenCV's `NMSBoxes`.
+- `Pipeline.crop_box(box)` crops each row to the smallest whole-pixel window
+  containing its box, clipped to the image.
+- `polars_cv.geometry.BoxFormat` is now an enum; `"xyxy"`, `"xywh"` and
   `"cxcywh"` are accepted as before.
-
-- **`explain()` and `show_graph()` on a lazy expression, from one
-  description of the graph (CR-148).** `expr.explain(format)` prints the
-  graph `sink(format)` runs: each node in execution order with what it reads,
-  each op with the domain, dtype and shape the planner gives its result (`?`
-  where a size is known only per row), the fused segments the executor runs as
-  one chain (`|`), each output with its planned Polars dtype (`_error`
-  included under `on_error="null_with_message"`; "set by the input column"
-  where the column decides it), and the engine passes that rewrite inside
-  each segment. `optimized=False` prints it as written. `expr.show_graph(format)`
-  draws the same description, so the two cannot disagree: the plugin builds
-  it (`describe_graph`) from the planning `check()` runs and the schema's
-  output types. `explain()` needs no Graphviz. `expr.graph(format)` returns
-  the graph itself, and `output_dtype()` / `current_domain()` give a node's
-  planned state.
-
-- **`source("tensor")`: the tensor sink can be read back (CR-138).** Its
-  output (then the `numpy`, `ndarray` and `torch` sinks') fed no source ("auto source cannot infer a
-  decode path for column dtype Struct(...)"), so a tensor column could not
-  enter another pipeline, even from a Parquet file. `source("tensor")` reads
-  each row where it lies, at its own shape, strides and offset (a flipped or
-  transposed row is not copied), and `source()` (auto) routes the struct to
-  it, tagged `polars_cv.ndarray` or not. A `float16` row reads as `f32`. A
-  row carries its own dtype and shape: `dtype=` declares one (checked per
-  row), and the rank is unknown until the data. A row's `shape`, `strides`
-  and `offset` are column data and are checked against its `data` before
-  anything is read: a row whose view does not lie inside it is a row error
-  (`on_error`), never a read outside it. Every buffer sink now has a source
-  that reads it; the sink table in the pipelines guide says which.
-
-- **`source(orientation="exif")` and `image_info().orientation` (CR-137).**
-  A photo tagged EXIF `Orientation=6` decoded as its stored landscape pixels,
-  with no way to ask for the displayed image and no way to see the tag. The
-  image sources (`image_bytes`, `file_path`, `auto`) take
-  `orientation="stored"` (the default: unchanged output, and what PIL's
-  `Image.open` gives) or `"exif"`, which turns the image by its tag exactly as
-  `PIL.ImageOps.exif_transpose` does, for JPEG, PNG, WebP and TIFF. The turn
-  is flips and a transpose, so it is a view and copies nothing. A missing,
-  out-of-range or unparseable tag decodes as stored. `image_info()` reports
-  the tag as `orientation` (1 to 8, null when absent), read from the header.
-
-- **`sink()` has a typed keyword per sink parameter, and `Sink` values
-  (CR-142).** `sink()` took `**kwargs`: Rust refused a keyword that did not
-  apply, but an editor or a type checker saw nothing. It is now generated from
-  the sink catalogue as `source()` is: `shape`, `quality`, `dtype`, `compact`,
-  `names` and `where` are keyword-only, typed, and documented with the formats
-  each applies to; `None` (the default) sends nothing, so the format's own
-  default applies. `polars_cv.Sink` is a format with its parameters, one
-  constructor per format taking exactly that format's fields
+- `expr.explain(format)` prints the graph `sink(format)` runs, with each op's
+  planned domain, dtype and shape; `optimized=False` prints it as written.
+  `expr.show_graph(format)` draws the same description.
+- `expr.graph(format)` returns the graph, and `output_dtype()` and
+  `current_domain()` give a node's planned state.
+- `source("tensor")` reads back the tensor sink's output (and `source()` auto
+  routes to it), at each row's own dtype, shape and strides; a row whose view
+  lies outside its data is a row error.
+- `source(orientation="exif")` turns JPEG, PNG, WebP and TIFF images by their
+  EXIF tag as `PIL.ImageOps.exif_transpose` does; the default `"stored"` is
+  unchanged.
+- `image_info().orientation` reports the EXIF tag (1 to 8, null when absent).
+- `sink()` has typed keywords `shape`, `quality`, `dtype`, `compact`, `names`
+  and `where`, and `polars_cv.Sink` builds a format with its parameters
   (`Sink.jpeg(quality=85)`, `Sink.array(shape=[224, 224, 3])`), accepted
-  wherever a format name is and as a value of the multi-output dict. The call
-  shape is unchanged: `sink("png")`, `sink("jpeg", quality=85)` and
-  `sink(fmt, False)` bind as before. `SINK_FIELDS` is the generated table of
-  each format's fields. (`pl.col(...).cv` is registered at run time, which
-  type checkers do not follow, so the keywords are checked where the
-  `LazyPipelineExpr` type is known.)
-- **Two guides, each backed by an example the suite runs (CR-144).**
-  "Training-Time Augmentation" (`docs/user-guide/augmentation.md`): seeded per-row parameters as columns, a random-resized-crop, flip, rotation
-  and contrast jitter, how an epoch maps to a query, and what it is not
-  (`examples/14_augmentation.py`). "Choosing a sink" in the pipelines guide:
-  which sink for a batch, ragged rows, a loader, persisting, or another
-  pipeline (`examples/15_choosing_a_sink.py`). The guides quote marked
-  sections of the examples, so an API change breaks the example in CI. The
-  quickstart gains a troubleshooting section (a forgotten `.sink()`, a
-  forgotten `.source()`, a null parameter, an undecodable row), and the
-  sources guide a table of the image formats decoded.
-
-### Breaking changes
-
-- **Graph inspection has one way in: `expr.graph(format)` (CR-148).** It
-  returns the optimized, checked graph `sink(format)` runs; `explain()` and
-  `show_graph()` on the expression describe it. What changed:
-    - `sink(..., return_expr=False)` is removed: `sink()` always returns an
-      expression. Write `expr.graph(format, opt_flags=...)`; a sink with
-      settings is a `Sink` value (`expr.graph(Sink.jpeg(quality=70))`).
-    - `sink()`'s `opt_flags` is keyword-only, so the old positional
-      `sink("png", False)` raises `TypeError` rather than meaning
-      `opt_flags=False`.
-    - `Pipeline.explain()` and `Pipeline.to_graph(column)` are removed: a
-      pipeline runs once it is bound to a column, so its graph is
-      `pl.col(c).cv.pipe(pipe).graph(format)` and its text
-      `.explain(format)`. `repr(pipe)` still shows the chain as written.
-    - `PipelineGraph.show_graph()` returns a `graphviz.Digraph` (it returned a
-      `graphviz.Source` while annotated `pydot.Dot`), and the `viz` extra is
-      `graphviz` alone: `networkx` and `pydot` are no longer used.
-    - `explain(optimized=False, opt_flags=...)` is refused: the two disagree.
-
-- **One tensor sink: `sink("tensor")` replaces `numpy`, `torch` and
-  `ndarray`, and its column is always typed `polars_cv.ndarray` (CR-81).**
-  `numpy` and `torch` wrote byte-identical plain structs and `ndarray` the
-  same struct with the extension tag; all three were already read by one
-  source, `tensor`. There is now one sink of the same name, with the same
-  `dtype="f16"` and `compact=True`, and it always carries the tag, so a
-  column says what it holds, through Parquet and IPC too. The rows, bytes
-  and strides are unchanged (the golden corpus re-records only the column
-  type). What to change:
-    - `sink("numpy")`, `sink("torch")`, `sink("ndarray")` → `sink("tensor")`;
-      likewise `Sink.tensor(...)` and `SinkFormat.TENSOR`.
-    - Reading rows is unchanged: `numpy_from_struct(out["x"][0])`,
-      `numpy_from_column(out["x"])`, `.to_list()`.
-    - Polars' struct operations do not see through the tag. Go through the
-      storage: `pl.col("x").ext.storage().struct.field("shape")`,
-      `df.with_columns(pl.col("x").ext.storage()).unnest("x")`.
-    - A dtype check is `isinstance(dtype, polars_cv.NdArrayType)`; the
-      struct is `NUMPY_OUTPUT_SCHEMA`, the type's storage.
-    - Concatenating with a plain-struct column written by an earlier release:
-      tag the old one, `pl.col("x").ext.to(polars_cv.NdArrayType())`. Such a
-      column is still read by `source("tensor")` and `numpy_from_struct`.
-    - `show_images(format="numpy")` is `format="tensor"` (an untagged struct
-      column; a tagged one is recognised under `"auto"`).
-
-  The source and sink names now pair up: `tensor`, `blob`, `list` and `array`
-  each read what the sink of the same name writes; the image encoders
-  (`png`, `jpeg`, `webp`, `tiff`) are read by `image_bytes`. `blob` stays:
-  it is the one form that is a single `Binary` value. Geometry outputs stay
-  plain structs.
-- **The `(format, {params})` tuple in a multi-output `sink()` is removed
-  (CR-142).** `{"thumb": ("jpeg", {"quality": 85})}` is
-  `{"thumb": Sink.jpeg(quality=85)}`; the tuple is now a `TypeError` naming
-  the output. The dict from alias to sink is unchanged.
-- **A misspelled `sink()` keyword is a `TypeError` (CR-142).** `sink("jpeg",
-  qualtiy=50)` was refused by the plugin with a `ValueError` ("'qualtiy' is
-  not a sink parameter"); Python now refuses it as it refuses any unknown
-  argument. A keyword that exists but does not apply to the chosen format is
-  still a `ValueError` naming where it applies.
-- **`PipelineGraph.set_output` and `set_multi_output` take a sink, not
-  keywords (CR-142).** `set_output(node, "jpeg", quality=85)` is
-  `set_output(node, Sink.jpeg(quality=85))`; a format name alone is unchanged.
-  `set_multi_output` takes a dict of format names or `Sink`s and no longer
-  reads shared keywords, which `sink()` merges into each output before it
-  (`_graph.as_sink`, the one reading of what an output may be written as).
-- **`image_info()` returns a fifth field, `orientation: Int64` (CR-137).** Its
-  struct is `{width, height, channels, dtype, orientation}`; code that names
-  the struct's full type, or unnests it into a fixed set of columns, gains a
-  column. `width` and `height` are unchanged: the stored size.
-
-- **The metrics are no longer re-exported from `polars_cv`; import them from
-  `polars_cv.metrics`.** `import polars_cv` loaded the whole metrics layer for
-  every user, and made core and metrics one import graph, so nothing stopped
-  the metrics growing private hooks into core. Metrics is now a downstream
-  layer on polars-cv's public API, the first step towards a package of its
-  own. The 31 names (`evaluate_detections`, `froc_auc`, `ContourMatcher`,
-  `DetectionTable`, …) were already all in `polars_cv.metrics`. There is no
-  shim: a root-level fallback would be the very core-to-metrics import this
-  removes. Migrating: `from polars_cv import froc_auc` becomes
-  `from polars_cv.metrics import froc_auc`.
-  The boundary is the layout, held by `tests/test_metrics_boundary.py`:
-  `metrics/_cv/` is the CV tier (the contour and bbox matchers,
-  `match_detections`, `evaluate_detections` / `evaluate_heatmaps`,
-  `segmentation_measures` / `evaluate_segmentation`) and imports only names in
-  the `__all__` of `polars_cv` or `polars_cv.geometry`; every other metrics
-  module (statistics, curves, bootstrap, the reports, the pre-matched adapter,
-  the matchers' shared tail) is generic: it imports nothing from polars-cv and
-  uses none of its accessors. Core never imports metrics. The generic tier is
-  also run on its own: copied into a package of another name, with
-  `polars_cv` unimportable, it evaluates pre-matched detections to the same
-  numbers. The matchers' shared tail reads metrics' own correspondence
-  contract, `MATCH_SCHEMA`, and refuses a producer whose struct differs when
-  the table is built. It used to read polars-cv's struct by field name, so a
-  producer with another dtype (a signed `right_idx`) was only refused, if at
-  all, by a cast when the query ran.
-- **`Pipeline.thumbnail(max_size)` is removed.** It was a second spelling of
-  `source(..., decode_max_size=max_size)`, which Python re-encoded by merging
-  the source's JSON by hand. The source keyword is now the only spelling.
-  Migrating: `.source("image_bytes").thumbnail(64)` becomes
-  `.source("image_bytes", decode_max_size=64)` (#182).
-- **`extract_contours` reads only a single-channel `u8` mask.** It used to
-  read the first H×W *bytes* of whatever reached it as `u8` pixels, so an
-  `f32`/`u16` mask traced a byte pattern (a mask of `1.0f32` came out as one
-  foreground pixel in four) and an `[H, W, 3]` image traced its interleaved
-  R,G,B of the first third of the rows, with no error. Now
-  `extract::check_mask_input` is its contract: `GeometryOp::validate` raises it
-  when the pipeline is built for a known dtype or channel count (an `f32` mask
-  after `cast("f32")`), and the kernel raises the same refusal per row
-  otherwise (a PNG's channel count is known only once it decodes). The error
-  names the fix: `.threshold()` or `.cast("u8")`, `.grayscale()` or
-  `.channel_select()` first. The raw-byte read and its `unsafe` block are gone;
-  the pixels are read through `as_slice::<u8>()`. Only inputs that were already
-  producing wrong contours are refused (#179).
-- **`CloudOptions.token_command` is an argument vector, run without a shell.**
-  It takes a non-empty `list[str]` (`["gcloud", "auth",
-  "print-access-token"]`) and runs `argv[0]` with the rest as its arguments,
-  on every platform. It used to be a string handed to `sh -c` (`cmd /C` on
-  Windows), so a value built from data (a bucket or profile name from a column)
-  that held `;` or `$(...)` ran as a command; the feature only ever needed one
-  program with arguments. A string now raises `TypeError` when the
-  `CloudOptions` (or the `cloud_options` dict) is built, showing the list form,
-  and the Rust wire refuses the old string shape too. Migrating: split the
-  command into its words (`token_command="my-broker get-token"` becomes
-  `token_command=["my-broker", "get-token"]`); a command that needs a pipe or
-  other shell syntax says so, `["sh", "-c", "a | b"]`. On Windows a batch
-  wrapper is named with its extension (`"gcloud.cmd"`), and the built-in
-  `gcloud` ADC delegation now does so itself. The credential in an error is
-  named by its vector (`token_command ["sh", "-c", "..."]`). A test pins that
-  `;`, `$(...)` and a backtick reach the program literally (#172).
-- **Reading paths is default-deny: `allowed_roots` is required.** A
-  `file_path` source (and an `auto` source over a `String` column),
-  `.cv.read_bytes()` and the header-metadata methods (`.cv.width()`,
-  `.cv.image_info()`, ...) on a path column used to read any path the process
-  could when `allowed_roots` was left out (`PathPolicy::default()`, substituted
-  in `compile.rs`, `read_bytes.rs` and `image_metadata.rs`). A pipeline that
-  builds paths from data was therefore unsandboxed unless its author knew to
-  ask. Now a path read without `allowed_roots` fails, whatever `on_error` is and
-  before any row is read, with an error naming the option and both ways out.
-  `allowed_roots=["*"]` is the explicit opt-in to reading anywhere; `[]` and `"*"`
-  beside real roots are refused. One function, `PathPolicy::resolve`, turns a
-  reader's `allowed_roots` (given or absent) into its policy, and `Default` is
-  gone, so a fourth reader cannot reintroduce the open default. Remote roots keep
-  their semantics (a URI prefix; a remote path must start with one and contain no
-  `..`); `["*"]` admits remote and local paths alike. An absent `allowed_roots`
-  refuses remote URLs too (`s3://`, `gs://`, `az://`, `http(s)://`), not only
-  local paths: credentials rarely bound a read to one prefix and `http(s)://`
-  has none, so the error names remote URLs and shows a remote root (#180).
-  Migrating: add
-  `allowed_roots=[...]` naming the directories and URI prefixes the column may
-  hold to each `source("file_path")`, `read_bytes()` and path-column metadata
-  call, or `allowed_roots=["*"]` for paths you trust. An `image_bytes` / `blob`
-  source and metadata over a `Binary` column are unaffected (they take no
-  `allowed_roots`). Tests, examples, benchmarks and docs that read local files
-  without it now pass a root or `["*"]` (#171).
+  wherever a format name is.
+- New guides: "Training-Time Augmentation", and "Choosing a sink" in the
+  pipelines guide; the quickstart gains a troubleshooting section.
 
 ### Changed
 
-- **The `image` crate is built with the formats a source decodes, not its
-  defaults (CR-145).** The defaults compiled an AVIF *encoder* (`ravif`,
-  which builds `rav1e`) that no sink reaches, and a Truevision TGA decoder no
-  input could reach (TGA has no signature, and every decode detects the
-  format from the bytes). Both are gone; nothing that decoded before stops
-  decoding. `image` is now one `[workspace.dependencies]` entry naming its
-  features, taken by both crates: the plugin crate declared it separately
-  with defaults, and features unify, so trimming one crate's entry would have
-  changed nothing. The formats decoded are listed in the sources guide (PNG,
-  JPEG, WebP, TIFF, BMP, GIF, PNM, QOI, ICO, DDS, farbfeld, Radiance HDR,
-  OpenEXR), and `tests/test_decode_formats.py` decodes a committed file of
-  each and holds the manifest, the files and that table to one another. The
-  extension is about 6% smaller: 62.6 MB to 58.9 MB, and the wheel 19.9 MB to
-  18.8 MB, measured on a `--profile benchmark` build (thin LTO; not the
-  fat-LTO release wheel, which was not built). `image`'s `rayon` feature is
-  kept: measured without it, one 2048x2048 OpenEXR decode took about 255 ms
-  against 170 ms, and PNG decode was unchanged.
-- **Messages say what went wrong in the user's words (CR-143).** The text of
-  these errors changes; code that matches on it should match the part that
-  stayed.
-    - A row that will not decode or encode prints the codec's message, not its
-      Rust value: `Failed to decode image: The image format could not be
-      determined`, where it read `Unsupported(UnsupportedError { format:
-      Unknown, kind: Format(Unknown) })`.
-    - A refused sink name or option ends with its diagnosis. It used to end
-      `at line 1 column 230`, a position in the JSON the builder sends the
-      plugin. `wire::from_str` is the one parser of that JSON, and clippy
-      refuses `serde_json::from_str` anywhere else.
-    - **A pipeline with no source is refused by `.cv.pipe()`**, naming
-      `.source()`. It was accepted there and refused at `.sink()` as `root
-      node 'node_e16ec35b' has no source`. A pipeline with no source still
-      continues another (`LazyPipelineExpr.pipe`).
-    - A null in a parameter column names both remedies: `fill_null` on the
-      column, or `Pipeline.on_null_param("null")` (`.on_null("null")` on a
-      geometry accessor).
-    - A failing pipeline is named: `Pipeline execution failed (column 'img'
-      to the png sink): ...`, or `(column 'img' to outputs 'full' (png),
-      'small' (numpy))`. Polars names a failing plugin call by its library
-      path and function, the same text for every pipeline in a query. The
-      name a result is given afterwards (`.alias()`, a `select` keyword) is
-      applied outside the plugin and cannot be reported.
+- Error messages are plainer: a failing row prints the codec's message, a
+  refused sink name no longer ends in a JSON position, and a failing pipeline
+  is named (`Pipeline execution failed (column 'img' to the png sink): ...`).
+  Match on the part that stayed.
+- `.cv.pipe()` refuses a pipeline with no source, naming `.source()`.
+- A null in a parameter column names both remedies: `fill_null`, or
+  `Pipeline.on_null_param("null")`.
+- `IntOrExpr`, `FloatOrExpr` and `BoolOrExpr` are exported from `polars_cv`.
+- The extension and wheel are about 6% smaller: the AVIF encoder and TGA
+  decoder are no longer built, and nothing that decoded before stops decoding.
+- Open work is tracked in GitHub issues; `ISSUES.md` is removed.
 
-  `tests/test_message_hygiene.py` runs a table of deliberate failures and
-  refuses a Rust `Debug` struct, a JSON position or a build-time node id in
-  any of them.
-- **`IntOrExpr`, `FloatOrExpr` and `BoolOrExpr` are exported from `polars_cv`**:
-  the annotations of a parameter that takes a literal or a per-row expression,
-  for code that wraps one in a signature of its own. The contour matcher kept
-  a private copy of `FloatOrExpr` because core's was not public; that copy is
-  deleted.
-- **The SessionStart hook no longer uninstalls the built extension.** It runs
-  again whenever a web session resumes, and its exact `uv sync
-  --no-install-project` removed the editable `polars-cv` that `maturin
-  develop` had installed, since the lockfile does not list it. Anything
-  starting a fresh interpreter (the pre-commit structural lane,
-  `test_each_module_imports_alone`) then failed with `No module named
-  'polars_cv'` until the next rebuild. The sync is now `--inexact`
-  (`test_session_start_hook_keeps_the_built_extension`).
-- **`ty` is pinned** (`uvx ty@0.0.100`) in CI, `scripts/verify.sh` and the
-  pre-commit hook, and `test_ty_runs_at_one_pinned_version` holds the three to
-  one version. `ty` renames rules between releases and reports an ignore
-  comment naming an old rule as a warning, which fails the check: unpinned, a
-  new release failed all three gates on `main` with no change to the code and
-  the hook then blocked every commit. Seven ignore comments carry the rules'
-  current names.
+### Fixed
 
-- **Every `unsafe` block states why it is sound, and clippy enforces it.**
-  `clippy::undocumented_unsafe_blocks` is `deny` for the whole workspace
-  (`[workspace.lints.clippy]`, inherited by view-buffer, polars-cv and
-  polars-cv-macros), so `-D warnings` in CI and `scripts/verify.sh` reject a
-  block without a `// SAFETY:` comment. 67 blocks and impls had none; each now
-  names its invariant and the code that establishes it (the SIMD dispatch cites
-  `is_x86_feature_detected!`, the allocator the layout polars exports in its
-  capsule, the FFI import Arrow's C Data Interface contract). Where a comment
-  could not be honest the code changed: `ImageViewAdapter` no longer slices
-  `row_stride * height` elements (a crop ran past its storage) and the ndarray
-  view asserts its pointer is aligned for `T`. `clippy::missing_safety_doc`
-  (for a public `unsafe fn`) is on by default and was already clean (#173).
-- **One home per kernel in view-buffer.** `ops/<family>.rs` owns an op's
-  contract, parameters and `execute` entry; the kernel bodies live in
-  `view-buffer/src/kernels/<kind>.rs`, one module per kind of computation
-  (`binary`, `blur`, `canny`, `channel`, `color`, `distance`, `elementwise`,
-  `equalize`, `filter`, `grid`, `histogram`, `lut`, `mask`, `morph`, `pad`,
-  `phash`, `pixel`, `rank`, `reduction`, `resample`, `resize`, `warp`); `execution/runner.rs` runs plans (`execute_plan`) and
-  `ViewDto::execute` stays the one dispatch. `runner.rs` goes from 2,646 lines
-  to 20. The code moved verbatim (paths and visibility only; the engine's
-  669 tests are unchanged). Public paths that moved: `apply_perceptual_hash`
-  is `view_buffer::ops::phash::apply_perceptual_hash` (it was
-  `execution::runner::`), `validate_channel_merge` lives in `ops::validation`
-  and `apply_channel_swap`/`apply_channel_merge` in `kernels::channel`
-  (all three still re-exported at the crate root), and
-  `split_alpha`/`merge_alpha` are crate-private. The rule is stated once, in
-  `view-buffer/AGENTS.md` ("Where code goes") (#170).
-- **view-buffer's `image_interop` and `perceptual_hash` features are gone; image
-  codecs, resize and perceptual hashing are always built.** The crate is
-  unpublished and the plugin always enabled both, so the feature-off branches
-  never ran in a shipped build and CI never built them. `image`, `tiff`,
-  `fast_image_resize` and `image_hasher` are now ordinary dependencies, the
-  `cfg(not(feature = ...))` stubs (which `panic!`ed per row) and every positive
-  gate are deleted, the `kernels` bench no longer needs `required-features`,
-  and `all_interops` no longer lists them. Nothing changes for Python (#174).
-- **`_lib.pyi` is checked against the built extension.**
-  `tests/test_lib_stub_parity.py` compares the hand-written stub with
-  `polars_cv._lib` in both directions (names, parameter names/kinds/order/
-  defaults, member kinds; every export stubbed or allowlisted with a reason),
-  with fixtures for the comparison in `test_stub_parity_fixtures.py`. It found
-  two drifts, now fixed: `Plan.with_source` was stubbed with a `refs`
-  parameter Rust lacks, and `__allocator__` was undeclared (#167).
-- **The `boolean` -> `u8` cast correspondence lives in `dtype_table!`.** Each row
-  now ends in a list of cast-only source names (`(U8, "u8", 1, "uint8",
-  ["boolean"])`), exposed as `DType::CAST_ONLY` and generated into
-  `_dtype_names.py` as `CAST_ONLY_TO_SHORT`, which `dtype_name_for` reads. The
-  `_CAST_ONLY_NAMES` literal in `_types.py` is gone, so that module holds no
-  dtype-name literal. A cast-only name equal to a dtype spelling fails the
-  generator and a view-buffer test. Behaviour is unchanged (#177).
-- **`OpShape::concrete` returns `Option<Vec<usize>>`**: `None` for a shape not
-  knowable from known sizes, distinct from `Some(vec![])`, the rank-0 shape.
-  It used to return `[]` for both. `ViewExpr` derives every op node's shape in
-  one place (`next_shape`), which panics naming the op if a `ViewDto` op ever
-  declares `OpShape::Dynamic`, rather than carrying an empty shape forward. No
-  current `ViewDto` family does; a registry-driven test now asserts every
-  engine sample has a concrete shape. The test pinning `Dynamic.concrete(..)`
-  as empty now pins `None` (#169).
-- **`Op::accepted_input_dtypes` and `Op::working_dtype` are required**, like
-  the trait's other contract methods: their default bodies (`Any` and `None`)
-  are gone, so an `impl Op` that omits either does not compile. `ViewOp` and
-  `ColorConvertOp` had inherited both defaults; each now states its choice
-  (`Any`/`None` for the zero-copy view ops, `None` for the colour conversions,
-  whose kernel works in the input dtype). Both values are the old ones, so no
-  behaviour changes (#168).
-- **The source hash has one definition per language, held to one fixture.**
-  The Python recomputation moves out of the package root into
-  `polars_cv/_build_info.py`, and `build.rs`'s walk and FNV-1a move into
-  `polars-cv/source_hash.rs`, which `build.rs` and a crate unit test both
-  include. A committed miniature workspace, `tests/fixtures/source_hash/`,
-  has a recorded digest asserted from Python and from Rust, so drift in
-  either fails without a built extension. The checkout is now found by
-  searching upward for the workspace root rather than `parents[3]`, and
-  `build.rs` reads `CARGO_MANIFEST_DIR` at run time, so a build script reused
-  from a shared target directory no longer hashes the checkout it was
-  compiled in (#175).
-- **`GLOSSARY.md`** fixes one meaning for each overloaded word (*view*,
-  *plan*, *node*, *step*, *graph*, *op*, *domain*) and lists the type names
-  that use one another way (`ViewBuffer`, `ViewDto`, `ExecutionPlan`,
-  `ExprNode`, …). It is linked from `CLAUDE.md`, `AGENTS.md` and the
-  Pipelines concepts page. No type is renamed (#163).
-- **Plugin modules are named for what they hold.** `graph/decode.rs` and
-  `graph/encode.rs`, which imported each other, are now `graph/source.rs`
-  (source decoding) and `graph/sink.rs` (an output's planned dtype, each row's
-  encoded value, and the Series assembly). Geometry-step execution moved out of
-  `encode.rs` into `geometry/exec.rs`. The flat `contour.rs`, `point.rs` and
-  `geom_*.rs` files are under `src/geometry/` (`accessor`, `arity`, `columns`,
-  `construct`, `fns`, `params`, `schema`), mirroring the engine's
-  `geometry/`. `graph/compiled.rs`, which was the cache, the compiler and the
-  row executor at once, is `graph/compiled/` with `compile.rs`, `cache.rs` and
-  `run.rs` (#161).
-- **A graph node's per-row value, `NodeOutput`, lives in the plugin's graph
-  (`polars-cv/src/graph/node_output.rs`), not in the view-buffer engine**, which
-  has no node concept and never used it. `Domain` stays in the engine, whose
-  histogram, reduction and LUT ops report their output domain with it.
-  `ViewDto::input_domain`/`output_domain`, which returned `Buffer` as
-  constants, are gone: `GraphStep` states that a single-buffer op maps a buffer
-  to a buffer (#160).
-- **Common-subexpression elimination is declared where it runs: in Python.**
-  It reads the expressions' identities, which only the Python graph holds, yet
-  it was a variant of Rust's `LogicalPass` whose only arm refused to run it,
-  and `PipelineGraph.optimize` picked it out by name. It is now the one
-  graph-tier pass in `polars_cv/_graph_passes.py`, which `scripts/gen_ops.py`
-  places ahead of Rust's catalogue. `optimize` dispatches by tier, and
-  `_graph.py` refuses to import if a declared graph pass has no
-  implementation. `OptFlags(common_subexpression_elimination=...)` and
-  `POLARS_CV_OPTIMIZATIONS` are unchanged; `PassSpec.tier` gains `"graph"`
-  (#159).
-- **The benchmark project's `polars-cv` pin is now checked.**
-  `benchmarks/pyproject.toml` pins the published wheel and lags the repo on
-  purpose, so `test_version_consistency.py` no longer lets it drift unseen: it
-  must be an exact pin, no later than `__version__`, match `benchmarks/uv.lock`,
-  and be named in `benchmarks/README.md`. `CONTRIBUTING.md`'s release checklist
-  says the pin tracks PyPI and is not bumped with the repo.
-- Test and docs housekeeping: `test_sanitation.py` sections are named by the
-  invariant they check (Plan == Exec, registry parity, enum parity) instead of
-  by assessment-finding labels, and both READMEs and `polars-cv/benchmarks/
-  AGENTS.md` point to the explanation of the two benchmark trees.
-- **The package has no import cycle, and `__init__` only re-exports.** A static
-  11-module cycle (`_namespace`, `expressions`, `geometry.*`, `metrics.*`, via
-  `from polars_cv import _plugin`) made import order load-bearing. Those edges
-  now name the submodule (`import polars_cv._plugin as _plugin`), and the
-  implementations that lived in `__init__.py` or `lazy.py` moved to named
-  modules: `numpy_io` (`numpy_from_struct`, `numpy_from_column`), `masks`
-  (`mask_iou`, `mask_dice`, `region_stats`) and `hashing` (`hamming_distance`,
-  `hash_similarity`). Every public name is unchanged and still importable from
-  `polars_cv`; `polars_cv.lazy.region_stats` is now `polars_cv.masks.region_stats`.
-  `tests/test_import_layering.py` holds both rules (no cycle in the top-level
-  import graph; nothing inside the package imports the package root) and
-  imports each submodule alone in a fresh interpreter.
-- Documentation only (issue #164): the architecture overview, data flow,
-  domain system, alpha-channel handling and known issues now live once, in the
-  root `AGENTS.md`, and `CLAUDE.md` points to them; the `lib.rs` description no
-  longer claims it defines `Plan`/`PlanState` (they are in `plan.rs`). Source
-  comments no longer cite `CR-NN` ledger ids (they state the invariant
-  instead), history-narrating docstrings are in the present tense, and the
-  `view-buffer` runner docs no longer link the removed `execution::tiling`
-  module.
-- **The engine's five op families are routed once, by `ViewDto`.** `ExprNode`
-  and `PlanStep` each had a variant per family (view, compute, image, color,
-  filter), matched in `apply_op`, `optimize_with`, `build_plan` and the plan
-  executor. Both now hold `Op(ViewDto)`; `ViewDto::execute` is the one dispatch
-  to the family runners, `ViewExpr::op_node` the one construction of a node
-  from the op's contract (shape, strides, dtype), and `ViewDto::lowered` the
-  one place a disguised op (a lattice rotation) becomes the op it executes as.
-  A family added to `ViewDto` now fails to compile in exactly those two
-  functions. A colour conversion's tracked strides are now the contiguous
-  strides of its output (they were `None`); nothing executes from them.
-- Documentation: the package `AGENTS.md` names `display.py` as the one exception to "no computation happens here" (notebook display normalises already-computed values), and the root `AGENTS.md` tree labels the repository root as the Cargo workspace and shows the root `scripts/` and `benchmarks/` directories beside their `polars-cv/` counterparts.
-- Open work is tracked in [GitHub issues](https://github.com/heshamdar/polars-cv/issues),
-  not in the repository. The `ISSUES.md` ledger and the `plans/` directory are
-  removed: each open item is now an issue (#203–#228), with its evidence and
-  approach. The owner's settled decisions moved to "Design decisions" in the
-  root `AGENTS.md`. Code comments and tests no longer cite ledger ids
-  (`CR-NN`); an id in an older CHANGELOG entry refers to the ledger in git
-  history. A pinned defect in `test_known_gaps.py` names its issue.
+- A box of negative size (for example `xywh` data passed as
+  `box_format="xyxy"`) is refused, naming the format to check, instead of
+  silently scoring as a 0-IoU false positive; zero-size boxes are still read.
+- Constants of the scalar ops (`scale`, `clamp*`, `add_constant`,
+  `adjust_contrast`, `adjust_gamma`, `convolve2d` coefficients, pad/crop fill
+  values) were rounded to f32 before f64 arithmetic: `scale(1/3)` on `Float64`
+  gave `0.3333333432674408`. Output changes for 32/64-bit data only.
+- A JPEG that `decode_max_size` would not shrink went through the slower
+  scaled decoder; it now takes the full decoder, so output changes (to match
+  no option) for a JPEG smaller than twice its `decode_max_size`.
+- Three error messages, and the `tensor` source's refusal, named the removed
+  `numpy` sink; they now name `tensor`.
 
 ## [0.41.0] — 2026-10-23
 
-Reductions, filters and windows for image analytics. One `reduce` takes any
-statistic or percentile, globally or along an axis, and `reduce_masked`,
-`masked_select`, `region_stats` and `block_reduce` reduce over the pixels a
-mask, a contour or a block selects. New ops: `rank_filter`/`median_filter`,
-`background_divide`, `resize_like`, `resize(filter="area")`,
-`crop_clip`/`crop_pad`, `normalize_percentile`/`normalize_range`/
-`normalize_percentile_masked`, `flip(when=)` and `sink("long")`; op
-parameters may be computed from the image's own size with `polars_cv.this`.
-`normalize(method="preset")` becomes `normalize_preset`, `LabelReduction`
-becomes `Statistic`, and image sizes are `Int64`. Upgrading from 0.40: see the
-[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.41/).
+Reductions, filters and windows for image analytics: one `reduce` takes any
+statistic or percentile, and new mask, region and block reducers, rank filters,
+`crop_clip`/`crop_pad` and `polars_cv.this` size expressions are added.
+Upgrading from 0.40: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.41/).
 
 ### Breaking changes
 
-- **`normalize(method="preset", mean=, std=)` is now
-  `normalize_preset(mean=, std=)`.** `mean` and `std` were optional fields
-  read under one method only (refused with any other); they are now the
-  required fields of their own op, and `normalize`'s methods are `"minmax"`
-  and `"zscore"`. Replace `normalize(method="preset", mean=m, std=s)` with
-  `normalize_preset(mean=m, std=s)`; results are byte-identical. A preset
-  normalization reads one pixel per output, so it is now declared pointwise:
-  a crop may move ahead of it.
-
-- **`LabelReduction` is now `Statistic`,** the named half of the one
-  reduction every region, mask and block reducer shares (`label_reduce`,
-  `.contour.label_reduce`, `reduce_masked`, `block_reduce`, `reduce`, the
-  contour matcher's `score_reduction`). A reduction parameter is a
-  statistic's name or a percentile spelled `"pNN"` (`"p90"`, `"p62.5"`: its
-  digits only, no sign or exponent). Every percentile (`"pNN"`,
-  `reduce_percentile(q)`, `rank_filter(q)`, `normalize_percentile`'s edges) is
-  the one `Percent`, refused outside [0, 100] in the same words as it is read,
-  literal or per row. The spellings `"max"`, `"mean"`, `"sum"` are
-  unchanged; only code importing the enum class needs the new name. The
-  rule for which spelling an op takes: an op that *is* a percentile takes
-  `q` (a float: `reduce_percentile`, `rank_filter`, the `normalize_percentile`
-  windows); an op that *chooses* a reduction takes `reduction` (a name or
-  `"pNN"`), and never also a `q`.
-- **`.cv.width()`, `.cv.height()`, `.cv.channels()` and `.cv.image_info()`'s
-  size fields are `Int64`, not `UInt32`.** Sizes are for arithmetic, and
-  unsigned arithmetic in polars wraps: `pl.col("img").cv.width() - 32` on a
-  31-wide image was 4294967295, so a crop offset computed that way failed as
-  `crop window 4294967295..4294967319 on axis 1 lies outside the input`
-  rather than as the -1 it was. It is now -1, refused as `crop: left:
-  Parameter column '...' at row n: -1 cannot be negative`. Code that cast
-  the result or compared schemas against `UInt32` needs `Int64`.
+- `normalize(method="preset", mean=, std=)` is now `normalize_preset(mean=, std=)`;
+  results are unchanged, and `normalize`'s methods are `"minmax"` and `"zscore"`.
+- `LabelReduction` is now `Statistic`; the spellings `"max"`, `"mean"` and
+  `"sum"` are unchanged. A percentile is `"pNN"` (`"p90"`, `"p62.5"`), refused
+  outside [0, 100].
+- `.cv.width()`, `.cv.height()`, `.cv.channels()` and `.cv.image_info()`'s size
+  fields are `Int64`, not `UInt32`, so arithmetic like `width() - 32` no longer
+  wraps; code that cast the result or compared schemas needs `Int64`.
 
 ### Added
 
-- **`normalize_percentile_masked(mask, low=, high=)`** (lazy-only):
-  `normalize_percentile` with its window from the pixels a mask selects —
-  a lesion's 1st–99th percentile mapped to [0, 1] across the whole image.
-  The window's checks and output dtype are `normalize_percentile`'s, and
-  under a mask of every pixel the result is `normalize_percentile`'s
-  exactly. `low`/`high` may be per row (CR-129).
-
-- **`masked_select(mask)`** (lazy-only): the values of an image where a mask
-  (u8 or float, `> 0`) is set, as a 1-D buffer of the image's dtype —
-  NumPy's `image[mask > 0].ravel()`. Reduce, histogram or sink it as any
-  buffer. `statistics(mask=)` now gathers through one `masked_select` node
-  for every statistic, rather than casting and scanning the image and mask
-  again per statistic (3.2× faster for the default four statistics in a
-  debug build), and `reduce_masked(axis=None)` reduces the same selection.
-  The gather reads views where they lie, with no packed copy of either
-  operand.
-
-- **`polars_cv.this`**: op parameters from the buffer the op reads, per row.
-  `this.height`, `this.width`, `this.channels` (1 for an `[H, W]` buffer) and
-  `this.ndim`, combined with numbers by `+ - * / //`, go wherever a parameter
-  may be an expression: `crop(top=0.2 * this.height, height=0.6 * this.height)`,
-  `blur(sigma=this.height / 320)`, `background_divide(this.height / 20)`. Each
-  op reads the buffer it is given, so after a `resize` `this.height` is the
-  resized height. An integer parameter takes the value rounded to nearest
-  (`0.29 * this.height` at a height of 100 is 29), where a float column in an
-  integer parameter truncates: the expression's float error is ours, not the
-  user's. Where the plan knows the sizes an expression reads (after a
-  `resize` or an `assert_shape`) its value is planned too, so the lazy
-  schema states the size; otherwise it is known per row, as a column's is.
-  Structural and non-numeric parameters, percentiles (`q`, the
-  `normalize_percentile` windows) and histogram edges, which are ranks and
-  points in the values rather than sizes, an attribute the buffer does not
-  have (`this.height` of a 1-D buffer), an op given no buffer (`rasterize`
-  reads contours), and functions with no buffer (the `.contour` methods)
-  refuse them, as the pipeline is built wherever the plan can tell. A new
-  attribute is one Rust `ThisAttr` variant: the Python `This` class is
-  generated from it, an expression's `repr` is the engine's own text (the
-  one its errors quote), and its operators (`THIS_OPERATORS`) from Rust's
-  `ThisOp`. The numeric per-row parameters of an op that reads a buffer,
-  whose type takes `this` (`WireScalar::TAKES_THIS`), are annotated
-  `IntOrThisOrExpr`/`FloatOrThisOrExpr`; an op that reads contours or vectors
-  (`rasterize`, the contour ops), and every other place, keeps
-  `IntOrExpr`/`FloatOrExpr`.
-- **`sink("long", names=[...], where=)`**: an `[H, W]` or `[H, W, C]`
-  buffer as `List[Struct{row: u32, col: u32, <names>...}]`, one struct per
-  pixel, row-major, each channel a named field of the buffer's dtype.
-  `where="<name>"` keeps the pixels whose named channel is > 0 and leaves
-  that channel out, so several maps stacked with `channel_merge` and a mask
-  become a per-pixel table (`.explode().struct.unnest()`) without a NumPy
-  round trip. The names are checked against the planned channel count when
-  the query is planned. `channel_merge`'s mixed-dtype refusal now says to
-  cast; no separate `stack()` was added, since `channel_merge` is that op.
-- **`rank_filter(height, width, q=50, border=)`, `median_filter(size)` and
-  `img.background_divide(sigma)`.** A rank filter is each pixel's window
-  percentile, per channel (q=50 a median, 0/100 minimum/maximum; `height=1,
-  width=25` a running median along rows), robust to the outliers a blur
-  averages in. `background_divide` flat-fields an image by its own blur.
-- **`img.resize_like(other, filter=)`** resizes an image onto another
-  node's grid, row by row (a 120-row heatmap and the 3,000-row image it came
-  from, compared cell by cell), keeping the image's channels and dtype;
-  `filter="area"` for the large shrink. The output's size is known to the
-  lazy schema when the other node's is.
-- **`resize(filter="area")`** and **`block_reduce(height=, width=,
-  reduction=)`.** Shrinking by a large factor, `"area"` makes each output
-  pixel the mean of its footprint, every input pixel weighted by its overlap
-  (OpenCV's `INTER_AREA`; bilinear when enlarging), where a narrow kernel
-  aliases. `block_reduce` pools fixed blocks with any reduction
-  (`"mean"`, `"max"`, `"median"`, `"p90"`, ...); the last row
-  and column of blocks are partial when the size does not divide.
-- **`flip(axes, when=)`, `flip_h(when=)`, `flip_v(when=)`**: a per-row
-  condition, e.g. `flip_h(when=pl.col("view").str.starts_with("R"))` to
-  orient every view the same way. The shape is the same flipped or not, so
-  `when` may be an expression; a row it declines is left as it is.
-- **`normalize_percentile(low=, high=)`** maps the window between the
-  image's own `low`-th and `high`-th percentiles to [0, 1] (robust windowing
-  across devices), and **`normalize_range(low=, high=)`** an explicit window,
-  per row if `low`/`high` are expressions; both clip outside the window. Each
-  is its own op, so `low` and `high` are required fields rather than
-  `normalize` fields read by two of its methods.
-- **`statistics(include=[..., "median", "p90", "count"], mask=)`** and
-  **`polars_cv.region_stats(regions, {name: (map, statistic)})`.** Statistics
-  take the median, any percentile (`"pNN"`) and, under a mask (reduced as
-  `reduce_masked`), the pixel count. `region_stats` reduces several maps over
-  each contour region (one `label_reduce` per entry) into a struct of
-  equal-length lists, one value per region: regionprops for any per-pixel map.
-- **`reduce(reduction, axis=None)`** reduces every value to one, or along
-  an axis, by any reduction (`"p90"`, `"median"`, `"count"`, ...), per row if
-  `reduction` is an expression; `statistics()` computes each statistic
-  through it, so it reads no list of names of its own. Each statistic is its
-  dedicated op's kernel (`reduce("mean")` is `reduce_mean()`'s value, bit for
-  bit), always in f64; a Rust sweep over every statistic pins those kernels
-  to the reduction masks, regions and blocks use. It is the one way to reduce
-  along an axis by any reduction: `reduce_sum` and `reduce_percentile` stay
-  global (`reduce("sum", axis=0)`, `reduce("p90", axis=1)`), and there is no
-  `reduce_median` (`reduce("median")`).
-- **`img.reduce_masked(mask, reduction=, axis=)`** reduces an image over
-  the pixels a mask selects (u8 or float, set where > 0): one value, or one
-  per column (`axis=0`) or row (`axis=1`), with every reduction `label_reduce`
-  takes. `apply_mask` zeroes outside the mask, which every reduction still
-  counted; a masked median, mean or percentile per row no longer needs nested
-  lists filtered in polars. A line with no masked pixel is NaN (0 for `sum`
-  and `count`).
-- **`label_reduce(reduction=...)` takes every reduction:** `"min"`, `"std"`
-  (population), `"median"`, a percentile `"pNN"` (NumPy's linear
-  interpolation) and `"count"` beside `"max"`, `"mean"` and `"sum"`, on the
-  pipeline op and the `.contour` accessor alike. A minimum no longer needs
-  `neg()` then `max`.
-- **`grayscale(keepdims=False)`** gives `[H, W]` from any input (gray, RGB,
-  RGBA). A decoded grayscale image is `[H, W, 1]`, so `reduce_mean(axis=0)`
-  gave one-element lists without a `channel_select(0, keepdims=False)` after
-  the decode.
-- **`crop_clip(top=, left=, height=, width=)` and `crop_pad(top=, left=,
-  height=, width=, value=0)`** for windows that reach past the image's edge,
-  as strips, tiles and sliding windows near a border do: one op per
-  behaviour beside `crop`, which still refuses such a window. `crop_clip`
-  keeps the part inside the image (a window with nothing inside is
-  refused); `crop_pad` keeps the requested `height` x `width`, filling
-  outside with `value`, as the in-bounds crop followed by a constant `pad`.
-  `top` and `left` may be negative in either. A window on a buffer with no
-  image plane (1-D) is refused as the pipeline is built.
-- **`polars_cv.check_cloud_access(path, cloud_options=None)`** resolves the
-  credential a read of `path` would use and exercises it once (a `HEAD`, or a
-  one-level listing of a prefix), before any row is read. It returns
-  `{"backend", "credential_source", "status"}` and raises
-  `polars_cv.CloudCredentialError` naming the credential when it fails. It
-  opens the store exactly as a read does (one `open_object`), and a prefix
-  with nothing under it is `"not_found"`, as a missing object is.
+- `polars_cv.this`: parameters computed per row from the buffer an op reads
+  (`this.height`, `.width`, `.channels`, `.ndim`, combined with `+ - * / //`),
+  e.g. `crop(top=0.2 * this.height, height=0.6 * this.height)`.
+- `reduce(reduction, axis=None)` reduces every value or an axis by any
+  statistic (`"p90"`, `"median"`, `"count"`, ...).
+- `img.reduce_masked(mask, reduction=, axis=)` reduces over the pixels a mask
+  selects.
+- `masked_select(mask)` (lazy-only) returns an image's values under a mask as a
+  1-D buffer, like NumPy's `image[mask > 0].ravel()`.
+- `block_reduce(height=, width=, reduction=)` pools fixed blocks with any
+  reduction.
+- `resize(filter="area")` averages each output pixel's footprint (OpenCV's
+  `INTER_AREA`).
+- `img.resize_like(other, filter=)` resizes an image onto another node's grid.
+- `rank_filter(height, width, q=50, border=)`, `median_filter(size)` and
+  `img.background_divide(sigma)`.
+- `normalize_percentile(low=, high=)`, `normalize_range(low=, high=)` and
+  `normalize_percentile_masked(mask, low=, high=)` (lazy-only) window an image
+  to [0, 1] by percentile, explicit range or masked percentile.
+- `statistics(include=[..., "median", "p90", "count"], mask=)`, and
+  `polars_cv.region_stats(regions, {name: (map, statistic)})` reduces several
+  maps over each contour region.
+- `label_reduce(reduction=)` takes every reduction (`"min"`, `"std"`,
+  `"median"`, `"pNN"`, `"count"`), on the pipeline op and `.contour` accessor.
+- `flip(axes, when=)`, `flip_h(when=)` and `flip_v(when=)` flip only rows a
+  per-row condition selects.
+- `sink("long", names=[...], where=)` writes a buffer as one struct per pixel.
+- `grayscale(keepdims=False)` gives `[H, W]` from any input.
+- `crop_clip(...)` and `crop_pad(..., value=0)` handle windows reaching past
+  the image's edge; `crop` still refuses them.
+- `polars_cv.check_cloud_access(path, cloud_options=None)` exercises the
+  credential a read would use before any row is read, raising
+  `polars_cv.CloudCredentialError` on failure.
 
 ### Changed
 
-- **`rank_filter` on u8 slides a 256-bin histogram** (Huang) rather than
-  selecting each window afresh: O(window height) per pixel, 6× faster for a
-  15×15 median at 256². Bit-identical to the selection path, which other
-  dtypes keep.
-- **The ambient GCS federation probe reads the ADC file once per version of
-  it** (path, mtime, size) rather than on every remote read with no options.
-- **`region_stats` finds each contour region once per row,** not once per
-  map: every `label_reduce` in a row over the same contours, region mode and
-  plane size shares one scan (most of a label reduction's cost). 1.9× faster
-  for eight maps; results are bit-identical.
-
-- **Header-only metadata on a remote path reads a prefix, not the object.**
-  `.cv.image_info()`, `width()`, `height()`, `channels()` and `image_dtype()`
-  over `s3://`/`gs://`/`az://`/`http(s)://` paths ask for the first 64 KiB
-  (a ranged read), and read the whole object only when the header is not in
-  it, as a local file already was. An empty remote object, whose range
-  servers refuse (HTTP 416, S3's `InvalidRange`), is read whole and has no
-  header: a null, as before.
-- **`show_images(df, pl.col("out").struct.field("strip"))`**: the column may
-  be an expression, so one field of a struct column shows, such as an
-  aliased intermediate sunk beside the result with a dict sink.
-- **A failing row is named once, within its batch: `(row 11 of 12 in this
-  batch)`,** by the pipeline and every `.contour`/`.point`/`.bbox` accessor
-  alike (`polars-cv/src/row_ref.rs`). A plugin call is one batch of the frame
-  under the streaming engine, polars 2.0's default for `collect()`, and
-  cannot know where its batch starts: a bare `(row n)` named the frame's row
-  50 as row 11. When the batch is the whole frame (in memory) the index is
-  the frame's row. Parameter messages no longer carry their own `at row n`,
-  and a bad per-row parameter names its op and the parameter it was bound
-  to as well as its column (`crop: width: Parameter column 'l': -1 cannot be
-  negative (row 0 of 1 in this batch)`), never an internal wrapper's field.
-  A crop window bound of 2^31 or more adds that it is usually an unsigned
-  subtraction that wrapped in polars.
+- Header-only metadata on a remote path (`.cv.image_info()`, `width()`, ...)
+  reads the first 64 KiB instead of the whole object.
+- `show_images` accepts an expression, so one field of a struct column can be
+  shown.
+- A failing row is named within its batch (`(row 11 of 12 in this batch)`),
+  for the pipeline and every geometry accessor; a bad per-row parameter names
+  its op and parameter.
 
 ### Fixed
 
-- **Every `lazy_only` op's `LazyPipelineExpr` method is generated from the
-  catalogue.** `apply_mask` and `channel_merge` were written by hand; their
-  signatures, defaults and docstrings now come from Rust, and each operand is
-  sent under the field name the catalogue gives (a generated method used to
-  send it as `other`, whatever the op named it).
+- `reduce_percentile(q)` with `q` outside [0, 100] returned the minimum or
+  maximum; it is now refused.
+- `label_reduce` and `region_stats` over a region with no pixels gave 0.0; they
+  now give NaN (0 for `sum` and `count`).
+- The contour matcher dropped a zero-scored detection but kept one scored NaN
+  (a region with no pixels), matching it as the most confident; both are now
+  dropped.
+- A federated gcloud ADC failed every `gs://` read when no `cloud_options` was
+  passed.
+- A failing `token_command` or delegated ADC now names its credential and the
+  command's stderr.
+- `stroke(join="miter")` painted pixels in a pocket its ring pinches off.
+- The `LazyPipelineExpr` methods for `apply_mask` and `channel_merge` sent
+  their operand as `other`, whatever the op named it.
 
-- **`reduce_percentile(q)` with `q` outside [0, 100]** returned the minimum
-  or maximum (the `q` was clamped); it is now refused, as every other
-  percentile is.
-- **`label_reduce` and `region_stats` over a region with no pixels** (outside
-  the image, or no points) gave 0.0 for every reduction; they now give what
-  every other reduction gives over nothing: NaN, or 0 for `sum` and `count`
-  (+0, as NumPy's: a sum of nothing was -0, Rust's `Sum` identity, on every
-  sum path).
-- **The contour matcher drops a detection scored NaN** (a region with no
-  pixels), as it drops a zero: in polars NaN is above every number, so it
-  would have been matched as the most confident detection.
-- **A federated gcloud ADC now works with no `cloud_options`.** Ambient
-  detection of an `external_account` / `external_account_authorized_user`
-  ADC (delegated to `gcloud auth application-default print-access-token`)
-  ran only when some `CloudOptions` was passed, so the default gcloud setup
-  under workforce federation failed every `gs://` read with `object_store`'s
-  "unknown variant `external_account_authorized_user`". It now runs either
-  way, as the `CloudOptions` docstring always said.
-- **A failing token names its credential.** A `token_command` or delegated
-  ADC that fails (an expired refresh token, a missing scope) reports
-  `token_command \`...\`` or `gcloud ADC (<type>, <path>)` with the command's
-  stderr, rather than a generic object-store error.
+### Performance
 
-- **`stroke(join="miter")` no longer paints a pocket its ring pinches off.**
-  A traced ring with 8-connected pinches strokes to a region whose hole
-  touches the exterior at one vertex; `geo`'s boolean ops return such a hole
-  wound like the exterior, and `unary_union`, which picks its fill rule from
-  winding, then filled it, so the stroke painted pixels 1.5 px from the ring
-  at width 2 (found by the slow parity lane's stroke law). Every union
-  (`union_all`, the set operations, `offset`, `stroke`) now winds its rings
-  by convention going in and coming out.
+- `rank_filter` on u8 is about 6× faster for a 15×15 median.
+- `region_stats` is about 1.9× faster for eight maps.
+- `statistics(mask=)` gathers the masked pixels once rather than per statistic
+  (3.2× faster for the default four, measured on a debug build).
 
 ## [0.40.0] — 2026-10-19
 
-One bit order for every hash, hash comparisons over stored hashes, a graph
-wire format where each node names its input once, and a parity report that
-says what every reference test compares. `average`, `difference` and
-`blockhash` hashes now pack their bits most significant first, as
-`perceptual` and imagehash do; `hamming_distance()` and `hash_similarity()`
-take stored hash columns, score out of the hashes' own length and count bits
-as `UInt32`. Graphs serialized by 0.39 are refused by their version. 115
-reference tests that never ran polars-cv now compare its output. Upgrading
-from 0.39: see the
+One bit order for every hash, hash comparisons over stored hashes, and a
+version-2 graph wire format.
+Upgrading from 0.39: see the
 [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.40/).
 
 ### Breaking changes
 
-- **`perceptual_hash(algorithm="average" | "difference" | "blockhash")`
-  packs its bits most significant first,** as `"perceptual"` always has and
-  as imagehash's hex does (CR-115). They came out least significant first,
-  so one `list[u8]` hash column held two bit orders depending on
-  `algorithm=`, and `int.from_bytes(bytes(h), "big")` read aHash and dHash
-  42 and 16 bits away from imagehash's on a test gradient (now 0). Stored
-  aHash/dHash/blockhash values change: recompute them, or reverse the bits
-  of each byte. Hamming distances between two hashes are unchanged.
-- **`hash_similarity()` has no `hash_bits=`: the length is the hashes' own.**
-  It defaulted to 64, so two 256-bit hashes were scored out of 64 bits (two
-  unrelated ones, ~128 bits apart, came out near -100%) unless the caller
-  restated the size. The XOR of the two hashes is now sunk beside its
-  popcount, and its length is the denominator. Drop the argument; passing it
-  raises `TypeError`.
-- **`hamming_distance()` returns `UInt32`,** a count of bits, not `Float64`.
-- **The graph wire format is version 2: each node names its input once**
-  (CR-117). A node is `{"input": {"decode": {"column", "source"}} |
-  {"node": id}, "ops": [...]}`; the top-level `column_bindings`, the
-  per-node `upstream` list and the `source` every continuation node carried
-  (a `{"format": "blob"}` nothing read) are gone, and a node's dependencies
-  are its input plus the nodes its ops read. A version-1 graph (persisted
-  `graph_json`, or one built by hand) is refused by its version, with a
-  message to rebuild it. Low-level graph building changes with it:
-  `PipelineGraph.add_node(..., input=)` replaces `upstream=` (keyword-only,
-  with `alias=`), and a node that reads both a column and a node, or neither,
-  is refused where it is added rather than at serialization.
+- `perceptual_hash(algorithm="average" | "difference" | "blockhash")` now packs
+  bits most significant first, like `"perceptual"` and imagehash; recompute
+  stored hashes or reverse the bits of each byte. Hamming distances between
+  two hashes are unchanged.
+- `hash_similarity()` no longer takes `hash_bits=`; the score is out of the
+  hashes' own length, and passing the argument raises `TypeError`.
+- `hamming_distance()` returns a `UInt32` bit count, not `Float64`.
+- The graph wire format is version 2, and graphs serialized by 0.39 are
+  refused with a message to rebuild them.
+- `PipelineGraph.add_node(..., input=)` replaces `upstream=`.
 
 ### Added
 
-- **`hamming_distance()` and `hash_similarity()` take stored hashes.** Each
-  side may be a hash pipeline, as before, or a `sink("list")`/`sink("array")`
-  hash column given as an expression or a name, so near-duplicate search over
-  stored hashes is a cross join: `hamming_distance("hash", "hash_b")`. Both
-  run the same XOR and popcount, and hashes of different lengths are refused.
-
-- **A parity report: every reference comparison, its tolerance and its
-  outcome.** Each test in `tests/reference/` now declares what it compares
-  polars-cv with and how close the outputs must be
-  (`@pytest.mark.parity(ops=, against=, tolerance=)`).
-  `scripts/parity_report.py` runs the suite and renders
-  [docs/user-guide/parity.md](https://heshamdar.github.io/polars-cv/user-guide/parity/)
-  and a README summary from the declarations and the benchmark's end-to-end
-  diffs against PIL. A reference test without a declaration fails
-  collection, and `tests/test_parity_report.py` fails when the committed
-  report no longer matches what the suite collects.
-- **PyPI metadata:** project URLs (docs, changelog, issues), keywords and
-  topic classifiers, and a description that says what the package does.
-
+- `hamming_distance()` and `hash_similarity()` accept stored hash columns
+  (`sink("list")`/`sink("array")`, as an expression or name), so near-duplicate
+  search is a cross join: `hamming_distance("hash", "hash_b")`. Hashes of
+  different lengths are refused.
+- A [parity report](https://heshamdar.github.io/polars-cv/user-guide/parity/)
+  lists every reference comparison, its tolerance and its outcome.
+- PyPI metadata: project URLs, keywords and classifiers.
 
 ### Changed
 
-- **One executor path for every step that reads another node** (CR-117).
-  The executor gathers a step's operands once, by node positions compiled
-  from the step's own `operands()`, and a null operand nulls the reader for
-  every step alike; `rasterize(shape=<node>)` no longer has a resolver of its
-  own. Each buffer-reading step meets its own validation against the row's
-  shapes and dtypes in one place, which `extract_shape` and `label_reduce`
-  had skipped. A reference to a node the graph does not have is one error,
-  `node 'x': op() reads node 'y', which is not in the graph`, for every kind
-  of operand, raised when the graph is parsed.
-- **`LazyPipelineExpr.pipe()` with a sourced pipeline on a continuation is
-  refused where it is written.** A sourced pipeline decodes a column, and a
-  continuation has none of its own; this failed later, at sink.
+- `LazyPipelineExpr.pipe()` with a sourced pipeline on a continuation is now
+  refused where it is written, not later at sink.
+- A step that reads a node the graph does not have now raises one error naming
+  both nodes, when the graph is parsed.
 
 ### Fixed
 
-- **115 reference tests compared nothing.** The reductions, histogram,
-  rasterize, extract-contours, contour-measure and pairwise suites, and the
-  NumPy and imagehash halves of the binary-op and pHash suites, computed an
-  OpenCV, NumPy or imagehash result and asserted on it without ever running
-  polars-cv, yet were cited as evidence that outputs are checked. Each now
-  compares polars-cv's output with that reference, and a reference test
-  that never enters the `polars_cv` package fails, whatever it asserts.
-
-### Notes
-
-- **Known issue: histogram buckets ignore the sink format.**
-  `histogram(output="buckets")` returns its list of bucket structs whatever
-  the sink asks for, so `sink("numpy")` silently gives the structs rather
-  than an array. Read the buckets from the structs, or sink
-  `output="counts"` / `"edges"` for arrays. Recorded
-  as CR-116 and pinned by a strict xfail in `tests/test_known_gaps.py`.
+- `extract_shape` and `label_reduce` skipped validation of their operands
+  against the row's shapes and dtypes.
+- 115 reference tests never ran polars-cv; each now compares its output with
+  the reference.
 
 ## [0.39.0] — 2026-10-18
 
-Shapes made explicit, contours made drawable, and CSE that settles. Binary
-ops no longer broadcast: operands of different shapes are refused, and the
-new `squeeze`/`expand_dims` change a rank. `channel_select` keeps the
-channel axis by default, and `apply_mask` reads a mask on its own dtype's
-scale. Contours gain set operations, shaping, stroking and open lines in
-pipelines; `rasterize` can supersample; `distance_transform`,
-`coordinate_grid`, `apply_lut` and disk footprints are new. CSE now computes
-each distinct value once, fuses linear runs and repeats until the graph
-settles. The sdist ships its license files where PyPI looks for them.
-Install 0.39.0 rather than 0.38.0 from PyPI: the 0.38.0 wheels there were
-built from this release's code, not 0.38.0's, and its sdist was refused (see
-Fixed). Upgrading from 0.38: see the
+Binary ops no longer broadcast, `channel_select` keeps the channel axis, and
+`apply_mask` reads a mask on its own dtype's scale. Contours gain set
+operations, shaping, stroking and open lines in pipelines, and CSE now shares
+all equal work. Upgrading from 0.38: see the
 [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.39/).
 
 ### Breaking changes
 
-- **`channel_select(i)` keeps the channel axis: `[H, W, 1]`, not `[H, W]`.**
-  That is the shape `grayscale` and `rasterize` give, so a selected channel
-  now combines with them as it is (the binary ops broadcast nothing, so a
-  `[H, W]` channel against a `[H, W, 1]` mask was refused). The new
-  `keepdims=False` gives `[H, W]`; it is a literal, since it fixes the rank.
-  A `[H, W]` input is returned as it is either way. Code that relied on the
-  2-D result passes `keepdims=False` (see the
-  [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.39/)).
-
-- **Binary ops no longer broadcast: both operands must have the same shape**
-  (breaking). `add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
-  `minimum` and the bitwise ops used NumPy broadcasting, aligned from the last
-  axis. `[H, W, 1]` against `[H, W]` therefore became `[H, W, W]` on a square
-  canvas (4 GB of f32 at 1024 px) and an error on any other, and a
-  `[H, W, 1]` operand stretched silently over `[H, W, 3]`. Operands of
-  different shapes are now refused (`OpShape::Elementwise`,
-  `elementwise_dims`): at build where the sizes are known, per row where they
-  are not. Change a rank with the new `squeeze`/`expand_dims`. `apply_mask`
-  keeps spreading a single-channel mask over the channels, as its contract,
-  and now does so for a `[H, W, 1]` mask itself rather than through
-  broadcasting. The broadcast half of the binary kernel (per-operand repeat
-  blocks, `broadcast_shapes`, `ViewBuffer::leading_axes`) is deleted with
-  it. An `extract_shape()` vector added to an image is now refused at build
-  rather than at execution.
+- `channel_select(i)` returns `[H, W, 1]`, not `[H, W]`; pass
+  `keepdims=False` for the 2-D result.
+- Binary ops (`add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
+  `minimum`, bitwise ops) no longer broadcast: operands of different shapes
+  are refused, at build where sizes are known. Use `squeeze`/`expand_dims` to
+  change a rank.
+- `apply_mask` reads the mask on its own scale (a u8 mask weighs `m / 255`, a
+  float mask `m` in `[0, 1]`), whatever the image dtype; other mask dtypes are
+  refused. A u8 image under a u8 mask is unchanged.
 
 ### Added
 
-- **`squeeze(axis)` and `expand_dims(axis)`**: remove an axis of size 1, or
-  insert one, as zero-copy views (`ViewOp::Squeeze`/`ExpandDims`, shapes
-  `OpShape::RemoveAxis`/`InsertAxis`). A negative axis counts from the end,
-  as NumPy's. Unlike `reshape` they need no sizes, so they change the rank of
-  an image whose height and width are known only per row; `squeeze` refuses
-  an axis of a known size other than 1, and either refuses an axis outside
-  the rank, at build. Planned over an input of unknown rank, a negative axis
-  claims no sizes (every position after it moves with the rank). The array
-  sink's shape-mismatch error had long told users to call these two; now
-  they exist.
-
-- **A second logo: a halftone polar bear**
-  (`docs/assets/logo/halftone_logo.py`). The bear's face is a table of polar
-  curves `r(θ)` evaluated by a polars query (`int_ranges`, expressions,
-  `group_by`), and it is printed as a halftone by one polars-cv graph: a
-  signed distance field sets each cell's dot radius (sampled per cell by a
-  `resize` down and a `nearest` resize up), and `coordinate_grid` minus its
-  `floor` places the dots. Writes a lockup with the existing wordmark and a
-  square mark; `tests/test_halftone_logo.py` holds both to the pixels that
-  make them a bear.
-
-- **"Drawing with polars-cv" guide, and the logo rebuilt on the drawing ops**
-  (CR-101). The guide (`docs/user-guide/drawing.md`) covers shapes as data,
-  filling and stroking, the shaping and set operations, fields over pixels,
-  and colouring an index map with one `apply_lut` palette; every example runs
-  in the test suite. `docs/assets/logo/make_logo.py` is now one graph:
-  terraces from `distance_transform`, contour lines as stroked `offset`s,
-  the wordmark as stroked centrelines and a filled `v`, stacked by `maximum` and
-  coloured by `apply_lut`. It replaces a per-pixel DataFrame for the distance
-  field and per-channel weighted sums of mask layers.
-
-- **`coordinate_grid(normalized=False)`** (CR-100): an f32 `[H, W, 2]` buffer
-  of each pixel's centre `(x + 0.5, y + 0.5)` (divided by `W`/`H` when
-  `normalized`, per-row capable), for fields over positions. Reads only the
-  input's height and width, so it takes any dtype and channel count, and
-  makes no copy of a view. Its shape is `OpShape::Canvas`, which now carries
-  a channel count (a rasterized mask's 1, a grid's 2). Held to `np.meshgrid`,
-  in the frame of the buffer it follows (a crop before it moves the origin).
-
-- **Contour set operations** (CR-99): `union`, `intersection`, `difference`
-  and `symmetric_difference` combine two contour sets, each read as the union
-  of its regions, into disjoint regions (always a set). Each is one lazy
-  pipeline op (the other side another contour-domain expression), and its
-  `.contour` accessor (the other side a contour column) is generated from
-  that op's catalogue entry and runs it; a line on either side is refused. Held to the mask identity —
-  rasterizing `a op b` paints the pixelwise `|`, `&`, `& ~` or `^` of the two
-  sides' masks, exactly on integer shapes — and to inclusion-exclusion and
-  `iou` on float shapes.
-
-- **Contour shaping and line rendering** (CR-98). Five contour ops, each a
-  pipeline op and a `.contour` accessor with one definition:
-  `offset(distance, join="round")` grows (negative: shrinks) a set's regions,
-  read as one union, so the result is always a set; `union_all()` merges them
-  into disjoint regions; `smooth(iterations=1)` is Chaikin corner cutting;
-  `densify(max_segment_length)` splits each edge into equal parts no longer
-  than the bound; and `stroke(width=1.0, cap="round", join="round")` is the
-  region a set's paths cover when drawn — an open line capped at its ends, a
-  region's rings (and a line returning to its start) as closed paths — as
-  disjoint regions. `rasterize` stays fill-only and still refuses a line,
-  now naming `stroke()`: lines are drawn as `stroke(...).rasterize(...)`.
-  (Stroking was first added as `rasterize(line_width=, cap=, join=)`, three
-  parameters a region-only set silently ignored; they never shipped.)
-  New enums `LineJoin` (`round`, `miter`, `bevel`; a miter limit of 4) and
-  `LineCap` (`round`, `square`, `butt`). Round arcs are polygons within 1/64
-  pixel up to a radius of about 32, about `r / 2000` beyond. Held to distance-band oracles (a round offset or stroke is the set of
-  points within the distance, checked on the mask's own samples), closed-form
-  areas per join and cap, a pure-Python Chaikin, an exact densify
-  construction, and `rasterize(union_all(s)) == rasterize(s)`.
-
-- **Open contours in pipelines; `boundary()` and `close()`** (CR-97). The
-  contour domain carries lines (`is_closed = false`) as well as regions:
-  `source("contour")` reads open rows instead of refusing them, and each
-  contour op behaves as its `.contour` accessor does — `perimeter` measures a
-  line's length, `bounding_box`, `translate`, `scale` (not about a centroid)
-  and `simplify` keep it a line, `convex_hull` makes a region, and `area`,
-  `centroid`, `largest` and `rasterize` refuse it with the accessors' message.
-  `boundary()` gives a region's rings as lines (always a set); `close()` joins
-  a line's ends into a region. Both are also `.contour` accessors.
-
-- **`rasterize(..., supersample=n)`** (CR-96): anti-aliased masks. Each pixel
-  samples its `n x n` sub-pixel centres and is painted between `background` and
-  `fill_value` by the fraction inside (rounded half away from zero), for `n`
-  from 1 to 16 (per-row capable). The default of 1 is the pixel-centre rule,
-  byte for byte. Not the `anti_alias=` removed earlier, which was accepted and
-  ignored: held to matplotlib's point-in-polygon on the same samples, and the
-  covered area to `area()` (exactly on integer edges, within a band that
-  shrinks as `1 / n` otherwise).
-
-- **`apply_lut(table, out_dtype="u8")`** (CR-95): each u8/u16 value read as a row
-  index into `table`. Rows of one entry map every element in place on any
-  channel count (`cv2.LUT`); rows of `K` entries take a single-channel image
-  to `K` channels, a palette. Entries are stored as `out_dtype` (any of the ten)
-  and must fit it, which is checked when the pipeline is built, as are ragged
-  rows and float input. A value with no row is an error for its row (so
-  `on_error("null")` nulls just that row); clamp with `clamp(0, n - 1,
-  out_dtype=...)` first to send larger values to the last row. Each entry
-  accepts an expression.
-
-- **`footprint="disk"` on `erode`, `dilate`, `morphology_gradient`,
-  `morphology_open` and `morphology_close`** (CR-94): the pixels within
-  Euclidean distance `ksize // 2` of the centre, edges replicated, for round
-  rather than square morphology on any dtype. The default stays `"square"`,
-  byte for byte. With a disk, `iterations` applies it that many times (two
-  disks do not compose into one). Held to scipy's `grey_erosion`/
-  `grey_dilation` with a disk footprint and, on masks, to the distance
-  transform. `footprint` accepts an expression.
-
-- **`distance_transform(signed=False)`** (CR-93): the exact Euclidean distance
-  transform of a single-channel mask, as an f32 image of the same shape.
-  Unsigned, each non-zero pixel holds its distance to the nearest zero pixel,
-  centre to centre — what `cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`
-  and `scipy.ndimage.distance_transform_edt` compute: exactly scipy's
-  distances, correctly rounded to f32 (OpenCV's can be one ulp off). `signed=True` gives the distance to the mask's pixel-edge
-  boundary (the one `extract_contours` traces), negative inside, matching
-  `.point.signed_distance_to_contour`. A class with no pixel at all is
-  infinitely far (`±inf`), where scipy and OpenCV return arbitrary finite
-  values. `signed` accepts an expression.
-
-- **A logo, drawn by polars-cv itself** (`polars-cv/docs/assets/logo/`). A
-  polar bear is sketched from overlapping ellipses, fused with `blur` +
-  `threshold` and traced back to a low-poly outline with `extract_contours` +
-  `simplify`; `.point.signed_distance_to_contour` over a pixel-per-row
-  DataFrame then gives a distance field that thresholds into topographic
-  terraces and contour lines. The wordmark is built from contour primitives.
-  `make_logo.py` regenerates `polars-cv-logo.png` (`--stages` also writes the
-  bear's construction stages).
-
-- **Each output of a multi-output sink takes its own sink parameters.** A
-  dict `sink()` value may be `(format, {params})`:
-  `merged.sink({"x": ("array", {"shape": [224, 224, 3]}), "thumb": ("jpeg",
-  {"quality": 85})})`. Keyword arguments to `sink()` still apply to every
-  output, so before this an `array` shape and a JPEG quality could not share
-  one graph (each was refused by the other's sink), and an image that fed
-  both had to be decoded twice. A parameter given both per output and shared
-  is refused, as is an output that is neither a format nor `(format, {params})`.
+- `squeeze(axis)` and `expand_dims(axis)` remove or insert a size-1 axis as
+  zero-copy views; negative axes count from the end.
+- Contour set operations: `union`, `intersection`, `difference` and
+  `symmetric_difference`, as pipeline ops and `.contour` accessors.
+- Contour shaping and drawing: `offset(distance, join="round")`,
+  `union_all()`, `smooth(iterations=1)`, `densify(max_segment_length)` and
+  `stroke(width=1.0, cap="round", join="round")`, with new `LineJoin` and
+  `LineCap` enums. `rasterize` still fills only; draw lines with
+  `stroke(...).rasterize(...)`.
+- Open contours (lines) work in pipelines via `source("contour")`; new
+  `boundary()` gives a region's rings as lines and `close()` joins a line's
+  ends into a region.
+- `rasterize(..., supersample=n)` anti-aliases masks with `n` from 1 to 16;
+  the default of 1 is unchanged.
+- `apply_lut(table, out_dtype="u8")` maps u8/u16 values through a lookup table,
+  including palettes that turn one channel into `K`.
+- `distance_transform(signed=False)` gives the exact Euclidean distance
+  transform of a single-channel mask as f32.
+- `coordinate_grid(normalized=False)` gives an f32 `[H, W, 2]` grid of pixel
+  centres.
+- `footprint="disk"` on `erode`, `dilate`, `morphology_gradient`,
+  `morphology_open` and `morphology_close` for round morphology.
+- A multi-output `sink()` dict value may be `(format, {params})`, so each
+  output takes its own parameters.
+- New guide: [Drawing with polars-cv](https://heshamdar.github.io/polars-cv/user-guide/drawing/).
 
 ### Changed
 
-- **`channel_merge` joins channel axes.** Each operand may be `[H, W]` (one
-  channel) or `[H, W, C]` (its `C`), joined in order, so
-  `photo.channel_merge(alpha)` is an RGBA image; it used to take only
-  single-channel operands, so adding an alpha channel meant splitting the
-  photo into its channels first. Stacking single channels is unchanged.
-- **CSE computes each distinct value once, and fuses linear runs.** It used
-  to share only a leading op run common to every root node on a column, so a
-  bare decode, two branches with different first ops, or one unrelated
-  pipeline on the same column left each decode separate, and nothing below a
-  root was shared. Every op is now numbered by what it computes (its input
-  and its wire form, operands included), so equal work is shared wherever it
-  was written, duplicates merge all the way down, and a node that only passes
-  its input on vanishes. Each linear run of ops that nothing else reads then
-  runs as one node, so a chain of lazy method calls is one node, and the
-  spatial-window pushdown can move a crop across what were node boundaries.
-  The logical passes then repeat until the graph stops changing, so two
-  pipelines that differ only by a no-op the identity pass removes, or by an
-  order the pushdown normalises, are shared too.
-  Outputs are byte-identical; `opt_flags=False` shows the graph as written.
-- **README**: a branch-and-rejoin example (a cup and saucer cut out to a
-  transparent PNG, with the optimised graph it runs, from
-  `scripts/make_readme_cutout.py`); the detection-metrics snippet and the
-  "When not to use polars-cv" section are gone. The halftone logo has a
-  transparent background, a tinted face, inked eyes and nose, and outlined
-  letters, so it reads on light pages too.
-
-- **`footprint="disk"` erode/dilate/morphology are linear in the radius**
-  (CR-105). Each half-width's spans were a separate full-size image, built
-  from scratch: O(r²) work per pixel and r + 1 images held at once. The spans
-  now grow a step at a time and the column fold runs row offset outermost,
-  regrouped (the min/max fold is associative) without changing its order, so
-  results are bit-identical, signed zeros and NaNs included. A 31-px disk is
-  2.2–2.4x faster (release, 256² to 1024²).
-
-- **`apply_lut` reads less and copies less per row.** A table of single
-  entries converts and holds only its rows, indexed directly (it padded a
-  table to all 65 536 u16 values on every row, 512 KiB for `out_dtype="f64"`),
-  and a palette writes its `[H, W, K]` output in one pass instead of building
-  `K` planes and merging them (one view-sized allocation instead of `K + 1`).
-  Its row errors are prefixed `ApplyLut:`, as `Histogram:`'s are: the two
-  fallible buffer steps now share one executor path.
-
-- **`target/debug` no longer grows without bound** (CR-104, development only).
-  The disk filled twice in one session; measured, three causes were
-  avoidable. The workspace's own crates keep debuginfo inline
-  (`split-debuginfo = "off"` per package, the polars stack keeping its
-  sidecars): each incremental rebuild had written its `.dwo` files under new
-  names and cargo never deletes the old (~79,000 files, ~12 GB). A rebuild after
-  a plugin edit is ~10 s, against ~11.5 s before (and ~21 s with debuginfo
-  inline for the whole stack, which the profile's comment records). view-buffer's
-  31 integration-test executables (~4 GB, each relinked on every change) are
-  one, `tests/it/`. The SessionStart hook cleans `target/` when `rustc -vV`
-  changes, since a new stable orphans every artifact (~5 GB here). polars-cv's
-  `polars` dev-dependency is gone, so its Rust tests run against the polars
-  features the plugin ships. `test_build_efficiency.py` guards each.
-
-- **Documentation restructured.** The README and the docs site open with the
-  halftone logo (also the site's logo and favicon). A new
-  [Parameters & Errors](https://heshamdar.github.io/polars-cv/user-guide/concepts/parameters/)
-  page is the one place for per-row parameters, null parameter values and
-  error policies, which had been split between the image-operations and
-  sources pages; the image-operations page's hand-kept table of which
-  parameters accept expressions is gone (it had missed every parameter added
-  since 0.36), and the method signatures in the API reference say it instead.
-  The migration guides have their own section with an overview page at
-  `user-guide/migration/` (the 0.28 → 0.29 guide, which had that address, is
-  now `migration-0.29`). The domains page covers open lines and the
-  contour-to-contour ops; the quickstart no longer says an eager call runs on
-  one thread; installation no longer repeats the cloud-credentials guide.
-  view-buffer's README described an unpublished crate as on crates.io at
-  version 0.3, with a `python` feature that does not exist and an example
-  that did not compile; it now matches the crate. Leftover planning text in
-  `ISSUES.md` (the finished drawing-primitives plan) is gone; its owner
-  decisions moved to the decisions list.
-
-- **The README is shorter and leads with one decode per image.** Its first
-  example now reads each file once and sinks both outputs from one graph; the
-  figure's top row is one multi-output graph, so its "one decode" label is
-  true (it was five separate plugin calls, each decoding the image). Thread
-  tuning, the 50k-image results and the test inventory moved out to the
-  linked guides and `benchmarks/`.
+- `channel_merge` joins channel axes: operands may be `[H, W]` or `[H, W, C]`,
+  so `photo.channel_merge(alpha)` gives an RGBA image.
+- CSE now computes each distinct value once, fuses linear runs of ops and
+  repeats until the graph settles; outputs are byte-identical, and
+  `opt_flags=False` shows the graph as written.
+- The README is shorter and leads with one decode per image, and the docs gain
+  a Parameters & Errors page and a migration section.
 
 ### Fixed
 
-- **The sdist PyPI refused.** The 0.38.0 publish uploaded its wheels and then
-  had its sdist rejected ("License-File LICENSE-APACHE does not exist in
-  distribution"): maturin auto-discovered `LICENSE-MIT`/`LICENSE-APACHE`,
-  named them at the top of `PKG-INFO`, but packed them under `polars-cv/`.
-  `pyproject.toml` now declares them (`license-files`, with the PEP 639
-  `license = "MIT OR Apache-2.0"` expression), which puts them at the top;
-  the build floor rises to `maturin>=1.9.3`, the first that does. The
-  `publish.yml` sdist job runs `scripts/check_sdist.py` before anything is
-  uploaded, so a release can no longer go up half-published this way
-  (`tests/test_sdist_metadata.py`, `tests/test_sdist_build.py`).
+- `apply_mask` refused a `[H, W, 1]` mask over a `[H, W]` image.
+- `channel_merge`, `apply_mask` and `merge_pipe` ran the left operand's ops
+  twice.
+- An alias given to two different nodes is now refused, and a node can carry
+  several aliases.
+- `show_graph()` hid a root node's ops and named nodes `None`.
+- `stroke()` of a ring narrower than the stroke left a hole in the band.
+- `stroke()` of a ring with no points panicked.
+- A line returning to its first point was stroked with caps instead of as a
+  loop.
+- `smooth` and `densify` could abort the process on huge outputs; a row past
+  2^22 points now fails with an error.
+- Contour results with an inferred layout (`holes: List(Null)`) panicked in
+  set-level functions, and `boundary()` lines read back as regions; every
+  contour result is now `{exterior, holes, is_closed}`.
+- A contour column of the wrong layout was turned into nulls by
+  `on_error("null")`; it now fails the query.
+- `rasterize(shape=)` onto another node's canvas skipped the op's check, so a
+  per-row `supersample` of 0 panicked.
+- `.contour.offset(inf)`, `densify(0)`, `stroke(width=0)` and `largest(k=0)`
+  failed only at collect; they are now refused at build.
+- Op-backed `.contour` accessors now give the same results, nulls and error
+  messages as the pipeline op; an empty contour's `bounding_box` is NaN on
+  both.
+- Error messages named the op twice (`blur: blur: sigma ...`); a build-time
+  refusal now begins with the op's Python name and a row error with its engine
+  step's name.
+- A literal `histogram` `range=` that is non-finite or inverted is refused at
+  build.
+- A non-finite float literal such as `simplify(float("nan"))` failed on the
+  wire; `"nan"`, `"inf"` and `"-inf"` now cross it.
+- `clamp` panicked on a NaN or crossed bound; it is now refused.
+- The thread count a call uses is measured from its first rows, so calls of
+  expensive rows reach the whole pool sooner. A call of only a few expensive
+  rows is slower (8 rows of ~18 ms on 4 threads took ~58 ms against ~39 ms).
+- The sdist is no longer rejected by PyPI over missing license files; the
+  build now requires `maturin>=1.9.3`. Install 0.39.0 rather than 0.38.0,
+  whose PyPI wheels were built from 0.39 code.
 
-- **`apply_mask` refused a `[H, W, 1]` mask over a `[H, W]` image** (a
-  rasterized mask over a heatmap, as `examples/05` does, failed since the
-  binary ops stopped broadcasting). Such a mask is read as the `[H, W]` one
-  it holds, as it already was over a `[H, W, C]` image.
-- **`apply_mask` read the mask on the image's scale.** A u8 mask (a
-  `rasterize` or `threshold` result, 0 or 255) multiplied a float image by
-  255 and darkened a u16 one 257-fold, and a float mask truncated to 0 or 1 on
-  a u8 image. The mask's own dtype now says its scale — a u8 mask weighs
-  `m / 255`, a float mask `m` in `[0, 1]` — whatever the image's dtype, and
-  the result keeps the image's dtype. A mask of any other dtype is refused
-  (cast or scale it first). A u8 image under a u8 mask is unchanged.
-- **Aliases.** An alias given to two different nodes is now refused (it
-  resolved silently to whichever was found last), and a node may carry
-  several aliases, each an output (all but one used to be lost: "Alias 'q'
-  not found in graph").
-- **Only the nodes an output reads are serialized.** `merge_pipe`'s own node
-  and branches no alias selects used to ride along on the wire and into the
-  compiled-graph cache key (Rust never ran them); `show_graph` hid them by
-  deleting childless nodes.
-- **`channel_merge`, `apply_mask` and `merge_pipe` applied the left
-  operand's ops twice.** They cloned its pipeline into the composed node,
-  which receives that operand's output, so a node fed by another node ran
-  its ops again on its own output (`x.pipe(Pipeline().add_constant(50))
-  .channel_merge(y)` added 100), and one on a column decoded it a second
-  time. They now start from the operand's output, as the binary ops did
-  (`LazyPipelineExpr._receiving`).
-- **`show_graph()` hid a root node's ops and named nodes `None`.** A source
-  node now lists the ops after its decode (where CSE puts a shared prefix),
-  every node leads with the wire id its operands are named by (`maximum(
-  other=n5)`), ops render as calls, and the DOT text no longer carries each
-  node's Python repr.
+### Performance
 
-- **An op-backed `.contour` accessor runs the pipeline step it is**
-  (CR-106). `.contour.area`, `offset`, `smooth`, `scale` and the twelve
-  other accessors that are pipeline ops each had their own body calling the
-  op's engine function, beside the step the pipeline runs; every
-  divergence the reviews of this release found between the two surfaces
-  came from that second dispatch. Each now resolves the op as the pipeline
-  resolves a step (once, or per row when an argument is an expression, with
-  the op's check), executes it with the executor's own dispatch, and only
-  presents the result its way (a value per member, or a set). So a refused
-  row reads the same on both surfaces, named once by the step:
-  `.contour.area()` of a line said `an open contour ... (row 0)` where the
-  pipeline said `Area: an open contour ...`, and `boundary`, `close`,
-  `smooth`, `densify` and `scale` named themselves in lower case on both
-  (`smooth: 40 passes ...`, now `Smooth: 40 passes ...`). An empty
-  contour's `bounding_box` is NaN on both: the pipeline gave a 0x0 box at
-  the origin, the accessor a null. Sixteen accessor bodies are deleted;
-  `tests/parity/invariance/test_parity_accessors.py` now holds the two
-  surfaces to the same refusal text as well as the same rows and nulls.
-
-- **`stroke()` of a ring narrower than the stroke is solid.** Stroking a
-  region's ring wider than the region left a hole where the band should
-  cover it: a single pixel stroked with `width=4` came back as a 5x5 square
-  with a diamond cut from its middle, so the drawn outline had a gap. Every
-  point of the region is within the half-width of its ring, but `i_overlay`
-  (4.5) turns the ring's inward side inside out once it passes the middle.
-  The band round a closed path is now also taken as its region grown by the
-  half-width less that region shrunk by it (`offset`, exact), joined to
-  `i_overlay`'s stroke, which still covers what has no area (a doubled
-  segment). Found by a new law of the parity suite: on contours traced from
-  random masks, `stroke(width=2k)` paints exactly the pixels within `k` of
-  the rings, by L∞ for a miter join and Euclidean for a round one. The same
-  laws now hold `offset` to Minkowski growth and shrinking, the four set
-  operations to `|`, `&`, `& ~` and `^` of their masks, `close(boundary())`
-  to the identity, `largest`, `union_all`, `densify`, `smooth(0)` and
-  `supersample` to the mask they read, and an open line's stroke to its
-  distance band; and an invariance property holds each op-backed
-  `.contour` accessor to its pipeline op (rows, refusals, nulls).
-
-- **A refused value names its op once, as the user spells it.** The planner
-  and the geometry accessors' build check prefixed every `check()` message
-  with the op's wire name, which most messages already began with their
-  own: `rasterize: rasterize: supersample ...`, `contour_densify: densify:
-  ...`, `blur: blur: sigma ...`. The prefix is gone, and the checks that did
-  not name their op (`normalize`, `histogram`'s range, `perceptual_hash`,
-  `largest`, `extract_contours`, `convolve2d`, `assert_shape`) now do. One
-  convention throughout: a build-time refusal begins with the op's Python
-  name (`histogram: range ...`), a row error with its engine step's name
-  (`Histogram: range ...`, `Offset:`, `Union:`); the set operations had
-  named their row errors in lower case. `assert_shape()`'s empty
-  declaration is refused by the op's own check, no longer by a copy in its
-  Python sugar.
-
-- **A `histogram` range no row can use is refused when written.** A
-  non-finite or inverted literal `range=` passed the op's check and failed
-  every row; the check now refuses it at build, through the one range rule
-  the executor also applies per row (named once, not `Histogram: histogram:`).
-
-- **A contour column of the wrong layout fails the query under every
-  error policy.** A `source("contour")` pipeline, and the set operations
-  (`.contour.union(other)`, ...) built on one, read a non-contour column
-  per row, so `on_error("null")` turned it into a column of nulls; the
-  column's layout is now checked once per call and refused like any other
-  wrong input type. A set operation's `other=` that is not an expression is
-  a `TypeError` naming it, and its docstring states what it returns.
-
-- **`rasterize(shape=)` onto another node's canvas checks its row.** The
-  shape-reference form skipped the op's check, so a per-row `supersample`
-  of 0 panicked in the engine and one past 16 ran; both are now refused
-  with the row, like the other forms. `.contour.largest(k=)` per row likewise applies the op's own rule
-  rather than a second copy of it.
-
-- **Contour results publish the canonical contour struct.** A `.contour`
-  function that returns contours declared "the input's own layout" and cast
-  its result to it. On a column polars inferred (`holes: List(Null)`, every
-  hole empty) the set-level functions (`largest`, `boundary`, `offset`,
-  `union_all`, the set operations) panicked, and on a struct without
-  `is_closed` or `holes` the cast dropped what that layout cannot hold:
-  `boundary()`'s lines read back as regions, a hole a union made vanished.
-  Every contour result is now `{exterior, holes, is_closed}` as
-  `geom_schema` declares it; a declaration that differs is an error, never a
-  cast, and `contour_accessor!` no longer hands the element type the input
-  dtype to echo. The three identical set-level output types are one.
-
-- **`smooth` and `densify` refuse a row past 2^22 points** before making
-  it. A pass doubles the points and a short `max_segment_length` splits every
-  edge, so `smooth(iterations=40)` or `densify(1e-9)` — literal or per row —
-  aborted the process on the allocation. Both now fail the row by name. The
-  budget is the row's whole set, not each contour's: thousands of traced
-  contours each within it could together still abort.
-
-- **`stroke()` of a ring with no points no longer panics.** An empty exterior
-  or hole underflowed inside `i_overlay`; a ring of fewer than two points has
-  no edge and strokes to nothing (a one-point *line* is still a dot, its
-  caps). Every shaping op is now swept over degenerate rings on both surfaces.
-
-- **An op-backed `.contour` accessor applies its op's check as it is
-  written.** `.contour.offset(inf)`, `densify(0)`, `stroke(width=0)` and
-  `largest(k=0)` were accepted at build and failed only at collect, where the
-  pipeline forms refuse at build; the accessor's build-time check now runs
-  the op's own `check()`.
-
-- **The round-arc tolerance is stated as it holds.** Arcs are within 1/64
-  pixel up to a radius of about 32 pixels; past it `i_overlay`'s finest arc
-  step (0.01π) bounds them by `r (1 − cos 0.01π)`, about `r / 2000`
-  (`transforms::arc_tolerance`). The docs promised 1/64 at every radius;
-  0.12 pixel was measured at `offset(1000)`.
-
-- **`boundary`, `close` and `scale(origin="centroid")` refuse a contour the
-  same way on both surfaces**, through one engine function each
-  (`transforms::boundary_outline`, `close_outline`, `scale_outline`); their
-  rules no longer live in the plugin's graph encoder, with a second copy of
-  the scale message in the accessor.
-
-- **A line that returns to its first point is stroked as a loop.** `geo`
-  strokes every line string as an open path, so `stroke()`
-  capped a loop's start instead of turning it like its other corners: a
-  `butt` cap left the corner missing, a `round` one rounded it. Found
-  rebuilding the logo, where each bowl of the wordmark showed a nick; a loop
-  is now stroked as a closed path (`i_overlay`, under `geo`, which view-buffer
-  now names directly).
-
-- **A non-finite float literal crosses the wire** (CR-103). JSON has no NaN
-  or infinity, so `simplify(float("nan"))` — any op or geometry accessor —
-  failed as the decoder's "expected value at line 1 column 41". Every float
-  field now reads and writes `"nan"`, `"inf"` and `"-inf"` (as `bound`
-  fields already spelled their infinities), and `_types._literal` encodes
-  them, so a literal meets the op's own check exactly as the same value
-  passed per row does: `apply_lut([[nan]], out_dtype="f32")` maps to NaN, and
-  `offset(inf)` is refused by `offset`'s rule. (A first fix refused every
-  non-finite literal in Python, which made a NaN table entry an error while
-  `pl.lit(nan)` worked; it never shipped.) A `bound` still refuses NaN. A
-  sweep of every float field of every pipeline op at NaN and ±inf holds each
-  to "refused at build naming the op, or runs without a panic"; it found
-  `clamp` panicking on a NaN or crossed bound (`f32::clamp`), which a
-  per-row pair already reached. `clamp`'s check now refuses both, at build
-  for literals and with the row for expressions.
-
-- Two parity references claimed inputs they do not model, failing the deep
-  lane: `apply_lut`'s strategy read a channel axis a rank-2 buffer (after
-  `channel_select`) lacks, and `canny`'s compared a 5-channel image against
-  `cv2.Canny` on its first three channels, while the engine (as documented)
-  takes the strongest gradient over every colour channel. The `canny`
-  reference now reads colour channels by the engine's one alpha rule and is
-  compared only where `cv2.Canny` applies (one or three colour channels).
-
-- The parity suite's per-row parameters now encode nested lists level by
-  level, so an `apply_lut` table varying by row passes one expression per
-  entry; it turned a whole table row (whose length is structural) into one
-  expression, which failed the deep lane.
-
-- **How many threads a call uses is measured, not raced.** Before a call's
-  first row range (about 300 image rows) finished, the plugin read a row's
-  cost off how fast the host woke a helper thread compared with how fast
-  that range ran. On a host that wakes threads in a few µs (the macOS CI
-  runner) a call of expensive rows stayed on two threads for its whole first
-  range. A call now times its first rows on its own thread (one row, then
-  1, 2, 4, ... until about 50 µs of rows; a first row only counts by itself
-  when it takes over 1 ms, since it pays the call's one-off costs) and
-  invites one helper per 200 µs of the work that measurement says is left.
-  Expensive rows reach the whole pool after a row or two, and a call of
-  cheap rows that finishes within its probe wakes no thread at all. Results
-  are unchanged. The cost: a call's first row now runs alone, so a call of
-  only a few expensive rows is slower — 8 rows of ~18 ms on 4 threads took
-  ~58 ms against ~39 ms. From 16 rows up, and in the regression suite's
-  pipeline, sink, split and geometry cases at 4 and 32 threads, the two are
-  within noise.
+- `footprint="disk"` morphology is linear in the radius; a 31-px disk is
+  2.2–2.4x faster.
+- `apply_lut` copies less per row.
 
 ## [0.38.0] — 2026-10-15
 
-Standard pHash, a pool switch, and a README with benchmarks.
-`perceptual_hash()` now computes standard pHash, so its hashes change and
-stored ones must be recomputed; `blur(sigma=0)` is no blur instead of an
-all-zero image, and a negative sigma is refused. On many-core hosts a call of
-cheap rows no longer wakes the whole plugin pool, and
-`polars_cv.set_row_parallelism(False)` turns the plugin's own row splitting
-off. The README is rewritten, with results from a new cross-library benchmark
-suite in `benchmarks/`, and the license texts now ship with the package.
-Upgrading from 0.37: see the
+Standard pHash and a switch for the plugin's row parallelism. Stored hashes
+must be recomputed. Upgrading from 0.37: see the
 [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.38/).
-
-### Security
-
-- **`rustls` 0.23.45 → 0.23.46**, for RUSTSEC-2026-0346 to -0349 (TLS
-  secrets in `Debug` output, ECH, Brotli certificate decompression, a
-  ServerHello key-exchange downgrade). It is the TLS stack of remote
-  `file_path` reads (`http(s)://`, `s3://`, `gs://`, `az://`).
 
 ### Breaking changes
 
-- **`perceptual_hash()` (the default `algorithm="perceptual"`) computes
-  standard pHash, so its hashes change.** It thresholded the 8x8 lowest
-  frequencies of a 16x16-input DCT at their *mean*, which the DC term
-  dominates, so most bits agreed between unrelated images. Distinct COCO
-  val2017 images averaged 18 differing bits instead of ~32, and 236 of the
-  5,000 (all distinct) shared a hash with another, in 64 groups. It now does
-  what `imagehash.phash` does: BT.601 grayscale, a Lanczos resize to 32x32, a
-  2-D DCT-II and the 8x8 lowest frequencies against their *median*, with the
-  bits row-major, most significant first. The grayscale and the resize are
-  the engine's own ops, which round differently from Pillow's, so a 64-bit
-  hash is typically within 0-2 bits of imagehash's rather than identical. A
-  coefficient that is mathematically 0 is compared as 0, not as rounding
-  noise. Hashes stored from an earlier version must be recomputed. `average`, `difference` and `blockhash`
-  are unchanged.
+- `perceptual_hash()` with the default `algorithm="perceptual"` now computes
+  standard pHash like `imagehash.phash`, within 0-2 bits of it; recompute
+  stored hashes. `average`, `difference` and `blockhash` are unchanged.
 
-### Fixed
+### Security
 
-- **Many-core hosts no longer spin the plugin's pool on cheap rows.** A
-  plugin call invited up to the whole pool to help before every row range,
-  however little work its rows were; on a 72-thread host the woken threads
-  spent their time searching for work, and a contour table took 19.5 s and
-  1,356 s of CPU against 0.4 s and 4.9 s at 16 threads (worst on hyperthread
-  siblings). A call now invites one helper per 200 µs of work it estimates
-  is left: from its finished ranges' measured cost, or, before one has
-  finished, from how long the first has been running, and helpers invite
-  too. So cheap rows stay on a thread or two, and expensive rows still reach
-  the whole pool within a few wake-ups.
-
-- **`blur(sigma=0)` returned an all-zero image.** The kernel was
-  `exp(-0/0)`, i.e. NaN, which casts to 0. `sigma=0` is now no blur, as in
-  PIL and SciPy. A negative, NaN or infinite sigma is refused, when the
-  pipeline is built for a literal and when the row runs for a column value.
-  A negative sigma used to be silently treated as no blur.
+- `rustls` 0.23.45 to 0.23.46, for RUSTSEC-2026-0346 to -0349; it is the TLS
+  stack of remote `file_path` reads.
 
 ### Added
 
-- **`polars_cv.set_row_parallelism(enabled)` / `row_parallelism()`** turn
-  the plugin's own row parallelism off (or back on) for the process. Off,
-  every plugin call — pipelines and the `.contour`/`.point`/`.bbox`
-  accessors alike — runs its rows on the thread polars called it on, so the
-  streaming engine's morsels are the only parallelism and the plugin's pool
-  is never woken. A process setting, not a `sink()` argument: it does not
-  change what a graph computes, so it stays out of the wire form, CSE and
-  the compiled-graph cache.
+- `polars_cv.set_row_parallelism(enabled)` and `row_parallelism()` turn the
+  plugin's own row splitting off or on for the process.
+- License texts (`LICENSE-MIT`, `LICENSE-APACHE`) now ship with the package.
+- A rewritten README with cross-library benchmark results.
 
-### Documentation
+### Fixed
 
-- **The README is rewritten for new users**: a figure generated by polars-cv
-  itself (`scripts/make_readme_figure.py`, from a CC0 image), a 30-second
-  example on files with a per-row parameter, scaling and threading guidance
-  checked against the code, the operations list in a collapsible block, when
-  not to use polars-cv, and a project-status section with the test, CI,
-  release and versioning facts. Its images use absolute URLs, so PyPI renders
-  it as GitHub does.
-- **A cross-library benchmark suite in `benchmarks/`** (its own uv
-  project, run against the published wheel): PIL, OpenCV, torchvision, Daft
-  and Hugging Face `datasets` on COCO val2017 over four workloads, with parity
-  tests against PIL, a subprocess per cell with pinned thread counts, peak PSS
-  sampling and a memory cap. polars-cv runs eager, streaming, and streaming
-  with its own pool off (`set_row_parallelism(False)`). The README's
-  Benchmarks section shows the 0.38.0 results, including the two workloads
-  where OpenCV is faster (thumbnails, and perceptual hashing at 5,000 images).
-- **License files.** `LICENSE-MIT` and `LICENSE-APACHE` at the repository
-  root, linked into `polars-cv/` so the sdist and wheels carry them as
-  `License-File`. The project declared `MIT OR Apache-2.0` but shipped no
-  license text outside `view-buffer/LICENSE` (MIT only).
-- **`tests/test_readme.py` executes every Python block of the README**, each
-  on its own in a scratch directory, in the per-push lane. The previous
-  README's quick start referenced undefined names and could not run.
+- `blur(sigma=0)` returned an all-zero image; it is now no blur. A negative,
+  NaN or infinite sigma is refused (a negative one used to be treated as no
+  blur).
+- On many-core hosts, calls of cheap rows woke the whole plugin pool and could
+  run far slower than at 16 threads (19.5 s against 0.4 s on 72 threads).
 
 ## [0.37.0] — 2026-10-11
 
-Detection metrics: streaming, null groups, and `carry=`. Every detection
-metric now runs on polars' streaming engine except `group_objects`' object
-lists, a null group key is evaluated as a group of its own, and every matcher
-takes `carry=` to compute per-image measures in its own pass. Two results can
-change: a null group's FROC/LROC curve is no longer empty, and
+Detection metrics now stream, treat a null group key as a group of its own, and
+take `carry=`. A null group's FROC/LROC curve is no longer empty, and
 `match_detections(images=...)` no longer checks that `images` has one row per
 image. Upgrading from 0.36: see the
 [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.37/).
 
 ### Added
 
-- **`carry=` on every matcher and on `match_detections`.** Columns of the
-  frame that defines `image_metadata` (or expressions over it, named by their
-  output name) are copied into it, one value per (image, class) row, and are
-  then grouping keys like `group_id`. They are computed in the matcher's own
-  pass, so a per-image measure of the same images (e.g.
-  `segmentation_measures(...).struct.field("dice")`) needs no second reader of
-  the image rows, which a streaming cache would otherwise buffer whole. A
-  missing column, an unnamed literal, a repeated name and a name
-  `image_metadata` defines itself are refused.
+- `carry=` on every matcher and on `match_detections` copies columns (or
+  expressions) of the `image_metadata` frame into the result, one value per
+  (image, class) row, usable as grouping keys.
 
 ### Changed
 
-- **A null group key is a group of its own throughout the metrics.** Curves,
-  operating points, AUCs and the weighted bootstrap already grouped nulls in
-  their `group_by`s and windows, but about thirty joins on the keys did not
-  match nulls, so a null group's FROC/LROC curve came out empty (sensitivity
-  null, AUC 0 or null) while the same images under any name were evaluated.
-  Every keyed join in `polars_cv.metrics` now passes `nulls_equal=True`
-  (`tests/test_join_ratchet.py`), and `tests/test_null_groups.py` holds every
-  grouped entry point to "a null group equals the same group named". The
-  interpolation's null-key group, which `join_asof(by=)` matched to nothing,
-  is interpolated too. In `match_detections`, a null `image_id` is one image.
-- **`grouped_scan` refuses an ungrouped reverse `CumMax`.** Over the whole
-  frame a reverse running max must buffer it in memory; no caller made one
-  (every caller passes a key). Group by a constant column instead.
+- A null group key is a group of its own throughout `polars_cv.metrics`, so a
+  null group's FROC/LROC curve is no longer empty. In `match_detections`, a
+  null `image_id` is one image.
+- `grouped_scan` refuses an ungrouped reverse `CumMax`; group by a constant
+  column instead.
+- `match_detections(images=..., weight=/group=)` no longer checks one row per
+  image in `images`; a repeated `image_id` repeats that image's objects.
 
 ### Fixed
 
-- **The detection metrics stay on the streaming engine.** Under polars 2 three
-  steps ran on the in-memory engine, which collects its whole input, and the
-  guard meant to catch that did not see them:
-  - an unwindowed `pl.int_range(pl.len())` row position in every ungrouped
-    `grouped_scan` (FROC/LROC/partial AUC/sensitivity-at) and in the weighted
-    bootstrap's weight clusters, now a `with_row_index`;
-  - `join_asof(by=...)` in `interpolate_curve_lazy` (`froc_summary_table`,
-    `froc_sensitivity_at_fp`, `lroc_sensitivity_at_fpf`, partial AUCs) and in
-    11/101-point AP, now `_grouped_scan.bracket`: queries and knots sorted
-    together and each knot filled forward and backward per group. Linear in
-    the rows, and the bracketing knot's `y` is copied rather than matched back
-    by float equality;
-  - `match_detections(images=..., weight=/group=)`'s `validate="m:1"` join,
-    which polars validates only in memory. It is now a plain streaming join.
-    One row per image in `images` is the caller's contract and is no longer
-    checked: a repeated `image_id` repeats that image's objects instead of
-    failing the query. Checking it cost a pass over `images`. The image
-    columns are now joined inside `group_objects` (new `image_columns=`),
-    before its final sort: a streaming join after the sort handed the matcher
-    one morsel and serialized it (1.5 s vs 0.9 s at 80k images); before the
-    sort, a call with `images=` costs what one without it does.
-  `group_objects`' per-(image, class) object lists stay the one in-memory
-  step: polars 2.0 builds a list only in memory (aggregation, `implode().over`
-  and a joined window all fall back). It holds object geometry only (an
-  instance mask is outlined elementwise first); callers with one row per
-  image call a matcher directly and skip it.
-  `evaluate_segmentation`'s default image ids are a row index for the same
-  reason. Results are unchanged (bit-identical, or to the last bit of a
-  weighted float sum, which varies run to run either way).
-- **The streaming guard reads polars' own classification.**
-  `tests/_streaming_guard.py` matched `in-memory-map` and plugin/UDF
-  `columnar-function` labels, so `in-memory-join` and polars' own columnar
-  functions passed as streaming, and a fixture asserted a frame-wide `rank()`
-  streamed. It now flags every node the graph's legend marks as an in-memory
-  engine fallback, raises if the legend stops naming that class, scans every
-  plan the eager metrics collect, and covers every public lazy entry point's
-  grouped, partial, extrapolated and weighted paths.
+- Several metrics steps (FROC/LROC, partial AUC, sensitivity-at, interpolation,
+  the weighted bootstrap and 11/101-point AP) fell back to Polars' in-memory
+  engine under Polars 2 and now stream. `group_objects`' per-(image, class)
+  lists remain in-memory.
 
 ## [0.36.0] — 2026-10-11
 
-Performance, and one new parameter. Ops that walk their input a row at a time
-read a crop or a vertical flip where it lies, `convolve2d`, `convert_color`
-and the binary ops read any view without packing it first, and a tensor sink
-copies a view at most once. `sink(..., compact=True)` writes only each row's
-elements, for columns you persist. Nothing is removed. One result can change:
-`equalize_histogram` and `perceptual_hash` of a u64 or i64 image saturate into
-u8 instead of wrapping. Upgrading from 0.35: see the
+Performance, plus `compact=` on tensor sinks. Crops and vertical flips are read
+where they lie by more ops, and a tensor sink copies a view at most once. Upgrading
+from 0.35: see the
 [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.36/).
 
 ### Added
 
-- **`sink("numpy"|"ndarray"|"torch", compact=True)`** makes each row's
-  `data` exactly its elements, row-major, at offset 0. By default a tensor
-  sink hands a view over with the storage it reads from (a crop, transpose or
-  flip of a decoded or in-place row, a blob's payload behind its header), so
-  Parquet and IPC write that whole storage: 16 rows of a 200×200 crop of
-  256×256 images wrote 3.15 MB for 1.92 MB of pixels. A compact row is
-  copied only when it is not already exactly its elements. A packed run of an
-  input column (a passthrough, a crop of whole rows) is sliced in place. The
-  other sinks refuse `compact`.
-
-### Performance
-
-- **Blur, erode, dilate, morphology gradient, pad and pad_to_size read a crop
-  or a vertical flip where it lies.** These ops walk their input one row at a
-  time. They used to declare `RequiresContiguous`, so the planner packed a view
-  first, even one whose rows are each packed and that only a row stride sets
-  apart. They now declare `RequiresDenseRows`, a new `MemoryEffect`. The
-  planner packs only a layout without packed rows (a transpose, a horizontal
-  flip), through `ViewBuffer::to_dense_rows`, and the kernels read rows at the
-  view's own stride. One view-sized copy fewer per crop→op, held by the copy
-  census and by `tests/dense_rows_ops.rs` (byte-equal to the packed copy).
-  `equalize_histogram` and `channel_swap` read rows the same way.
-- **`convolve2d` and `convert_color` read any view without a planned pack.**
-  Their arithmetic starts with a widening cast (to the accumulator, or f64 for
-  the ranged color spaces), which walks a view once. Packing first only copied
-  the view before casting the copy. A u8 crop, flip or transpose now costs them
-  no extra copy.
-- **Binary ops (`add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
-  `minimum`, `bitwise_*`, `apply_mask`) read their operands where they lie,
-  in any layout.** `zip_with` packed both operands, whatever their layout:
-  two view-sized copies per call on any view. Each operand, broadcast to the
-  output, is now read a block at a time through its walk's cursor
-  (`Walk::cursor`): a block inside a packed unit (a contiguous operand of any
-  rank, a row of a crop or a vertical flip) in place, any other (a transpose,
-  a horizontal flip, a broadcast) packed into a stack scratch, never the whole
-  operand. An operand broadcast along its trailing axes (a `[h, w, 1]` mask)
-  is read once per element and repeated in the block. 1024×1024×3 u8 `add`:
-  crop 0.90 → 0.24 ms, vertical flip 0.84 → 0.33 ms. Measured with
-  `benches/kernels.rs` at 1024 against this cycle's first in-place reader:
-  u8 + u16 over a transpose 3.4 → 2.9 ms, over a vertical flip at 65536×4×3
-  0.59 → 0.20 ms (32 ms before this cycle), an f32 `blend` with a
-  `[h, w, 1]` mask 9.5 → 5.0 ms, with a `[3]` channel vector 7.6 → 2.3 ms,
-  with a `[h, 1, 3]` column 8.6 → 2.7 ms. A contiguous rank-1 or rank-4
-  operand is not copied: 3M-element u8 `add` 0.83 → 0.23 ms. `apply_mask`
-  writes an inverted mask, or a 2-D mask expanded across the channels, once
-  from the view instead of packing it first.
-- **Convolution resizes of f64 and the 32/64-bit integers, `convert_color`
-  of f64, `convolve2d` of f32 and f64, and `equalize_histogram` of any dtype
-  but u8 read a view of any layout without packing it.** Each converted its
-  input before reading it, and packed it when the conversion was the
-  identity (f64 to f64), or after it (`equalize_histogram`'s conversion to
-  u8, behind a planned pack of the wide input). They now read the view once,
-  in the conversion: the resampler converts straight into its working buffer
-  (one allocation for every dtype, where the integer resizes made two), and
-  `equalize_histogram` declares `PacksOwnRows`, so only a u8 input without
-  packed rows is packed, by the kernel. A nearest resize still packs a
-  transpose or a horizontal flip, as fast_image_resize does. `convolve2d`
-  reads its accumulator-dtype input a row at a time, top down: rows in place
-  where they are packed, a transpose's or a horizontal flip's each packed
-  once, through its walk, into a ring of the `ksize` rows a tap reaches.
-  1024×1024×3 f32, 3×3, timed with a throwaway harness (warm memory; the
-  `kernels.rs` cases allocate fresh inputs and read ~3x higher): crop
-  9 → 6.3 ms, vertical flip 27 → 7 ms, horizontal flip 27 → 12 ms,
-  transpose 31 → 17.5 ms; contiguous input and u8 input unchanged.
-- **A tensor sink that has to copy a view copies it once.** When a numpy,
-  ndarray or torch row could not hand its storage over (a slice below the 50%
-  rule, a buffer another output shares), the view was packed with
-  `to_contiguous()` and the result copied again into the column's buffer: two
-  view-sized copies for a strided view. Every such path now packs straight
-  into the buffer Polars receives (`ViewBuffer::packed_polars_buffer`), held to
-  one allocation by `copy_counts.rs`.
-
-### Fixed
-
-- **`equalize_histogram` and `perceptual_hash` of a u64 or i64 image
-  saturate into u8 instead of wrapping.** Their conversion to u8 sent the
-  64-bit integers through a plain cast, so an i64 300 became 44 and a -5
-  became 251, while every narrower integer saturated (300 to 255, -5 to 0).
-  The 64-bit dtypes now saturate too, and the conversion matches every dtype
-  explicitly rather than through a fallback arm.
+- `sink("numpy"|"ndarray"|"torch", compact=True)` writes only each row's
+  elements, so Parquet and IPC do not persist a view's whole backing storage.
+  Other sinks refuse `compact`.
 
 ### Changed
 
-- **`scripts/verify.sh` runs the slow lane only with `--slow`.** By default it
-  now runs what CI runs on every push and PR: about 5 minutes on 4 cores
-  instead of about 14.5. The slow lane was 65% of a full run, and it is CI's
-  weekly search rather than a per-change check: its floor is one randomised
-  2,000-example parity search (449 s) that no worker count splits. Run
-  `--slow` before a release (CONTRIBUTING's release process now says so) and
-  after engine changes. `--fast` is removed and fails with a message, since
-  its behaviour is now the default; any other unknown argument fails too.
+- `scripts/verify.sh` runs the slow lane only with `--slow`; `--fast` is
+  removed.
 
-### Internal
+### Fixed
 
-- **Benchmarks: pyvips, the newer ops, multi-branch workflows and an HTML
-  report.** The comparison suite gains a `pyvips` (libvips) adapter, with its
-  operation cache disabled and every result materialised, so a timed pass is
-  neither a cache hit nor only the building of libvips's lazy graph. Nine
-  newer ops join the single-op benchmarks (`letterbox`, `adjust_gamma`,
-  `to_hsv`, `laplacian`, `morphology_open`/`close`/`gradient`,
-  `warp_affine`, a 5x5 `convolve2d`), four pipelines are built from them,
-  and a `workflows` scenario times graphs that branch and rejoin (one decode
-  feeding a tensor, a thumbnail and a statistic; unsharp masking;
-  mask-gated statistics; mask to contours to areas), written once per
-  library and held to polars-cv's result by `test_benchmark_workflows.py`.
-  `test_benchmark_adapters.py` now holds pyvips to polars-cv as it does OpenCV
-  and Pillow, and pyvips joins the `dev` group so CI runs those rows.
-  `run_benchmarks --save-json/--html` writes a run and a self-contained
-  report, `python -m benchmarks.report` re-renders and merges saved runs, and
-  `run_benchmarks` refuses a debug extension as `run_suite` does. The Pillow
-  adapter now decodes when preparing pre-decoded images: `Image.open` is
-  lazy, so the first timed pass over each image paid its PNG decode.
-  First run: `benchmarks/reports/2026-10-10-library-comparison`.
-- **Per-value conversions run through `core::map`.** The u8 conversion of the
-  image ops working in u8 (`ImageU8`), `apply_mask`'s mask inversion and its
-  2-D mask expansion (a stride-0 broadcast, packed or mapped), and the ranged
-  `convert_color` (`PixelMap` now has an output width: `Ranged` maps 1 or 3
-  channels to 1 or 3) are element and pixel maps: dispatched, reading any
-  view in its walk's runs. `for_each_pixel_run`, their side channel, is gone.
-- **`MemoryEffect::PacksOwnRows`** for a kernel that reads packed rows in
-  place and packs any other layout itself: the resizes and letterbox (which
-  declared `StridePreserving`, though they pack a transpose or a horizontal
-  flip) and the binary ops (which declared `RequiresDenseRows`, though they run
-  outside the planner). No copy count changes.
-- **The copy census holds every dtype to each op's declared memory effect.**
-  An op pays no copy on any dtype for a layout its declaration reads in place,
-  and (on u8) pays one where it packs; on no dtype does it pay more than its
-  exact u8 count in `KNOWN`. An op that runs on u8 must run on every dtype its
-  contract accepts (`accepted_input_dtypes`), and an engine panic fails the
-  census rather than reading as a refusal. Copies are counted from one byte
-  per element, so a narrow copy of a wide input (a u8 working copy of f32)
-  counts. It is what found the f64 and
-  non-u8 copies above. `copy_counts.rs` adds that a contiguous
-  buffer of any rank is never copied to be read, that a binary op or
-  `apply_mask` allocates the same number of times at any size (the reader
-  that first read views rebuilt every row's slice per 1024-element block:
-  58x slower than packing on a 65536-row view), and that a mask with packed
-  rows costs `apply_mask` no copy. `binary_views.rs` covers rank 1, 2 and 4,
-  lower-rank broadcasts, empty axes and float dtype pairs.
-- **fast_image_resize 6.1** (from 5.6.0, which upstream yanked: it added a
-  default `std` feature, a break). 6.0's only change is that opt-in `std`
-  feature, which default features keep. 6.1 speeds up the AVX2 vertical pass
-  for `u8` pixel types. Resize output is unchanged: the bit-exact resize tests
-  and the reference parity suite pass as before.
-- **A census of what a view costs each op** (`polars-cv/src/graph/copy_census.rs`).
-  Every catalogue op runs on a crop, a vertical flip, a transpose and a
-  horizontal flip, and on a contiguous image of the same shape. The extra
-  view-sized allocations are the copies the view cost. Each must be listed with
-  its reason (`KNOWN`), and a listed copy that no longer happens fails too.
-  At introduction: element-wise and view ops pay nothing on any layout. Every
-  `RequiresContiguous` op pays one pack. Binary ops pay two, packing both
-  operands. Resize packs only a transpose or a horizontal flip.
-- **`scripts/verify.sh` prints each check's duration**, and drops work it
-  repeated. Profiled on 4 cores (warm tree, ~14.5 min): the slow lane 562 s,
-  the fast lanes 124 s and 85 s, `cargo test -p view-buffer` 62 s. Of that
-  62 s, 49 s was one test, `sixteen_bit_ops_match_the_legacy_code_through_the_lookup_table`,
-  looping over two dtypes and two layouts serially. It is now four tests over
-  the same cases, which libtest runs side by side (lib tests 51 s → 24 s).
-  The structural lane runs on every core (18 s → 11 s), and the in-memory
-  lane no longer re-runs the structural guards, which read the source tree
-  rather than an engine's output and have already run twice by then.
+- `equalize_histogram` and `perceptual_hash` of a u64 or i64 image wrapped
+  into u8 instead of saturating (an i64 300 became 44).
+
+### Performance
+
+- `blur`, `erode`, `dilate`, `morphology_gradient`, `pad`, `pad_to_size`,
+  `equalize_histogram` and `channel_swap` read a crop or vertical flip without
+  a copy.
+- `convolve2d`, `convert_color`, convolution resizes of f64 and 32/64-bit
+  integers, and `equalize_histogram` of non-u8 dtypes read any view without
+  packing it first; a vertical-flip f32 `convolve2d` goes from 27 to 7 ms.
+- Binary ops and `apply_mask` read operands in any layout without packing
+  them; a 1024×1024×3 u8 `add` on a crop goes from 0.90 to 0.24 ms.
+- A tensor sink that has to copy a view copies it once instead of twice.
 
 ## [0.35.0] — 2026-10-09
 
-Fixes and performance. A call's rows now spread over the thread pool whatever
-ran before it, remote reads stream through a fetch window on Polars' own async
-runtime, and every bootstrap plan streams. No method or parameter is added or
-removed. Two results can change: nearest-neighbour resize at exact pixel-centre
-ties, and `DetectionTable.collect()`, which now respects
-`pl.Config.set_engine_affinity`. Upgrading from 0.34: see the
+Fixes and performance for threading, remote reads and bootstrap plans. Nearest
+resize at exact pixel-centre ties and `DetectionTable.collect()` can change
+results. Upgrading from 0.34: see the
 [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.35/).
 
-### Fixed
-
-- **Nearest-neighbour resize took the wrong pixel at an exact tie.** Output
-  pixel `i` takes the source pixel under its centre, `floor((i + 0.5) ×
-  src / dst)`; when that centre falls exactly on a pixel boundary (2 → 21
-  rows: row 10 at exactly 1.0; 2 → 7: row 3), the u8/u16/f32 path
-  (fast_image_resize's nearest, stepping in floating point) could take the
-  pixel before it. Nearest of every dtype is now one exact integer gather,
-  reading a crop or vertical flip where it lies. Output changes only at
-  those tie rows and columns. Kernel benchmarks (u8 RGB, interleaved A/B):
-  downscale to 224 unchanged to 13% faster, 2× upscale 1.6–1.9× faster.
-  The parity oracle's allowance for tie pixels is removed: nearest is now
-  compared exactly (found by the randomized deep parity lane, CR-88). The
-  golden corpus is re-recorded for the 7 `expr/*.filter` cases, whose
-  nearest row (16×16 → 7×7) has a tie at row and column 3.
-
-- **A query could make the next run of the same pipeline single-threaded.**
-  Whether a call spread its rows over the plugin's thread pool was decided
-  by history: whether the previous call of the same compiled graph (cached
-  process-wide, and since 0.34 shared by rebuilt expressions) had overlapped
-  another. After a streaming run, an eager `with_columns` of the same
-  pipeline ran on one thread (3.9× slower on 4 cores, debug build), and a
-  streaming scan whose Parquet row groups differed in size ran its large
-  row group on one thread on every run after the first (2.3×). A call now
-  runs its rows on its own thread and on whichever pool threads are idle,
-  under one plugin-wide budget of `POLARS_MAX_THREADS` threads, re-checked
-  before each row range; nothing outlives a call. Concurrent streaming
-  calls still keep their rows on their own threads once the budget is used.
-  Benchmark profile, 4 threads: `split_streaming_then_eager` 2.2× faster,
-  `split_streaming_uneven_row_groups` +11%, eager pipelines unchanged,
-  streaming pipelines −3.8% to +6.5% (`medium` the one consistent dip, under
-  the 7% gate); see `benchmarks/reports/2026-10-08-row-split-budget`.
-- **Remote reads started a second async runtime.** The plugin built its own
-  tokio runtime (one worker per CPU, ignoring Polars' settings) beside
-  Polars' `ASYNC` runtime, which the 0.55 object stores already spawn onto.
-  Every remote read now runs on Polars' runtime alone, sized by
-  `POLARS_ASYNC_THREAD_COUNT` (default `min(POLARS_MAX_THREADS, 32)`), and a
-  root `clippy.toml` refuses building another (`test_async_runtime.py`).
-- **A call held every remote file it read before decoding any.** Remote
-  paths (`file_path` sources, `.cv.read_bytes()`, the header-only
-  `.cv.width()` and friends) were all fetched before the call's first row.
-  Under Polars 2.0's streaming default a call is a morsel, and a Parquet
-  morsel is a whole row group, so thousands of encoded images could be
-  resident at once, with no download overlapping a decode. Each row now
-  fetches its own path and the next rows' up to `POLARS_CONCURRENCY_BUDGET`
-  ahead, and a body is freed after the last row naming it has read it. Each
-  distinct path is still fetched once per call. Benchmark profile: remote
-  `file_path` +51–61% at 1 thread, and +43–45% / +6% at 1 / 4 threads with
-  20 ms latency. At 4 threads over loopback with no latency it is −4 to −6%,
-  where decoding now shares the cores with the downloads. See
-  `benchmarks/reports/2026-10-08-fetch-window`.
-- **Bootstrap intervals ran two steps on Polars' in-memory engine.** The
-  weight cells of each sampling unit (`unique().sort()` inside a group-by)
-  and the entity-to-image expansion for `sample_col=` (a list per entity,
-  exploded per draw) each collected their whole input. They are now a
-  native `unique()` aggregate sorted outside it, and a join, so every
-  bootstrap plan streams; `KNOWN_FALLBACKS` loses both entries. Bounds are
-  unchanged to the ulp (the pinned bounds hold exactly).
-- **The docs claimed polars-cv's fetches shared Polars' concurrency budget.**
-  The plugin links its own copy of Polars' I/O layer, so its budget, store
-  cache and runtime are its own: `POLARS_CONCURRENCY_BUDGET` bounds polars-cv's
-  requests and, separately, Polars' scans. `sources.md` and the `cloud.rs`
-  docs now say so.
-
 ### Changed
 
-- **The metrics collect with Polars' default engine.** They passed
-  `engine="streaming"` at 14 call sites, which since Polars 2.0 restates the
-  default and overrode a user's `pl.Config.set_engine_affinity`.
-  `DetectionTable.collect(engine=)` defaults to `"auto"` (was
-  `"streaming"`). Results are unchanged; a test refuses any literal engine
-  choice in the package (`test_engine_choice.py`).
-
-### Docs
-
-- **Release docs pass.** Migration guide 0.34 → 0.35. The API reference now
-  covers every public export: `OptFlags`, `build_info`, `dtype_name_for`,
-  `IMAGENET_MEAN`/`IMAGENET_STD`, the remaining geometry schemas
-  (`RING_SCHEMA`, `POINT_SET_SCHEMA`, `ANNOTATED_POINT_SCHEMA`,
-  `CORRESPONDENCE_SCHEMA`) and `BoxFormat`, and in metrics `ReportMetric`,
-  `Matcher`, `COCO_IOU_THRESHOLDS` and `FROC_RATES`. The README's operation
-  list gains the element-wise math, binary and mask ops, `flip`, `pad_to_size`,
-  `assert_shape` and the contour ops. Its threading paragraph described the
-  pre-budget behaviour ("about twice `POLARS_MAX_THREADS`") and linked a
-  renamed anchor; it now matches the streaming guide. The streaming guide and
-  example 06 no longer pass `engine="streaming"`, the default. The panic-audit
-  page (September 2026) is removed: the fix it recommended shipped as CR-34
-  and `test_engine_no_panics.py` guards it. Git history keeps the page.
-
-- **One issues ledger: `ISSUES.md`.** The open items of seven root documents
-  (`CODE_REVIEW_FINDINGS.md`, `FOLLOW_UPS_0.32.md`, `PERFORMANCE_PLAN.md`,
-  `PERFORMANCE_HANDOVER.md`, `EXTENSION_TYPES_PLAN.md`, `POLARS_2_PLAN.md`,
-  `UPSTREAM_ISSUES.md`) were re-checked against the code and moved into one
-  file, continuing the `CR-NN` ids; the rest had shipped. CR-11 and CR-50
-  were already resolved and FU-05 (yanked numpy) was fixed, so they close;
-  the PR #124 regressions found after merge are CR-67 and CR-68. Every closed
-  id keeps a one-line entry, so ids cited in code still resolve. 22 benchmark
-  report directories that measured superseded code, cited only by those
-  documents, are removed (git history keeps them). The two metrics defects
-  still open (CR-76, CR-77) are now `xfail(strict=True)` pins in
-  `test_known_gaps.py`.
-
-- **The streaming guide says how big a call is and how to bound it.** A
-  streaming call is one morsel and holds its whole output. Polars sizes
-  morsels by rows, and a Parquet scan gives a call a whole row group: 20,000
-  images at 224×224×3 `f32` is about 12 GB in one call. The two knobs are
-  row groups sized by bytes, or `pl.Config.set_streaming_chunk_size`
-  (process-global, which is why polars-cv does not set it).
-  `tests/test_streaming_morsels.py` checks these claims at the plugin.
-- **Feeding a training loop:** `LazyFrame.collect_batches` with a fixed-shape
-  `array` sink gives one `(rows, *shape)` NumPy tensor per batch, viewing the
-  batch's memory.
-
-### Internal
-
-- **`scripts/verify.sh` runs its pytest lanes on every core.** They were 89%
-  of its time, single-threaded: on 4 cores the full run took ~37 minutes,
-  25 of them the slow lane. With `pytest-xdist` (`-n auto`, a new dev
-  dependency) the two fast lanes take 1.7 and 1.1 minutes instead of 4.8
-  and 3.4, and the slow lane ~8 instead of 25, bounded by its longest single
-  test. The coverage gate holds across workers (pytest-cov combines them).
-
-- **The parity oracle rounded the largest double below 0.5 up.** Its
-  float → integer rule was `floor(|v| + 0.5)`, whose addition rounds:
-  0.49999999999999994 became 1 (the engine, correctly, 0) and an odd integer
-  above 2⁵² the even one after it. It is now exact, with fixture tests
-  (CR-89, found by the randomized deep parity lane on a `cast("u8")` of a
-  chroma channel that resampled to one ulp below 0.5).
-- **The parity framework carried a bound through a wrapping cast.** An
-  integer cast that can wrap (`u8 → i8`) turns a one-level difference
-  upstream (bilinear 127 vs 128) into 255, but cast declared a Lipschitz
-  gain of 1, so the chain check failed on a correct engine. An op's gain now
-  sees its input as its tolerance does (`OpSpec.gain_for(x, p)`), and cast's
-  is infinite exactly when `np.can_cast(..., "safe")` refuses (CR-90).
-- **Two more parity-oracle defects, both on correct engine output.**
-  A colour conversion's float bound was scaled by the whole image, alpha
-  included, though alpha passes through: an infinite alpha made `to_hsv`'s
-  bound unbuildable and `to_ycbcr`'s infinite (so it accepted anything), and
-  a large one inflated all three (`grayscale` too). They now scale by the
-  colour channels (`color_magnitude`, CR-91). The `to_lab` reference was
-  OpenCV's float Lab, whose sRGB curve is approximate: 0.57 off in a* on a
-  dark pixel, where the engine matches the definition. It is now Lab by its
-  definition in float64, and the bound tightens from 0.5 to 0.01 (CR-92).
-
-- **Benchmarks: a change to the row splitter is measured on a parallel pool.**
-  The splitter does nothing on one thread, and `relevance` mapped it to
-  `pipelines`, the geometry and the `split_` cases only; PR #124's rewrite
-  passed those while the eager `list` sink lost 15.6% and streaming
-  `sobel_x` 11.5% at 4 threads. `row_split.rs` now also selects
-  `single_ops`, `e2e` and the `sink_` cases, with a new `@threads=N`
-  selector marker (`@threads=4`) that travels in `SEL` to both sides;
-  `targeted`'s `split_` cases declare `min_threads=2` themselves. `run_suite`
-  refuses fewer threads than a selection needs (and a smaller actual pool),
-  and `compare` refuses results run on different thread counts.
-- `_lib._take_max_split_rows()` reports the most rows one plugin call ran
-  since it was last read (and resets).
-- Four Polars issues reproduced on 2.0.0 alone, drafted to file (now
-  CR-83 to CR-86 in `ISSUES.md`). They are list aggregation in a streaming group-by, a
-  per-plugin morsel-size hint, zero-width `Array` across the C interface,
-  and the out-of-core spill livelock.
-- `_plugin.call` and `_PluginNamespace._plugin` lose their `is_elementwise`
-  parameter, which every caller passed or defaulted as `True`. Every plugin
-  function is elementwise, and `_plugin.call` declares it once. The streaming
-  guard now treats a whole-column plugin call (`columnar-function` over the
-  `.so`) as a fallback, and `test_streaming_plans.py` covers the plugin's own
-  entry points (`cv.pipe`, `read_bytes`, `width`, a contour and a point
-  accessor). With the declaration flipped to `False`, those and every metrics
-  plan built on the plugin fail, 30 in all; before this nothing did.
-- The direct `tokio` dependency and `CloudError::RuntimeError` are removed
-  (nothing builds a runtime any more).
-- `fetch::prefetch`/`FetchedBatch`/`row_bytes`/`row_header`,
-  `cloud::read_file`, `cloud::read_files_concurrent` and
-  `CloudError::UnsupportedScheme` are removed. `fetch::Fetcher` replaces them,
-  and `cloud::read_remote_budgeted` is the one remote read. Gone with them:
-  the "fetch inline when a row is missing from the batch" fallback, which no
-  row can reach any more, and `read_file`'s second list of remote schemes
-  (`is_remote_path` is the one).
-- `_lib._last_fetch_peak_resident()` reports the most fetched bodies the most
-  recent call held at once, read by `test_fetch_window.py`.
-- `row_split::CallTracker`, `Call::spreads` and the `geom_calls!` macro are
-  removed, with the `calls` parameter every geometry row loop took. The
-  budget replaces them (`row_split::split`).
-- New `targeted` benchmark cases `split_streaming_then_eager` and
-  `split_streaming_uneven_row_groups` (run with `--threads` above 1).
-- `_lib._last_split_workers()` reports how many workers (the calling thread
-  and each pool thread that helped) ran the most recent call's rows, read by
-  `test_parallel_rows.py`.
-
-## [0.34.0] — 2026-10-07
-
-Polars 2.0 support. The plugin is built against the polars 0.55 Rust crates
-(pyo3-polars 0.28, pyo3 0.29) and requires `polars>=2.0.0,<3.0`. Equal
-pipelines in one query now run once (Polars' plugin CSE), and polars-cv's
-outputs and memory take part in Polars' new out-of-core spilling. The
-polars-cv API is unchanged; seeded bootstrap intervals differ from 0.33 for
-the same seed. Upgrading from 0.33: see the
-[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.34/).
-
-### Changed
-
-- **Requires polars 2.0** (`polars>=2.0.0,<3.0`; was `>=1.44.2,<2.0`). Every
-  plugin call passes `register_plugin_function(is_deterministic=True)`, which
-  polars 1.x does not accept.
-- **Seeded bootstrap intervals differ from 1.x for the same seed.** The draw is
-  `hash(slot) % n`, and polars 2.0 changed `Expr.hash`'s values (polars
-  guarantees hash stability only within a version). Intervals stay
-  reproducible for a given seed and polars version; the method is unchanged.
-- **A Parquet file with a tagged column, read without importing polars-cv**,
-  now loads as polars' generic `pl.Extension("polars_cv.point", ...)` rather
-  than its plain struct (polars 2.0's default for unknown extension types). No
-  data is lost: `.ext.storage()` gives the struct, or set
-  `POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`.
-- **Performance:** no regression across the 83-case regression suite
-  (median +0.7%); `.point` accessors are 12–43% faster with ~25–30% less
-  peak memory under polars 2.0 (see the upgrade report).
-- **Metrics windows stream natively.** Polars 2.0 runs `.over()` windows in
-  the streaming engine, so `grouped_scan` (every per-group scan in the
-  metrics) no longer falls back to the in-memory engine; its allowance in the
-  streaming guard is removed, and `test_grouped_scan_stays_streaming` holds it
-  to no fallback at all.
-
-### Added
-
-- **Plugin CSE.** Two equal pipeline expressions in one query (the same
-  pipeline and sink, built separately) run as one plugin call. Graph node ids
-  were random per build and went into the plugin's kwargs, which polars
-  compares, so no two builds were ever equal; the wire now names nodes by
-  position, including the nodes an op reads (`Plan.to_spec` renames every
-  `NodeRef` and refuses one the graph does not name). The same change lets the
-  compiled-graph cache reuse an entry across rebuilt expressions.
+- `DetectionTable.collect(engine=)` defaults to `"auto"` (was `"streaming"`),
+  and the metrics use Polars' default engine, so
+  `pl.Config.set_engine_affinity` is respected. Results are unchanged.
+- New guide material: sizing and bounding a streaming call, and feeding a
+  training loop with `LazyFrame.collect_batches` and a fixed-shape `array`
+  sink.
 
 ### Fixed
 
-- **The extension segfaulted on import on macOS** (every Python version),
-  introduced by this release's pyo3 0.29 bump; no released wheel was affected.
-  pyo3-polars' `PolarsAllocator` looks up polars' allocator under
-  `Python::attach` on the first allocation; under pyo3 0.29.3 that attach
-  locks a mutex whose first lock allocates on macOS, so the lookup re-entered
-  itself until the stack overflowed (pola-rs/polars#29731). The plugin's
-  allocator now does the lookup through the C API alone, which cannot
-  allocate through it, and aborts with the reason should a lookup ever
-  re-enter. Linux and Windows were not affected.
-- **`froc_curve_lazy(thresholds=[1, ...])` raised** under polars 2.0, whose
-  `is_in` refuses to compare Float64 data with an Int64 list. Thresholds are
-  now passed as Float64.
-- **Debug builds undercounted their memory to polars.** The SIMD dispatcher's
-  debug parity check made a buffer on a helper thread and freed it on the
-  caller's; polars' allocation count (which its out-of-core engine spills by)
-  saw the free but not the allocation, so each check pushed the count down,
-  to zero after a few calls. The check now frees aside as well. Release wheels
-  were not affected. `test_polars_counts_the_plugins_memory` holds the count
-  to the truth.
-
-### Removed
-
-- `POLARS_OOC_SPILL_POLICY` from the out-of-core tests: polars 0.55 no longer
-  reads it, so the tests that set it exercised nothing. The canary pinning the
-  0.54 stub spill backend (no spill files) is replaced by a test that forces a
-  real spill (32 MB budget; lower can hit a polars 2.0.0 livelock in its
-  spill loop, reproduced without polars-cv), reads the spill count from
-  `POLARS_OOC_LOG_METRICS`, and checks every sink against the in-memory
-  engine.
-- `read_ipc(memory_map=False)` in the benchmark harness (removed in polars 2.0;
-  `read_ipc` no longer maps).
-- The `RUSTSEC-2026-0176`/`-0177` (pyo3 < 0.29) advisory ignores: fixed by the
-  pyo3 0.29 bump.
-
-### Internal
-
-- CI pins uv through a root `.tool-versions` (uv 0.12.23, read by every
-  `astral-sh/setup-uv` step, now v10.2.0) instead of resolving `latest` per
-  job; `tests/test_ci_tool_pins.py` holds every step to it.
-- `uv.lock` moves numpy off the yanked 2.4.0 (2.4.6 on Python 3.11, 2.5.3 on
-  3.12+).
-
-## [0.33.0] — 2026-10-06
-
-Weighted bootstrap intervals are corrected: 0.32 fixed each weight cell's
-positive count in every replicate, which made intervals for sample-estimated
-weights too narrow. The new `weight_scheme=` says what the weights are
-(`"reestimate"`, the default; `"stratified"`, 0.32's draw; `"fixed"`, for known
-or continuous weights). Unweighted intervals and every point estimate are
-unchanged. Requires Python >= 3.11. Upgrading from 0.32: see the
-[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.33/).
-
-### Changed
-
-- **Python 3.11 or newer is required** (`requires-python = ">=3.11"`; was
-  3.10). Python 3.10 has reached end of life. Wheels are tagged `cp311-abi3`,
-  and the CI matrix, the dependency-floors job and ty/ruff's target versions
-  move with it; a structural test now holds all of them to `requires-python`.
-  The `tomli` and `typing_extensions` fallbacks for older Pythons are gone.
-
-### Added
-
-- **`weight_scheme=` on every bootstrap interval** (`bootstrap_ci`,
-  `froc_auc_ci_lazy`, `lroc_auc_ci_lazy`, `average_precision_ci_lazy`,
-  `Report.ci`), saying what the weights are and so how the resample treats
-  them. `Report.ci` also takes `weight_rtol=`.
-  - `"reestimate"` (default): weights estimated from the sample (`p / q̂` over
-    target distributions, conditional ones included). Each `(group, weight
-    cell)` is redrawn to its own size, so the weights given are the
-    per-replicate re-estimates.
-  - `"stratified"`: 0.32's draw, which also fixes each cell's `gt_label`
-    counts. Use it when those counts were fixed by the study design.
-  - `"fixed"`: known weights (design weights, a continuous weight), carried
-    unchanged on a `gt_label`-stratified draw with no weight cells. A
-    continuous weight now gets an interval instead of null bounds; 0.32 had no
-    way out of weight cells short of `weight_rtol=1e300`. `"fixed"` raises if
-    given `strata` or `weight_rtol`, which describe cells it does not form.
-  - An unknown scheme raises.
-
-### Fixed
-
-- **Weighted bootstrap intervals were too narrow.** 0.32 stratified the
-  image-level draw on `gt_label` crossed with the weight cells, so every
-  replicate kept each cell's positive count. When the weights were estimated
-  over all images that count is random, and the weighted statistics depend on
-  it: the positives' mix across cells follows each cell's observed prevalence.
-  In simulation (and in a downstream report) the bootstrap SE came out 7-17%
-  below the estimate's actual spread, and 95% intervals covered 0.88-0.93.
-  `"reestimate"` (the default) no longer crosses the label with the cells,
-  which brings the SE within a few percent; targets conditioned on `gt_label`
-  already give each label its own cells. A group with a single cell (unit
-  weights) keeps the `gt_label` stratum, so unweighted intervals are
-  bit-identical.
-- **A replicate that drew no positive image scored a value.** A draw that does
-  not fix the `gt_label` counts (`sample_col`, and now `"reestimate"`) can draw
-  no positive (or, for Mann-Whitney, no negative) image in a small group. Its
-  statistic still has a value (`NaN` for AP, `0.5` or `0.0` for the AUCs) that
-  describes no resample; it was scored, pulling the bounds. Such a replicate
-  now nulls its group's bounds, like an undefined one.
-- **A weight-0 image no longer nulls its group's bounds.** An image outside the
-  target forms a singleton weight cell, and the singleton rule nulled the whole
-  group although the image contributes nothing to any statistic. Cells whose
-  weights are all zero are exempt.
-
-## [0.32.0] — 2026-10-03
-
-Detection evaluation in one call: `evaluate_detections` (boxes, polygons or
-instance masks, COCO-style by default), `evaluate_heatmaps` (FROC) and
-`evaluate_segmentation`, built on object-table matching, IoU sweeps, COCO
-101-point AP and one bootstrap engine for any `Statistic`. Precision-recall
-metrics are now weighted, and bootstrap memory is bounded by batching the
-replicates. Several metric values were wrong and are now computed as
-documented: multi-class matching, AP over tied scores, and multi-class or
-grouped bootstrap draws. Requires polars >= 1.44.2. Upgrading from 0.31: see
-the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.32/).
-
-### Added
-
-- **`.contour.single(label=)`**: each row's one contour, from a contour-set
-  column. A set of any other size fails the query, and the error quotes that
-  row's `label` (an image id, say) rather than a morsel-local row number. It
-  is how `match_detections` refuses an instance mask of several regions. That
-  failure is now a `polars.exceptions.ComputeError` raised by the plugin
-  ("'img1' holds 2 contours, not one"). It used to be a `ValueError` raised by
-  a Python UDF.
-
-- **One-call evaluation: `evaluate_detections`, `evaluate_heatmaps`,
-  `evaluate_segmentation`.** Each goes from predictions and ground truth
-  straight to a report.
-  - `evaluate_detections(preds, gts, box_format=...)` takes long object
-    tables of boxes, polygons or instance masks. By default it follows COCO:
-    it re-matches at 0.50:0.05:0.95, uses 101-point AP, keeps 100 detections
-    per class, and leaves classes without ground truth out of the means. It
-    agrees with pycocotools' `COCOeval` to 1e-12 on mAP, AP50, AP75 and AR@100
-    (`tests/reference/test_coco_parity_ref.py`, which runs when pycocotools is
-    installed). Area ranges and crowd regions are not modelled.
-  - `evaluate_heatmaps(df, heatmap=, gt=, **ContourMatcher options)` adds a
-    FROC summary: sensitivity at each rate and their mean, the CPM.
-  - The `DetectionReport` both return has:
-    - `.summary`, `.per_class`, `.per_threshold`;
-    - `.ci(metric, by=...)`, which is `bootstrap_ci` of the statistic behind
-      each number;
-    - `.matches(t)`, which gives each prediction input row its TP/FP outcome
-      and matched ground-truth row, for error analysis;
-    - `.pr_curve`, `.froc`, `.confusion`, and `.table` for anything lower
-      level.
-  - `evaluate_segmentation(df, pred=, target=)` and the per-row expression
-    `segmentation_measures(...)` give Dice, IoU, ASSD, HD, HD95 and the
-    directed mean distances in one graph per row.
-    - Hole borders count as boundary.
-    - `frame="image"` leaves the image edge unmeasured.
-    - `spacing=` gives physical units.
-    - Empty masks follow an explicit policy.
-    - `SegmentationReport.ci` resamples images with the same seeded hash draw
-      as the detection intervals.
-
-- **`.contour.set_boundary_distances(other, sample_step=, frame=)`.** Boundary
-  distances between two contour sets, each read as one boundary (the union of
-  its outlines), returned as one struct per row. This is the surface distance
-  of a mask with several regions, as MONAI computes it. The engine's
-  `boundary_distances` now takes outline sets, and the per-contour accessor is
-  the case of one outline per set, so both share one implementation.
-
-- **`match_detections(predictions, ground_truth, ...)`: object tables in, a
-  `DetectionTable` out.** Takes the long format detections usually arrive in,
-  one row per object, and dispatches on the geometry column's dtype:
-  - boxes, as `BBOX_SCHEMA` or as four numbers in `box_format=`;
-  - polygons (`CONTOUR_SCHEMA`);
-  - per-instance masks, whose single outline is extracted. A mask that holds
-    several regions fails the query and names its image.
-
-  `group_objects` is the reshaping step it uses, from long rows to one row per
-  (image, class) with object lists. It crosses every image with every class,
-  so images and classes that appear on only one side (or only in `images=`)
-  are not lost. It also applies COCO's `max_detections`. `images=` can carry
-  per-image `weight=` and `group=` columns.
-- **`bbox_from_coords(coords, format=...)`.** Reads `"xyxy"`, `"xywh"` or
-  `"cxcywh"` boxes, from one list column or four columns, into `BBOX_SCHEMA`.
-  The format is required.
-- **IoU sweeps: matching once per threshold, as COCO does.**
-  `BBoxMatcher(iou_threshold=[...])` and `ContourMatcher(iou_threshold=[...])`
-  match at each threshold in one plan. The table carries `iou_threshold` on
-  both frames, and `DetectionTable.iou_thresholds` lists them.
-  - A detection that lost its ground truth at 0.5 can now claim it at 0.75,
-    which re-thresholding a single match cannot do.
-  - Evaluations that would pool the thresholds, and so count each ground truth
-    once per threshold, are refused in one place, `DetectionTable.frames`. You
-    can group by `iou_threshold`, average over it (`mean_ap()`), or select one
-    threshold (`at_iou_threshold`, which now slices a matched threshold
-    exactly).
-  - `mean_average_precision` evaluates a sweep's thresholds on their own
-    matchings. The bootstrap keeps a replicate's thresholds paired.
-
-- **`Statistic`: every detection metric as one grouped, lazy reduction.**
-  `AP(interpolation)`, `Recall`, `PrecisionAt`/`RecallAt`/`F1At(score)`,
-  `FROCSensitivity(fp)`, `CPM(fp_rates)`, `FROCAUC`, `LROCAUC` and
-  `LROCSensitivity(fpf)` each expose `.by_group(table, keys)` (a lazy
-  `[*keys, value]` frame) and `.value(table)`. They compose the existing
-  authorities and add no second estimator; a test holds every public metric
-  function to agree with its statistic, and fails on a new public metric that
-  has none. `MeanOver(statistic, undefined=...)` averages one over facets
-  (`class_id`, `iou_threshold`). `mean_ap()` is mAP: `undefined="exclude"`
-  leaves classes without ground truth out, as COCO does, while `"zero"`
-  averages them in as 0, which is what `mean_average_precision` does.
-- **`bootstrap_ci(table, statistic, ...)`: one CI engine for any statistic.**
-  `froc_auc_ci_lazy`, `lroc_auc_ci_lazy` and `average_precision_ci_lazy` are now
-  this with `FROCAUC`, `LROCAUC` and `AP`, and their outputs are unchanged.
-  A drawn image brings its rows for every class, so the classes averaged by a
-  `MeanOver` statistic come from one resample. That makes an mAP interval
-  correct, where it would be wrong with one independent resample per class.
-- **COCO 101-point AP.** `interpolation="101_point"` on `average_precision`,
-  `mean_average_precision` and `PrecisionRecallResult.auc`. 11-point and
-  101-point AP now have a grouped lazy form (`ap_by_group`), so they can be
-  bootstrapped, and `mean_average_precision` no longer loops per class for
-  11-point.
-- **`group_by=` on `froc_sensitivity_at_fp`, `froc_summary_table` and
-  `lroc_sensitivity_at_fpf`**, through a grouped `interpolate_curve_lazy`.
-
-### Changed
-
-- **Bounded bootstrap memory.** A confidence interval's replicate frame holds
-  `n_bootstrap × detections` rows, and the metric's sorts and group-bys hold all
-  of them at once, natively or not. The replicates are now evaluated in
-  batches of 50 within the one lazy plan, and the streaming engine runs the
-  batches one after another, so peak memory follows the batch rather than
-  `n_bootstrap`. Each batch draws its own `bootstrap_id` range, and a draw
-  hashes its global slot id, so every bound is bit for bit what one whole draw
-  gives (pinned at batch sizes 1, 7, 50 and unbatched). `bootstrap_ci(AP)`,
-  2000 images and 50k detections, 1000 replicates: peak RSS 4257 MB → 614 MB,
-  20.4 s → 14.8 s. Nothing is collected to choose the batch, and there is no
-  new parameter.
-- **Metrics stay on the streaming engine, except where it cannot help.**
-  Polars' streaming engine hands any step it cannot run natively to the
-  in-memory engine, which collects that step's whole input first. In the
-  metrics, these steps were `.over()` running sums, maxima and shifts, sorts
-  inside `group_by().agg()`, a quantile inside a group-by, and a Python UDF.
-  They sat in the PR, FROC and LROC curves, AP, the AUC integrals and the
-  bootstrap; `froc_curve_lazy` alone had 15 of them. Every one is now native,
-  or is one of the cases that `tests/_streaming_guard.py` lists with its
-  reason:
-  - **A `.over()` scan straight after the sort on its keys.**
-    `metrics/_grouped_scan.py::grouped_scan` is the one way the metrics write
-    a per-group scan: one sort, then windows. Such a window reads the frame the
-    sort has just collected, so it adds no memory of its own. An all-native
-    version was built (frame-wide scans restarted exactly at group starts) and
-    measured. On the bootstrap it held as much memory and ran 2.4x slower, so
-    it was not kept. The guard checks in the physical plan that the window's
-    input is that sort, keyed on the window's keys.
-  - **Three list aggregations**, which polars cannot build in a streaming
-    group-by: `group_objects`' per-image object lists, a sampling unit's weight
-    cells and an entity's images. Each runs on a per-object or per-image
-    frame, never on the bootstrap's replicate frame.
-  - Reductions that must be reproducible are exact (`exact_sums`): Int128 fixed
-    point, exact up to one rounding of each term at 2⁻¹²⁵ of the largest
-    magnitude, and one rounding of the result. They are native, and they no
-    longer vary between runs or thread counts.
-  - The bootstrap interval's `quantile` is read off ranks, bit for bit as
-    polars' `quantile(q, "linear")` computes it.
-  - `group_objects(max_detections=)` caps inside the list aggregation it
-    already builds, instead of using a separate window.
-  - `PreMatchedAdapter`'s `det_idx` ordinals and `to_per_image` go through
-    `grouped_scan`. The weight-cell clustering is native: a frame-wide count
-    minus its value where the part starts.
-  - The mask-instance region check (`match_detections(geometry=<masks>)`) is
-    no longer a Python UDF that received the whole column of extracted
-    outlines at once. It is `.contour.single` in the plugin (see Added), and
-    `tests/test_no_python_udfs.py` keeps Python UDFs out of the package.
-  - `precision_recall_curve` no longer collects the weighted detection table
-    just to test whether it is empty. It collects only the curve and the two
-    totals.
-  - `tests/test_streaming_plans.py` reads every public plan's physical
-    streaming graph and fails on any fallback not listed, with its reason, in
-    `tests/_streaming_guard.py`.
-  - Removing these fallbacks does not by itself bound memory. The bootstrap
-    holds its whole replicate frame (`n_bootstrap × detections` rows) in its
-    sorts and group-bys, natively or not; see *Bounded bootstrap memory*.
-- **The AUC integrals take a frame, not an aggregation.** `_auc_expr`'s
-  `trapz_auc_expr` / `partial_auc_expr` / `mann_whitney_auc_expr` were `pl.Expr`
-  reductions for `group_by().agg()`, which sorted inside the aggregation. They
-  are replaced by `trapz_auc` / `partial_auc` / `mann_whitney_auc(lf, keys=...)`,
-  which return `[*keys, auc]`. These are internal; the public metric functions
-  are unchanged.
-- **`DetectionTable.to_per_image()` returns `max_score`, `top_is_tp` and
-  `best_tp_score`, and no `detections` list.** The per-image list of detection
-  structs existed only for LROC to read those three values back out of it, and
-  building it is a list aggregation the streaming engine cannot run.
-
-- **polars-cv now requires `polars>=1.44.2`** (was `>=1.43.2`). The bootstrap
-  CIs cache their resample lazily (`LazyFrame.cache()`), because the replicate
-  metric reads it many times and the streaming engine would otherwise re-run
-  the draw at each read (about 4x slower). On polars 1.43.2, a cached frame read
-  under different projections returns wrong rows, which produced AP bounds above
-  1. The `dependency-floors` CI job tests the new floor.
-- **Precision-recall metrics are weighted.** `precision_recall_curve`,
-  `average_precision` (all-points and 11-point), `mean_average_precision`,
-  `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold` and
-  `confusion_at_threshold` used to ignore `image_metadata.weight`, so a
-  reweighted study's AP silently ignored its weights while its FROC/LROC were
-  weighted. Each detection now carries its image's weight: precision is
-  `Σw·tp / Σw·(tp + fp)` and recall `Σw·tp / Σw·n_gts`, matching scikit-learn's
-  `sample_weight` (a weight of `k` equals the image drawn `k` times; a test
-  checks this across every entry point).
-  - Unit weights reproduce every previous value exactly.
-  - Each function takes `weight_agg=` like FROC.
-  - Zero-weight detections add no PR point.
-  - The PR curve gains `cum_weighted_tp`/`cum_weighted_fp` and
-    `PrecisionRecallResult` gains `weighted_gts`.
-  - `ConfusionResult` keeps its raw `tp`/`fp`/`fn` counts and `to_dict()`, and
-    gains `weighted_tp`/`weighted_fp`/`weighted_fn`. Its `precision`/`recall`/`f1`
-    now read the weighted values, so they agree with the threshold functions.
-  - The grouped AP authority (`all_points_ap_by_group`) takes `weight` and
-    `gt_mass` columns in place of `total_gts`.
-- **Bootstrap intervals re-estimate sample-derived weights correctly.**
-  `froc_auc_ci_lazy`, `lroc_auc_ci_lazy` and `average_precision_ci_lazy` carried
-  each image's `weight` unchanged into every replicate. That is wrong for an
-  importance weight `p / q̂` whose `q̂` comes from the same sample, such as a
-  vendor or prevalence mix reweighted to a target. Each replicate draws a
-  different mix, so held-fixed weights let the weighted mix drift off target
-  and widened the interval.
-  - **Weight cells.** The resample is now stratified on weight cells: units whose
-    weights agree within the new `weight_rtol` (relative, default `1e-6`) form a
-    cell, and each `(group, cell)` is redrawn to its own size.
-  - **Entity-level draws.** Under `sample_col`, entities of different sizes still
-    let the image mix drift, so each drawn image's weight is rescaled by
-    `(n_c/N) / (n*_c/N*)`. That restores its cell's full-sample share, which is
-    the re-estimated `p / q̂` (exactly 1 for image-level draws).
-  - **Why it is exact.** The weighted statistics are scale-invariant ratios, so a
-    weight that depends only on its cell's count (`p / q̂`, post-stratification,
-    raking) is then exactly the weight re-estimated in each replicate. This holds
-    for weights computed per group or globally. The cells come from the weight
-    itself, everything stays lazy, and point estimates are unchanged.
-  - **Unit weights:** bounds stay bit-identical, apart from single-unit groups
-    (below).
-  - **New `strata=` columns** are crossed into the cells. They separate cells
-    that happen to share a weight.
-  - **Behaviour change:** a group with a weight cell holding a single unit now
-    reports null `ci_lower`/`ci_upper`, keeping its point estimate, as
-    degenerate groups already do. That cell has no bootstrap variance: a
-    continuous weight (every image its own cell), or a one-image group, would
-    otherwise report a zero-width interval.
-  - **Behaviour change:** `average_precision_ci_lazy` is now weighted and
-    weight-stratified like the others.
-  - A downstream proposal asked for a `reweight` callback hook. It was not
-    adopted: it re-weighted the replicates but not the point estimate, and had
-    to handle replicates that draw nothing from a positive-target cell. The
-    cell-stratified draw makes the existing weights correct as they stand.
-
-### Fixed
-
-- **Multi-class matcher input duplicated every detection.** `BBoxMatcher` and
-  `ContourMatcher` read multi-class data as one row per (image, class), but
-  attached `class_id` to detections by joining on `image_id` alone. On an image
-  with *k* classes, every detection appeared *k* times, once under each class,
-  which corrupted per-class AP, mAP and FROC for any multi-class evaluation.
-  The matchers now share one tail (`_matching/_table.py`), and each detection
-  keeps its own row's class. Images with no predictions no longer leave a
-  null-score row in a `BBoxMatcher` table.
-
-- **All-points AP over-counted score ties.** The envelope was integrated as a
-  trapezoid, `(Pₖ + Pₖ₋₁)/2`, while the docstring named the step rule
-  `Σ (Rₖ − Rₖ₋₁)·Pₖ` (Pascal VOC 2010+ / COCO / scikit-learn). The two agree
-  whenever scores are distinct. They differ when a tied block mixes TPs and
-  FPs, which lowers precision while raising recall: TP@0.9 then
-  {TP, FP, FP}@0.5 against 2 GTs read **0.875**, and is now **0.75**. Tied
-  scores are common with heatmap-derived scores. This affects
-  `average_precision`, `mean_average_precision`, `PrecisionRecallResult.auc()`,
-  `average_precision_ci_lazy` and the grouped authority. Untied results are
-  unchanged.
-- **The 11-point recall grid is the reference one.** It was `i / 10`; it is
-  now `i · 0.1`, as the VOC devkit (`np.arange(0, 1.1, 0.1)`) and COCO
-  (`np.linspace`) build their grids. A recall landing exactly on 0.3, 0.6 or
-  0.7 now compares the way it does there.
-- **AP and mAP are reproducible bit for bit.** Their sums used Polars'
-  chunked `sum`/`mean`, whose last bits depend on how the values are chunked.
-  They now sum exactly in Int128 fixed point (`exact_sums`), which does not
-  depend on chunking, order or thread count, and which streams (see
-  *Metrics stay on the streaming engine* under Changed).
-- **`DetectionTable.to_per_image()`'s `top_is_tp` no longer depends on row
-  order.** It took the first detection of an unstable sort by score, so when two
-  detections tied for the top score, either could be read, and reversing the
-  input flipped the result (and LROC's `top_scoring` variant with it). The tie
-  now goes to the lowest `det_idx`, the order the matcher ranked them in, which
-  is what the LROC reference reads.
-
-- **`.contour.boundary_distances(frame=)` no longer spikes next to the frame.**
-  The frame removed the *target's* boundary lying on it, but kept source samples
-  a hair inside it. An annotation drawn even slightly inside the image edge,
-  against a prediction cut by that edge, therefore lost its nearest partner and
-  was measured across the region: about 30 px instead of 1 px in the reported
-  case, inflating the GT→prediction mean, `hd` and `hd95`. An inset frame only
-  moved where the jump happened. Now the frame only chooses which samples are
-  measured; each one is measured to the other side's whole outline, so distances
-  are continuous as boundary approaches the edge. The engine's clipped-target
-  outline (`PreparedOutline::within`) is deleted, and the Rust test that
-  asserted the 30 px reading is rewritten to assert 1 px.
-
-- **Multi-class bootstrap replicates over-drew mixed-label images.** The
-  image-level resample took one base row per distinct `(image_id, gt_label)`.
-  `image_metadata` has a row per `(image, class)`, so an image positive for one
-  class and negative for another sat in both strata: it had two draw chances
-  per replicate, and replicates held more images than the sample. An image now
-  has one draw slot, in the positive stratum if any of its classes is
-  positive. Single-class tables are unchanged.
-- **`match_detections(images=...)` repeated an image listed twice.** The
-  `images=` frame's `weight` / `group` columns were joined onto the
-  per-(image, class) object lists, so an `image_id` appearing twice in it
-  repeated that image's detections and ground truth. The join now requires
-  one row per image and fails the query on a repeat.
-- **Grouped bootstrap draws brought other groups' rows.** A draw partitioned by
-  a group key was joined back to the metadata and detections on `image_id`
-  alone. Under `group_by="class_id"`, a draw in one class's partition therefore
-  also brought the image's other classes, and every class's replicate gained
-  the other classes' draws. Draws now carry their partition keys and bring only
-  their own group's rows. Groups that never share an image, such as a
-  per-study `group_id`, are unchanged.
-
-## [0.31.0] — 2026-10-03
-
-Open polylines become a first-class contour (`is_closed=False` is read),
-with boundary distances, coverage matching for line-shaped ground truth,
-closing a line along the image frame, and coordinate-list constructors.
-FROC/LROC curves are read past their end by one explicit policy, null by
-default. Contour labelling and `label_reduce` region scans are orders of
-magnitude faster. Upgrading from 0.30: see the
-[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.31/).
-
-### Security
-
-- **`allowed_roots` could be escaped with a `file://` URL naming a host.**
-  The policy check stripped `file://` and judged `host/etc/passwd` as a path
-  relative to the working directory, while the read parsed the URL and opened
-  `/etc/passwd` — so with the working directory inside an allowed root (e.g.
-  `allowed_roots=["."]`) any local file was readable, through
-  `.cv.read_bytes()`, the `file_path` source and the new header-metadata path
-  reads alike. One resolver (`cloud::local_file_path`) now serves the check
-  and every local read, so the file judged is the file read. A `file://` URL
-  naming a host other than `localhost` is refused (it names no local file),
-  and a `file://` URL is percent-decoded, as its comment always claimed.
-
-### Removed
-
-- **`extract_contours(mode="tree")`.** It ran exactly as `mode="all"` — the
-  kernel told only `external` from the rest — while documented as "full
-  hierarchy", which nothing builds (borders come back as a flat list). Use
-  `mode="all"`; `"tree"` is now refused by the wire like any unknown value.
-
-### Changed
-
-- **FROC/LROC read a curve past its end by one policy, null by default
-  (breaking for `froc_auc`).** `froc_auc(fp_range=...)` filled the curve flat
-  past its last operating point while `froc_summary_table` and
-  `froc_sensitivity_at_fp` returned null there, so one table reported an
-  unknown sensitivity at 2 FP/image and a defined AUC over 0–2 FP/image — for
-  detections from a thresholded mask, which exist at a single operating point,
-  an AUC that was nearly the curve's maximum sensitivity. The two curve readers
-  (`partial_auc_expr`, `interpolate_curve_lazy`) now share one `extrapolate`
-  argument, `"none"` (default) or `"flat"` (extend the endpoints — the LUNA16
-  `np.interp` convention), threaded through `froc_auc`,
-  `froc_sensitivity_at_fp`, `froc_summary_table`, `lroc_auc`,
-  `lroc_sensitivity_at_fpf`, `froc_auc_ci_lazy` and `lroc_auc_ci_lazy`. An
-  `fp_range` reaching past the curve now gives a null AUC; pass
-  `extrapolate="flat"` for the previous value. LROC values are unchanged (its
-  curve always spans `[0, 1]`). A bootstrap replicate whose curve stops short
-  of the window nulls the bounds instead of being scored as an empty draw's
-  0.0.
-
-### Added
-
-- **`on_error("raise" | "null")` on the geometry accessors.** One invalid row
-  — e.g. a `close_along_border` line ending beyond `max_snap` from the frame —
-  failed the whole query, and the only remedy was re-implementing the check
-  in Polars expressions. `pl.col(...).contour.on_error("null")` (and on
-  `.point`/`.bbox`) nulls just the rows whose data a function refuses,
-  mirroring `source(on_error="null")`; it composes with `on_null`. An error
-  about the operand **column** (a contour set where one contour is expected,
-  an unreadable dtype) still raises: those are now `SchemaMismatch` errors
-  internally, which the policy never nulls. `"null_with_message"` is refused
-  (an accessor has no struct output to carry the message).
-- **`.contour.boundary_distances(frame=...)`.** A region cut off by the image
-  edge has a frame segment in its outline that no annotation traces, so every
-  frame sample was measured as error (ASSD/HD/HD95 inflated even for a perfect
-  prediction). `frame` takes a bbox per row (literal or column): boundary not
-  strictly inside it is dropped from both directions, and each side is
-  measured to the other's boundary clipped to the frame. Insetting the bbox
-  drops boundary near the edge too.
-
-- **`ContourMatcher(score_reduction=, score_region_mode=)`.** Detections were
-  always scored by the peak heatmap value inside them (`label_reduce`'s
-  `"max"`/`"interior"`, hard-coded), so on a heatmap that saturates most
-  detections tied at the peak and FROC/LROC collapsed to a few points. Both
-  pass through to `label_reduce`; the defaults are unchanged.
-- **Per-row `ContourMatcher` parameters.** `iou_threshold`,
-  `extraction_threshold`, `min_contour_area`, `coverage_tolerance` and the new
-  `min_contour_area_fraction` each take a Polars expression, read per row by
-  the op they reach (`correspond`/`correspond_by_coverage`, `threshold`,
-  `extract_contours`) — e.g. `coverage_tolerance=5.0 / pl.col("spacing_mm")`
-  for a physical tolerance across devices. A literal is still checked at
-  construction; a per-row `iou_threshold` stores no `matching_iou_threshold`.
-- **Contour predictions in `ContourMatcher`.** `pred_col` may be a contour or
-  contour-set column, scored by `score_col` (`List[float]` aligned with a set,
-  a float for one contour per row; a count mismatch fails the query). The
-  contours are the detections as they are — no extraction, no heatmap
-  scoring, and a caller's 0.0 score is kept — and share the matching,
-  duplicate policy and table build. `score_col` with a heatmap prediction is
-  now refused instead of silently ignored.
-- **`DetectionTable.filter_images(ids | predicate)`.** Keeps the named images
-  (or the `image_metadata` rows a predicate selects) and their detections,
-  with the stored matcher settings, for stratified evaluation without
-  rebuilding the table by hand.
-
-- **Line-shaped ground truth in `ContourMatcher`.** `match_by="coverage"`
-  (with `coverage_tolerance`) pairs predictions with GT by coverage, so GT
-  annotated as polylines — skinfolds, muscle edges — can be scored, which IoU
-  cannot; `gt_col` may now be a contour or contour-set column (with
-  `auto_resize=False`) instead of a mask. `duplicates="ignore"` drops a
-  prediction whose only hit was an already-matched GT rather than counting it
-  as a false positive (default `"false_positive"`, as before).
-
-- **`.contour.correspond_by_coverage(other, tolerance, threshold=0.5, order=None,
-  sample_step=None)`** pairs contours by *coverage* rather than IoU: the
-  fraction of each target's boundary samples inside the candidate (when it is
-  closed) or within `tolerance` of its edges. It scores line-shaped targets —
-  polyline annotations, which IoU cannot (a polyline has no area) — through
-  the same greedy, exclusive rule as `correspond`.
-- **Correspondences report duplicates.** `CORRESPONDENCE_SCHEMA` (from
-  `.contour.correspond`, `.correspond_by_coverage` and `.bbox.correspond`)
-  gains `duplicate: List(Boolean)`: an unpaired element that cleared the
-  threshold against a target another element had already claimed — a
-  repeated hit, which LUNA16/CAMELYON-style evaluation ignores rather than
-  counting as a false positive.
-
-- **Header-only metadata from path columns, and `.cv.image_info()`.**
-  `.cv.width()`, `.height()`, `.channels()` and `.image_dtype()` take a
-  `String` column of paths as well as image bytes, with the same
-  `cloud_options`, `on_error` and `allowed_roots` as `.cv.read_bytes()`: a
-  local file is read only as far as its header needs (a growing prefix, since
-  a JPEG's frame header can sit behind large EXIF/comment segments), instead
-  of `read_bytes()` reading every file whole first. Remote objects are still
-  fetched whole (a ranged read would nest the object store's concurrency
-  permits). `.cv.image_info()` returns `Struct{width, height, channels,
-  dtype}` from one header read per row. Path options on a bytes column are
-  refused.
-
-- **`.contour.close_along_border(width, height, arc="shortest", max_snap=2.0)`**
-  closes an open line whose ends lie on the image frame into the region it
-  bounds — a pectoral muscle edge, a skin line — by snapping each end onto its
-  nearest frame edge and walking the frame back from the line's end to its
-  start through the corners it passes (`arc`: the shorter way, or
-  `"clockwise"`/`"counterclockwise"` as displayed). A straight chord would
-  drop a corner region entirely. An end farther than `max_snap` from the frame
-  is refused rather than joined; a closed contour is refused.
-
-- **Geometry from coordinate lists, and back.**
-  `polars_cv.geometry.point_from_coords(expr, order="xy"|"yx")`,
-  `contour_from_coords(expr, order, closed=True)` and
-  `contour_set_from_coords(...)` build points, contours (open polylines with
-  `closed=False`) and contour sets from `[x, y]` or `[y, x]` (row, column)
-  pairs — `List` or `Array(_, 2)`, integers or floats — instead of hand-built
-  structs. `.point.to_coords(order)` and `.contour.to_coords(order)` are the
-  inverse (`Array(Float64, 2)` per point; a contour with holes is refused). A
-  pair that is not two non-null numbers is an error naming its row.
-
-- **`largest(k=1)`** keeps the `k` largest contours of a set by area,
-  largest first, equal areas in input order — as a pipeline op
-  (`.extract_contours().largest()`) and as `.contour.largest(k)` on a contour
-  column, both from one definition. The result is always a set (a lone contour
-  is a set of one), so downstream set-level code is unchanged; `k` may be per
-  row, and `k = 0` is refused.
-
-- **`extract_contours(min_area_fraction=)`** filters contours by area as a
-  fraction of the image's own height x width, resolved per image as it runs,
-  so a speck threshold scales with resolution without reading each image's
-  size first. In (0, 1]; a literal outside it is refused when the pipeline is
-  built, a per-row one when its row runs. With `min_area` too, a contour must
-  pass both.
-
-- **`.contour.boundary_distances(other, sample_step=None)`** — point-to-edge
-  boundary distances, both directions, as
-  `Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`: the directed means, the
-  average symmetric surface distance, the Hausdorff distance and the larger
-  directed 95th percentile (MONAI's convention). Each boundary is sampled at
-  its vertices, plus every `sample_step` along each edge when given, and
-  measured to the other's *edges*, so two tracings of one outline at
-  different vertex densities are 0 apart (`hausdorff_distance`, which stays
-  vertex-to-vertex, called the reporter's pair 50 apart). Open contours are
-  measured as polylines; for physical units `.contour.scale()` both sides by
-  the pixel spacing first. Broadcasts a set against a single like `iou`.
-
-- **`.point` accessors take point sets.** A `POINT_SET_SCHEMA` column
-  (`List(point)`) gives one value per point, in input order, as a `List` — the
-  `.contour` arity rule: `pl.col("pts").point.distance_to_contour(pl.col("c"))`
-  measures every point against the row's contour without an explode/group-by.
-  A contour or bbox operand broadcasts against the set; two point columns
-  broadcast either way, and a set on both sides is refused. A null point in a
-  set gives a null in its place. `x()`/`y()` are typed functions now, so they
-  take sets too and read the `X`/`Y` spellings the other accessors accept.
-
-- **`froc_operating_range(table, group_by=...)`** reports each curve's
-  `max_fp_per_image` and `max_sensitivity`, so a truncated curve is visible
-  next to the AUC.
+- Nearest-neighbour resize took the wrong source pixel at exact pixel-centre
+  ties (2 → 21 rows, 2 → 7); output changes only at those rows and columns.
+- A streaming run could make the next run of the same pipeline
+  single-threaded (3.9x slower on 4 cores); a call now uses idle pool threads
+  within a budget of `POLARS_MAX_THREADS`.
+- Remote reads started a second async runtime beside Polars'; they now use
+  Polars' runtime, sized by `POLARS_ASYNC_THREAD_COUNT`.
+- A call held every remote file it read before decoding any; each row now
+  fetches its path and the next rows' up to `POLARS_CONCURRENCY_BUDGET`
+  ahead. `POLARS_CONCURRENCY_BUDGET` bounds polars-cv's requests separately
+  from Polars' scans.
+- Bootstrap intervals ran two steps on Polars' in-memory engine; every
+  bootstrap plan now streams, with bounds unchanged.
 
 ### Performance
 
-- **`extract_contours` labels runs, not pixels.** Every call flood-filled the
-  whole background through a per-pixel `u32` label array (34 MB for a
-  3328 x 2560 mask) before tracing anything — even for an empty mask, and in
-  `mode="external"`. Components are now found by union-find over each row's
-  runs (word-at-a-time run detection, an all-zero mask returns at once), work
-  proportional to the runs. Finding the borders of a 3328 x 2560 blob went
-  from ~140 ms to under 1 ms in a release build; output is unchanged, held to
-  the old flood fill (kept as a test oracle) on randomized masks.
-- **`label_reduce` scans regions by scanline.** `region_mode="interior"` /
-  `"boundary"` tested every pixel in a contour's bounding box against every
-  edge, so cost grew with vertices x pixels: a 4,096-vertex disc of radius
-  1000 took ~11 s per image. A scanline winding scan now settles each row
-  from its edge crossings, leaving to the exact predicate only the pixels
-  whose centre lies within rounding distance of an edge and the rows through
-  a vertex — so the selected pixels, their order, and every score are
-  unchanged (held to the per-pixel predicate on randomized, self-intersecting
-  and half-pixel contours). The same disc now takes ~23 ms.
+- Nearest-neighbour resize: 2× upscale is 1.6–1.9× faster.
+- Remote `file_path` reads are 51–61% faster at 1 thread.
+
+## [0.34.0] — 2026-10-07
+
+Polars 2.0 support, and equal pipelines in one query now run once.
+Upgrading from 0.33: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.34/).
+
+### Breaking changes
+
+- Requires `polars>=2.0.0,<3.0` (was `>=1.44.2,<2.0`).
+- Seeded bootstrap intervals differ from 0.33 for the same seed, because
+  polars 2.0 changed `Expr.hash` values; they stay reproducible for a given
+  seed and polars version.
+- A Parquet file with a tagged column, read without importing polars-cv, now
+  loads as `pl.Extension("polars_cv.point", ...)` instead of a plain struct;
+  use `.ext.storage()` or set `POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`.
+
+### Added
+
+- Two equal pipeline expressions in one query (built separately) now run as one
+  plugin call, and the compiled-graph cache is reused across rebuilt
+  expressions.
+- polars-cv's outputs and memory take part in Polars 2.0's out-of-core
+  spilling.
+
+### Changed
+
+- Metrics `.over()` windows now stream natively on Polars 2.0 instead of
+  falling back to the in-memory engine.
 
 ### Fixed
 
-- **`ContourMatcher` refuses a null score for contour predictions.** A
-  null-scored contour took part in matching — and could claim a GT — and was
-  then dropped from the table, so the GT counted as missed and the detection
-  that should have matched it as a false positive. A null score list beside
-  present contours dropped the row's detections. Both now fail the query, as
-  a score count mismatch does; a null contour set is still an image without
-  predictions.
-- **`close_along_border` refuses a NaN or negative `max_snap`** (a NaN passed
-  every distance test, so a line in the middle of the image was "snapped" to
-  the frame and closed) **and a non-finite frame size.**
-- **Densifying an edge of overflowing length no longer loops forever.**
-  `boundary_distances` / `correspond_by_coverage` with `sample_step` appended
-  samples without end along an edge between finite vertices ~1e308 apart; such
-  an edge is sampled at its vertices.
-- **`point_from_coords` / `contour_from_coords` refuse a non-finite
-  coordinate**, naming the row, rather than building a point every geometry
-  reader then refuses.
-- **The streaming guide no longer claims the plugin stays within
-  `POLARS_MAX_THREADS`.** The plugin's pool is its own (sized by the same
-  setting), and overlapping calls run inline on Polars' threads while a lone
-  call spreads over that pool, so up to about twice the setting can be
-  runnable. The guide and README now say so, and when to lower the setting.
-- **A length-1 geometry operand broadcasts.** Every `.point`/`.contour`/`.bbox`
-  accessor failed with "geometry row 1 out of bounds" when an operand was one
-  row — a bbox, point or contour built from literals, or a column the
-  optimiser folded back into a literal — whatever the arity of the other side
-  (single points and contour sets included, not only the new point sets). The
-  three geometry readers now locate rows through one shared locator that
-  broadcasts a one-row column, as a per-row parameter already did, and
-  `correspond`'s `order` reads through the same broadcast-aware accessor.
+- The extension segfaulted on import on macOS; no released wheel was affected.
+- `froc_curve_lazy(thresholds=[1, ...])` raised under polars 2.0; thresholds are
+  now passed as Float64.
 
-- **Open contours are measured as polylines; `is_closed` is read.** The field
-  was written `True` and never read, so an open polyline was measured as the
-  ring its closing edge would make: the point (0, 10) was 7.07 from the L
-  (0,0)->(10,0)->(10,10) instead of 10. `is_closed = False` now makes a contour
-  an open polyline: perimeter, `point.distance_to_contour`,
-  `point.nearest_point_on_contour`, `hausdorff_distance`, `bounding_box`,
-  `simplify`, `convex_hull` and the point-wise transforms (`translate`,
-  `scale`, `flip`, `normalize`, `to_absolute`) measure or keep it as a line;
-  region functions — `area`, `centroid`, `is_convex`, `winding`,
-  `ensure_winding`, `contains_point`, `iou`, `dice`, `pairwise_iou`,
-  `correspond`, `label_reduce`, `point.signed_distance_to_contour`, and the
-  pipeline's `contour` source — refuse it, naming the row, instead of
-  silently closing it. `scale(origin="centroid")` refuses one (a polyline has
-  no centroid). An open contour with holes is an error; an unspecified
-  `is_closed` (absent, or null) reads as closed, as before. view-buffer models the
-  polyline as its own type (`Outline::Open`), so a region measure cannot be
-  handed one: every `.contour` accessor declares which it reads.
+### Performance
 
-- **`PreMatchedAdapter` refuses keys and columns it used to drop silently.**
-  With `class_col` omitted, every detection was re-keyed to the default class
-  while `image_meta` kept its own `class_id`, so the `(image_id, class_id)`
-  joins matched nothing and `lroc_auc` returned 0.0 for a perfect detector. A
-  `class_id` column on the detections or on `image_meta` now requires
-  `class_col`, and `class_col` requires `class_id` on `image_meta`. A named
-  `iou_col`, `det_idx_col`, `n_gts_col`, `weight_col`, `gt_label_col` or
-  `group_col` that is missing now raises, as the docstring said, instead of
-  falling back to its default (a misspelled `weight_col` left every weight at
-  1.0). Without `iou_col` the `iou` column is null rather than 0.0, and
-  `DetectionTable.at_iou_threshold` — so `mean_average_precision` — raises on
-  such a table: it compared the placeholder and turned every TP into an FP.
+- `.point` accessors are 12–43% faster with about 25–30% less peak memory under
+  polars 2.0.
 
-- **A sourceless `Pipeline()` no longer assumes it continues a buffer.**
-  `contours.pipe(Pipeline().simplify(2.0))` raised "expects contour input but
-  pipeline is currently in buffer domain" while `contours.simplify(2.0)`
-  worked: an unsourced plan started from a placeholder *buffer* state and
-  checked its first op against it, although nothing yet said what it follows.
-  Its first op now anchors it in the domain that op reads (a buffer whenever
-  the op reads one, so every buffer pipeline plans as before), and `.pipe()`
-  plans every op again from the real upstream node, so a continuation onto
-  the wrong domain is still refused there. `.pipe(Pipeline().op())` now plans
-  like `.op()` on the lazy node for every chainable op
-  (`test_a_sourceless_continuation_plans_like_the_lazy_method`).
+## [0.33.0] — 2026-10-06
+
+Weighted bootstrap intervals are corrected: they were too narrow when weights
+were estimated from the sample, and the new `weight_scheme=` says what the
+weights are. Requires Python >= 3.11.
+Upgrading from 0.32: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.33/).
+
+### Breaking changes
+
+- Python 3.11 or newer is required (was 3.10); wheels are tagged `cp311-abi3`.
+- Weighted bootstrap intervals now default to `weight_scheme="reestimate"`; pass
+  `weight_scheme="stratified"` for 0.32's draw. Unweighted intervals and point
+  estimates are unchanged.
+
+### Added
+
+- `weight_scheme=` on `bootstrap_ci`, `froc_auc_ci_lazy`, `lroc_auc_ci_lazy`,
+  `average_precision_ci_lazy` and `Report.ci`: `"reestimate"` (default),
+  `"stratified"` or `"fixed"` (known or continuous weights, which now get an
+  interval instead of null bounds); an unknown scheme raises.
+- `Report.ci` takes `weight_rtol=`; `"fixed"` raises if given `strata` or
+  `weight_rtol`.
+
+### Fixed
+
+- Weighted bootstrap intervals were too narrow: standard errors were 7–17% low
+  and 95% intervals covered 0.88–0.93.
+- A bootstrap replicate that drew no positive (or, for Mann-Whitney, no
+  negative) image was scored with a meaningless value; it now nulls its group's
+  bounds.
+- A weight-0 image no longer nulls its group's bounds.
+
+## [0.32.0] — 2026-10-03
+
+Detection evaluation in one call (`evaluate_detections`, `evaluate_heatmaps`,
+`evaluate_segmentation`), weighted precision-recall metrics, and bounded
+bootstrap memory. Several metric values were wrong and are now computed as
+documented: multi-class matching, AP over tied scores, and multi-class or
+grouped bootstrap draws. Requires polars >= 1.44.2.
+Upgrading from 0.31: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.32/).
+
+### Breaking changes
+
+- Requires `polars>=1.44.2` (was `>=1.43.2`).
+- Precision-recall metrics (`precision_recall_curve`, `average_precision`,
+  `mean_average_precision`, `precision_at_threshold`, `recall_at_threshold`,
+  `f1_at_threshold`, `confusion_at_threshold`) now use `image_metadata.weight`;
+  unit weights give the same values as before.
+- `ConfusionResult.precision`/`recall`/`f1` now read the weighted values.
+- All-points AP no longer over-counts score ties: a tied block mixing TPs and
+  FPs now scores lower (TP@0.9 then {TP, FP, FP}@0.5 against 2 GTs was 0.875,
+  now 0.75); untied results are unchanged.
+- The 11-point recall grid is `i * 0.1` (was `i / 10`), so a recall landing
+  exactly on 0.3, 0.6 or 0.7 compares as in the VOC devkit and COCO.
+- Bootstrap intervals now stratify on weight cells; a group with a weight cell
+  holding a single unit reports null `ci_lower`/`ci_upper`, and
+  `average_precision_ci_lazy` is now weighted.
+- `DetectionTable.to_per_image()` returns `max_score`, `top_is_tp` and
+  `best_tp_score`, and no `detections` list.
+- A failing mask-instance region check in `match_detections` is now a
+  `polars.exceptions.ComputeError` (was `ValueError`).
+
+### Added
+
+- One-call evaluation: `evaluate_detections(preds, gts, box_format=)` (COCO-style
+  by default, matching pycocotools to 1e-12 on mAP, AP50, AP75 and AR@100),
+  `evaluate_heatmaps(df, heatmap=, gt=)` (FROC and CPM), and
+  `evaluate_segmentation(df, pred=, target=)`.
+- `DetectionReport` (from the two detection evaluators) has `.summary`,
+  `.per_class`, `.per_threshold`, `.ci(metric, by=)`, `.matches(t)`,
+  `.pr_curve`, `.froc`, `.confusion` and `.table`.
+- `segmentation_measures(...)` gives Dice, IoU, ASSD, HD, HD95 and directed mean
+  distances per row, with `frame=`, `spacing=` and an explicit empty-mask
+  policy; `SegmentationReport.ci` bootstraps it.
+- `match_detections(predictions, ground_truth, ...)` builds a `DetectionTable`
+  from long object tables of boxes, polygons or instance masks; `group_objects`
+  reshapes them and applies `max_detections`.
+- `bbox_from_coords(coords, format=)` reads `"xyxy"`, `"xywh"` or `"cxcywh"`
+  boxes into `BBOX_SCHEMA`.
+- `.contour.single(label=)` returns each row's one contour; a set of any other
+  size fails the query naming the row's `label`.
+- `.contour.set_boundary_distances(other, sample_step=, frame=)` measures the
+  boundary distance between two contour sets, as MONAI does.
+- IoU sweeps: `BBoxMatcher(iou_threshold=[...])` and
+  `ContourMatcher(iou_threshold=[...])` match once per threshold, as COCO does,
+  and `DetectionTable.iou_thresholds` lists them. Evaluations that would pool
+  thresholds are refused.
+- `Statistic` objects (`AP`, `Recall`, `PrecisionAt`, `RecallAt`, `F1At`,
+  `FROCSensitivity`, `CPM`, `FROCAUC`, `LROCAUC`, `LROCSensitivity`,
+  `MeanOver`, `mean_ap()`) expose every detection metric as a grouped lazy
+  reduction via `.by_group(table, keys)` and `.value(table)`.
+- `bootstrap_ci(table, statistic, ...)` is one interval engine for any
+  `Statistic`; an mAP interval resamples images once across all classes.
+- `interpolation="101_point"` on `average_precision`, `mean_average_precision`
+  and `PrecisionRecallResult.auc`.
+- `group_by=` on `froc_sensitivity_at_fp`, `froc_summary_table` and
+  `lroc_sensitivity_at_fpf`.
+- Weighted PR metrics take `weight_agg=`; the PR curve gains
+  `cum_weighted_tp`/`cum_weighted_fp`, `PrecisionRecallResult` gains
+  `weighted_gts`, and `ConfusionResult` gains `weighted_tp`/`weighted_fp`/
+  `weighted_fn`.
+- Bootstrap intervals take `strata=` and `weight_rtol=` to control the weight
+  cells.
+
+### Changed
+
+- Bootstrap replicates are evaluated in batches of 50, so peak memory follows
+  the batch rather than `n_bootstrap`; bounds are bit for bit unchanged and
+  there is no new parameter.
+- Metrics run on Polars' streaming engine wherever it can; AP, mAP and other
+  reductions that must be reproducible are now exact and no longer vary between
+  runs or thread counts.
+
+### Fixed
+
+- Multi-class `BBoxMatcher` and `ContourMatcher` input duplicated every detection
+  once per class, corrupting per-class AP, mAP and FROC; images with no
+  predictions no longer leave a null-score row in a `BBoxMatcher` table.
+- `DetectionTable.to_per_image()`'s `top_is_tp` depended on row order when two
+  detections tied for the top score; the tie now goes to the lowest `det_idx`.
+- `.contour.boundary_distances(frame=)` spiked next to the frame (about 30 px
+  instead of 1 px), inflating GT-to-prediction mean, `hd` and `hd95`; distances
+  are now continuous at the edge.
+- Multi-class bootstrap replicates over-drew images that were positive for one
+  class and negative for another; single-class tables are unchanged.
+- `match_detections(images=...)` repeated an image listed twice; it now fails
+  the query on a repeated `image_id`.
+- Grouped bootstrap draws (for example `group_by="class_id"`) brought other
+  groups' rows into each replicate.
+
+### Performance
+
+- Bootstrap AP with 2000 images, 50k detections and 1000 replicates: peak
+  memory 4257 MB to 614 MB, and 20.4 s to 14.8 s.
+
+## [0.31.0] — 2026-10-03
+
+Open polylines become a first-class contour (`is_closed=False` is read), with
+boundary distances, coverage matching for line-shaped ground truth, closing a
+line along the image frame, and coordinate-list constructors. FROC/LROC curves
+are read past their end by one policy, null by default. Contour labelling and
+`label_reduce` region scans are orders of magnitude faster.
+Upgrading from 0.30: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.31/).
+
+### Breaking changes
+
+- `froc_auc(fp_range=...)` now gives a null AUC when `fp_range` reaches past the
+  curve; pass `extrapolate="flat"` for the previous value. LROC values are
+  unchanged.
+- `extract_contours(mode="tree")` is removed; it ran as `mode="all"`, so use
+  `mode="all"`.
+- Open contours (`is_closed=False`) are now measured as polylines instead of
+  rings, and region functions (`area`, `centroid`, `iou`, `contains_point`,
+  `correspond`, `label_reduce`, ...) refuse them, naming the row.
+- `PreMatchedAdapter` now raises on keys and columns it used to drop silently: a
+  `class_id` column on detections or `image_meta` requires `class_col`, and a
+  named but missing `iou_col`, `det_idx_col`, `n_gts_col`, `weight_col`,
+  `gt_label_col` or `group_col` raises.
+- Without `iou_col`, a `PreMatchedAdapter` table's `iou` is null (was 0.0), and
+  `DetectionTable.at_iou_threshold` (so `mean_average_precision`) raises on it.
+- A bootstrap replicate whose FROC/LROC curve stops short of the window now
+  nulls the bounds instead of scoring 0.0.
+- `ContourMatcher` with `score_col` and a heatmap prediction is now refused
+  instead of ignoring `score_col`.
+
+### Security
+
+- `allowed_roots` could be escaped with a `file://` URL naming a host, making
+  any local file readable through `.cv.read_bytes()`, the `file_path` source
+  and header-metadata reads; such URLs are now refused, and `file://` URLs are
+  percent-decoded.
+
+### Added
+
+- `extrapolate="none"|"flat"` on `froc_auc`, `froc_sensitivity_at_fp`,
+  `froc_summary_table`, `lroc_auc`, `lroc_sensitivity_at_fpf`,
+  `froc_auc_ci_lazy` and `lroc_auc_ci_lazy`.
+- `.contour.on_error("raise" | "null")` (also on `.point` and `.bbox`) nulls
+  rows a function refuses instead of failing the query; errors about the
+  operand column still raise.
+- `.contour.boundary_distances(other, sample_step=None, frame=...)` returns
+  `Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`; `frame` drops boundary
+  traced by the image edge rather than an annotation.
+- `.contour.correspond_by_coverage(other, tolerance, threshold=0.5, order=None,
+  sample_step=None)` pairs contours by boundary coverage, for line-shaped
+  targets.
+- `CORRESPONDENCE_SCHEMA` gains `duplicate: List(Boolean)`, flagging repeated
+  hits on an already-claimed target.
+- `.contour.close_along_border(width, height, arc="shortest", max_snap=2.0)`
+  closes an open line whose ends lie on the image frame.
+- `.contour.largest(k)` and the pipeline op `largest(k=1)` keep the `k` largest
+  contours by area.
+- `extract_contours(min_area_fraction=)` filters contours by area as a
+  fraction of the image size.
+- `point_from_coords`, `contour_from_coords` and `contour_set_from_coords` in
+  `polars_cv.geometry` build geometry from `[x, y]` or `[y, x]` pairs;
+  `.point.to_coords(order)` and `.contour.to_coords(order)` are the inverse.
+- `.point` accessors take point sets (`POINT_SET_SCHEMA`), returning one value
+  per point as a `List`.
+- `ContourMatcher(score_reduction=, score_region_mode=)` pass through to
+  `label_reduce` for scoring detections.
+- `ContourMatcher` parameters `iou_threshold`, `extraction_threshold`,
+  `min_contour_area`, `coverage_tolerance` and the new
+  `min_contour_area_fraction` accept Polars expressions per row.
+- `ContourMatcher` accepts contour or contour-set predictions in `pred_col`
+  scored by `score_col`, and line-shaped ground truth via `match_by="coverage"`
+  with `coverage_tolerance`; `duplicates="ignore"` drops repeated hits.
+- `DetectionTable.filter_images(ids | predicate)` keeps the named images and
+  their detections.
+- `.cv.width()`, `.height()`, `.channels()` and `.image_dtype()` take a `String`
+  column of paths, reading only each file's header; `.cv.image_info()` returns
+  `Struct{width, height, channels, dtype}`.
+- `froc_operating_range(table, group_by=...)` reports each curve's
+  `max_fp_per_image` and `max_sensitivity`.
+
+### Fixed
+
+- `ContourMatcher` now fails the query on a null score for contour predictions,
+  which previously made GT count as missed and the detection as a false
+  positive.
+- `close_along_border` refuses a NaN or negative `max_snap` and a non-finite
+  frame size.
+- `boundary_distances` and `correspond_by_coverage` with `sample_step` looped
+  forever on edges between vertices about 1e308 apart.
+- `point_from_coords` and `contour_from_coords` refuse a non-finite coordinate,
+  naming the row.
+- Every `.point`/`.contour`/`.bbox` accessor failed with "geometry row 1 out of
+  bounds" when an operand had one row; one-row operands now broadcast.
+- `contours.pipe(Pipeline().simplify(2.0))` raised "expects contour input but
+  pipeline is currently in buffer domain"; a sourceless `Pipeline()` now takes
+  the domain of its first op.
+- The streaming guide wrongly claimed the plugin stays within
+  `POLARS_MAX_THREADS`; up to about twice the setting can be runnable.
+
+### Performance
+
+- `extract_contours` labels runs instead of pixels: finding the borders of a
+  3328 x 2560 blob went from about 140 ms to under 1 ms.
+- `label_reduce` with `region_mode="interior"`/`"boundary"` scans by scanline: a
+  4,096-vertex disc of radius 1000 went from about 11 s to about 23 ms.
 
 ## [0.30.0] — 2026-10-02
 
 Every op now computes and stores in the dtype it declares, following NumPy and
 OpenCV where they define an answer: colour ranges per dtype, NumPy promotion,
 IEEE division, NaN propagation, NumPy histogram binning and pixel-edge
-contours. Kernels are substantially faster across the board. Upgrading from
-0.29: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.30/).
+contours. Kernels are substantially faster across the board.
+Upgrading from 0.29: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.30/).
 
 ### Breaking changes
 
-- **Colour conversions use each dtype's value range, as OpenCV does.** They
-  assumed 0–255 for every dtype. Now:
-  - **floats are in [0, 1]**: HSV gives H in degrees and S, V in [0, 1];
-    YCbCr centres chroma at 0.5; Lab reads RGB in [0, 1], and converting
-    from Lab gives `f32` RGB in [0, 1] (it was 0–255). A carried alpha is
-    rescaled with the image (u8 RGBA -> Lab gives alpha 1.0, not 255.0).
-    Scale 0–255 float images by 1/255 first;
-  - **u16, u32 and u64 span 0..MAX**: YCbCr chroma is centred at
-    (MAX + 1) / 2 (a u16 gray pixel had Cb = Cr = 128), HSV's S and V span
-    0..MAX with the hue over the whole range for one turn (S was scaled to
-    255; OpenCV has no HSV above 8 bits, so this extends its 8-bit
-    `HSV_FULL` scheme and is polars-cv's own), and Lab reads RGB / MAX (u16
-    mid-gray had L = 5393);
-  - **signed integers are refused** by `to_hsv`, `to_lab`, `to_ycbcr` and
-    `convert_color` to or from those spaces, which have no signed range
-    (RGB, BGR and gray conversions accept every dtype).
-  u8 keeps OpenCV's 8-bit conventions; its values move by at most one unit
-  where the math, now f64 throughout, rounds a tie differently.
-
-- **Aspect-preserving resizes derive sizes exactly, and never as 0.**
-  `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`,
-  `resize_scale` and `letterbox` computed the derived size in f32, which
-  landed some exact halves just below .5: `resize_to_height(21)` of a 14x31
-  image gave width 46 where 7.5 and 1.5 round up. They also had no floor, so
-  `resize_max(1)` of a 3x1 image was 1x0, `resize_scale(0.25)` of a 1x1
-  image 0x0, and `letterbox` of a 1x3 image into 1x1 fitted the content to
-  zero rows and returned only padding. A derived size is now `n * t / d`
-  rounded half up in exact integer arithmetic, and at least 1, at plan time
-  and at execution (one rule, `shape_rule::scaled_size`, which letterbox's
-  fit also reads). Sizes change only for those inputs.
-
-- **`relu`, `clamp_min` and `clamp_max` propagate NaN.** They used
-  `f32::max`/`min`, which return the other operand for a NaN, so `relu(NaN)`
-  was 0 and `clamp_min(NaN, 0.5)` was 0.5, while `clamp`, `abs`, `sign` and
-  `round` propagated it. NaN in now gives NaN out from every scalar op, as in
-  NumPy (`np.maximum`) and PyTorch. Replace NaN first (`fill_nan`) where a
-  bound was wanted.
-
-- **The ordering reductions propagate NaN too.** `reduce_max`/`reduce_min`
-  (whole-buffer and per-axis) return NaN when any input is NaN, and
-  `reduce_argmax`/`reduce_argmin` return the first NaN's index, as in NumPy.
-  They used to compare with `>`/`<`, so whether a NaN survived depended on
-  its position. `reduce_percentile` of input that contains a NaN is NaN.
-  Before, it sorted with a comparator that is not a total order, so the
-  engine panicked ("comparison function does not correctly implement a
-  total order"), which the deep parity chain hunt hit through `sqrt`.
-
-- **Every op that orders values propagates NaN, from either side.** Binary
-  `maximum`/`minimum` gave `maximum(NaN, 1) = 1` but `maximum(1, NaN) = NaN`;
-  `dilate`/`erode` kept a NaN centre but skipped a NaN neighbour;
-  `morphology_gradient` turned NaN into 0; MinMax `normalize` skipped NaN
-  (ZScore propagated it); HSV's `max(r, g, b)` skipped a NaN channel. They,
-  the scalar clamps and the reductions above now read one rule,
-  `ops::util::displaces` (`maximum`/`minimum`): a NaN anywhere is the result.
-
-- **Non-finite geometry is refused, not warped.** A NaN or infinite
-  `rotate_and_scale` angle, centre or scale, `rotate` angle or `warp_affine`
-  coefficient passed the singularity check (`NaN < eps` is false) and warped
-  every pixel to the border; a NaN, infinite, zero or negative
-  `resize_scale` factor became a 1-pixel or `usize::MAX` axis. Each is now
-  refused — at plan time for a literal, per row for a column — by one matrix
-  rule, `AffineParams::matrix_is_invertible` (finite and non-singular), and
-  a finite-positive factor rule.
-
-- **`histogram` follows NumPy for NaN.** A NaN pixel is in no bin. It is not
-  counted, `normalized`/`buckets` shares sum to 1 over what was counted, and
-  its `quantized` index is one past the last bin (`np.digitize`). Before, it
-  was counted in bin 0 with equal-width bins and panicked the engine with
-  explicit edges. An auto-detected range over NaN or infinity, or a supplied
-  `range` that is not finite, now raises "... is not finite" as NumPy does;
-  before, auto range silently skipped NaN. Explicit edges must increase
-  monotonically, checked at plan time.
-
-- **`histogram` drops values outside its bins, as NumPy does.** A value
-  below the first edge or above the last — of an explicit `range` or of
-  explicit edges — was clamped into the end bin, so `range=(50, 200)` counted
-  every pixel. It is now in no bin, like NaN: not counted, and its
-  `quantized` index is one past the last bin. Pass infinite outer edges to
-  keep everything (`bins=[-inf, 50, 200, inf]`, see *Added*). Tied edges
-  follow `np.histogram` (`[0, 1, 1, 2]` puts 1 in the last bin left-closed,
-  the first right-closed); a binary search over the tie used to pick either.
-  A `range` whose min exceeds its max is an error. An auto-detected range
-  still holds every pixel: its ends widen outward where a 64-bit integer
-  rounds inward to f64.
-
-- **NaN propagates through `label_reduce`, and geometry refuses non-finite
-  coordinates.** `label_reduce(reduction="max")` folded with `f64::max`,
-  which drops a NaN, so a region holding a NaN pixel scored its largest
-  number; it now scores NaN, as `mean` and `sum` already did (the
-  whole-image statistics `reduce_sum`/`mean`/`std`, `normalize` and
-  `adjust_contrast` already propagated). A contour, point or bbox with a NaN
-  or infinite coordinate is now an error naming the row, as a null
-  coordinate already was, in every geometry function, the `contour` source
-  and `label_reduce`: a NaN vertex panicked the plugin in `convex_hull`,
-  `iou`, `dice` and `simplify`, made `hausdorff_distance` `1.8e308`, and
-  left the bbox, winding and convexity finite but wrong.
-
-- **Mixed dtypes promote as NumPy's do, and 32/64-bit integers promote to
-  f64.** Two operands of different dtypes met in "the larger integer", which
-  lost values: `u8` 200 plus an `i8` came back `i8`, `u64` with `i64` was
-  `i64`, `u32` with `i16` was `u32`, and an `i64` with an `f32` was computed
-  in `f32`. They now meet in NumPy's `result_type` (`DType::promote`, derived
-  from the lossless-containment rule): `u8`+`i8` is `i16`, `u32`+`f32` is
-  `f64`, and `u64` with a signed integer is `f64` — where a bitwise op is
-  refused, there being no common integer. The float-promoting ops (`scale`,
-  `sqrt`, `divide`, `convolve2d`, gamma, the scalar math family, ...) give
-  `f64` for `u32`/`i32`/`u64`/`i64` input, computed from the exact value; they
-  gave `f32`, reading each pixel as f32 (`2**24 + 1` became `2**24`), and
-  convolve and divide computed in f64 only to store f32. 8/16-bit integers
-  still give `f32`. One rule decides both what an op computes in and what it
-  stores (`OutputDTypeRule::PromoteToFloat` resolves to
-  `DType::accumulator`). Mixed operands are converted a block at a time
-  rather than each copied whole.
-
-- **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
-  exports a sliced `Array` column that has nulls across the plugin FFI with
-  its offset applied twice (the `FixedSizeListArray` export reported the
-  validity's offset while its values were already sliced), so the plugin's
-  import panicked: an `array` source over two chunks, or one chunk split
-  into streaming morsels, failed with "the offset of the new Buffer cannot
-  exceed the existing length". Fixed in polars itself; 1.43.0 and 1.43.1 are
-  yanked. The floor's fast suite was run at polars 1.43.2 / numpy 2.0.2.
-
-- **`divide` is IEEE true division; `ratio` is removed.** `divide` already
-  promoted integer operands to float (`f32`, or `f64` with an `f64` operand)
-  and divided, but a zero divisor gave `0`, even for floats, and its
-  docstring promised integer division for u8/u16. A zero divisor now follows
-  IEEE 754, as NumPy's `true_divide`: `x / 0` is `inf` (`-inf` for negative
-  `x`) and `0 / 0` is `nan`. Write `a.divide(b)` and replace non-finite
-  values afterwards if `0` was wanted. `ratio` was documented as `(a/b)`
-  scaled to the dtype's range but executed exactly as `divide`; it is
-  deleted rather than kept as a second name. Use `divide` (and `.scale(255)`
-  for the documented scaling).
-
-- **`extract_contours` traces along pixel edges, not pixel centres.** Pixel
-  `(x, y)` is the unit square `[x, x+1] x [y, y+1]`, and every extracted
-  outline runs along those squares' edges, so it bounds exactly its region's
-  pixels. The centre-traced outline sat half a pixel inside its region:
-  - A `w x h` blob came back bounding `(w-1) x (h-1)`; it now comes back
-    `w x h`.
-  - A single pixel came back as a one-point contour and a `1 x n` line as a
-    segment, both with area 0; they are now the unit square (area 1) and a
-    `1 x n` rectangle.
-  - `mask -> extract_contours -> rasterize` eroded the mask by a pixel per
-    round trip; it now returns the mask unchanged.
-
-  Vertex coordinates, `area`, `perimeter`, `bounding_box` and IoU of
-  extracted contours all change accordingly, and so does `min_area`, which
-  now filters on the pixel count. Connectivity is unchanged: regions are
-  8-connected, so pixels touching only at a corner are one region, whose
-  outline passes through that corner twice. `mode="external"` is now decided
-  from the region labelling rather than a quadratic point-in-polygon scan.
+- Colour conversions use each dtype's value range: floats are in [0, 1] (Lab to
+  RGB now gives `f32` in [0, 1], so scale 0-255 float images by 1/255 first),
+  and u16/u32/u64 span 0..MAX for YCbCr, HSV and Lab.
+- `to_hsv`, `to_lab`, `to_ycbcr` and `convert_color` to or from those spaces
+  refuse signed integer dtypes; u8 values move by at most one unit.
+- Aspect-preserving resizes (`resize_to_height`, `resize_to_width`,
+  `resize_max`, `resize_min`, `resize_scale`, `letterbox`) derive sizes by exact
+  integer arithmetic, rounded half up and never below 1; sizes change only for
+  inputs that previously landed just below .5 or at 0.
+- `relu`, `clamp_min` and `clamp_max` propagate NaN, as NumPy and PyTorch do;
+  use `fill_nan` first where a bound was wanted.
+- `reduce_max`/`reduce_min` return NaN if any input is NaN, `reduce_argmax`/
+  `reduce_argmin` return the first NaN's index, and `reduce_percentile` of NaN
+  input is NaN.
+- Binary `maximum`/`minimum`, `dilate`/`erode`, `morphology_gradient`, MinMax
+  `normalize` and HSV conversion now propagate a NaN from either side.
+- Non-finite geometry is refused instead of warped: NaN or infinite
+  `rotate_and_scale`, `rotate` and `warp_affine` parameters, and a NaN,
+  infinite, zero or negative `resize_scale` factor.
+- `histogram` follows NumPy for NaN: a NaN pixel is in no bin and its
+  `quantized` index is one past the last bin, and a non-finite auto or supplied
+  `range` raises.
+- `histogram` drops values outside its edges or `range` instead of clamping them
+  into the end bins; use infinite outer edges (`bins=[-inf, 50, 200, inf]`) to
+  keep everything.
+- `histogram` raises on a `range` whose min exceeds its max, and checks that
+  explicit edges increase at plan time.
+- `label_reduce(reduction="max")` propagates NaN, and any geometry with a NaN or
+  infinite coordinate is an error naming the row (it panicked or gave wrong
+  results before).
+- Mixed dtypes promote as NumPy's `result_type` does: `u8`+`i8` is `i16`,
+  `u32`+`f32` is `f64`, and `u64` with a signed integer is `f64` (bitwise ops
+  refuse it).
+- Float-promoting ops (`scale`, `sqrt`, `divide`, `convolve2d`, gamma, the
+  scalar math family) now give `f64` for `u32`/`i32`/`u64`/`i64` input,
+  computed exactly; 8/16-bit integers still give `f32`.
+- Requires `polars>=1.43.2` (was `>=1.41.1`); older polars made the plugin panic
+  on a sliced `Array` column with nulls.
+- `divide` follows IEEE 754 for a zero divisor (`x / 0` is `inf`, `0 / 0` is
+  `nan`); it gave 0 before. Replace non-finite values afterwards if 0 was
+  wanted.
+- `ratio` is removed; use `divide` (and `.scale(255)` for the documented
+  scaling).
+- `extract_contours` traces along pixel edges: a `w x h` blob now bounds `w x h`
+  (was `(w-1) x (h-1)`), a single pixel is a unit square of area 1, and
+  `min_area` filters on pixel count. Vertices, `area`, `perimeter`,
+  `bounding_box` and IoU change accordingly.
+- Detection metrics move for any `ContourMatcher` evaluation: IoU against ground
+  truth rises (most for small lesions), some former misses become true
+  positives, and one-pixel-thick detections now count as false positives.
+- `ContourMatcher(min_contour_area=)` defaults to `0.0` (was `1.0`), and
+  `gt_min_contour_area=` defaults to `1.0` and no longer follows
+  `min_contour_area` (`None` is no longer accepted).
+- `normalize(method="zscore")` computes mean and standard deviation exactly, so
+  values can differ from 0.29.0 in the last bits.
 
 ### Added
 
-- **Open-ended histogram bins.** Explicit edges may start at `-inf` and end
-  at `inf`, as polars' `hist` breaks do: `histogram(bins=[-math.inf, 0,
-  math.inf])` splits every value at 0. The wire carries an infinite edge as
-  `"inf"`/`"-inf"` (JSON has no infinity), through a `bound` catalogue type
-  (`naming::Bound`) that only histogram edges have, so no other float
-  parameter can receive an infinity it does not define.
-
-### Performance
-
-- **Broadcasting two-buffer ops are ~29x faster.** An operand broadcast to
-  the other's shape (the `[H, W, 1]` mask `apply_mask` blends into an
-  `[H, W, 3]` image, or any binary op over differently shaped inputs) was
-  read by decoding every output element's coordinates afresh, allocating a
-  `Vec` and dividing once per axis per element. It is now read by stepping
-  through the output and carrying the source index along: 1024x1024 RGB
-  under a mask drops from ~104 ms to ~3.6 ms. Results are unchanged.
-
-- **Kernels use AVX2 on CPUs that have it, whatever the wheel was built for.**
-  The published wheels target the x86-64 baseline (SSE2), where much of the
-  engine's arithmetic could not vectorise. One runtime dispatch mechanism now
-  compiles a kernel's whole body a second time with AVX2 and picks it per
-  call. Only AVX2 is enabled, never FMA, so the output is byte-identical on
-  every CPU. Blur (the one kernel that already dispatched) moved onto it.
-- **Float → integer casts are ~2x faster on the wheels.** `cast` and a fused
-  scalar chain's integer output share one conversion rule and one dispatched
-  loop; on SSE2 rounding was a `roundf` call per element (f32 → u8 at 1024²:
-  9.1 → 5.1 ms).
-- **u8 `grayscale` is 5–10x faster and u8 `threshold` 1.4–3x.** Both are
-  vectorised kernels over the image's rows. A contiguous, cropped or
-  vertically flipped input is read where it lies instead of being copied
-  first. Non-u8 grayscale is 1.4–2.9x faster.
-- **Per-value ops run through one engine that picks how per call.**
-  `invert`, `adjust_gamma`, `adjust_contrast`, `normalize`, `scale`, `clamp`,
-  the scalar math ops and fused chains of them share one element-wise engine,
-  and results are unchanged. Work that cannot vectorise (a `powf` per pixel,
-  as in gamma) or that differs per channel (preset `normalize`) runs once per
-  possible value of an 8-bit input (16-bit once an image has 65,536 values per
-  table), and each pixel becomes a table read: u8 gamma is 22–27x faster and
-  u8 ImageNet-style `normalize` 5–12x. An integer map such as `invert` runs in
-  integer arithmetic (1.3–1.9x). Everything else streams vectorised, in
-  cache-sized blocks for an integer result, with no image-sized f32
-  intermediate (u8 `adjust_contrast` 2–5.5x, z-score 2.2–4x, a fused u8 → u8
-  chain 1.8–2.5x). An op whose input nothing else reads writes it in place
-  when the output dtype is the input's (u8 `invert`, u8 → u8 chains, u8
-  `threshold`).
-- **Converting floats to 8/16-bit integers vectorises.** Rounding half away
-  from zero and saturating is now written so it compiles to vector
-  instructions, with identical results: f32 → u8 `cast` is another 1.6–2.3x
-  faster on top of the previous entry.
-- **Materialising a strided view copies runs, not elements.** A crop, flip or
-  transpose used to be copied a few bytes at a time with an N-d offset
-  recomputed per copy. One walk now coalesces the layout into the longest
-  packed runs it has (a whole buffer, a row, a pixel) and copies each run
-  once. This covers `to_contiguous` and every list/array sink. A `cast` of a
-  view converts straight from those runs, with no packed copy first, and so
-  does a per-value op's read of a strided view. At 1024² RGB u8 on the wheels,
-  materialising a vertical flip is ~22x faster, a horizontal flip ~5x, a
-  transpose ~5.5x, grayscale of a flipped image ~4.7x, crop then resize ~4.5x
-  and a cast of a flipped view ~3.4x.
-- **Resize reads a crop or a vertical flip where it lies.** It used to pack
-  any view into a new image first. Rows packed within themselves, whatever
-  their spacing or order, now go to the resizer as they are, so the output is
-  the only image-sized allocation. At 1024² RGB u8 → 224² on the wheels, crop
-  then resize is 1.3x faster and a vertical flip then resize 1.5x. Output is
-  byte-identical. Other layouts (a transpose, a horizontal flip) are still
-  packed first, as before.
-- **`grayscale` of a crop or vertical flip is no longer copied first.** The
-  u8 grayscale entry above already said so, but the planner packed such a
-  view before the kernel could read it. u8 grayscale after a vertical flip is
-  1.65x faster at 1024² on the wheels (CR-57).
-- **Cheap rows cost about half as much.** A buffer's shape and strides used
-  to live on the heap, so copying a buffer or asking whether it was
-  contiguous allocated, several times per row: `invert` on an 8×8 image made
-  27 allocations per row and spent more than half its time in the
-  allocator. Layouts of up to four dimensions are now stored inline, a
-  cached plan is replayed without copying it, and row results are no longer
-  gathered into one call-sized vector before the column is built. `invert`
-  on 8×8 rows is 1.3x faster eager and 1.4x streaming (CR-58).
-- **The plugin allocates through polars' allocator.** It used the system
-  `malloc`, which gave a call's freed row buffers back to the OS for the next
-  call to fault in again. It now shares polars' allocator (jemalloc on
-  Linux), as pyo3-polars intends: 64×64 pipelines are 1.15–1.66x faster, a
-  repeated large `blob` sink 2x faster, and peak memory ~10% higher (CR-60).
-- **`erode`/`dilate` with `iterations` and `blur` are faster**, with
-  identical output: integer images erode or dilate `n` times in one wider
-  pass (1.1–1.7x for 3–4 iterations; float images keep the passes, which
-  NaN and signed zeros depend on), and blur converts its input a row at a
-  time instead of copying the whole image to f32 first (1.1–1.3x).
-- **Rotation and `warp_affine` are 1.4–2.2x faster**, with bit-identical
-  output: the warp takes a bounds-check-free path for pixels whose
-  neighbours are all inside the image and is compiled per channel count and
-  for AVX2. A rotation by 0° (or 360°) now returns its input instead of
-  warping it.
-- **`List` columns are read in place.** A `list` source row whose values
-  are already the declared dtype is now a view of the column, as an `Array`
-  row already was, instead of a per-row copy through several intermediate
-  Series: 3.6x faster for 64×64 u8 rows, 2x for flat f32 rows, and a row of
-  another dtype is converted in one pass (1.5x). Raw and blob rows are read
-  in place whenever they are aligned for their own dtype, rather than only
-  at 8-byte boundaries.
-- **Every per-value op, `threshold` and `grayscale` read any view where it
-  lies.** Whether a crop, flip or transpose was copied first used to depend
-  on the op, the dtype and which strategy ran it: u8 `invert` or `gamma` of
-  a horizontal flip packed it, `normalize` and `adjust_contrast` were always
-  packed by the planner, and grayscale read a crop in place for u8 but not
-  for u16. One traversal now runs all of them, reading a view in the runs its
-  layout has and writing into place when nothing else holds the buffer. The
-  output is the only image-sized allocation, and results are unchanged. On
-  the wheels: per-value ops on a flipped or transposed view 1.0–1.2x, non-u8
-  grayscale 1.5–2.1x, u8 preset `normalize` 1.5–1.9x, u8 `adjust_contrast`
-  1.1–1.5x, an f32 scalar chain written in place 1.1–2x (CR-64).
-- **The half-precision tensor sink is 3–6x faster and runs in parallel.**
-  `sink("numpy"|"torch", dtype="f16")` converted every row one element at a
-  time after all rows were computed, on one thread. Each row is now
-  converted on its own thread, in one pass with the CPU's F16C instructions
-  when it has them. The bytes are unchanged (CR-65).
-
-### Changed
-
-- **`ContourMatcher(min_contour_area=)` defaults to `0.0`**, down from `1.0`.
-  The `1.0` default dates from the boundary tracer that collapsed regions
-  into degenerate walks. Since the smallest extracted region now has area 1,
-  both values keep every region; `0.0` says so directly.
-- **`ContourMatcher(gt_min_contour_area=)` defaults to `1.0`** and no longer
-  follows `min_contour_area` (`None` is no longer accepted). A caller who set
-  only `min_contour_area` now gets `1.0` for ground truth; pass
-  `gt_min_contour_area` explicitly to change it.
-- **Detection metrics move** for any `ContourMatcher` evaluation. Regions
-  are measured on their full pixel extent, so IoU against ground truth rises,
-  most for small lesions. Under the default `iou_threshold` some former
-  misses become true positives, and one-pixel-thick detections now count as
-  false positives.
-- **`source("list", require_contiguous=True)` accepts rectangular `List`
-  rows.** It refused every `List` row, although it documents refusing only
-  jagged ones; rectangular rows are now read in place. A row that would need
-  converting to the declared dtype is still refused, as for `array`.
-- **`normalize(method="zscore")` computes its mean and standard deviation
-  exactly.** They used to be running f32 sums, which drift at image sizes;
-  8/16-bit images now use exact integer sums and other dtypes f64 sums. The
-  normalized values can differ from 0.29.0 in the last bits.
-
-### Internal
-
-- One declaration that 2- and 4-channel images are gray + alpha and RGBA
-  (`ops::color::has_alpha`), read by the resamplers' premultiply (fir's is
-  now set from it explicitly rather than by its pixel-type default), the
-  shape rule's carried alpha, grayscale and the colour conversions; a
-  structural guard (`test_alpha_authority.py`) refuses a restated channel
-  test.
-- tests: the parity generator draws NaN/infinity content for float images,
-  64-bit integers beyond 2**53, and sweeps every op on empty images
-  (`invariance/test_parity_empty.py`: refused or processed, never a panic).
-  What it found is fixed above; the references it showed to be inexact for
-  64-bit integers (threshold, blend, grayscale's bound) now compare exactly,
-  the YCbCr reference expands its chroma so an infinite channel gives its
-  limit, and the morphology ordering law skips NaN positions.
-- tests (review follow-ups): the dtype sweep fails an op its contract admits
-  on no swept layout (it had never swept `reshape`, whose sample fitted no
-  layout); `rotate_and_scale`'s lowering and the binary float ops are
-  checked against independent references (geometry; f64 rounded once and
-  exact integers), not restatements of the kernel; the parity harness keys
-  the quarter-turn rule on `rotate` itself and keeps literal-only list forms
-  (`histogram` edges) literal on every parameter axis; the u8 resample bound
-  against Pillow is 2 for every filter, as two correct fixed-point
-  resamplers round to opposite sides of the exact value.
-- tests: a generative parity suite, `tests/parity/` (Hypothesis). Every
-  chainable op runs against an independent reference (NumPy, OpenCV, Pillow,
-  SciPy) over drawn dtypes, sizes, channel counts, pixel content, null rows,
-  mixed-size rows, sources and engines, with per-row expression arguments.
-  Random chains and two-branch graphs are checked step by step, each step
-  against its reference on the engine's own previous output, and end to end
-  with the error bound carried through each op's gain. The same case must
-  agree byte for byte across every source, sink, engine, parameter style
-  (literal, `pl.col`, `pl.lit`, computed), composition (one pipeline,
-  `.pipe()`, aliased prefixes, blob-materialized steps), optimizer setting
-  (all, none, and each registered pass alone and removed) and chunking. Algebraic laws cover inverses, commutation, resampling
-  identities, morphology ordering and the lossless contour round trip.
-  Ratchets hold its tables to the op, I/O and dtype catalogues. Each property
-  runs a small derandomized budget per push and a 25x randomized one in the
-  weekly slow lane.
-- tests: divergences the suite found are registered in
-  `tests/parity/framework/known.py`, each pinning the exception and message
-  its repro fails with (`known.still_reproduces`), so a repro broken for
-  another reason no longer reads as the defect. Every divergence the suite
-  found has since been fixed (see *Fixed* and *Breaking changes*) and its
-  entry deleted; the registry is empty.
-- tests: the parity suite's binary ops are drawn on every dtype their
-  contract admits (`BinarySpec` splits `accepts` from `ref_accepts`, as
-  `OpSpec` does); add/subtract/multiply/blend were drawn on u8, u16 and floats
-  only, which is how the claim that they were exact on wide integers went
-  unchecked.
-- tests: `tests/property/` is folded into `tests/parity/laws/`. The
-  `TestResizeScaleReference`/`TestAspectRatioResizeReference` classes in
-  `test_resize_enhancements.py` are removed: they resized with Pillow and
-  asserted Pillow's output size without running polars-cv. The parity suite's
-  resize entries compare polars-cv's pixels with Pillow's.
-- view-buffer: `ViewBuffer::try_apply_fused_kernel_inplace` is removed. Whether
-  a kernel may write its input is decided in one place,
-  `ViewBuffer::unique_contiguous_mut`, which the element-wise engine and the
-  u8 threshold ask; `apply_fused_kernel` remains and never writes `&self`.
-- view-buffer: one walk over a view's memory, `core::strided::Walk`, replaces
-  the packing loop in `copy_elements_into`, the element-wise engine's strided
-  f32 read and grayscale's per-pixel strided fallback (a non-dense layout is
-  now packed, then takes the dense kernel).
-- view-buffer: the affine warp lives in `execution/warp.rs`, and M5's
-  `CastFrom<f64>` for 8/16-bit targets is `round().clamp() as T` (the same
-  values as before, in a form the compiler vectorises across a pixel's
-  channels).
-- view-buffer: `Layout` and `LayoutFacts` store shape and strides as
-  `core::layout::{Dims, Strides}` (inline up to rank 4), and the constructors
-  (`from_vec_with_shape`, `reshape`, `from_polars_buffer*`, `new_contiguous`)
-  take `impl Into<Dims>`, so existing `Vec` arguments still work.
-  `ExecutionPlan::execute_steps` replays borrowed steps.
-- view-buffer: the resizes (`resize`, `resize_scale`, `resize_to_*`,
-  `resize_max`/`min`, `letterbox`) and `grayscale` declare
-  `MemoryEffect::StridePreserving`,
-  so the planner no longer inserts a `MaterializeContiguous` before them. They
-  read their input through `interop::fir::FirViewAdapter`, the
-  `ExternalLayout::FastImageResize` adapter, which accepts any layout with
-  packed rows (`LayoutFacts::is_dense_rows`), and one generic
-  `resize_pixels::<P>` replaces the u8/u16/f32 copies of the resize kernel.
-- view-buffer: `core::map` is the one traversal of a per-value
-  (`ElementMap`) or per-pixel (`PixelMap`) kernel. The element-wise engine's
-  strategies, `cast`, `threshold`, `grayscale` and `to_f16_bits` are maps;
-  their per-kernel in-place / into / pack code, `map_pixel_rows` and the
-  typed threshold and grayscale kernels are deleted. The engine's f32 "pass"
-  strategy is merged into "blocked". `normalize` and `adjust_contrast`
-  declare `MemoryEffect::StridePreserving`. `Walk::for_each_run` takes a
-  `RunSink` and a grain (runs never split a pixel), and `clamp_for_dtype` is
-  test-only (the warp and blur oracles).
-- view-buffer: `ViewBuffer::to_f16_bits` returns a buffer's elements as
-  IEEE-754 half-precision bit patterns (a `U16` buffer); `half` is a
-  view-buffer dependency. polars-cv's `NumpyRowOutput::from_buffer_f16` is
-  replaced by `from_f16_bits`.
+- `histogram(bins=[-math.inf, 0, math.inf])`: explicit edges may start at `-inf`
+  and end at `inf`.
+- `source("list", require_contiguous=True)` accepts rectangular `List` rows; it
+  refused every `List` row before.
 
 ### Fixed
 
-- **An empty image is refused cleanly, not a panic.** `reduce_argmax`/
-  `reduce_argmin` over an empty axis panicked the engine, and `pad` with
-  `mode="edge"`, `"reflect"` or `"symmetric"` panicked extending an empty
-  axis; both are now refused by their contracts, as NumPy refuses them (padding
-  only the *other* axis of an empty image gives an empty image, as NumPy's), as
-  are `reduce_max`/`min`/`percentile` over nothing (`sum`, `mean` and `std`
-  stay defined). An `Array` column with a zero-size dimension is refused at
-  planning, naming the column: polars' FFI import of one sets its length to 0
-  and then slices it to the real row count, which panicked the plugin.
-- **`convert_color(rgb -> gray)` is `grayscale()`.** BT.601 was written out
-  in five places, and `convert_color` computed it in f32 for i8, u16, i16 and
-  f32 where `grayscale` computes in f64 and rounds once, so the two
-  disagreed (f32 in the last bit). Both now run one luma
-  (`ops::color::Luma`), as does the YCbCr encoder.
-- **Histogram edges meet integer pixels exactly.** A u64/i64 pixel was
-  compared with an edge through f64, so `2**53 + 3` landed in the bin above
-  the edge `2**53 + 4`. Histogram binning now reads the threshold's exact
-  integer cut (`core::cut`, the one pixel-against-boundary comparison).
-- **Resizing an empty image is refused, not a panic.** An aspect-preserving
-  resize (`resize(height=…)`, `resize_max`, `resize_min`, `letterbox`) of an
-  image with a zero height or width divided by it while deriving the other
-  side and panicked the engine. Every resampling op now refuses an empty
-  image in its contract (at plan time when the size is known, per row
-  otherwise), and the shape rule has no output for one.
-- **`ViewBuffer::reshape` refuses a strided view in every build.** The check
-  was a `debug_assert!` in the runner, so a direct caller in a release build
-  got elements in memory order rather than view order.
+- Empty images are refused cleanly instead of panicking: `reduce_argmax`/
+  `reduce_argmin` over an empty axis, `pad` with `mode="edge"`, `"reflect"` or
+  `"symmetric"`, `reduce_max`/`min`/`percentile` over nothing, aspect-preserving
+  resizes, and an `Array` column with a zero-size dimension.
+- `convert_color(rgb -> gray)` disagreed with `grayscale()` in the last bit for
+  some dtypes; both now use one luma.
+- Histogram edges now meet integer pixels exactly (u64/i64 values above 2**53
+  landed in the wrong bin), and a value on a bin edge is counted in the bin the
+  edges give.
+- `ViewBuffer::reshape` accepted a strided view in release builds.
+- 8-bit HSV hue could round to 180; it now wraps to 0 as in OpenCV.
+- A gray + alpha image now round-trips through the `tiff` sink as two channels.
+- The `scalar_fusion` pass changed an integer chain's result (u16
+  `invert().cast("u8")` of 1000 was 255 fused and 23 unfused); every pass is
+  now byte-identical on and off.
+- A blob or raw column sunk to `numpy`/`ndarray`/`torch` returned row 0's
+  pixels for every row; every row is now returned.
+- `crop(top=1).channel_select(0)` and other `reshape`/`channel_select` after a
+  crop with an offset read the uncropped rows.
+- `reshape` after `flip`, `transpose`, quarter `rotate` or `crop` failed with
+  "cannot reshape a non-contiguous view"; it now copies first, as NumPy does.
+- `channel_swap`, `channel_merge`, RGB/BGR, gray to RGB and
+  `morphology_gradient` panicked or rounded values on dtypes other than u8; they
+  are now exact on every dtype.
+- Resizing, blurring and `rgb->gray` lost precision on 32/64-bit integer and
+  f64 images (u32 16777217 became 16777216); they are now exact, and nearest
+  resampling is an exact gather.
+- Two-buffer ops (`add`, `subtract`, `multiply`, `blend`, `maximum`, `minimum`,
+  bitwise) were computed in f32 for most dtypes (u32 `16777219 ^ 16777221` gave
+  0, not 6), and `blend` was a plain saturating multiply on integers; they are
+  now exact, with `blend` normalized as `round(a*b / MAX)`.
+- Colour conversions silently misread a channel count they cannot handle (such
+  as `to_bgr` of a 5-channel image); they now accept exactly the space's
+  channels or those plus alpha.
+- `convolve2d` (and `sobel`, `laplacian`, `sharpen`) on f64 planned f64 but
+  executed f32 and failed; it now returns f64.
+- A literal float parameter could land an ulp away from the same value given as
+  an expression (visible in `warp_affine`'s matrix and `threshold` near a u64
+  pixel); literals now parse exactly.
+- `rotate_and_scale` with a per-row angle, centre or scale differed in the last
+  bits from the same literals on f64 images; they now match.
+- `threshold` on non-u8 integer pixels above 2**53 compared through f64 and
+  answered for a neighbour; it now compares exactly.
+- `rotate`/`warp_affine` filled off-image pixels with a truncated border value
+  (u8 `border_value=7.5` gave 7, 300 gave 0); it is now rounded and saturated
+  (8 and 255).
+- `ContourMatcher` silently dropped one-pixel-thick regions, and `label_reduce`
+  returned 0.0 for a zero-area contour; thin regions are now scored, measured
+  and matched on their own pixels.
+- `rotate(0)` spread NaN or infinity to neighbouring pixels; it now returns the
+  image unchanged.
+- `rotate` and `warp_affine` stored the top of the u64/i64 range as 0; they now
+  saturate.
+- A `list`/`array` value the declared dtype cannot hold (`300` or `-1` as `u8`,
+  or `NaN`) became 0; it now fails naming the value, or nulls the row under
+  `on_error="null"`.
+- `sink("blob")` of a whole-row crop wrote the rest of the image after the crop,
+  reading past the image's memory for a crop below the top row.
+- `grayscale` of a non-u8 gray + alpha image mixed alpha into the intensity (u16
+  (1000, 65535) gave 46239); it now returns the gray channel.
+- `invert` on i8/i16/u32/i32/u64/i64 failed with a planned-dtype error; every
+  integer dtype now inverts in its own dtype (`-1 - x` for signed, as NumPy's
+  `~x`).
 
-- **8-bit HSV hue stays in [0, 180).** A hue in [359°, 360°) rounded to
-  180 (`RGB(255, 0, 1)` -> H = 180), outside the range; it wraps to 0, as
-  OpenCV's does. Integer hues wrap at their period on every dtype.
-- **A gray + alpha image round-trips through TIFF.** The `tiff` sink
-  expanded it to RGBA, so it came back as four channels, and a two-sample
-  TIFF from another writer (Pillow's `LA`) was refused as "Unsupported TIFF
-  color type". It is now written as two samples with the second declared
-  alpha (ExtraSamples), and decoded as two channels.
-- **A histogram counts a value on a bin edge in the bin its edges give.**
-  The uniform-bin index was `floor((x - lo) / width)`, which for a value
-  exactly on an edge can land a bin low: -7142.857142857143, edge 1 of
-  [-10000, 10000] in 7 bins (and so what `output="edges"` reports), was
-  counted in bin 0. The edges now decide membership for both
-  `closed="left"` and `"right"` (whose former epsilon test is gone).
-- **The `scalar_fusion` pass no longer changes an integer chain's result.**
-  It fused an integer `invert` with a following narrowing integer `cast`
-  into one kernel that stores by the float -> int rule (round, saturate)
-  instead of the int -> int rule the unfused cast applies (wrap): u16
-  `invert().cast("u8")` of 1000 was 255 fused and 23 unfused. Every pass is
-  byte-identical on and off again. `DType::converts_like_float` is now the
-  one rule both `scalar_fusion` and `cast_chain_collapse` read before
-  replacing a conversion with a float one (and it lets `cast_chain_collapse`
-  drop an f32 intermediate between integers where that is exact, such as
-  u8 -> f32 -> u16).
-- **A blob or raw column sunk to `numpy`/`ndarray`/`torch` returns every row,
-  not row 0's pixels for each.** Rows read in place are slices of the
-  column's shared buffer, and the numpy `data` column registered those
-  slices; Arrow's FFI export hands over a buffer's *storage* pointer, so
-  every row was read from the start of the shared storage (raw rows: from
-  the wrong place). The column now registers each storage once, unsliced,
-  and addresses each row by its offset in it.
-- **`reshape` and `channel_select` after a crop read the crop.** A crop that
-  starts below the first row (or right of the first column) leaves a view
-  with an offset; a reshape rebuilt its layout at offset 0, so
-  `crop(top=1).channel_select(0)` of a single-channel image returned the
-  uncropped rows. Reshape keeps the view's offset.
-- **`reshape` after a `flip`, `transpose`, quarter `rotate` or `crop` copies
-  first, as NumPy's does.** It was refused at execution ("cannot reshape a
-  non-contiguous view"), not by the planner, with no way to ask for the
-  copy. Reshape now declares `MemoryEffect::ViewOfContiguous` and the planner
-  packs a strided input before it: a no-op when the input already is
-  contiguous.
-- **`channel_swap`, `channel_merge`, RGB <-> BGR, gray -> RGB and the
-  morphological gradient are exact on every dtype.** They had native paths
-  for u8 (and some u16/f32) only and converted every other dtype through f32:
-  `channel_swap` and `channel_merge` then panicked against their contract
-  ("expected output dtype U16 ... but got F32"), and the colour moves and the
-  gradient silently rounded values f32 cannot hold (u32 16777217 ->
-  16777216). Each is now one kernel generic over the element type
-  (`with_dtype!`); `channel_swap` and the colour conversions' reorder are the
-  same kernel, where they were two.
-- **Resizing, blurring and `rgb->gray` keep 32/64-bit integer and f64 images
-  at full precision.** These dtypes were cast to f32, resampled and cast
-  back, so any value f32 cannot hold changed, even through a nearest resize
-  that only moves data (u32 16777217 -> 16777216). Nearest resampling is now
-  an exact gather on every dtype, and the convolution resamplers, blur and
-  the luma compute in `DType::accumulator` (f64 for these dtypes). fast_image_resize has
-  no 64-bit pixel types, so those dtypes are resampled by
-  `execution::resample`, which uses fast_image_resize's own filters and
-  coefficient rule in f64 (tested against it: byte-identical for nearest,
-  within 1e-4 for the convolution filters). u8, u16, f32, i8 and i16 are
-  unchanged.
-- **The two-buffer ops are exact on every dtype, and `blend` is normalized on
-  every integer dtype.** `add`, `subtract`, `multiply`, `blend`, `maximum`,
-  `minimum` and the bitwise ops ran natively only for u8 and u16 (and same-
-  dtype floats); every other operand pair was computed in f32, so a value f32
-  cannot hold changed (u32 `16777219 ^ 16777221` gave 0, not 6), and `blend`
-  was a plain saturating multiply (i8 `81 blend 81` gave 127). One kernel
-  generic over the element type now serves every dtype: integer arithmetic
-  saturates to the dtype's range, `blend` is `round(a*b / MAX)` (the
-  normalized product u8/u16 already used), and floats use IEEE arithmetic.
-  True division computes in `DType::accumulator`.
-- **Colour conversions refuse a channel count they cannot read.** They
-  admitted any `C` at least the source space's channel count, but every
-  kernel reads a pixel as that many values: `to_bgr` of a 5-channel image
-  reordered the first three channels and returned the other two as zeros,
-  and the other spaces read across pixel boundaries. A conversion now
-  admits exactly the space's channels or those plus alpha (3 or 4 for RGB,
-  BGR, HSV, Lab and YCbCr; 1 or 2 for gray), at plan time when the count is
-  known and per row otherwise.
-- **`convolve2d` (and `sobel`, `laplacian`, `sharpen`) on f64 returns f64.**
-  It planned f64 and executed f32, which the output guard refused. A
-  convolution now accumulates in `DType::accumulator` — f64 for f64 and the
-  32/64-bit integers, f32 otherwise — and stores its declared dtype.
-- **A literal float parameter equals the same value given as an expression.**
-  The graph JSON was parsed without `serde_json`'s `float_roundtrip`, so a
-  literal could land an ulp away from what the caller wrote, while the same
-  value from a column was read exactly. Any f64 parameter could differ; the
-  parity suite caught `warp_affine`'s matrix (the last bits of an f64 or wide
-  integer image differed between `matrix=[...]` and per-row expressions) and
-  `threshold` near a u64 pixel. Literals now parse to the nearest f64.
-- **`rotate_and_scale` with a per-row angle, centre or scale matches the same
-  values given as literals.** Its matrix was computed in Python: through the
-  `rotation_matrix_2d` FFI for literals, but as polars expression arithmetic
-  for any expression argument, and polars' `radians()` (`x * (pi/180)`)
-  rounds differently from the engine's `x * pi / 180`, so the two disagreed
-  in the last bits of an f64 image. `rotate_and_scale` is now a typed op the
-  engine lowers per row through `AffineParams::rotation_matrix_2d`, so there
-  is no second copy of the trig; its signature and outputs are unchanged.
-  The `polars_cv._lib.rotation_matrix_2d` FFI, which existed only to feed the
-  Python copy, is removed.
-- **`threshold` compares integer pixels exactly.** A non-u8 integer pixel was
-  rounded to f64 before the comparison, so above 2**53 it answered for a
-  neighbour (`2**53 + 1 > 2**53` came out false). Every integer dtype now
-  compares `p > floor(t)`, as u8 already did.
-- **`rotate`/`warp_affine` fill pixels off the image with the border value
-  rounded and saturated, like every other pixel.** The fill truncated it: a
-  u8 `border_value=7.5` filled 7 while pixels at the edge blended toward 7.5,
-  and a value the dtype cannot hold (300 for u8) filled 0. It now fills 8
-  and 255. Integer border values inside the dtype's range are unchanged
-  (CR-66).
-- **`ContourMatcher` no longer silently drops one-pixel-thick regions.** Two
-  causes, both fixed:
-  - Traced through pixel centres, a single pixel, a two-pixel pair or a
-    `1 x n` line had no area, so the default `min_contour_area=1.0` dropped
-    it. Even kept (`min_contour_area=0`), it overlapped nothing, so it could
-    never be a true positive.
-  - `label_reduce` (both `Pipeline.label_reduce` and `.contour.label_reduce`)
-    returned 0.0 for a zero-area contour in every region mode. Its zero-width
-    or zero-height bounding box returned early, before the documented
-    "no pixel centre" fallback ran, so `ContourMatcher` removed the region as
-    a zero-score detection.
+### Performance
 
-  Edge tracing gives every region an area equal to its pixel count, so thin
-  regions are now scored, measured and matched on their own pixels: over a
-  matching lesion they are true positives. A contour supplied with no area,
-  or whose region catches no pixel centre, is now scored on the pixels its
-  outline passes through, in every region mode. That rule replaces the
-  centroid fallback sub-pixel contours had.
+- Broadcasting two-buffer ops are about 29x faster (1024x1024 RGB under a mask:
+  about 104 ms to about 3.6 ms).
+- Kernels use AVX2 on CPUs that have it, whatever the wheel was built for, with
+  byte-identical output on every CPU.
+- Float to integer `cast` is about 2x faster, and f32 to u8 a further 1.6–2.3x.
+- u8 `grayscale` is 5–10x faster and u8 `threshold` 1.4–3x; non-u8 grayscale is
+  1.4–2.9x faster.
+- Per-value ops are much faster: u8 `adjust_gamma` 22–27x, u8 ImageNet-style
+  `normalize` 5–12x, u8 `adjust_contrast` 2–5.5x, z-score 2.2–4x, and fused
+  u8 chains 1.8–2.5x.
+- Materialising a crop, flip or transpose is faster (at 1024² RGB u8: vertical
+  flip about 22x, horizontal flip about 5x, transpose about 5.5x), and `cast`,
+  per-value ops, `grayscale` and `resize` read crops and flips in place.
+- Cheap rows cost about half as much: `invert` on 8×8 rows is 1.3x faster eager
+  and 1.4x streaming.
+- The plugin allocates through polars' allocator: 64×64 pipelines are
+  1.15–1.66x faster and a repeated large `blob` sink 2x, with about 10% higher
+  peak memory.
+- `erode`/`dilate` with `iterations` and `blur` are 1.1–1.7x faster.
+- `rotate` and `warp_affine` are 1.4–2.2x faster; a rotation by 0° or 360°
+  returns its input.
+- `list` sources are read in place: 3.6x faster for 64×64 u8 rows, 2x for flat
+  f32 rows.
+- The half-precision tensor sink (`sink("numpy"|"torch", dtype="f16")`) is 3–6x
+  faster and runs in parallel.
 
-- **`rotate(0)` no longer spreads NaN or infinity.** It ran a full bilinear
-  warp, which turned a NaN or infinite pixel's left and upper neighbours into
-  NaN. It now returns the image unchanged (CR-63).
-- **A warped u64/i64 image keeps its maximum values.** `rotate` and
-  `warp_affine` stored a value at the top of the 64-bit range as 0; it now
-  saturates, as every other conversion does (CR-62).
+### Removed
 
-- **A `list`/`array` value the declared dtype cannot hold is an error, not
-  0.** Converting a row to its declared dtype stored 0 for any value out of
-  range (`300` or `-1` as `u8`) or undefined (`NaN`). It now fails naming the
-  value, or nulls the row under `on_error="null"`. Float values declared as
-  an integer dtype are still truncated (CR-61).
-
-- **`sink("blob")` of a whole-row crop wrote the rest of the image after
-  it.** A crop that keeps every column is a contiguous view of part of the
-  image, and its blob's payload was the whole image's length from the crop's
-  first byte on: too long, and for a crop below the top row a read past the
-  end of the image's memory. The blob now holds exactly the crop (CR-59).
-
-- **`grayscale` of a non-u8 gray + alpha image mixed the alpha into the
-  intensity.** A `[H, W, 2]` u16/f32 pixel came out as
-  `0.299·gray + 0.701·alpha` (u16 (1000, 65535) → 46239). It is now the gray
-  channel, as it always was for u8 (CR-51).
-- **`invert` on an integer dtype other than u8/u16 failed.** i8/i16/u32/i32/
-  u64/i64 input computed `1 - x` as f32 against a schema promising the input
-  dtype, so the query raised `planned dtype … but execution produced F32`.
-  Every integer dtype now inverts as `MAX + MIN - x` in its own dtype: `255 - x`
-  for u8 (unchanged), `-1 - x` for a signed dtype, which is NumPy's `~x`
-  (CR-53). Signed 8/16-bit invert now also fuses with neighbouring scalar ops.
+- `ratio` (use `divide`) and the `polars_cv._lib.rotation_matrix_2d` FFI.
 
 ## [0.29.0] — 2026-09-27
 
-Every operation, source, sink and geometry accessor is now one typed Rust
-definition from which its Python method, docstring and wire form are
-generated, and the planner that computes a pipeline's schema runs in Rust
-over the same definitions execution uses. Plan-time optimizations are one
-explicit, toggleable phase. Many silent wrong results are now errors. Upgrading
-from 0.28: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.29/).
+Plan-time optimizations are now one explicit, toggleable phase, and many silent
+wrong results are now errors.
+Upgrading from 0.28: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.29/).
 
 ### Breaking changes
 
-Each item is described in full under its section below.
-
-- **Builder signatures.** One rule for every generated method: an op's only
-  required parameter is positional-or-keyword, every other parameter is
-  keyword-only (e.g. `.normalize(method="minmax")`). `source()` keywords
-  default to `None`. `perceptual_hash`'s parameters are keyword-only.
-- **Removed parameters and methods.** `convolve2d(ksize=)`, `sobel(ksize=)`,
-  `laplacian(ksize=)`; `source()`'s contour canvas keywords (`width`,
-  `height`, `shape`, `fill_value`, `background` — write
-  `.rasterize(...)`); `Pipeline.output_encoding()`;
-  `PipelineGraph.set_root_column()` (`to_graph(column)` requires its column);
-  `PlanState.DIM_NAMES`; `_graph.LIB_PATH`; the `affine_fusion` optimization
-  pass.
-- **Changed defaults and results.** `.contour.scale()` scales about the
-  centroid; `.point.interpolate(t=)` is keyword-only; `canny` matches
-  `cv2.Canny` (more edges, no pre-blur); an image with no contours yields `[]`,
-  not null; a null `numpy`/`torch`/`ndarray` sink row is a null value;
-  `output_dtype()` can return `"auto_float"`; `PipelineGraph.to_expr()` needs
-  an optimized graph (`.sink()` produces one).
-- **Stricter input checks.** `crop` windows past the edge or with negative
-  values, `raw` byte lengths that are not whole elements, `reshape`s that
-  change the element count, image ops on anything but `[H, W]`/`[H, W, C]`,
-  short `transpose` axis lists, jagged or null `List` rows, null contour
-  coordinates, contour structs without an `exterior` field, `sobel(axis=)`
-  other than `"x"`/`"y"`, per-row `"triangle"`/`"grey"` enum aliases, and
-  `list`/`array` sink rows that do not match the plan are all refused.
-- **Hand-built graph JSON.** Fields follow the typed definitions; an unknown,
-  misspelled or inapplicable field is rejected by name, as are the old
-  `alias`/`domain`/`output_dtype` node fields and the `expr_column_names`
-  kwarg.
-- **Environment and dependencies.** Requires `polars>=1.41.1`;
-  `networkx`/`graphviz`/`pydot` move to the `viz` extra. The single-thread
-  warning and `POLARS_CV_ENGINE_WARN_SECONDS` /
-  `POLARS_CV_ENGINE_WARN_ROWS` / `POLARS_CV_SILENCE_ENGINE_WARNING` are gone.
+- Builder methods take their one required parameter positional-or-keyword and
+  every other parameter keyword-only, e.g. `.normalize("minmax")` is now
+  `.normalize(method="minmax")`.
+- Keyword-only now: `convert_color(from_space=, to_space=)`,
+  `histogram(bins=, range=, closed=, output=)`,
+  `normalize(method=, mean=, std=, out_dtype=)`, `reduce_max/mean/min(axis=)`,
+  `reduce_std(axis=, ddof=)`, `warp_affine(matrix=, output_size=)`,
+  `perceptual_hash(hash_size=, algorithm=)`, `.point.interpolate(t=)`.
+- Positional now: `adjust_contrast(factor)`, `adjust_gamma(gamma)`,
+  `channel_select(index)`, `channel_swap(order)`, `simplify(tolerance)`,
+  `label_reduce(contours)`, `convolve2d(kernel)`.
+- `source()` keywords default to `None`; `on_error=` or `require_contiguous=` on
+  a format that does not read them is now refused.
+- `source()` no longer takes `width`, `height`, `shape`, `fill_value` or
+  `background`; write `source("contour").rasterize(...)`.
+- `canny` now matches `cv2.Canny` pixel for pixel (more edges, no pre-blur, a
+  colour image uses the strongest channel); add `.blur(sigma=...)` before it for
+  the old smoothing.
+- `.contour.scale()` now defaults to `origin="centroid"`, as
+  `Pipeline.scale_contour()` does; it scaled about `(0, 0)`.
+- `.contour.label_reduce(image)`'s `image` is required.
+- `extract_contours()` yields `[]`, not null, for an image with no contours.
+- A null row of `sink("numpy")`/`"torch"`/`"ndarray"` is now a null value; test
+  `row is None`, not `row["data"] is None`. `numpy_from_struct(None)` raises
+  `ValueError`.
+- `Pipeline.output_dtype()` can return `"auto_float"`.
+- `PipelineGraph.to_expr()` needs an optimized graph (`.sink()` produces one);
+  `PipelineGraph.set_root_column()` is removed, and `to_graph(column)` requires
+  its column.
+- Hand-built graph JSON follows the typed definitions: unknown, misspelled,
+  missing or inapplicable fields are rejected by name, as are the node fields
+  `alias`, `domain`, `output_dtype`, the `expr_column_names` kwarg, and a sink
+  `dtype` other than `"f16"`/`"float16"`. Renamed fields: `warp_affine(output_size=)`,
+  `histogram(range=)`, the binary ops' `other`, `apply_mask`'s `mask`,
+  `channel_merge`'s `others`, `rasterize`'s `size`.
+- Requires `polars>=1.41.1` and `numpy>=2.0.2`; `networkx`, `graphviz` and
+  `pydot` move to the `viz` extra (`pip install 'polars-cv[viz]'`), needed only
+  by `show_graph()`. Wheels are tagged `cp310-abi3`.
+- The single-thread warning and `POLARS_CV_ENGINE_WARN_SECONDS`,
+  `POLARS_CV_ENGINE_WARN_ROWS` and `POLARS_CV_SILENCE_ENGINE_WARNING` are gone.
+- `_graph.LIB_PATH` and `_namespace._LIB_PATH` are removed.
 
 ### Added
 
-- **A plan-time optimization phase you can see and control.** Building a
-  pipeline records the graph as written; `.sink()` then applies the
-  optimizations in one phase (`PipelineGraph.optimize(flags)`). Every pass —
-  `common_subexpression_elimination`, `identity_elimination`,
-  `spatial_window_pushdown`, and the engine rewrites `cast_chain_collapse`,
-  `cast_identity`, `view_flip_involution`, `view_transpose_merge` and
-  `scalar_fusion`, which used to run unconditionally — has an `OptFlags`
-  field (`polars_cv.OptFlags`, with `OptFlags.all()` / `OptFlags.none()`).
-  Choose them per call with `.sink(opt_flags=...)` or for the process with
-  `POLARS_CV_OPTIMIZATIONS`; all are on by default. `Pipeline.explain()`
-  shows the chain as written, or with `optimized=True` after the passes
-  `.sink()` would apply (from the same registry, so it cannot drift from
-  execution). Every pass is held to byte-identical output by an on/off
-  differential in `test_optimize_equivalence.py`.
-- **`identity_elimination` pass.** Deletes operations that are provably
-  no-ops so they never reach the engine: a zero pad (`pad(0, 0, 0, 0)`), a
-  same-dtype `cast`, and a full-frame `crop` (or a `pad_to_size` to the
-  current size). A crop is a candidate only with a literal `(0, 0)` origin (an
-  offset crop the size of its input runs past the edge). A blob's declared
-  `dtype` is checked at decode, so the pass never removes a `.cast()` on the
-  strength of a wrong declaration.
-- **`spatial_window_pushdown` pass.** Hoists an H/W crop earlier in a
-  pipeline, past the run of pointwise ops immediately before it, so they
-  process only the window. A neighbourhood, geometric or global op, an
-  `assert_shape`, and an op that reads another node (`apply_mask`,
-  `channel_merge`, binary ops) are barriers.
-- **`numpy_from_column(column)` reads a numpy/ndarray sink column without
-  copying.** Every row comes back as a read-only NumPy view of the column's
-  own Arrow memory, keeping its shape, dtype and byte strides; null rows are
-  `None`, and `copy=True` returns owned, contiguous arrays. Reading rows as
-  dicts for `numpy_from_struct` copies every row into Python `bytes` first
-  (and again with its default `copy=True`). A view that would reach outside
-  its row's bytes (only a hand-built struct can ask for one) raises.
-- **The planner tracks every dimension, at any rank.** A pipeline's planned
-  shape is one size per dimension rather than three `[H, W, C]` slots, so
-  every output whose sizes are all known publishes its shape — a rank-1 or
-  rank-2 output (`channel_select`, `reshape`, `assert_shape(dims=[h, w])`) and
-  a rank-4 one included — and `.sink("array")` needs no `shape=` for it.
-  A fixed-size `Array` column's dtype states every size, so `source("array")`
-  (or `auto` over an `Array` column) publishes the whole shape too; a `List`
-  column's sizes still vary per row. `assert_shape(dims=[...])` accepts any
-  rank (it refused more than three). `PlanState.dims` has one entry per
-  dimension (the leading declared ones over an unknown rank), and
-  `PlanState.DIM_NAMES` is gone.
-- **`source("contour")` without a canvas decodes to the contour domain.** A
-  pipeline can start from a contour column and measure or transform it
-  (`Pipeline().source("contour").area()`, `.simplify(...)`, then
-  `.rasterize(...)` or a native sink). It used to raise: the source *was* a
-  rasterization.
-- **Arrow extension types: `polars_cv.ndarray`, `.point`, `.contour`, `.bbox`.**
-  `NdArrayType`, `PointType`, `ContourType` and `BBoxType` (in
-  `polars_cv.extension_types`, re-exported from `polars_cv`) tag the structs
-  polars-cv already emits, so a column is identified by its type rather than by
-  sniffing field names, and keeps that identity through Parquet/IPC. They are
-  registered at `import polars_cv` (pure Python — importing still loads no
-  compiled code), so a tagged column read from Parquet keeps its tag. An
-  instance of one of these classes always has the canonical storage: a column
-  carrying the name over any other storage (or with metadata) reconstructs as
-  polars' generic `Extension` instead. The names and storages are declared once
-  in Rust (`ext_types::ExtType`) and held to the Python classes by a parity test
-  over the new `extension_types` FFI. Polars documents its extension-type API
-  as unstable; polars-cv uses it only in `extension_types.py` and
-  `src/ext_types.rs`.
-- **`sink("ndarray")`.** The numpy sink struct, tagged `polars_cv.ndarray` —
-  same rows, bytes, strides and `dtype="f16"` downcast. `numpy_from_struct` and
-  `show_images` (under `format="auto"`) read it. `sink("numpy")` is unchanged:
-  polars' struct operations (`.struct.field`, `unnest`, casts, `concat` with a
-  plain struct) do not see through a tag, so tagging the existing sink would
-  break code that uses them. Use `.ext.storage()` for those on a tagged column.
-- **Every expression accepts tagged inputs.** Each `.cv` / `.point` /
-  `.contour` / `.bbox` accessor and every `vb_graph` source (e.g.
-  `source("contour")`) takes a tagged column wherever it takes the plain struct,
-  and computes exactly the same result. Geometry outputs stay plain structs.
-- **An op, source or sink field with a declared default may be omitted from
-  hand-built graph JSON**; the wire applies the same default the Python
-  signature shows.
-- **Benchmarks build in a fraction of the time, and run only what a change
-  can move.** `maturin develop --profile benchmark` is release with thin LTO
-  (the fat-LTO link was most of a 10–18 minute release build). The regression
-  suite's `--select scenario[:glob]` runs a subset of cases by their result
-  names, and `--changed REF` (or `python -m benchmarks.regression.relevance
-  REF`, to pass the same `--select` to the base side) derives it from the
-  files a change touches, through a path → cases map that a guard holds every
-  tracked source file to. A new `targeted` scenario times what the adapter
-  scenarios never reach: the geometry accessors, the `array`/`list` sinks,
-  JPEG and re-encoding, and the blob source. `run_suite --scenarios` is
-  replaced by `--select` (a bare scenario name is a selector).
-- **The benchmark suite refuses a debug build.** Its numbers look plausible and
-  measure nothing; `run_suite` exits unless given `--allow-debug-build` (a
-  harness smoke test), and `compare` refuses results marked as such. It also
-  refuses results from two different build profiles (thin LTO runs a few
-  percent off fat LTO per case). The extension reports
-  `_lib.__debug_assertions__` and `_lib.__build_profile__` for it.
+- Optimizations run as one phase at `.sink()`; `polars_cv.OptFlags`
+  (`OptFlags.all()` / `OptFlags.none()`) toggles each pass, per call with
+  `.sink(opt_flags=...)` or per process with `POLARS_CV_OPTIMIZATIONS`. All are
+  on by default.
+- `Pipeline.explain(optimized=True)` shows the chain after the passes `.sink()`
+  would apply.
+- New passes: `identity_elimination` (removes no-op pads, same-dtype casts and
+  full-frame crops) and `spatial_window_pushdown` (moves an H/W crop ahead of
+  preceding pointwise ops).
+- `numpy_from_column(column)` reads a numpy/ndarray sink column as zero-copy
+  read-only views; null rows are `None`, and `copy=True` returns owned arrays.
+- The planner tracks every dimension at any rank, so rank-1, rank-2 and rank-4
+  outputs publish their shape and `.sink("array")` needs no `shape=` for them.
+  `assert_shape(dims=[...])` accepts any rank, and `source("array")` over a
+  fixed-size `Array` column publishes the whole shape.
+- `source("contour")` without a canvas decodes to the contour domain, so a
+  pipeline can start from a contour column and measure or transform it.
+- Arrow extension types `polars_cv.ndarray`, `.point`, `.contour` and `.bbox`
+  (`NdArrayType`, `PointType`, `ContourType`, `BBoxType`) keep a column's
+  identity through Parquet/IPC; every `.cv`, `.point`, `.contour` and `.bbox`
+  accessor and every source accepts tagged columns.
+- `sink("ndarray")` is the numpy sink tagged `polars_cv.ndarray`;
+  `numpy_from_struct` and `show_images` read it. `sink("numpy")` is unchanged.
+- Hand-built graph JSON may omit a field that has a declared default.
+- Benchmarks: `maturin develop --profile benchmark` builds with thin LTO,
+  `--select` and `--changed REF` run only the cases a change can move, and
+  `run_suite` refuses debug builds unless given `--allow-debug-build`.
 
 ### Changed
 
-- **Breaking: one signature rule for every generated builder method.** An op
-  with exactly one required parameter takes it positional-or-keyword; every
-  other parameter is keyword-only. Now positional: `adjust_contrast(factor)`,
-  `adjust_gamma(gamma)`, `channel_select(index)`, `channel_swap(order)`,
-  `simplify(tolerance)`, `label_reduce(contours)`, `convolve2d(kernel)`. Now
-  keyword-only (pass by name): `convert_color(from_space=, to_space=)`,
-  `histogram(bins=, range=, closed=, output=)`,
-  `normalize(method=, mean=, std=, out_dtype=)`, `reduce_max/mean/min(axis=)`,
-  `reduce_std(axis=, ddof=)`, `warp_affine(matrix=, output_size=)` and
-  `perceptual_hash(hash_size=, algorithm=)` — e.g. `.normalize("minmax")` is
-  now `.normalize(method="minmax")`. Names and defaults are otherwise
-  unchanged.
-- **Breaking: `Pipeline.source()` keywords default to `None`.**
-  `require_contiguous` and `on_error` read `None` (the format's own default:
-  `False`, `"raise"`) instead of restating it, so passing a keyword is exactly
-  passing a non-`None` value — `on_error="raise"` or `require_contiguous=False`
-  on a format that does not read them is now refused like any other
-  inapplicable keyword. `Pipeline.output_encoding()` is removed (the executor
-  reads histogram buckets off the ops).
-- **Breaking: a contour source only decodes; rasterizing is `rasterize()`.**
-  `source()` no longer takes `width`, `height`, `shape`, `fill_value` or
-  `background`; write `source("contour").rasterize(...)`. A per-row
-  `width`/`height`/`fill_value` that is invalid for a row now fails the query
-  (or nulls the node under `on_null_param="null"`) as it does for
-  `rasterize()`; `source(on_error=)` covers only a contour value that cannot
-  be decoded.
-- **Breaking: the geometry accessors are generated from their Rust
-  definitions.** Each `.contour` / `.point` / `.bbox` function parses its own
-  typed definition (`src/geom_fns.rs`) — or, for `.contour.area`,
-  `perimeter`, `centroid`, `bounding_box`, `convex_hull`, `translate`,
-  `scale` and `simplify`, the pipeline operation's — so its fields, defaults
-  and docstring are declared once. `.contour.scale()` now defaults to
-  `origin="centroid"`, matching `Pipeline.scale_contour()` (it scaled about
-  `(0, 0)`); `t` in `.point.interpolate(other, t=...)` is keyword-only; and
-  `.contour.label_reduce(image)`'s `image` is required in the signature (it
-  defaulted to `None` and then raised `ValueError`).
-- **Breaking: `canny` computes what `cv2.Canny(image, low, high)` computes,
-  pixel for pixel.** It ran a 5×5 σ≈1.4 Gaussian blur first, used an L2
-  magnitude and its own suppression rules, so it found 30–70% fewer edges than
-  OpenCV on the same image. It now does OpenCV's algorithm — 3×3 Sobel with a
-  replicated border, L1 magnitude, no pre-blur, OpenCV's fixed-point
-  non-maximum suppression and 8-connected hysteresis — and a colour image
-  takes the strongest channel per pixel, as OpenCV does, rather than its
-  luminance. Add `.blur(sigma=...)` before `canny` for the old smoothing.
-  `tests/reference/test_canny_ref.py` asserts exact equality with
-  `cv2.Canny`, for u8 and for every other input dtype.
-- **Breaking: `PipelineGraph.to_expr()` needs an optimized graph.** `.sink()`
-  runs the optimization phase and returns an executable expression as before;
-  a graph from `to_graph()` must go through `.optimize(...)` before
-  `.to_expr()`, which otherwise raises `RuntimeError`.
-- **Breaking: an image with no contours yields `[]`, not null.**
-  `extract_contours()` published an empty contour set as null, the same as a
-  null input or a failed row, so `list.len()` read null instead of 0 and the
-  `.contour` transforms (which keep `[]`) disagreed with it. Null now means
-  only "no value" (a null input, or a row failed under `on_error("null")`).
-- **Breaking: a null row of `sink("numpy")`/`"torch"`/`"ndarray"` is a null
-  value.** It used to be a struct whose five fields were all null, so
-  `is_null()` was `False` and `drop_nulls()`/`null_count()` did not see it,
-  unlike every other sink. Code that tested `row["data"] is None` should test
-  `row is None`. `numpy_from_struct(None)` raises `ValueError` (CR-39).
-- **Breaking: dependency metadata.** Requires `polars>=1.41.1` (was `>=1.0`,
-  which could not import below 1.36.1 and failed the suite below 1.41.1) and
-  `numpy>=2.0.2` (was `>=2.2.6`). `networkx`/`graphviz`/`pydot` move to a
-  `viz` extra (`pip install 'polars-cv[viz]'`), needed only by
-  `show_graph()`. Wheels are tagged `cp310-abi3` to match
-  `requires-python>=3.10`. A new CI job tests the declared floors on Python
-  3.10. (CR-44)
-- **Every `.cv.pipe(...)` call runs its rows in parallel.** Rows are split
-  into ranges on the plugin's thread pool (sized by `POLARS_MAX_THREADS`) and
-  reassembled in order, so eager `with_columns`/`select` on a single-chunk
-  column is multi-core: 3–4× faster on 4 cores in the measured cases. A call
-  spreads its rows only when it runs alone and the graph's previous call did
-  too, so the streaming engine's concurrent morsel calls stay on their own
-  threads, and a one-thread pool never splits. Under `on_error="raise"` the
-  reported error is still the earliest failing row's. **Breaking:** the
-  one-time "ran on one thread" warning and its
-  `POLARS_CV_ENGINE_WARN_SECONDS` / `POLARS_CV_ENGINE_WARN_ROWS` /
-  `POLARS_CV_SILENCE_ENGINE_WARNING` variables are removed. (CR-32)
-- **Every `.contour`, `.point` and `.bbox` function uses every core on the
-  in-memory engine.** They split a call's rows over the plugin's thread pool
-  through one row driver (`GeomParams::map_rows`), as pipelines do, and stay
-  inline under the streaming engine, which is already parallel across morsels
-  (~3.2x for `.contour.area()` over 200k contours on 4 cores).
-- **Everything the plan knows about an op's input is checked where the op is
-  written.** An op no row could run on its planned input raises when it is
-  appended, naming the op, rather than failing every row: an image op on a
-  rank-1 buffer (`source("raw").blur()`), a crop window past a known edge, a
-  channel index past a known channel count, a `transpose` with a repeated
-  axis, and two operands whose known sizes cannot broadcast (`x.add(y)` over
-  `(4, 5, 3)` and `(2, 5, 3)` used to plan `(4, 5, 3)` and then fail each
-  row). A size the plan does not know is still checked per row. Validation
-  messages show an unknown size as `?`.
-- **A binary op plans each axis it can.** Its operands broadcast axis by axis,
-  so two 8x8 images of unknown channel count add to a planned 8x8 (the
-  planner used to drop every size when one was unknown). A lazy continuation
-  or binary op starts from the upstream state as planned rather than a copy
-  with the sizes dropped.
-- **`apply_mask` and `channel_merge` are planned against the nodes they
-  read.** A mask that cannot broadcast against its buffer, or channels of
-  different known sizes, raise when the op is written; a merge plans the
-  H and W any of its channels knows.
-- **Rank and channels come from the op's shape.** A crop, transpose or
-  reshape now plans a known channel count, a size an op replaces is no longer
-  carried across it when the input rank is unknown, and a contour measure
-  plans one value per contour (its length is the set's size) rather than a
-  single value.
-- **`assert_shape` is a checked operation.** It is planned where it is
-  written and checked against every row there; a mismatch fails the row
-  naming the assertion. Optimizations may rely on the declared shape (it is a
-  fact once checked), and an assertion is never removed. `dims=` entries may
-  be per-row expressions, and its sizes must be positive ints whichever
-  spelling (`dims=` or `height=`/`width=`/`channels=`) carries them.
-  `repr()`/`explain()` render the `assert_shape` calls that were written,
-  where they were written, instead of every inferred size as an
-  `assert_shape(...)`.
-- **Sinks are checked at `.sink()`.** `.sink()` validates the graph with the
-  plugin's own compile, planning and sink-schema code (`_lib.check_graph`),
-  so sink problems raise `ValueError` there.
-- **The builder's planner and the executor share one dtype lattice.** A
-  float-promoting op over a dtype the plan does not know (`scale`, `sqrt`,
-  `sobel`, … after `source("image_bytes")`) is planned as `auto_float` —
-  "a float, which one depends on the decode" — where it was `auto`.
-  `Pipeline.output_dtype()` can therefore return `"auto_float"`.
-- **Planner state is a Rust object.** `Pipeline` holds one immutable
-  `polars_cv._lib.Plan` (its source, typed ops and the state at every op
-  boundary); `Pipeline._state` is a frozen `polars_cv._lib.PlanState`. The
-  Python `PlanState` dataclass and `HINT_DIMS` are gone; `Domain` is
-  generated from the Rust registry like every other enum. `repr(pipeline)`
-  shows enum arguments by their wire name (`origin=centroid`).
-- **Operations report errors from their Rust definition.** Errors name the
-  op, the field and the valid values (`operation 'resize': 'filter': unknown
-  FilterType "bogus", expected one of [...]`, `'top': -5 cannot be
-  negative`), and a source/sink keyword the format does not read is refused
-  naming where it does apply (`'quality' does not apply to the 'webp' sink (it
-  applies to: jpeg)`), as is a misspelled one. A per-row enum value outside
-  its table reads `unknown Winding "CW", expected one of [...]`.
-- **Hand-built graph JSON follows the typed definitions.** The wire form of a
-  field is the value itself (`"height": 224`, `"filter": "bilinear"`) or
-  `{"$slot": n}`, the index of the plugin input column that carries an
-  expression parameter; each distinct expression (by `Expr.meta.eq`) gets one
-  input, root columns first. Wire fields follow the Python signatures:
-  `warp_affine(output_size=)` (was `output_height`/`output_width`),
-  `histogram(range=)` (was `range_min`/`range_max`, where one without the
-  other was silently ignored), the binary ops' `other`, `apply_mask`'s `mask`
-  and `channel_merge`'s `others` (were `other_node`/`other_nodes`), and
-  `rasterize`'s `size`: `[height, width]` or the id of the node whose canvas
-  it takes. **Breaking:** a misspelled, extra, missing or inapplicable field
-  is rejected by name, as are a sink `dtype` other than `"f16"`/`"float16"`
-  (which Rust used to accept and ignore), the `expr_column_names` kwarg, and
-  the node fields `alias`, `domain` and `output_dtype` (the plugin read none
-  of them). The graph JSON (the compiled-graph cache key) no longer depends on
-  which other expressions are alive in the process, and carries no
-  expression text.
-- **One way into the compiled plugin.** `polars_cv._plugin.call` now builds
-  every plugin expression. It resolves the extension file the import system
-  loads and passes that to polars; before, polars was handed the package
-  directory and took the first `.so` `iterdir()` returned, which beside a stale
-  second build (`_lib.abi3.so` next to `_lib.cpython-3xx-*.so`) could be a
-  different library from the one the planner had just read. It also passes each
-  argument as `.ext.storage()`, which is how tagged inputs are accepted without
-  any Rust input path knowing about extension types. **Breaking:**
-  `_graph.LIB_PATH` and `_namespace._LIB_PATH` are removed.
-- **Point coordinates are always matched by field name.** One contour path
-  took a point's first two fields by position; a `.point` distance function
-  given a contour *set* now says so instead of failing to find an `x` field.
-
-### Removed
-
-- **`PipelineGraph.set_root_column()`; `Pipeline.to_graph(column)` requires
-  its column.** The two existed for a graph built before its column was
-  known, a route nothing took; the root check still refuses a graph whose
-  root has no column.
-- **Loose contour-struct matching.** A contour struct's ring is its
-  `exterior` field. A `points` field was read as an alias, and a struct with
-  neither had its first list field taken as the exterior. Such a struct is
-  now refused ("Contour struct has no 'exterior' field"); rename the field.
-- **`sobel(ksize=)` and `laplacian(ksize=)`.** Both accepted only `3` and
-  raised for anything else; the kernels are the 3x3 ones. `sobel(axis=)` now
-  refuses a value other than `"x"`/`"y"` (it computed the y gradient for any
-  of them).
-- **`convolve2d(ksize=)`.** The side is the kernel's: its length must be the
-  square of an odd number (9 for 3×3, 25 for 5×5, ...), and `kernel` is now
-  the op's one positional parameter (`.convolve2d(k)`). `ksize` could only
-  restate that length, and a per-row `ksize` could only fail when it
-  disagreed.
-- **The resize family's `filter=` no longer accepts `"triangle"` from a
-  per-row column.** It was a parser-only alias for `"bilinear"` that the
-  Python builder already rejected as a literal, so only a column value could
-  reach it. Use `"bilinear"`. Likewise `convert_color` no longer has the
-  unreachable `"grey"`/`"grayscale"` spellings; use `"gray"`.
-- **The `affine_fusion` optimization pass, and the `rotate_affine_params` FFI it
-  used.** Collapsing a run of warps into one composed warp folds several
-  interpolation passes into one (and drops the intermediate clip of an
-  `expand=False` rotate), which changes pixels by as much as ~185/255 — so it
-  could not satisfy the on/off output-equivalence guarantee every optimization
-  now carries. `rotate`/`warp_affine`/`rotate_and_scale` ops are unchanged and
-  still execute (unfused); only the plan-time fusion of adjacent affine ops is
-  gone.
+- Every `.cv.pipe(...)` call runs its rows in parallel on the plugin's thread
+  pool (sized by `POLARS_MAX_THREADS`): 3–4× faster on 4 cores in the measured
+  cases.
+- Every `.contour`, `.point` and `.bbox` function uses every core on the
+  in-memory engine.
+- An op no row could run on its planned input now raises when it is appended,
+  naming the op: an image op on a rank-1 buffer, a crop past a known edge, a
+  channel index past a known channel count, a repeated `transpose` axis, or
+  operands whose known sizes cannot broadcast.
+- Binary ops plan each axis they can, and `apply_mask` and `channel_merge` are
+  planned against the nodes they read.
+- `assert_shape` is a checked operation: a mismatch fails the row naming the
+  assertion, `dims=` entries may be per-row expressions, and an assertion is
+  never optimized away.
+- `.sink()` validates the graph, so sink problems raise `ValueError` there.
+- A float-promoting op over an unknown dtype (`scale`, `sqrt`, `sobel`, ...
+  after `source("image_bytes")`) plans as `auto_float`.
+- Errors name the op, field and valid values; a source or sink keyword the
+  format does not read is refused naming where it applies.
+- A `.point` distance function given a contour set now says so instead of
+  failing to find an `x` field.
 
 ### Fixed
 
-- **Inputs an op cannot handle are row errors, and some silent wrong results
-  are now errors.** Every operation now checks its input shape before running,
-  so a shape the plan could not see (e.g. from a `blob` source) is an ordinary
-  error that `on_error` handles, rather than a panic. As a result some inputs
-  that used to "succeed" with a wrong or unsafe result now raise:
-  - `reshape` to a different element count, which produced a view over
-    memory the buffer did not own;
-  - image operations (resize, colour conversion, filters, rotation, affine
-    warps, grayscale, canny) given anything but `[H, W]` or `[H, W, C]`, which
-    either passed the input through unchanged or read a 4-D buffer with an axis
-    silently dropped;
-  - `transpose` with fewer axes than the input;
-  - a reshape after a transpose/flip/crop (a non-contiguous view).
-
-  `normalize(method="minmax"/"zscore")` explicitly accepts any shape, and
-  `perceptual_hash` any power-of-two `hash_size` (CR-34).
-- **`crop` rejects windows it cannot honour.** A negative `top`/`left`/`height`/
-  `width` is an error (a literal when the pipeline is built, a per-row value as
-  a row error), and so is a window that runs past the image. Previously a
-  negative offset was clamped to 0 while the extent was kept — returning a
-  *shifted* window — and an overrunning window was silently shrunk. `height`
-  and `width` are now independent: giving only one used to discard it. Row
-  errors follow `on_error`. (CR-42)
-- **`source("raw")` rejects a byte length that is not a whole number of
-  elements** instead of dropping the remainder. (CR-42)
-- **A jagged or null `List` row is refused, not misread.** The `list` source
-  took each level's size from its first element and read the row's values as
-  that shape: `[[1, 2], [3]]` read past the end of its values (the missing
-  slot held whatever memory followed), `[[1, 2], [3], [4, 5, 6]]` came back
-  silently re-rowed as `[[1, 2], [3, 4], [5, 6]]`, and a null value read as
-  0. A row must now be a grid of values; anything else is an error naming
-  what is wrong. `.contour.label_reduce`'s image operand decodes the same way
-  (it had its own parser, which dropped null pixels and shifted the rest of
-  the row); a flat, one-dimensional image is refused rather than read as one
-  row, and an empty image scores a null row rather than zeros.
-- **A null contour coordinate is an error, not the origin.** A point with a
-  null `x` or `y`, or a null point inside a ring, used to read as `0.0`,
-  silently moving the ring (and changing its area, IoU, rasterization…). Every
-  contour consumer now refuses it, naming the row.
-- **Geometry values are read by field name, and a missing value is never
-  0.0.** `.contour.contains_point` read a point's first two fields by
-  position (a `{y, x}` point was tested swapped) and read a missing,
-  null or non-`Float64` coordinate as 0.0 — an integer point was tested at
-  the origin. A bbox's null or missing field read as 0.0. Every
-  `.point`/`.contour`/`.bbox` function now reads points and bboxes through one
-  reader each, by field name, refusing a null field or a non-`Float64` one.
-- **`.point.rotate(origin=...)` with a null origin is a null row.** It
-  rotated about `(0, 0)`, as if no origin had been given.
-- **A null input point gives a null result point.** Point transforms
-  returned a struct of null fields (`{"x": None, "y": None}`) for a null row;
-  they now return a null row, as every other geometry function does.
-- **`numpy_from_struct` refuses a struct describing memory outside its
-  data.** Its strided path built the view with `as_strided`, which does not
-  bounds-check, so a hand-built struct whose shape, strides or offset reached
-  past its `data` read whatever memory followed. It now builds every array
-  through the same checked view `numpy_from_column` uses (the byte range the
-  strides reach must lie within the row), and so does its no-strides path,
-  which reported a short `data` as numpy's "cannot reshape".
-- **An op reading another node checks that node's domain at build.**
-  `img.apply_mask(contours)`, `img.add(contours)` and `channel_merge` over a
-  contour-domain node built, planned a buffer schema and failed every row;
-  they are now refused while the pipeline is built, like the op's own input.
-- **`apply_contour_mask()` runs the whole contour pipeline.** It rebuilt the
-  mask from the contour pipeline's first op alone, so a `translate()` or
-  `scale_contour()` before the rasterize was silently dropped, and a contour
-  node continued from another node lost its input. Only a trailing
-  `rasterize()`'s canvas is replaced (its paint is kept); a pipeline ending
-  in neither contours nor `rasterize()` is refused.
-- **A per-row parameter is no longer validated as a stand-in value.** The
-  planner resolved each op with a placeholder for every expression parameter
-  (`1` for an integer) to read its rules, so
-  `channel_select(index=pl.col("i"))` on a known `[H, W]` buffer was refused
-  while building as "channel 1", though every row selected channel 0. The plan
-  now reads each op as written: a literal is checked when the pipeline is
-  built, a per-row value when its row runs, and nothing is invented. A per-row
-  blur `sigma` or morphology `ksize` likewise plans a per-row neighbourhood
-  radius rather than the placeholder's.
-- **An image of unknown size is no longer planned as square.** The plan-time
-  shape prober stood the same placeholder in for every unknown input axis, so
-  an aspect-preserving resize made per-row by another parameter
-  (`resize_max(7, filter=pl.col("f"))`) published `[7, 7]` for a 100x50 image
-  that executes as 7x4. Shapes are now computed symbolically: only what the op
-  fixes is known (`resize_to_height(7, ...)` plans `[7, ?]`). Conversely a
-  per-row rotation angle over a known square image now keeps its size.
-- **Distinct expression parameters no longer collapse into one.** An
-  expression parameter was identified by its display text, `str(expr)`, which
-  is not unique: every `pl.lit(pl.Series("f", ...))` prints `Series[f]`, and
-  every Python UDF prints `python_udf`. Two such parameters in one pipeline
-  shared a plugin input, so the second op silently read the first op's values —
-  `.scale(pl.lit(s1)).scale(pl.lit(s2))` applied `s1` twice. The same text
-  identity decided CSE merges and root-column deduplication. Identity is now
-  `Expr.meta.eq`, through one slot table per graph (CR-31).
-- **`cast(A)→cast(B)` no longer drops a narrowing intermediate cast.** The engine
-  collapsed consecutive casts unconditionally, discarding the intermediate even
-  when it quantized — a fractional-`f32` `.cast("u8").cast("f32")` returned `0.5`
-  instead of the correct `1.0`. It now collapses only when the intermediate dtype
-  losslessly holds the input (`DType::losslessly_contains`); a narrowing
-  intermediate is kept and executes. A float intermediate between an integer
-  input and an integer target is kept too, although it is lossless: float → int
-  saturates where int → int wraps, so collapsing `u16 → cast("f32") → cast("u8")`
-  turned 300 into 44 instead of 255.
-- **A malformed VIEW blob can no longer cause undefined behaviour.** A blob
-  whose `data_offset` or strides were not multiples of the element size built a
-  misaligned typed slice in release builds (debug builds panicked). Both blob
-  decoders now read through one validated parser (`view_buffer::parse_blob`)
-  that rejects it as a row error, and `ViewBuffer::as_ptr` checks alignment in
-  every build. `ViewBuffer::from_blob` also no longer reads past its own copy
-  for a strided blob. (CR-41)
-- **`on_error("null")` now covers failures the engine raises as panics.** Some
-  data-dependent failures, such as two operands that cannot broadcast, are
-  raised inside the engine as panics, which were caught once per batch. Under
-  `on_error("null")` one such row failed the whole query, good rows included,
-  and under streaming how much of the query it took down depended on the
-  morsel size. They are now caught per row and follow the row policy like any
-  other error (CR-34).
-- **A row the sink cannot represent is an error, not a null.** If the encoder
-  ever produced a row of a different kind than the sink expects,
-  `build_series_from_spec` published it as null. It now raises an internal error
-  naming both kinds (CR-38).
-- **`list` and `array` sink rows that break the plan are errors.** A row whose
-  dtype differs from the planned one was silently cast (only the first row was
-  checked), and an `array` row with the wrong element count was accepted
-  (CR-33).
-- **`uv run` no longer builds the extension at release LTO**
-  (`[tool.uv] package = false`). (CR-43)
-- **The OpenCV and Pillow benchmark adapters time the operation polars-cv
-  runs.** Several single-op benchmarks compared different work, and the
-  suite's output validator reported the gap as a correctness failure:
-  `resize` ran OpenCV's `INTER_AREA` against bilinear; `sharpen` an unsharp
-  mask (OpenCV) or Pillow's `SHARPEN` against polars-cv's 3×3 kernel;
-  `erode`/`dilate` thresholded to a mask on the polars-cv side only;
-  `adjust_contrast` and `adjust_brightness` truncated to u8 (Pillow's
-  contrast also took the luminance mean) against polars-cv's f32 result;
-  `blur` used another kernel size and border; `sobel_x` another border; and
-  `rotate` turned counter-clockwise (Pillow), about another centre, and
-  truncated its expanded canvas. Each adapter now computes polars-cv's
-  definition, and Pillow's `sharpen` raises `NotImplementedError`, as its
-  missing `canny`/`sobel_x` do, instead of timing another filter.
-  `tests/test_benchmark_adapters.py` holds every single-op benchmark, per
-  library, to a stated per-pixel tolerance against both polars-cv engines.
+- Inputs an op cannot handle are now row errors that `on_error` handles, not
+  panics, and some silent wrong results now raise: `reshape` to a different
+  element count, image ops on anything but `[H, W]`/`[H, W, C]`, `transpose`
+  with too few axes, and a reshape after a transpose/flip/crop.
+- `crop` with a negative `top`/`left`/`height`/`width`, or a window past the
+  image, now raises; it used to return a shifted or shrunk window. Giving only
+  `height` or `width` no longer discards it.
+- `source("raw")` rejects a byte length that is not a whole number of elements
+  instead of dropping the remainder.
+- A jagged or null `List` row is refused; it used to read past the row's values
+  or come back re-rowed. `.contour.label_reduce`'s image operand is decoded the
+  same way.
+- A null contour coordinate is an error, not the origin.
+- `.contour.contains_point` and other geometry functions read points and bboxes
+  by field name and refuse null or non-`Float64` fields; they read a missing
+  value as 0.0 and tested a `{y, x}` point swapped.
+- `.point.rotate(origin=...)` with a null origin gives a null row, not a
+  rotation about `(0, 0)`; a null input point gives a null result point.
+- `numpy_from_struct` refuses a struct describing memory outside its data.
+- `img.apply_mask(contours)`, `img.add(contours)` and `channel_merge` over a
+  contour-domain node are refused when the pipeline is built, not at every row.
+- `apply_contour_mask()` ran only the first op of the contour pipeline,
+  dropping a `translate()` or `scale_contour()` before the rasterize.
+- A per-row parameter was validated as a stand-in value:
+  `channel_select(index=pl.col("i"))` on a known `[H, W]` buffer was refused.
+- An image of unknown size was planned as square: `resize_max(7,
+  filter=pl.col("f"))` published `[7, 7]` for a 100x50 image that executes as
+  7x4.
+- Distinct expression parameters could collapse into one (e.g. two
+  `pl.lit(pl.Series(...))`), so `.scale(pl.lit(s1)).scale(pl.lit(s2))` applied
+  `s1` twice.
+- `cast(A)` then `cast(B)` dropped a narrowing intermediate cast: a
+  fractional-`f32` `.cast("u8").cast("f32")` returned `0.5` instead of `1.0`.
+- A malformed VIEW blob could cause undefined behaviour; it is now a row error.
+- `on_error("null")` did not cover failures raised as panics, such as
+  operands that cannot broadcast; one bad row failed the whole query.
+- A row the sink cannot represent is an error, not a null; `list` and `array`
+  sink rows that differ from the plan (dtype, element count) are errors.
+- The OpenCV and Pillow benchmark adapters now time the same operation as
+  polars-cv.
 
 ### Performance
 
-- **Less per-row executor overhead.** A run of all-literal buffer ops is
-  planned once per input layout per call and replayed, instead of re-planned
-  on every row (a 4-op chain: 2.62 → ~1.85 µs/row), and the row loop
-  addresses nodes by position instead of hashing node-id strings (no-op rows:
-  1.16 → 0.72 µs). Debug-build figures (CR-37).
-- **`canny` on u8 input runs in integer arithmetic** over padded planes, as
-  OpenCV does.
-- **Image decode and encode no longer copy every pixel an extra time.**
-  Decoding hands the codec's allocation over instead of converting through a
-  new image; PNG, JPEG and WebP encode read the buffer's pixels in place. Only
-  a colour type the encoder refuses as it is (JPEG's alpha layouts) still
-  converts. 16-bit PNG keeps the one image-sized buffer its big-endian byte
-  swap needs.
-- **`blob` and `raw` sources read aligned rows in place.** A row longer than
-  12 bytes that already starts on an 8-byte boundary in the column's memory (a
-  `blob` sink's rows always do) is read where it lies; others are copied once,
-  at memcpy speed (the aligned copy used to assemble 8-byte words one at a
-  time, ~7x slower).
-- **f32 scalar ops write in place in pipelines, as the engine intended.** A
-  segment takes its input by value, and a node that is its upstream's only
-  reader (not a graph output, not an operand) moves that output instead of
-  sharing it, so the fused kernel's in-place path applies.
-- **`list` and `array` sinks are built straight into Arrow and copy each
-  row's values once.** A `list` sink of rank 2 or more, or an `array` sink
-  with even one null row, built one `AnyValue` per element and ran ~34–40x
-  slower than `sink("numpy")`; both now cost about what the numpy sink costs
-  (CR-33).
-- **Contour columns are read and written straight from Arrow.** Every contour
-  consumer shares one reader over the column's arrays (6 allocations for a
-  two-contour row, was 98), and the contour sink and `.contour` transforms
-  build their output directly: encode overhead drops ~10x and
-  `.contour.translate()` ~6x on a 90k-point batch (CR-36).
-- **`source("array")` is no longer quadratic in the batch size.** Rows are
-  views into the column (~1.2 µs per row, was ~35 µs on a 100k-row morsel of
-  8×8 arrays) (CR-40).
-- **`blur()` uses AVX2 when the CPU has it, in the published wheels too.**
-  The wheels target baseline x86-64; blur dispatches at runtime to an AVX2
-  build (1.2–1.3x faster), with bit-identical output on every CPU (CR-35).
-- **Plan-time passes are linear.** Identity elimination folds each op's
-  entering state once (O(n), was O(n²) FFI calls). CSE groups nodes by a
-  canonical source serialization instead of `hash(source)`, so a hash
-  collision cannot fuse across different sources.
+- Less per-row executor overhead, and image decode and encode no longer copy
+  every pixel an extra time.
+- `canny` on u8 input runs in integer arithmetic.
+- `blob` and `raw` sources read aligned rows in place.
+- f32 scalar ops write in place in pipelines.
+- `list` and `array` sinks cost about what the numpy sink costs (they were
+  ~34–40× slower).
+- Contour columns are read and written straight from Arrow: `.contour.translate()`
+  about 6× faster on a 90k-point batch.
+- `source("array")` is no longer quadratic in batch size.
+- `blur()` uses AVX2 when available, about 1.2–1.3× faster, in the published
+  wheels too.
 
-### Internal
+### Removed
 
-- **One typed op protocol.** Every op is a variant of a mode-generic family
-  enum (`ImageOpKind<M>`, `ComputeOp<M>`, `GraphOp<M>`, …) listed in
-  `typed_ops!`; sources and sinks are `#[derive(Ops)]` families
-  (`formats::source::Source`, `formats::sink::Sink`), and the geometry
-  accessors are `ContourFn`/`PointFn`/`BBoxFn`. `TypedOp` is
-  `GraphStep<Wire>`: the planner (`src/plan.rs`, one `plan::step` per
-  appended op) reads its rules directly, and resolving it per row gives the
-  `GraphStep<Exec>` that runs. New crate `polars-cv-macros` holds the
-  derives. Each op declares its shape as data (`Op::shape() -> OpShape`,
-  evaluated on known sizes at execution and symbolically at plan time), and
-  new required `Op` contracts `identity_rule` and `is_spatial_window` drive
-  identity elimination and the spatial pushdown with no op name matched in
-  Python. The legacy name-keyed op protocol is deleted.
-- **The Python surface is generated.** `scripts/gen_ops.py` writes the
-  enums, every builder method, `source()`, the geometry accessors and
-  `LazyPipelineExpr`'s chainable methods (`_ops_generated.py`,
-  `_lazy_forwarders.py`) from the committed catalogues
-  (`tests/golden/{op,io,enum,geom}_catalog.json`); `lazy.pyi` and
-  `scripts/gen_lazy_stub.py` are gone and `ty` checks `lazy.py` itself. Every
-  "Domain:" docstring line is generated from the op's domain contract, and a
-  hand-written sugar method's is composed from the ops it declares
-  (`@_sugar`).
-- **Safety net.** A golden behaviour corpus (`tests/golden/op_corpus.json`),
-  a frozen builder call surface (`tests/golden/signatures.json`), a
-  pickle/copy pin, a single test seam for planner state
-  (`tests/_plan_view.py`) and plan-build benchmarks (`benchmarks/plan_build.py`).
-- **Source decoding lives in `graph/decode.rs`**, and geometry functions share
-  one row splitter (`row_split.rs`) and one reader per geometry type
-  (`geom_columns.rs`).
-- `scripts/verify.sh` and the pre-commit clippy hook run cargo under the PyO3
-  environment `maturin develop` sets (`scripts/with-pyo3-env.sh`), so the two
-  no longer invalidate each other's builds; `verify.sh` checks that cargo
-  finds maturin's build fresh.
+- `Pipeline.output_encoding()` and `PlanState.DIM_NAMES`.
+- `convolve2d(ksize=)`, `sobel(ksize=)` and `laplacian(ksize=)`; the kernel is
+  `3x3` for `sobel`/`laplacian`, and `convolve2d`'s side comes from `kernel`'s
+  length (a square of an odd number). `sobel(axis=)` accepts only `"x"`/`"y"`.
+- Loose contour-struct matching: the ring must be the `exterior` field (a
+  `points` field or the first list field is no longer read).
+- The per-row `"triangle"` alias for resize `filter=` (use `"bilinear"`) and
+  `convert_color`'s `"grey"`/`"grayscale"` (use `"gray"`).
+- The `affine_fusion` optimization pass; `rotate`, `warp_affine` and
+  `rotate_and_scale` are unchanged and run unfused.
 
 ## [0.28.0] — 2026-09-12
 
+### Breaking changes
+
+- `froc_auc(method="trapezoidal")` raises without an `fp_range`, e.g.
+  `fp_range=(0.0, 8.0)`.
+- `froc_auc` and `lroc_auc` default to `correction="normalize"` (mean
+  sensitivity over the window); pass `correction=None` for the raw partial area.
+  `lroc_auc` defaults `fpf_range` to `(0.0, 1.0)`, and `froc_auc_ci_lazy` and
+  `lroc_auc_ci_lazy` mirror these defaults.
+- `partial_auc`'s below-curve `UserWarning` is gone.
+
 ### Added
 
-- **14 core elementwise-math `Pipeline` methods.** `neg`, `abs`, `sqrt`,
-  `square`, `reciprocal`, `sign`, `floor`, `ceil`, `round`, `trunc`,
-  `clamp_min`, `clamp_max`, `add_constant` and `subtract_constant` join the
-  pure-elementwise scalar-op vocabulary. Each promotes to float (integers → f32,
-  f64 preserved) like `scale`/`relu` and fuses automatically with adjacent
-  scalar ops into a single kernel pass, so a chain of them costs one pass rather
-  than one per op. `clamp_min`/`clamp_max`/`add_constant`/`subtract_constant`
-  take a bound that may be a per-row expression; `round` breaks ties to even
-  (banker's rounding, matching Polars/numpy). A cross-path guard pins the f32
-  bulk kernel and the f64 cold path to compute the same function for every
-  variant, so the fused and unfused results cannot diverge.
-
-### Changed
-
-- **`froc_auc` now requires an explicit `fp_range`, and `froc_auc`/`lroc_auc`
-  normalize by default (breaking).** The trapezoidal AUC previously defaulted to
-  the raw area over the *observed* x-range, which for FROC is neither bounded nor
-  comparable across models (its false-positives-per-image axis is unbounded and
-  its observed maximum is model-dependent). Now:
-  - `froc_auc(method="trapezoidal")` **raises** without an `fp_range` — there is
-    no reasonable default window; pass e.g. `fp_range=(0.0, 8.0)`, or use
-    `froc_summary_table` / `method="mann_whitney"` for range-free summaries.
-  - `lroc_auc` defaults `fpf_range` to the full `(0.0, 1.0)` FPF domain (LROC's
-    axis is a bounded fraction), preserving the classic LROC AUC value.
-  - `correction` now defaults to `"normalize"` for both, so the result is the
-    mean sensitivity over the window (bounded, comparable); pass
-    `correction=None` for the raw partial area. `froc_auc_ci_lazy` /
-    `lroc_auc_ci_lazy` mirror these defaults.
-  - `method="mann_whitney"` is unchanged; it rejects a range and ignores
-    `correction` (a rank statistic integrates no curve).
-
-- **All AUC integrals are now lazy; the eager `_auc.py` integrals were removed.**
-  `trapz_auc`, `partial_auc` and `_interp` (Series-based reductions to a Python
-  float) are deleted. Every AUC — `froc_auc`/`lroc_auc`, `MetricResult.auc` and
-  all-points/trapezoidal AP — reduces through the single lazy authority in
-  `_auc_expr.py` (`collapse_curve` + `trapz_auc_expr` / `partial_auc_expr`) and
-  collects streaming. `_auc.py` keeps only the `correction` vocabulary
-  (`CorrectionMethod` + `validate_correction`). Consequence: `partial_auc`'s
-  below-curve `UserWarning` had no lazy equivalent and is gone.
+- Elementwise `Pipeline` methods `neg`, `abs`, `sqrt`, `square`, `reciprocal`,
+  `sign`, `floor`, `ceil`, `round`, `trunc`, `clamp_min`, `clamp_max`,
+  `add_constant` and `subtract_constant`. They promote to float, fuse with
+  adjacent scalar ops, and `round` breaks ties to even; the bound of
+  `clamp_min`, `clamp_max`, `add_constant` and `subtract_constant` may be a
+  per-row expression.
 
 ### Fixed
 
-- **Weighted FROC partial-AUC is weight-scale invariant again.**
-  `froc_curve_lazy` divided sensitivity and false-positives-per-image by
-  weighted denominators floored with `max(..., 1.0)`, which assumes unit-scale
-  weights: under normalized (sub-unit) weights the weighted ground-truth mass is
-  `< 1` and was clamped up to `1`, inflating the denominator and roughly halving
-  the partial AUC purely by rescaling the weights — a metric that should be
-  weight-scale invariant moved by rescaling alone. The division now guards
-  against the unclamped weighted mass (mirroring the LROC curve), and a zero
-  weighted denominator (no weighted ground truths, or all-zero weights) yields
-  `null`, surfacing the degenerate input rather than fabricating a value. LROC's
-  own zero-mass branch, which previously substituted the unweighted count and
-  silently masked the same degeneracy, now yields `null` too. Guarded by new
-  weight-scale-invariance and null-on-degenerate-mass regression tests for both
-  FROC and LROC.
+- Weighted FROC partial AUC changed with the scale of the weights; sub-unit
+  weights roughly halved it. A zero weighted denominator now gives null, and so
+  does LROC's zero-mass case.
+- `correction="normalize"` returned run-to-run varying, often negative values
+  on the in-memory engine.
 
-- **`correction="normalize"` no longer returns non-deterministic garbage on the
-  in-memory engine.** The normalize branch guarded the zero-span case with
-  `pl.when(span > 0).then(raw / span).otherwise(0.0)`, reading `span` off the
-  **sorted** x. The in-memory engine miscompiles a `pl.when` whose predicate
-  embeds a sorted reduction next to a `.then` that also embeds sorted reductions:
-  an ungrouped normalized `.collect()` (the default engine) returned values that
-  changed run-to-run and were frequently negative, while `engine="streaming"`
-  and the `group_by().agg()` path compiled the same expression correctly. `span`
-  is now read off the unsorted column (`x.max() - x.min()`, order-independent and
-  numerically identical), so no sort enters the predicate. Guarded by
-  `test_auc_expr.py::TestNormalizeEngineParity` and the engine-stability tests in
-  `test_froc_auc.py` / `test_lroc_auc.py`.
+### Removed
+
+- The eager `trapz_auc`, `partial_auc` and `_interp` helpers; every AUC now
+  reduces lazily.
 
 ## [0.27.0] — 2026-09-10
 
-### Removed
+### Breaking changes
 
-- **The McClish standardized partial-AUC correction is removed (breaking).**
-  `correction="mcclish"` is no longer accepted by `froc_auc`, `lroc_auc`,
-  `partial_auc`/`trapz_auc`, their `_auc_expr` reductions, or
-  `MetricResult.auc`; the `mcclish_correction` helper and its expression twin
-  `_mcclish_correction_expr` are deleted. McClish's standardization
-  (Med Decis Making 1989;9(3):190–195) maps a partial area into `[0.5, 1.0]`
-  against the **ROC** chance diagonal `y = x` on the unit square, so it is only
-  meaningful when the x-axis is a probability bounded to `[0, 1]`. None of the
-  curves this package integrates is that ROC curve: FROC's x-axis is false
-  positives **per image** (unbounded — for any window with `lo+hi ≥ 2`, such as
-  the standard `fp_range=(0, 8)`, the old code silently returned the sentinel
-  `0.5` for *every* model), LROC's chance line is not the diagonal, and the PR
-  chance line is horizontal at prevalence. The `correction` vocabulary is now
-  `"normalize"` (divide the partial area by the window width — a bounded mean
-  sensitivity that needs no ROC assumption) or `None`, and an unrecognised
-  `correction` is now **rejected** with `ValueError` rather than silently
-  degraded to the raw area. Migrate `correction="mcclish"` →
-  `correction="normalize"`.
+- `correction="mcclish"` is removed from `froc_auc`, `lroc_auc`, `partial_auc`,
+  `trapz_auc` and `MetricResult.auc`; use `correction="normalize"`. An
+  unrecognised `correction` now raises `ValueError` instead of degrading to the
+  raw area.
 
 ## [0.26.0] — 2026-09-08
 
+### Breaking changes
+
+- The eager bootstrap API is removed: `bootstrap_froc_auc`, `bootstrap_lroc_auc`,
+  `bootstrap_pr_auc`, `bootstrap_metric_sequential`, `BootstrapResult` and
+  `MetricResult.bootstrap_ci`. Use `froc_auc_ci_lazy`, `lroc_auc_ci_lazy` or
+  `average_precision_ci_lazy`, which return a `pl.LazyFrame`
+  `[*group_by, <metric>, ci_lower, ci_upper]`; e.g.
+  `bootstrap_froc_auc(t, seed=0).ci_lower` becomes
+  `froc_auc_ci_lazy(t, seed=0).collect()["ci_lower"].item()`.
+- `shear` and `rotate_and_scale` require `output_size` (and `rotate_and_scale`
+  `center`) as keyword-only arguments; omitting one raises `TypeError`.
+- All-points AP now collapses tied scores into one precision-recall point
+  (scikit-learn/COCO convention), so results on inputs with tied scores change;
+  distinct scores are unaffected.
+
 ### Changed
 
-- **All-points AP is now independent of input row order on tied scores.**
-  The all-points average precision (`average_precision(...,
-  interpolation="all_points")`, `PrecisionRecallResult.auc("all_points")`,
-  `mean_average_precision`, `all_points_ap_by_group`, and the `*_ap` bootstraps)
-  now applies a canonical tie convention: detections that share a score collapse
-  into a single precision–recall point, using the cumulative TP/FP after the
-  whole tied block (the scikit-learn / COCO convention). Previously the curve
-  visited tied detections in input row order, so the AP — and the
-  `PrecisionRecallResult.curve` — could differ between runs that shuffled equal-
-  scored rows. **This changes AP output on inputs with tied scores** (values with
-  strictly distinct scores are unaffected). It also makes the scalar and grouped
-  estimators agree exactly on ties.
-
-- **Bootstrap confidence intervals are now lazy and group-aware (breaking).**
-  The eager, scalar bootstrap API is removed — `bootstrap_froc_auc`,
-  `bootstrap_lroc_auc`, `bootstrap_pr_auc`, `bootstrap_metric_sequential`,
-  `BootstrapResult`, and `MetricResult.bootstrap_ci` (with its
-  `_bootstrap_grouped` hook and the `threshold_counts_by_group` authority) are
-  all gone. In their place are three free functions —
-  `froc_auc_ci_lazy`, `lroc_auc_ci_lazy`, `average_precision_ci_lazy` — each
-  returning a `pl.LazyFrame` `[*group_by, <metric>, ci_lower, ci_upper]` and
-  **never collecting internally**. The whole bootstrap (resample, per-replicate
-  metric, and the percentile bounds) is one Polars plan the caller collects, so a
-  CI can be built at plan time with no data present and joined onto a
-  point-metric frame instead of looping over groups in Python. Migrate
-  `bootstrap_froc_auc(t, seed=0).ci_lower` →
-  `froc_auc_ci_lazy(t, seed=0).collect()["ci_lower"].item()`, and reach for
-  `group_by=` to get one bound row per group.
-- **The resample is now genuinely collect-free.** `_lazy_resample` builds its
-  draw skeleton by cross-joining a constant-length reps frame against the base
-  units, so the per-replicate slot count is a window expression rather than the
-  `O(1)` scalar collect the previous release still paid. Draws are partitioned
-  within each group (a group only redraws its own units) and stratified within
-  `gt_label`; an empty base or group yields no rows instead of raising.
-- **Degenerate groups null their bounds instead of raising.** A group keeps its
-  point estimate but reports null `ci_lower`/`ci_upper`, so one lazy plan spans
-  viable and degenerate groups — no per-group `try/except`. Viability needs ≥1
-  positive target; under `method="mann_whitney"` (a two-class rank statistic) it
-  also needs ≥1 negative.
-- **`mean_average_precision(interpolation="all_points")` is now a single lazy
-  plan.** It computes every `(iou_threshold, class)` AP through the shared
-  grouped authority `all_points_ap_by_group` instead of a Python loop of eager
-  per-cell `average_precision` collects. It now applies the same canonical tie
-  convention as the rest of the all-points path (above), so its output is
-  order-independent on ties as well as bit-identical to the previous loop on
-  distinct scores. The VOC `"11_point"` method is unchanged (it keeps the
-  per-class loop).
-- **`shear` and `rotate_and_scale` require their sizing parameters (breaking).**
-  `output_size` (both) and `center` (`rotate_and_scale`) are now required
-  keyword-only arguments instead of defaulting to `None` and immediately raising
-  "auto-size not yet implemented". `output_size` is structural — it sets the
-  plan-time output H/W — and an image source's dimensions are unknown at plan
-  time, so auto-sizing cannot yield a plan-time shape; the requirement is the
-  principled end state, not a placeholder. Callers that already passed both are
-  unaffected; omitting one now raises `TypeError` at call time rather than
-  `ValueError` at build time.
-
-### Removed
-
-- `PrecisionRecallResult.detection_table` — it existed only to feed the removed
-  `bootstrap_ci`; nothing reads it now.
-- `MetricResult.interpolate` / `MetricResult.summary_table` — unused eager
-  wrappers over `interpolate_curve_lazy`; nothing called them (the FROC/LROC
-  helpers build on `interpolate_curve_lazy` directly and stay lazy). To
-  interpolate a result's curve, call `interpolate_curve_lazy(result.curve.lazy(),
-  …)`.
-- The `heatmap=` back-compat alias on the `.contour.label_reduce()` accessor —
-  it had no callers and duplicated `image=`. Pass `image=` instead. (The
-  `Pipeline.label_reduce(contours=...)` method is unaffected.)
+- `group_by=` on the lazy CI functions gives one bound row per group; a group
+  with no positive target (or, for `method="mann_whitney"`, no negative) keeps
+  its estimate with null `ci_lower`/`ci_upper`.
+- `mean_average_precision(interpolation="all_points")` is a single lazy plan.
 
 ### Fixed
 
-- **`grayscale` on non-`u8` data no longer corrupts downstream kernel fusion.**
-  `ViewExpr::grayscale()` tracked its output dtype as `u8` regardless of input,
-  contradicting the op's `PreserveInput` contract. The published schema stayed
-  correct (it reads the contract over FFI), so the divergence was silent — but a
-  fused compute block after grayscale (e.g. `grayscale → invert → scale`) read
-  the mistracked `u8` and inverted normalized `f32` as `255 − x` instead of
-  `1 − x`, an off-by-254 wrong result. The four remaining image ops that still
-  routed through hand-written builders (`grayscale`, `threshold`, `resize`,
-  `blur`) are folded into `apply_op`'s single `ViewDto::Image` construction
-  arm, which derives shape/strides/dtype from each op's contract; the image
-  builders are now thin wrappers over it, so no builder can track a dtype its
-  contract does not declare. The dtype-tracking guard was extended to cover
-  `Grayscale`/`Threshold`/`Blur`/`Resize` and the builder methods, and a
-  fusion-execution regression was added.
+- `grayscale` on non-`u8` data was tracked as `u8`, so a fused op after it (e.g.
+  `grayscale -> invert -> scale`) inverted normalized `f32` as `255 - x`
+  instead of `1 - x`.
+
+### Removed
+
+- `PrecisionRecallResult.detection_table`, `MetricResult.interpolate` and
+  `MetricResult.summary_table` (use `interpolate_curve_lazy`), and the
+  `heatmap=` alias on `.contour.label_reduce()` (use `image=`).
 
 ## [0.25.0] — 2026-09-05
 
 ### Changed
 
-- **Bootstrap resampling is now fully lazy and streaming.** The resample frame
-  was the last eager step — a Python `for b in range(n_bootstrap)` loop calling
-  `pl.Series.sample` and building a `n_bootstrap × n_units` DataFrame in memory
-  before any lazy plan ran. It is replaced by `_lazy_resample`, a
-  position-independent hash-expression draw over a lazy `pl.int_range` skeleton
-  (`hash(slot, seed) % stratum_size`), so the whole bootstrap — draw included —
-  runs as one streaming plan and the intermediate frame never leaves the engine.
-  The only materialization is an `O(1)` scalar collect of the base-unit count.
-  `bootstrap_froc_auc` / `bootstrap_lroc_auc` / `bootstrap_pr_auc` inherit this;
-  `bootstrap_pr_auc` also dropped the two eager `collect()`s it did on the source
-  frames.
-- **The draw is invariant to the runtime thread count.** Because each draw is a
-  hash of its own global slot id (never of row position), a given `seed` yields a
-  bit-identical confidence interval regardless of `POLARS_MAX_THREADS` or how the
-  streaming engine morselizes — closing the join-order nondeterminism the old
-  path fought (it once produced negative AUCs on macOS CI).
-- **`MetricResult.bootstrap_ci` (PR/Confusion) is vectorized.** The sequential
-  per-replicate reconstruct loop (a full collect per replicate per metric) is
-  gone; one shared lazy resample feeds `_bootstrap_grouped`, which computes each
-  metric grouped by `bootstrap_id` in a single plan. `bootstrap_ci(metric="auc")`
-  is now bit-identical to `bootstrap_pr_auc` (same stratified resample, same
-  all-points estimator, read from the shared `all_points_ap_by_group` /
-  `threshold_counts_by_group` authorities). Supported metrics: `auc`
-  (`all_points`), `precision_at`, `recall_at`; any other method raises rather
-  than silently degrading.
+- Bootstrap resampling is fully lazy and streaming, and a given `seed` gives a
+  bit-identical interval regardless of thread count. `seed=None` is now
+  deterministic. The draw stream differs from earlier releases, so seeded
+  intervals change.
+- `MetricResult.bootstrap_ci` is vectorized; `bootstrap_ci(metric="auc")`
+  matches `bootstrap_pr_auc`. Supported metrics are `auc`, `precision_at` and
+  `recall_at`; any other raises.
 
 ### Removed
 
-- **`MetricResult._reconstruct` (and the PR override).** It rebuilt and collected
-  a whole result per replicate; the vectorized `_bootstrap_grouped` hook replaces
-  it. Guarded by `test_removed_surfaces.py::test_bootstrap_reconstruct_hook_is_gone`.
-- **`MetricResult._resolve_sampling_entities`** — the last eager step in the
-  entity-level path. It collected the metadata and iterated rows in Python to
-  build the `entity → [image_id]` map; `_resolve_bootstrap_samples` now expands
-  entities to images with a lazy `group_by`/`explode` instead, so nothing in the
-  bootstrap flow leaves the streaming engine. Guarded by
-  `test_removed_surfaces.py::test_eager_sampling_entity_resolver_is_gone`.
-- **`DetectionTable.image_ids_and_strata`** — the eager image-id list plus
-  `{image_id: stratum}` dict the old bootstrap sampled from. Its only caller was
-  `_resolve_sampling_entities` (also removed); `_lazy_resample` now stratifies
-  directly off the `gt_label` column with no Python-side id list or strata dict.
-  Guarded by
-  `test_removed_surfaces.py::test_detection_table_image_ids_and_strata_is_gone`.
-
-### Note
-
-- The lazy sampler changes the RNG *stream*: a given `seed` no longer reproduces
-  the pre-lazy `pl.Series.sample` draw values (it reproduces its own draws
-  bit-for-bit, on every platform and thread count). `seed=None` is now
-  deterministic (a fixed hash constant) rather than a fresh draw each run.
+- `MetricResult._reconstruct`, `MetricResult._resolve_sampling_entities` and
+  `DetectionTable.image_ids_and_strata`.
 
 ## [0.24.0] — 2026-09-03
 
-### Changed
+### Breaking changes
 
-- **FROC is fully lazy again; the conflicting-weight guard is gone.**
-  `froc_curve_lazy` / `froc_auc` no longer collect `image_metadata` at
-  construction time — they build a plan with **zero** eager collects, so the
-  trapezoidal path streams like the Mann-Whitney and LROC paths already did. The
-  build-time guard that raised `ValueError` on disagreeing duplicate weights is
-  removed; a new `weight_agg` keyword (`"first"` default, plus `"min"` / `"max"` /
-  `"mean"` / `"sum"`) resolves each `(image[, class])` key's weight
-  deterministically for the numerator and the denominators alike
-  (`metrics._weights.resolve_key_weights`). Conflicting weights now resolve per
-  this policy instead of raising — supplying consistent weights is the caller's
-  responsibility.
-- **The interpolation/summary helpers are lazy.** `froc_sensitivity_at_fp`,
-  `froc_summary_table` and `lroc_sensitivity_at_fpf` now return a `LazyFrame`
-  (**breaking**: previously `float | None` / `DataFrame`); no metric method
-  collects internally — the caller owns the collect. A scalar is
-  `froc_sensitivity_at_fp(t, fp).collect().item()`. They and
-  `MetricResult.interpolate` / `summary_table` share one lazy authority,
-  `metrics._auc_expr.interpolate_curve_lazy` (`collapse_curve` + `join_asof`).
+- `froc_sensitivity_at_fp`, `froc_summary_table` and `lroc_sensitivity_at_fpf`
+  return a `LazyFrame`; a scalar is `froc_sensitivity_at_fp(t, fp).collect().item()`.
+- `froc_curve_lazy` and `froc_auc` no longer raise on conflicting duplicate
+  weights; they resolve them per the new `weight_agg` keyword.
 
 ### Added
 
-- **Weighted Mann-Whitney FROC/LROC AUC.** `froc_auc` / `lroc_auc` with
-  `method="mann_whitney"` are now weighted by `image_metadata.weight` at both
-  `level="detection"` and `level="image"`, consistent with the trapezoidal path
-  (previously weights were ignored). Implemented as one weighted-capable authority
-  — `metrics._auc_expr.collapse_scores` (bucket by distinct score → positive/
-  negative weight mass) then `mann_whitney_auc_expr` (weighted rank-sum) — so the
-  unweighted statistic is literally the weighted one with every weight `= 1`, not
-  a second implementation. `bootstrap_froc_auc` / `bootstrap_lroc_auc` inherit the
-  weighting through `froc_auc` / `lroc_auc`.
+- `weight_agg` (`"first"` default, `"min"`, `"max"`, `"mean"`, `"sum"`) resolves
+  each `(image[, class])` weight.
+- `froc_auc` and `lroc_auc` with `method="mann_whitney"` are weighted by
+  `image_metadata.weight` at `level="detection"` and `level="image"`.
+
+### Changed
+
+- `froc_curve_lazy` and `froc_auc` do no eager collects when built.
 
 ## [0.23.0] — 2026-09-03
 
+### Breaking changes
+
+- `froc_auc` and `lroc_auc` return a `LazyFrame` with one row per group; use
+  `froc_auc(table).collect().item()` for a float.
+- Removed `FROCResult`, `LROCResult`, `froc_curve` and `lroc_curve`, and the
+  multi-metric-dict bootstrap for FROC/LROC (call `bootstrap_froc_auc` or
+  `bootstrap_lroc_auc` once per metric).
+
 ### Added
 
-- **Expression-valued, group-aware FROC and LROC AUC.** `froc_auc` and
-  `lroc_auc` return a `LazyFrame` — one row per group — instead of reducing a
-  curve to a Python float, so the integral rides inside a lazy plan and a
-  `group_by` becomes a Polars grouping rather than a Python loop. Both take the
-  trapezoidal family (`raw` / `partial` / `normalize` / `mcclish`) and the
-  Mann-Whitney family; FROC keeps its image-level Mann-Whitney (`level="image"`)
-  and both expose the detection level. The reusable expression core lives in
-  `metrics._auc_expr`, the single authority both the curve builders and the AUC
-  path read.
-
-- **Lazy curve and summary helpers.** `froc_curve_lazy` / `lroc_curve_lazy`
-  return the curve as a `LazyFrame`, and `froc_sensitivity_at_fp`,
-  `lroc_sensitivity_at_fpf` and `froc_summary_table` are standalone lazy
-  functions built on them, reusing the shared `MetricResult` interpolation and
-  summary geometry. `froc_sensitivity_at_fp` / `lroc_sensitivity_at_fpf` return
-  `None` when the operating point is off the curve; `froc_summary_table` returns
-  a null row.
-
-- **Vectorized, seed-reproducible FROC/LROC bootstrap.** `bootstrap_froc_auc`
-  and `bootstrap_lroc_auc` build every replicate as one seeded
-  `(bootstrap_id, image_id)` sample frame and compute the AUC grouped by
-  replicate in a single lazy plan, replacing the sequential per-replicate
-  Python loop. The confidence interval is now reproducible for a given `seed`
-  (the ids are sorted before sampling, closing the `.unique()` order-dependence
-  that made a fixed seed sample different images each run). A `sample_col`
-  argument resamples at the entity level (expanding entities to their images),
-  and a `level` argument selects the image- or detection-level Mann-Whitney AUC.
-
-- **Contour/bbox matchers accept a pre-decoded `LazyPipelineExpr`.**
-  `ContourMatcher.match()` (and `BBoxMatcher.match()`) now take either a column
-  name or a pre-decoded `LazyPipelineExpr` for `pred_col` / `gt_col`. When an
-  expression is passed the matcher appends its threshold / `extract_contours` /
-  `label_reduce` onto the node the caller already built, so a segmentation graph
-  and the contour extraction share one decode (collapsed by CSE) and stream from
-  a single collect.
+- `froc_curve_lazy` and `lroc_curve_lazy` return the curve as a `LazyFrame`, and
+  `froc_sensitivity_at_fp`, `lroc_sensitivity_at_fpf` and `froc_summary_table`
+  are standalone lazy functions.
+- `bootstrap_froc_auc` and `bootstrap_lroc_auc` run every replicate in one lazy
+  plan, are reproducible for a given `seed`, and take `sample_col` (entity-level
+  resampling) and `level` (image- or detection-level Mann-Whitney).
+- `ContourMatcher.match()` and `BBoxMatcher.match()` accept a pre-decoded
+  `LazyPipelineExpr` for `pred_col` / `gt_col`, sharing one decode and one
+  collect.
 
 ### Changed
 
-- **The contour and bbox matchers are lazy — one collect at the boundary.**
-  `ContourMatcher.match` / `BBoxMatcher.match` no longer materialize internally;
-  the eager `collect(engine="streaming")` that split the frame and ran an
-  alignment guard is replaced by a cached lazy `image_level`, and
-  `DetectionTable.collect` runs both derived frames through a single
-  `pl.collect_all`, so common-subplan elimination executes the shared
-  contour-extraction/correspond graph once (decode-once, collect-once) instead
-  of once per frame. The empty short-circuit is gone: empty and populated
-  inputs flow through the same lazy expressions, so their detection tables can
-  no longer disagree about dtypes.
-
-### Removed
-
-- **The eager FROC/LROC result API is gone.** `FROCResult` / `LROCResult`,
-  `froc_curve` / `lroc_curve`, the dead eager curve builders, and the
-  FROC/LROC-only `mann_whitney_u_auc` / `detection_level_mann_whitney` in
-  `_auc.py` are removed — they were a second implementation of the integral the
-  expression path now owns. Callers use `froc_auc(table).collect().item()` (or
-  the `froc_sensitivity_at_fp` / `froc_summary_table` curve helpers, and
-  `bootstrap_froc_auc` / `bootstrap_lroc_auc` for CIs); the FROC/LROC
-  Mann-Whitney is now `metrics._auc_expr.mann_whitney_auc_expr`. The shared
-  `MetricResult` base and `_auc.py`'s `trapz_auc` / `partial_auc` / `_interp` /
-  `mcclish_correction` stay — the PR curve and AP still use them.
-  `test_removed_surfaces.py` guards the deletion.
-
-- **The multi-metric-dict bootstrap convenience is dropped for FROC/LROC.** Call
-  `bootstrap_froc_auc` / `bootstrap_lroc_auc` once per metric.
+- The contour and bbox matchers are lazy and `DetectionTable.collect` runs both
+  derived frames in one `pl.collect_all`; empty and populated inputs now give
+  tables with the same dtypes.
 
 ## [0.22.0] — 2026-09-01
 
-### Changed
+### Breaking changes
 
-- **Detection matching left the CV layers; contour correspondence replaced it.**
-  `view-buffer` — the tensor engine — implemented greedy one-to-one assignment
-  *walked in descending confidence order*, which is the COCO/PASCAL evaluation
-  protocol, and returned a struct whose fields were true/false-positive counts.
-  The plugin's `score_order` computed that confidence ranking. Between them the
-  two CV layers owned a policy that belongs to whoever knows what the contours
-  mean.
-
-  `.contour.match_detections()` / `.bbox.match_detections()` are replaced by
-  `.contour.correspond()` / `.bbox.correspond()`, which run the same rule over
-  the same overlap matrix but take a visit **order** — a permutation — instead
-  of scores. Deriving that order from confidence is now `metrics`' business.
-  The engine's half is `pairwise::greedy_assign`, an assignment over a matrix
-  that knows nothing about detections.
-
-  **The rule itself did not change.** Every detection row, average precision,
-  PR AUC (both methods), LROC AUC and Mann-Whitney AUC came back bit-identical
-  across both matcher paths — 208 of 213 captured values exactly equal. The
-  other five are `fp_per_image` and the FROC trapezoidal AUC derived from it,
-  differing by ≤3e-16; that field is *already* nondeterministic run to run
-  (its weights arrive through a join, and joins do not preserve row order), a
-  pre-existing property confirmed by running unmodified code five times and
-  getting two different values.
-
-- **`correspond` rejects a malformed visit order** — wrong length, out of
-  range, or repeated — naming the row. The rule it replaced took scores and
-  silently skipped any index it could not use, so a short or duplicated order
-  quietly left predictions unvisited.
-
-### Removed
-
-- **`n_tp`, `n_fp`, `n_fn` and `pred_idx` are gone from the match result.**
-  All four were computed per row, published in `MATCH_RESULT_SCHEMA`, and
-  documented on two accessors — and read by nothing in the repository. The
-  accessor docstrings argued against reading them: per-row counts undercount
-  false negatives over any population containing ground-truth-bearing images
-  with no detections, which is exactly the population a detection metric
-  evaluates. `pred_idx` was worse than unread, it was `0..n` — a second copy of
-  the position its own list was already indexed by, and removing it collapsed
-  the metrics explode from a join plus two explodes into one explode.
-
-  `MATCH_RESULT_SCHEMA` is replaced by `CORRESPONDENCE_SCHEMA`
-  (`right_idx`, `overlap`), and unlike its predecessor it is exported at the
-  package top level — being geometry-only is why the metrics matchers read the
-  old struct's fields by string literal rather than from its declaration.
-
-- **The tie-break tolerance was unreachable, and is gone.** Both the engine and
-  its Python mirror carried an arm treating overlaps within 1e-12 as tied, so
-  the smaller index would win. Under an ascending scan the incumbent's index is
-  always the smaller one, so the arm's guard was never true — in the deleted
-  code as well as the new. The documented rule is now what the code does:
-  exact ties go to the smallest index, and an overlap larger by one ULP is not
-  a tie. Pinned by `test_greedy_assign_does_not_treat_a_near_tie_as_a_tie`.
-
-- **`metrics` no longer restates the dtype table.** `_POLARS_TO_CV_DTYPE` was a
-  hand-written Polars-type → engine-name map, kept honest by a *core* test that
-  imported a *metrics private* to compare it against `dtype_table!` — a
-  three-way coupling that could not survive the two ever being separated. The
-  correspondence is now generated into `NUMPY_TO_SHORT` and published as
-  `polars_cv.dtype_name_for`; the guard went with the duplicate it existed for.
-
-### Fixed
-
-- **The match-alignment check compared two lists that could not disagree.** It
-  compared `pred_idx` against `gt_idx`, both built by the engine from one
-  result. It now checks the payload against the *prediction* list, which is the
-  alignment the explode actually depends on — and that check immediately caught
-  a real case: `extract_contours` returns null, not an empty list, for a mask
-  with no contours, so predictions on a ground-truth-free image had a null
-  payload. Metrics already reads a null ground-truth column as zero targets;
-  the payload now follows, and those predictions stay the false positives they
-  are.
+- `.contour.match_detections()` and `.bbox.match_detections()` are now
+  `.contour.correspond()` and `.bbox.correspond()`, which take a visit order (a
+  permutation) instead of scores; matching results are unchanged.
+- `correspond` rejects a wrong-length, out-of-range or repeated visit order,
+  naming the row.
+- `n_tp`, `n_fp`, `n_fn` and `pred_idx` are gone from the match result, and
+  `MATCH_RESULT_SCHEMA` is replaced by `CORRESPONDENCE_SCHEMA` (`right_idx`,
+  `overlap`), exported at the package top level.
 
 ### Added
 
-- **Greedy assignment is testable on its own.** It used to live in a private
-  `match_from_matrix` reachable only through a detection-shaped wrapper, and
-  had exactly one test — a self-match at threshold 0.5. Tie-breaking, the
-  effect of the visit order, the threshold boundary and `bbox` matching had no
-  coverage at all in either language. `greedy_assign` takes a bare matrix and
-  has ten Rust unit tests; `tests/test_correspondence.py` adds 30 more that
-  cross-check the engine against a plain-Python reference on every case.
+- `polars_cv.dtype_name_for` maps a Polars dtype to the engine's name.
 
+### Changed
+
+- Overlap ties go to the smallest index, and an overlap larger by one ULP is not
+  a tie.
+
+### Fixed
+
+- Predictions on a ground-truth-free image no longer carry a null payload in
+  the metrics matchers; they remain false positives.
 
 ## [0.21.0] — 2026-08-24
 
-### Fixed
+### Added
 
-- **`ContourMatcher` could not read an image-bytes mask column.**
-  `metrics/_matching/_contour.py` decided the source format itself and mapped
-  every `Binary` column to `"blob"`, so a PNG mask failed with "Invalid blob
-  magic bytes" — while the same column read fine through `source("auto")`,
-  which checks the VIEW magic bytes and falls back to `image_bytes`. Metrics
-  now uses `source("auto")` and contributes only the one fact the Polars schema
-  settles that Rust cannot infer at plan time: a nested column's leaf dtype.
-  The `_gt_h`/`_gt_w` derivation likewise branches on the Polars dtype (which
-  decides whether a cheaper native path exists) rather than on a format string.
-
-  A `String` mask column now routes to `file_path` through `auto` instead of
-  raising in Python, so a column of paths to mask files works where it
-  previously did not.
-
-- **`Pipeline.to_graph()` silently discarded `on_error` and `on_null_param`.**
-  Three functions built a `Pipeline` field by field — `_clone`,
-  `_create_sub_pipeline`, and CSE's `_create_shared_node` — and the second
-  carried 11 of the 14 fields. `PipelineGraph._to_dict` reads the per-row
-  policies off the *node* pipeline, and `to_graph()` makes its sub-pipeline the
-  graph's only node, so a public
-  `Pipeline().source(...).on_error("null").to_graph(col)` executed under
-  `"raise"`. CSE escaped it by accident: the hoist unions over all nodes and the
-  originals kept their policy.
-
-  All three now inherit the whole state through one `_copy_state_from`, driven
-  by a `_STATE_COPIERS` table, and override only what they mean to change — so a
-  new field is carried by default rather than by remembering three call sites.
-  `test_pipeline_state_copy_is_complete` fails if the table and `__init__`
-  disagree in either direction.
-
-- **A vector-domain reduction was accepted at plan time and rejected at
-  execution.** *(see also the two notes below on what this deliberately does
-  not extend to, and on fused rotate sizes.)* `GraphStep::input_domains` declares that binary ops and
-  reductions take `[Buffer, Vector]`, and the Python planner validates against
-  it — but execution re-derived the precondition by hand at ten sites, each with
-  a hardcoded `"<Step> requires Buffer"` string, and `NodeOutput::as_buffer()`
-  returns `None` for a vector. So `extract_shape().reduce_sum()` planned clean
-  and failed the row. The ten sites are now one `step_buffer_operand` that reads
-  the declared contract, materializing a 1-D buffer for a vector the step admits
-  — the equivalence the planner's own docstring already claimed. A domain the
-  contract does *not* admit is still refused.
-
-- **An unmappable dtype string is no longer typed `UInt8`.**
-  `dtype_str_to_polars` ended in `_ => DataType::UInt8`, guarded only by a
-  source-scanning ratchet, with a comment conceding that any unmatched string
-  was silently typed. It now parses through `DType::from_short_name` and returns
-  `PolarsResult`, and the Polars spelling is an exhaustive match on `DType`, so
-  an eleventh dtype fails to compile rather than defaulting.
-
-- **`deny_unknown_fields` now covers the nested wire-format structs.** serde's
-  attribute does not descend, so closing `GraphNode` left `SourceSpec`,
-  `OutputSpec`, `UnifiedGraph` and `GraphKwargs` accepting anything. That
-  mattered most on `SourceSpec`, which carries `allowed_roots`: a misspelled key
-  deserialized to `None`, i.e. no path sandbox, silently.
-
-
-- **`gcs_bearer_token` on an `s3://` path now errors instead of being ignored.**
-  S3 signs with SigV4 and cannot use an OAuth bearer token; the value was
-  accepted and silently discarded, which is the bug `token_command` was already
-  rejected for one field over.
-
-- **S3 object keys are no longer double percent-encoded.** `read_s3` passed
-  `url.path()` — already encoded — to `Path::from`, which encodes again, so
-  `s3://bucket/a b.png` requested the key `a%2520b.png`. Reads now use the raw
-  prefix, which also makes polars-cv agree with `pl.scan_parquet` on the same
-  URL.
-
-- **A misspelled storage option is still rejected.** polars'
-  `parse_untyped_config` silently drops keys it does not recognise ("Silently
-  ignores custom upstream storage_options"), so delegating naively would have
-  turned `unknown GCS storage option 'x'` into a request that quietly did the
-  wrong thing. Keys are validated against each backend's own vocabulary before
-  the options are handed over, lower-cased exactly as polars does so the
-  accepted set is neither wider nor narrower than what polars would act on.
+- `Pipeline.scale_contour(origin=)`, matching `.contour.scale`; the defaults
+  still differ (`"centroid"` and `"origin"`).
+- Ambient AWS configuration is honoured: `~/.aws/config` and
+  `~/.aws/credentials` supply a region and keys when the options do not, so a
+  machine with an unrelated AWS profile may sign requests that went unsigned
+  before; pass `anonymous=True` for a public bucket.
 
 ### Changed
 
-- **Every deserialized plugin-boundary struct is closed.** `ContourKwargs`,
-  `PointKwargs` and `ReadBytesKwargs` lacked `#[serde(deny_unknown_fields)]`, so
-  a kwarg Python emits and Rust no longer reads was dropped in silence — how
-  `sink("jpeg", qualtiy=50)` encoded at the default quality with nothing said.
-  Guarded in two halves that do not subsume each other: a source scan
-  (`tests/_kwargs_scan.py`, with a floor so it cannot pass by matching nothing,
-  and committed fixtures) catches a struct nobody closed; runtime probes
-  through `register_plugin_function` catch an attribute present but not
-  rejecting. `cloud_auth.rs::Probe` is exempt — a deliberate partial parse of a
-  Google ADC file, and not a boundary struct. Exemptions are keyed
-  `file.rs::Name` so a generic name cannot blanket-exempt a future struct.
+- `rotate(expand=True)` output dimensions can differ by one pixel from 0.20.0
+  for about 1 in 5000 inputs.
+- Remote reads reuse connections across files and calls, and fetch concurrency
+  is one global budget, `POLARS_CONCURRENCY_BUDGET` (default
+  `max(thread count, 10)`).
+- Store-build and read errors carry polars' context.
 
-- **The `{x, y}` point struct has one declaration.** It was spelled out eight
-  times across `contour.rs`, `point.rs` and `geometry/schemas.py` with nothing
-  relating them. Rust now reads `geom_schema::point_fields`; Python keeps its
-  own `POINT_SCHEMA` (so `polars_cv.geometry` still imports with no compiled
-  extension) held to Rust by a bidirectional parity test over a new
-  `point_schema` FFI — the way `enum_variants` surfaces the naming registry. A
-  bbox deliberately does *not* chain off these fields: it begins `x, y` by
-  coincidence of meaning, and chaining would drag a point rename into the bbox
-  wire format.
+### Fixed
 
-- **The CI/verify.sh parity guard reads the `- run:` form too.** It only
-  matched `run:` on its own line, so a check added as `- run: some-check` would
-  have been invisible to a guard whose entire claim is that a check cannot hide.
-  No workflow here uses that form today; the point is that one could. Its
-  regexes now have committed fixtures (`tests/test_verify_script_fixtures.py`)
-  covering each branch that exists because a real check once hid.
+- `ContourMatcher` failed with "Invalid blob magic bytes" on an image-bytes
+  (PNG) mask column; a `String` column of mask paths now works too.
+- `Pipeline.to_graph()` discarded `on_error` and `on_null_param`.
+- `extract_shape().reduce_sum()` planned cleanly and then failed every row.
+- An unmappable dtype string was silently typed `UInt8`; it now errors.
+- A misspelled key in the graph wire format (e.g. `allowed_roots`, which
+  disabled the path sandbox) and a misspelled kwarg such as
+  `sink("jpeg", qualtiy=50)` were silently ignored; they are now rejected.
+- `gcs_bearer_token` on an `s3://` path is now an error instead of being
+  ignored.
+- S3 object keys were double percent-encoded: `s3://bucket/a b.png` requested
+  `a%2520b.png`.
+- A misspelled storage option is still rejected.
 
-- **`ViewExpr::apply_op` reads each image op's declared dtype rule.** The
-  `Canny` and `HistogramEqualize` arms hardcoded `DType::U8` and
-  `strides: None` — a second copy of a rule `image.rs` already states as
-  `OutputDTypeRule::Fixed(DType::U8)`, in the module the planner reads the
-  first copy from over the FFI. The dtype-preserving group beside them
-  restated `PreserveInput` the same way. All three collapse into one arm that
-  resolves shape, strides and dtype the way the `Filter` and `Compute`
-  neighbours already did. Still exhaustive, so a new `ImageOpKind` has to say
-  where it belongs. A new `expr.rs` unit test asserts the property for every
-  image op rather than for the two names.
+### Performance
 
-- **`display.py` reads the generated dtype table.** It carried a third Python
-  copy of the VIEW wire codes, guarded by a regex over its own source — the
-  weakest guard kind, and one a reformat defeats. `gen_dtype_names.py` now
-  emits `NUMPY_BY_WIRE_CODE` from `dtype_table!`, and the regex guard went with
-  the duplicate it existed for.
-
-- **The matcher conformance sweep is derived** from
-  `metrics._matching.__all__` with a floor assertion, rather than naming its
-  three subjects literally.
-
-- **`Pipeline.scale_contour` takes `origin=`.** It hardcoded
-  `ScaleOrigin::Centroid` and exposed no way to choose, while the same-named
-  `.contour.scale` accessor exposed `origin=` defaulting to `"origin"` — so a
-  square scaled by 2 landed at (1,1)-(5,5) through the pipeline and (4,4)-(8,8)
-  through the namespace. Both surfaces now take the parameter and agree for
-  every explicit value.
-
-  The defaults still differ: `scale_contour` keeps `"centroid"` and
-  `.contour.scale` keeps `"origin"`, because each is what that surface has
-  always done and changing either would silently move existing output.
-  Aligning them is a separate, deliberate decision; it is pinned in
-  `tests/test_known_gaps.py` until it is taken.
-
-- **The generated type stub derives its imports.** `gen_lazy_stub.py` carried a
-  hardcoded `polars_cv._types` import list, so a `Pipeline` parameter annotated
-  with any type it did not happen to name produced a stub referencing an
-  undefined symbol — and `test_lazy_stub_is_current`, being a
-  regenerate-and-diff, had the same defect on both sides and could not see it.
-  `scale_contour(origin=)` is the annotation that proved it. The block is now
-  derived from what the rendered stub references, read from `_types`' own
-  definitions.
-
-- **The rotation matrix has one implementation again.** Affine fusion
-  transliterated `AffineParams::from_rotation` into Python line for line, so a
-  `rotate()` got its matrix from Rust when it stood alone and from Python when a
-  neighbouring op made it fusible. The two had already drifted — Python
-  normalised `angle % 360` where Rust did not, and rounded the expand bounding
-  box half-to-even against Rust's half-away-from-zero — and nothing compared
-  them: the test that appeared to cross-check compared Python against a third
-  copy of the same arithmetic in `test_affine_builder.py`. The planner now reads
-  the matrix through a new `rotate_affine_params` FFI, the test helper reads the
-  same authority, and `test_removed_surfaces.py` rejects trigonometry
-  reappearing in the fusion helper.
-
-- **`GraphStep::input_domains` is exhaustive.** It was the one contract method
-  with a `_ =>` catch-all, so a new multi-domain variant would silently have
-  been given a single domain — in the method `CLAUDE.md` names as the authority
-  for accepted input domains.
-
-- **Staleness of the compiled extension is detectable within a release cycle.**
-  `test_compiled_plugin_is_not_stale` compared release *versions*, and both
-  sides read the same `Cargo.toml` literal, so they agreed throughout the entire
-  window in which Rust gets edited without a rebuild — it could only fire across
-  a version bump. A new `build.rs` bakes a content hash of both crates' sources
-  into the extension, `build_info()` recomputes it from the working tree, and
-  `test_compiled_plugin_matches_the_rust_sources` compares them. This matters
-  because 53% of the suite is gated on a `.so` merely existing, of any age: a
-  stale one does not skip those tests, it runs them against old Rust.
-
-- **`.pre-commit-config.yaml` moved to the repo root**, where `pre-commit`
-  actually resolves it. It sat in `polars-cv/`, so the hook was never loaded —
-  while `tests/AGENTS.md`, the `pyproject.toml` marker description and ten
-  module docstrings all justified themselves with "the pre-commit hook enforces
-  this". The config's own contents gave it away: `cargo fmt --all` and
-  `uv run --directory polars-cv` are both written for the root.
-
-- **Guards that read as coverage and enforced less.** `test_no_local_png_factories`
-  documented two fixture names and grepped for one; the unchecked half had
-  drifted into eleven copies, each having dropped conftest's Pillow-missing
-  skip. Three sweeps in `test_schema_parity_chains.py` discarded their
-  `plan_or_reject` results, and a fourth asserted only things its own types
-  guarantee. `test_verify_script_covers_every_ci_check` searched the raw
-  `verify.sh` including comments, so commenting out the structural lane passed
-  both it and its sibling. The `Matcher` protocol was pinned by
-  `isinstance`, which checks attribute presence and never signatures. Two
-  guard-fixture modules were in the structural lane but pinned by neither lane
-  mechanism.
-
-
-- **The remote source stopped opening one connection per file.** `read_http`
-  built a `reqwest::Client` — which *is* the connection pool — inside the
-  per-file read, and `read_s3` / `read_gcs` / `read_azure` each built a fresh
-  object store per file. The 0.20.0 benchmark counted the result exactly: 1.00
-  requests per connection, so every image paid a TCP handshake and, off
-  loopback, a TLS handshake. Under the streaming engine it paid them again on
-  every morsel, because nothing scoped to a plugin call can outlive one.
-
-  The three cloud schemes now go through `polars-io`'s `build_object_store`,
-  which keeps a process-wide store cache; `http(s)://` keeps its own pooled
-  client, because polars deliberately does not cache HTTP stores (that suits a
-  few large Parquet files, not many small images). Measured over three
-  successive plugin calls on 64 URLs: 16 connections for the first call — one
-  per concurrent worker rather than one per file — and none at all for the
-  calls after it.
-
-  Delegating rather than reimplementing is also what makes caching a
-  *credentialed* store safe, which is the question 0.20.0 measured but declined
-  to answer. polars keys the cache on the bucket **and** the credentials, and
-  `exec_with_rebuild_retry_on_err` rebuilds the store with cached credentials
-  cleared and retries once on any object-store error, swapping the new store in
-  through the `Arc` the cache holds.
-
-- **Fetch concurrency is a global budget, not a per-call constant.** It was 16
-  per plugin invocation, and the streaming engine invokes the plugin once per
-  morsel across threads — so the real number of in-flight requests was (morsels
-  in flight × 16), bounded by nothing and settable by no one. Every request now
-  takes one permit from polars' own semaphore, so our fetches and polars' own
-  scans share one bound: `POLARS_CONCURRENCY_BUDGET`, defaulting to
-  `max(thread count, 10)`.
-
-  The chunked fan-out went with it. It spawned 16 scoped OS threads and joined
-  *all* of them before starting the next chunk, so the slowest file in a wave
-  stalled the wave; `buffer_unordered` starts the next file as soon as any one
-  finishes. `fetch::DEFAULT_CONCURRENCY` and the `max_concurrency` parameter are
-  deleted — a per-call knob beside a global budget would be a second authority
-  for one number.
-
-- Six `chunks_exact(N)` loops became `as_chunks::<N>()`, which
-  `clippy::chunks_exact_to_as_chunks` requires on stable 1.98. No behaviour
-  change; `slice::as_chunks` is stable well below the crate's 1.96 floor.
+- The remote source no longer opens a connection per file.
 
 ### Removed
 
-- **`DomainOp` (view-buffer).** A public trait with zero implementors, a doc
-  example implementing it for a type that does not exist, and an entry in
-  `view-buffer/AGENTS.md` describing it as a live part of the op contract.
-  Domain dispatch actually lives on `GraphStep` in the plugin. It was also the
-  only reason `ops/traits.rs` imported `NodeOutput` — a graph concept reaching
-  into the engine's trait module — so deleting it closed that too. Pinned by
-  `test_removed_surfaces.py`.
-
-- **`match_detections(strategy=)` on `.contour` and `.bbox`.** Typed
-  `Literal["greedy"]`, rode the wire as `ContourKwargs.strategy`, and selected
-  nothing — the greedy policy is unconditional in the shared `match_from_matrix`.
-  The contour entry point checked the value and discarded it; the bbox one did
-  not check at all, so `strategy="hungarian"` was accepted, ignored, and matched
-  greedily. Guarded by `test_removed_surfaces.py`.
-
-### Notes
-
-- **Binary ops still refuse a runtime vector, and that is deliberate.** The
-  reduction fix above coerces a runtime `NodeOutput::Vector` to a 1-D buffer,
-  but only for steps whose published output shape derives from that operand
-  alone. `Binary` declares it accepts `vector` — it must, because
-  `perceptual_hash` plans as one — yet a phash *executes* as a buffer, so the
-  only operands that ever arrive as a runtime vector are `extract_shape` and
-  `label_reduce`. Coercing those would broadcast against the other operand
-  while the planner had already published the *left* operand's rank:
-  `extract_shape().add(image)` would plan rank 1 and execute rank 3. It raises
-  instead, naming the reason.
-
-- **`rotate(expand=True)` output dimensions can differ by one pixel from
-  0.20.0** for a small fraction of inputs (~1 in 5000 over a 200k-case sweep),
-  now that the fused path reads the engine's matrix rather than recomputing it.
-  The cause is precision, not convention: `AffineParams::from_rotation` takes
-  `angle_deg: f32` where the Python transliteration used f64. The new value is
-  the one an unfused rotate has always produced, so this makes the two paths
-  agree rather than changing what a rotate means.
-
-- **`to_graph()` now emits `shape_asserted: true`** where it emitted `false`,
-  because the sub-pipeline it builds inherits `_asserted_dims` along with the
-  rest of the state. It only selects which of two error strings
-  `validate_output_schema` prints, and the new value is the correct one — it is
-  what `.cv.pipe()` already emitted — but `graph_json` is the compiled-graph
-  cache key, so affected pipelines mint a new cache entry once.
-
-- Ambient AWS configuration is now honoured: `build_aws` reads `~/.aws/config`
-  and `~/.aws/credentials` for a region and keys when the options do not supply
-  them, and issues one `HEAD` per bucket to discover an unset region. Neither
-  happened before, so a machine with an unrelated AWS profile may sign a request
-  that previously went unsigned — pass `anonymous=True` for a public bucket.
-- Store-build and read errors now carry polars' context.
-- `polars` gains the `aws`/`gcp`/`azure` features, which pull in polars-io's
-  `cloud` stack (and transitively `file_cache`, `serde_json`, `rand`).
+- `match_detections(strategy=)` on `.contour` and `.bbox`; it was ignored, and
+  `strategy="hungarian"` matched greedily.
 
 ## [0.20.0] — 2026-08-13
 
+Every `.contour` accessor now reads contour sets, and `assert_shape` can pin
+rank.
+
 ### Added
 
-- **Every `.contour` accessor now takes a set of contours, not just one.** A
-  column may be a `CONTOUR_SCHEMA` struct per row or the `CONTOUR_SET_SCHEMA`
-  list of them that `extract_contours()` produces; the result is wrapped to
-  match, so `area()` returns `Float64` for the first and `List(Float64)` for the
-  second, one entry per contour. Fifteen of the eighteen accessors called
-  `parse_contour` directly and rejected a set outright, which meant the
-  namespace could not read the column its own pipeline produced.
+- Every `.contour` accessor accepts either a single contour or a contour set
+  (what `extract_contours()` produces) and wraps its result to match, e.g.
+  `area()` returns `Float64` or `List(Float64)`.
+- `iou`, `dice` and `hausdorff_distance` broadcast a set against a single
+  contour; a set on both sides raises.
+- `Pipeline.assert_shape(dims=[...])` pins the output rank as well as the
+  per-dimension sizes, which lets a `list`/`array` source reach a fixed-shape
+  `array` sink.
+- `.contour.ensure_winding(direction=)` and `.contour.scale(origin=)` accept
+  Polars expressions, and now follow `on_null(...)`.
 
-  Two-operand accessors (`iou`, `dice`, `hausdorff_distance`) **broadcast**: a
-  set on one side and a single contour on the other yields one result per
-  contour, whichever side the set is on. A set on *both* sides raises rather
-  than guessing — it could mean the N×M matrix (`pairwise_iou`) or an
-  index-wise pairing (`.explode()` one side), and those are different answers.
-  The set-level accessors (`pairwise_iou`, `match_detections`, `label_reduce`)
-  run the rule backwards through the same `parse_contour_set` repack, so a lone
-  contour is read as a set of one.
+### Changed
 
-  The arity is **one value, read from the column dtype**, and it drives both
-  halves of every accessor: `src/geom_arity.rs` wraps the declared element type
-  for `output_type_func` and the produced results with the same `Arity::wrap`,
-  and `contour_accessor!` emits both from a single `-> <elem>` declaration. That
-  matters because the two halves are otherwise unconnected — declaring
-  `Float64` while building `List(Float64)` is exactly the plan/exec divergence
-  `test_schema_parity_namespaces` exists to catch, and per-accessor list
-  handling would have been fifteen chances to introduce it. The case table there
-  is now swept in *both* arities, so an accessor that skips the macro fails
-  rather than shipping a schema its data contradicts.
-
-- **`Pipeline.assert_shape(dims=[...])`** — the positional spelling, and the one
-  that pins the output **rank** alongside the per-dimension sizes. This is what
-  makes an assertion reach the published schema for a `list`/`array` source,
-  whose rank is not knowable until execution: the `height=`/`width=`/`channels=`
-  form set the hints, but `expected_shape` only publishes at rank 3, so the
-  assertion changed nothing and the `array` sink went on refusing the query.
-
-- **`.contour.ensure_winding(direction=)` and `.contour.scale(origin=)` accept a
-  Polars expression**, resolved per row like every other non-structural
-  parameter. Per-row eligibility is decided by whether a value affects the
-  output's shape, rank or dtype — not by its type — and neither of these does:
-  the column stays `List(Struct(CONTOUR_SCHEMA))` whichever winding or origin a
-  row picks. They were nonetheless literal-only while `label_reduce`'s
-  `reduction` and `region_mode`, two enums of the same kind in the same
-  namespace, were already per-row.
-
-  Worse, the rejection asserted the opposite of the truth — *"'direction' is
-  structural (it fixes the output shape/rank/dtype at planning time)"* — for a
-  parameter that fixes none of them. Both now ride `_ArgBinder`, like `scale`'s
-  own `sx`/`sy`: the expression is appended as a plugin input, named in
-  `input_slots`, and read per row against the same `NAMED` table a literal is
-  validated against, so moving the check to execution does not lose it. Routing
-  them through `contour_row` also brings both under the shared null-parameter
-  policy, so `on_null("null")` now applies to them.
-
-  `test_non_structural_geometry_enums_accept_an_expression` reads the geometry
-  namespaces' live signatures, so a new non-structural enum has to be plumbed
-  for per-row use or exempted with the structural reason.
-
-- **The remote source has a benchmark.** Every scenario in the suite was handed
-  bytes that were already in memory, so the `fetch.rs` / `cloud.rs` stage — the
-  one every `s3://`, `gs://`, `az://` and `http://` path goes through — had no
-  coverage at all. `benchmarks/scenarios/remote_source.py` measures it against a
-  loopback HTTP server, selectable from the regression suite as
-  `--scenarios remote`.
-
-  Loopback rather than a real bucket because the transports differ in *signing*,
-  not in structure: each lands in `cloud::read_file`, which builds a client and
-  issues one GET per file, and each is batched by the same `fetch::prefetch`. A
-  wide-area measurement is dominated by the link and hides what the plugin
-  costs; a `--latency-ms` knob injects a synthetic delay for when modelling the
-  link *is* the point. Real S3/GCS numbers need credentials and a bucket, so
-  they cannot be a committed benchmark.
-
-  It reports three timings over one corpus whose differences isolate a stage,
-  and one thing that is not a timing: **requests per connection**, counted by
-  the server. On this code that ratio is 1.00 — a fresh connection for every
-  file, because `read_http` constructs a `reqwest::Client` inside the per-file
-  read and the three cloud backends each build a store per file. On loopback
-  that costs about 0.5 ms/file; against a real endpoint it is a TCP *and* TLS
-  handshake per file. Measured and reported rather than fixed: caching a
-  credentialed store is a correctness question before it is a performance one.
+- The `array` sink's error now names the missing dimensions and what each
+  remedy supplies.
 
 ### Fixed
 
-- **`assert_shape` rejects a contradiction where it is written, instead of
-  blaming the plugin at `collect()`.** `resize(224, 224).assert_shape(height=999)`
-  was accepted, published as the output schema, and reported much later by
-  `validate_output_schema` as *"the planner's shape contract disagrees with the
-  Rust implementation"* — the plugin taking the blame for a value the caller had
-  typed three lines earlier. An assertion that contradicts a dimension the
-  planner already knows now raises at the call, naming both values and the op
-  that established the known one. When a divergence *does* survive to execution,
-  the message distinguishes the two cases: an output whose shape was asserted
-  says so and points at the assertion, while an inferred one keeps the
-  contract-bug wording, which is correct there. The two are told apart by a
-  `shape_asserted` flag on the output spec, tracked per dimension and cleared
-  whenever the schema fold recomputes it — the `rasterize(shape=<node>)` canvas
-  is deliberately *not* counted, since it comes from another node's inferred
-  hints.
-
-  The `height`/`width`/`channels` keywords are also rejected once the rank is
-  known to be anything but 3. The hints are positional — they are dimensions 0,
-  1 and 2 — so after a `transpose([2, 0, 1])` dimension 0 is the channel axis
-  and calling it `height` is a lie. `dims=` is the honest spelling there.
-
-- **The `array` sink's error names remedies that exist.** It advised
-  `.resize()` / `.assert_shape()`, and the source that reaches it most often is
-  a `list`/`array` column — whose shape genuinely is not knowable until
-  execution, and which therefore got the same advice back after following it.
-  `.resize()` supplies height and width but never the channel count. The message
-  now names the missing dimensions and what each of the three remedies actually
-  supplies, and is written once per side rather than at four sites. The
-  unreachable copy in `encode.rs` became an internal-invariant error rather than
-  a fourth restatement of user advice, since `dtype_for_output` reads the same
-  two fields and refuses first.
-
-- **`.contour.ensure_winding()` and `.contour.scale(origin=)` reject a value
-  they do not recognise instead of guessing one.** These were the only two
-  user-facing string parameters in the plugin that did not read a `NAMED`
-  table. Both parsed by hand and ended in `_ => <default>`, so a spelling the
-  parser did not know was answered with a plausible one:
-  `ensure_winding("CW")` returned *counter*-clockwise — the opposite of the
-  request — and `scale(origin="top_left")` scaled about the centroid. Silently,
-  in both cases; a capitalisation that does not match is not an exotic input.
-
-  `ScaleOrigin` and `Winding` now go through `named_variants!` + `registry!`
-  like every other enum, which is also what makes them checkable: they are
-  surfaced over `enum_variants`, covered by `every_named_enum_is_registered`,
-  and demanded by `test_every_rust_enum_is_parity_checked` — hence
-  `_types.ScaleOrigin` and `_types.Winding`, which replace the `Literal[...]`
-  annotations that used to shadow them. The long `"clockwise"` /
-  `"counterclockwise"` spellings the parser has always accepted are kept, as
-  aliases inside `NAMED` rather than a second table.
-
-  One behaviour change beyond the rejection: a `contour_scale` graph that omits
-  `origin` entirely now defaults to `Origin` rather than `Centroid`, matching
-  what the Python signature has always declared. Every pipeline built through
-  `.contour.scale()` already sent an explicit value, so this is reachable only
-  by hand-writing the plugin kwargs.
-
-- **`numpy_from_struct()` no longer reads `"u8"` as `uint64`.** Its dtype
-  allowlist was hand-typed and admitted numpy's *character codes* alongside its
-  spelled names. numpy reads `"u8"` as uint64 and `"i8"` as int64 — the
-  opposite of what those strings mean everywhere else in this project, where
-  they are `dtype_table!`'s short names for uint8 and int8. So a caller
-  hand-building a struct with `dtype="u8"` — the spelling `.cast("u8")` uses —
-  got a uint64 reinterpretation of the bytes: wrong values, and either a wrong
-  shape or a `reshape` error far from the cause. The function is exported from
-  the package root and takes a plain dict, so this needed no compiled plugin to
-  reach. The list also admitted `bool`/`b1`/`f2`, which the engine cannot
-  produce.
-
-  The accepted names are now generated into `python/polars_cv/_dtype_names.py`
-  from `dtype_table!` by `scripts/gen_dtype_names.py`, guarded by
-  regenerate-and-diff. Character codes are rejected; the numpy/torch sink has
-  never emitted them.
-
-- **The contour struct layout is declared once, and checked against what the
-  engine emits.** Three places spelled it out: `contour_struct_dtype()` in
-  `src/graph/encode.rs` (the only one execution reads), the public
-  `CONTOUR_SCHEMA`, and a private copy in `metrics/_matching/_contour.py` that
-  did not import the public one. A fourth site, `tests/test_contour_source.py`,
-  shadowed `CONTOUR_SET_SCHEMA` with a local alias of the constant it had just
-  imported. The private copy and the shadow are gone; `CONTOUR_SCHEMA` remains,
-  as the public mirror.
-
-  Nothing had been checking any of them. The two Python copies agreed with each
-  other, which is not the property that matters — a field renamed or reordered
-  in Rust would have left both still agreeing and both wrong, and the metrics
-  matcher casts a real sink output to its copy, so the divergence would have
-  surfaced as a cast error inside a detection pipeline rather than at the schema.
-
-  `test_contour_schema_is_what_rust_emits` runs an extraction through the plugin
-  and compares `CONTOUR_SET_SCHEMA` to the dtype Polars actually returned, so it
-  is behaviour-observed rather than two Python constants compared to each other.
-  It was watched failing against a deliberately reordered `contour_struct_dtype()`.
-
-- **A `DetectionTable`'s dtypes are declared, not invented at the empty path.**
-  `DETECTION_COLUMNS` and `IMAGE_META_REQUIRED` listed column *names* with no
-  dtypes, so the only place the dtypes existed was a hand-written literal inside
-  `_empty_detection_table()` — twelve `pl.` types that nothing connected to what
-  a populated match returns. The two frames meet: an all-background image yields
-  the empty table and a normal one does not, and a caller concatenating them
-  would have discovered a disagreement at the concat rather than at the schema.
-
-  They are now `DETECTION_SCHEMA` / `IMAGE_META_SCHEMA`, name→dtype maps that
-  `_empty_detection_table()` builds from directly.
-  `test_matcher_schemas_match_the_declaration` runs `ContourMatcher`,
-  `BBoxMatcher` and `PreMatchedAdapter` on real inputs and compares each
-  result's schema to the declaration, so the declaration records observed
-  behaviour rather than an intention; a new matcher is added to `_PRODUCERS`,
-  which is what gets its output checked at all. Watched failing by widening one
-  declared dtype — the three matchers rejected it while the empty path, which
-  builds from the declaration, could not.
-
-  `from_matched` still validates **names only**. It accepts caller-assembled
-  frames, and rejecting a `UInt64` `det_idx` that Polars compares happily
-  against a `UInt32` would break working pipelines for no benefit; what the
-  matchers produce and what a caller may supply are different claims.
-
-- **`statistics()` and `statistics_lazy()` read one table instead of four.**
-  Each carried a `valid_stats` set *and* a five-arm `if/elif` dispatch — the
-  same list of statistics written out four times — and both dispatches ended in
-  `else: continue`. So the two halves could disagree in the direction that says
-  nothing: a name the validator accepted but the chain did not know was dropped
-  from the output silently, producing a struct with a missing field rather than
-  an error.
-
-  Both now build their nodes through `_stat_nodes()`, which reads
-  `_STAT_REDUCERS` for the accepted names *and* the dispatch, so the two cannot
-  come apart. The methods differ only in the alias prefix and in whether they
-  sink, which is what they always differed in.
-  `test_stat_reducers_are_all_pipeline_methods` rejects an entry naming a
-  method that does not exist or one that is not a reduction — watched failing
-  for both.
-
-  `_require_concrete_sink_dtype` also stops spelling its own `("list",
-  "array")`. That vocabulary is now `SINKS_WITH_TYPED_ELEMENTS` in `_types`,
-  beside the `SOURCES_RESOLVED_FROM_COLUMN` the same function already read from
-  there.
-
-- **"Channels from rank" is derived in one place.** The mapping
-  `3 => Some(shape[2]), 2 => Some(1), _ => None` appeared character-for-character
-  at three sites, each feeding the same `ImageCodec` check: `execute.rs` (the
-  encoder), `graph/decode.rs` (the planner), and `to_dynamic_image` in
-  view-buffer's `interop/image.rs` — whose own comment said "a second copy here
-  is how the two would come to disagree" while being exactly that.
-
-  Both now call `ImageCodec::check_shape`, which takes the *shape* and derives
-  the rank and channel count itself, so neither caller can derive them
-  differently. `image_metadata.rs` keeps its own, different mapping: it answers
-  `.cv.channels()` for buffers of any rank and its callers need a number rather
-  than a maybe, so it interprets ranks 0 and 1 that the codec check must reject.
-  A comment there now says so, rather than leaving it looking like a third copy.
-
-- **Three error/null policies stop being spelled by hand in Python, and
-  `enum_variants` loses its last hand-written arm.** `("raise", "null")` and
-  friends appeared at five Python sites covering *three* different policies —
-  `RowErrorPolicy` (3 values), `NullParamPolicy` (2) and the `file_path` /
-  `read_bytes` fetch policy (2). Over-listing a value errors loudly at the
-  boundary; under-listing one rejects a value the plugin would have accepted,
-  silently, forever.
-
-  The fetch policy was not even an enum: `parse_on_error` matched two string
-  literals and hand-wrote `(expected 'raise' or 'null')`. It is now
-  `FetchErrorPolicy`, and all three carry `named_variants!` tables mirrored by
-  `_types.RowErrorPolicy` / `NullParamPolicy` / `FetchErrorPolicy`, which the
-  five sites read.
-
-  Reaching them required lending the plugin crate the mechanism rather than
-  cloning its exception: `named_variants!` and `registry!` are exported, and
-  the plugin declares `PLUGIN_REGISTRY`, which `enum_variants`/`enum_names`
-  chain onto the engine's. Registering an enum is therefore the same act as
-  getting it checked — `test_every_rust_enum_is_parity_checked` reads
-  `enum_names()` and demands a Python mirror for each.
-
-  `BinaryOp` came along: its name table lived in the plugin crate purely by
-  habit, which is what made it the one enum needing a bespoke FFI arm and an
-  exemption from that test. `BINARY_OPS` is now `BinaryOp::NAMED` beside the
-  enum in view-buffer, registered like everything else — so a new `BinaryOp`
-  variant no longer compiles until it is named. The `BINARY_OP_ENUM` constant
-  and the `enum_variants` special case are deleted.
-
-  Two new Rust tests cover the one thing the parity test cannot see: these
-  policies have *two* mechanisms describing one vocabulary, serde's
-  `rename_all` reading the wire and `NAMED` publishing it.
-  `row_error_policy_names_match_serde` and its `NullParamPolicy` twin compare
-  them, so a rename on one side alone can no longer leave Python confidently
-  sending a value the graph cannot parse.
-
-- **Four guards that only asserted an absence now also assert a presence.** A
-  test whose every assertion is "this string is not there" passes just as
-  happily when the thing it guards has been renamed, moved or deleted — it
-  stops distinguishing "the pattern is gone" from "the code is gone". Each was
-  watched failing after the positive half was made to fail:
-
-  - `test_enum_validation_uniform` now builds each parameter with a *real*
-    variant as well as a bogus one, and asserts that variant is one
-    `enum_variants` actually publishes. Writing it caught a hard-coded
-    `"dhash"` that `HashAlgorithm` does not have.
-  - `TestParamPolicyRatchet` asserts `execute.rs` still mentions `resolve_usize`
-    and `params::get` before ratcheting against two idioms that use them.
-    Renaming the resolver used to leave the scan green.
-  - `test_domain_vocabulary_declared_once` now checks that a wrong-domain op
-    still raises and that the reported domain is a `_types.Domain` member.
-    Deleting the domain check entirely used to pass every assertion.
-  - `test_anti_alias_is_gone_from_the_type_stub` requires the stub to declare
-    `rasterize` first — an empty `lazy.pyi` used to satisfy it.
-
-- **The documentation is built by CI.** `docs.yml` was `workflow_dispatch:`-only
-  and ran `mkdocs build --clean`, so nothing checked the docs on a push or a PR
-  and a warning did not fail the build. A broken link or a nav entry pointing at
-  a deleted page was found by whoever next deployed by hand, if at all.
-
-  A `docs` job in `ci.yml` now runs `mkdocs build --strict` on every push and
-  PR, the deploy workflow uses `--strict` too (so it cannot ship a site CI would
-  reject), and `scripts/verify.sh` runs the same command — which
-  `test_verify_script_covers_every_ci_check` now requires, so the three cannot
-  come apart. The job is in `ci.yml` deliberately: that test reads only that
-  file, so a check placed anywhere else is one it cannot see. Watched failing
-  against a nav entry naming a missing page.
-
-  `docs/panic-audit.md` joins the nav under a Development section. It was the
-  one page in `docs/` absent from `nav`, i.e. built but unreachable from the
-  site. (Not a `--strict` blocker, as it happens — mkdocs reports an
-  out-of-nav page at INFO, not WARNING — but a page nothing links to is not
-  published in any useful sense.)
-
-- **The examples are executed, and two of them were broken.**
-  `polars-cv/examples/` held fourteen files that nothing ran: no test, no
-  workflow, and `ruff`'s `extend-exclude` skips the directory. They read as
-  documentation while being unverified for the life of the directory.
-  `test_examples_run` executes each as a subprocess and requires exit 0, marked
-  `slow` and discovered through `tests/_discovery.py` so an empty sweep fails
-  rather than passes.
-
-  Its first run found two independent bugs in `08_ml_integration.py`:
-
-  - `.assert_shape(channels=3, height=96, width=96)` was applied *after*
-    `.transpose([2, 0, 1])`. Those keywords describe an `[H, W, C]` buffer, so
-    asserting them on an already-transposed one made the planner publish
-    `[96, 96, 3]` for something that executes as `[3, 96, 96]` — the query died
-    at `collect()` with a plan/exec mismatch. The assertion moves before the
-    transpose, where it means what it says.
-  - The `array` sink was given no `shape=`, on the assumption that
-    `.assert_shape()` supplies one. It does not, and neither does `.resize()` —
-    only `.sink("array", shape=[...])` does, which the example now passes.
-
-  `matplotlib` joins the dev group: ten of the thirteen runnable examples plot,
-  and without it those ten would not skip but fail, since the runner asserts
-  exit 0.
-
-- **The documentation's vocabularies are checked against the code's.** Three
-  places in `docs/` restate something the code owns, all hand-maintained and
-  none compared to anything: `domains.md`'s table (now required to *equal*
-  `_types.Domain`), `sources.md`'s `auto`-resolution table (its formats must
-  exist in `SourceFormat`), and the methods called in the operations pages'
-  Python examples (each must resolve to a real `Pipeline` /
-  `LazyPipelineExpr` / namespace method).
-
-  The last one is not the table-diff it looks like it should be: those pages
-  name operations in prose headings, not tables, so a "rows ⊆ `OP_NAMES`" guard
-  would have matched nothing and read as green forever. It reads the code
-  blocks instead — what a reader actually copies. Its `_FOREIGN_METHODS`
-  exemption list is itself guarded, and immediately caught three of our own
-  methods wrongly exempted while it was being written.
-
-  The Markdown readers live in `tests/_doc_tables.py` with committed fixtures
-  in `tests/test_doc_table_fixtures.py`, which caught a lookbehind that
-  excluded `df.method(` — the ordinary shape of a call, i.e. most of every page.
-
-- **The structural guards run before a commit, not just in CI.** They check the
-  shape of the codebase — registry parity, single-authority ratchets,
-  removed-surface pins, the doc vocabularies — and read the source tree rather
-  than exercising a pipeline, so the whole lane is ~650 tests in about five
-  seconds. That is affordable in a pre-commit hook; the full suite is not.
-
-  `-m structural` is declared in `pyproject.toml` and applied per module. A
-  `structural-checks` hook joins `.pre-commit-config.yaml` (which previously
-  stopped after `cargo clippy`), the `lint` job runs the lane without waiting
-  on the build matrix, and `scripts/verify.sh` runs it as its own check so a
-  failure says "the hook would have caught this" rather than arriving buried in
-  the full suite's output. The hook passes `--no-sync`: without it `uv run`
-  re-syncs the project and rebuilds the Rust extension on every commit.
-
-  Two guards keep the lane from becoming decorative.
-  `test_every_source_scanning_module_declares_its_lane` derives its set —
-  anything importing `_discovery`, the mandated way to find files to scan, must
-  declare `structural` or `slow` — so a new source-scanning guard cannot join
-  without choosing. `test_the_structural_lane_is_not_empty` catches a renamed
-  marker or a dropped declaration, which would otherwise make the hook select
-  nothing and pass in milliseconds.
-
-- **A check added to CI can no longer be missing from `verify.sh` unnoticed.**
-  `test_verify_script_covers_every_ci_check` pinned a hand-written list in both
-  directions, but a check added to CI and never added to that list was simply
-  invisible: the local run kept reporting PASS while CI failed.
-
-  `test_no_ci_check_is_missing_from_the_verify_script` reads every command in
-  `ci.yml`'s `run:` blocks and requires each to be **classified** — either a
-  check `verify.sh` must also run, or setup. An unclassified command fails, so
-  a new checker cannot pass unnoticed. It proved itself immediately: adding the
-  structural lane to CI made it fail until the command was classified.
-
-- **`scripts/verify.sh` no longer rebuilds the extension in release mode.** The
-  `mkdocs` check added above was written without `--no-sync`, so `uv run` synced
-  the project on every verification — and syncing builds the plugin through the
-  PEP 517 backend, which maturin runs at `--profile release`. That is a
-  multi-minute re-optimisation of the whole polars stack, on every run, for a
-  documentation build that never loads the extension. With `--no-sync` (what
-  every other lane in the script already passes) the check takes about six
-  seconds.
-
-- **Review pass: five guards that could pass while checking nothing, and six
-  false statements.** An independent review of the entries above found that the
-  weakest part of the work was the part meant to be strongest.
-
-  Guards that could be evaded, each now watched failing against the exact
-  evasion:
-
-  - `test_no_ci_check_is_missing_from_the_verify_script` read only the
-    `run: |` block form, so `cargo test -p view-buffer` — a check `ci.yml` has
-    run all along — was invisible to it. It also classified a whole line by its
-    first token, so `cd polars-cv && deno lint` filed under `cd`, and exempted
-    every `uv run python scripts/check_*.py` as setup. It now reads both `run:`
-    forms, splits on `&&`/`;`/`||`, and has no blanket script exemption.
-  - The same guard compared `verify.sh` as one string, so a *comment* naming a
-    deleted check satisfied it. It now reads only `run_check` lines.
-  - `_module_marks` walked the whole AST, so a `pytestmark` nested in a class
-    counted as a module declaration: moving one cut the lane from 651 tests to
-    547 while both lane guards reported it healthy.
-  - The lane's "derived" set was a substring match on `"_discovery import"`,
-    which `from tests import _discovery as _d` defeated. It is parsed now.
-  - `test_the_structural_lane_is_not_empty` compared a count against a
-    threshold with a margin of one. It names the load-bearing modules instead.
-  - Nothing read `.pre-commit-config.yaml` at all, though the hook is the
-    premise for the marker on ten modules. `test_the_precommit_hook_runs_the_structural_lane` does.
-
-  And the exemption lists, which are how a guard gets quietly narrowed:
-  `_FOREIGN_METHODS` is now **empty** — once the resolution learned about the
-  metrics API and module-level `pl.col`, all 34 entries turned out to be
-  resolvable or absent from the docs — and `_NON_SCRIPT_EXAMPLES` is guarded
-  against exempting anything with a `__main__` block.
-
-- **`test_benchmark_list_is_current` now exists.** `benchmarks/AGENTS.md` cited
-  it as pinning the benchmark list. It had never been written — a guard's name
-  in prose, which is the failure this whole effort is against. It exists, it
-  reads `get_single_op_benchmarks()`, and it was watched failing on all three
-  ways that sentence has been wrong: a wrong count, a drifted name, and a
-  benchmark added to the code.
-
-- **A plugin-crate `named_variants!` table left out of `PLUGIN_REGISTRY` now
-  fails.** Exporting the macro gave the plugin the ability to declare
-  vocabularies without giving it `every_named_enum_is_registered`, which scans
-  view-buffer only. An unregistered enum was invisible to `enum_variants`, to
-  `enum_names()` and so to the parity test — 128 tests passed with one sitting
-  there. `every_plugin_named_enum_is_registered` is the missing half.
-
-- **`_STAT_REDUCERS` is pinned by value, not just by shape.** The existing
-  guard checked that each entry resolves to a reduction; it could not tell one
-  reduction from another, so `"mean": "reduce_max"` — the plausible copy/paste
-  error in the refactor that *removed* the explicit dispatch — passed the whole
-  suite, because the fixtures paint constant images where mean equals max.
-  `test_each_statistic_computes_its_own_reduction` uses a gradient on which all
-  five differ.
-
-- **The documented-method sweep covers every page.** It read five hand-picked
-  pages of twenty-one, because `pl.col` and `pl.DataFrame` are module-level and
-  the resolution only knew `pl.Expr`/`pl.DataFrame`, making `col` unresolvable
-  almost everywhere. The fence reader also missed indented fences (admonitions,
-  tabs, list items) and annotated ones (`title=`, `hl_lines=`) — both forms
-  `mkdocs.yml` enables — so examples inside them were never checked. Fixtured.
-
-- **`statistics(include=<generator>)` raised `IndexError` instead of a
-  message.** `_stat_nodes` iterated `include` twice, so a one-shot iterable was
-  exhausted by the validation pass and produced no nodes. Off the declared
-  `list[str] | None`, but a raw `IndexError` from a private helper is not an
-  answer. It is materialised once now.
-
-- **The `zero_copy` benchmark scenario could never run.** It is offered in
-  `ALL_SCENARIOS` and named in `benchmark.yml`'s input description, but
-  selecting it died in `_aggregate_best` with `'BenchmarkResult' object has no
-  attribute 'framework'`. The scenario returned its own `BenchmarkResult` — a
-  different record that happened to shadow
-  `benchmarks.frameworks.BenchmarkResult` — and `_run_once` appended those to a
-  list of these without converting. Nothing ever exercised it.
-
-  The local record is `IngestionResult` now, so two records meaning different
-  things read differently, and `to_suite_results` is the one conversion between
-  them. `_run_once` rejects any result that is not the suite's own record, so a
-  scenario that skips the conversion fails at the boundary naming the scenario
-  rather than several frames later naming a missing field.
-
-- **The benchmark workflow measured a binary nobody installs.** `ci.yml` and
-  `publish.yml` both clear `RUSTFLAGS` so `.cargo/config.toml`'s
-  `target-cpu=x86-64-v3` is not baked in; `benchmark.yml` did not. It was
-  therefore timing an AVX2/BMI2/FMA build while published wheels are built
-  without those, so its numbers described a configuration no user runs. Cleared,
-  with the same comment the other two carry.
-
-- **A release tag is checked against the version being published.** maturin
-  reads the version from `polars-cv/pyproject.toml`; a tag is only a label on a
-  commit, and nothing compared the two. A release tagged `v0.20.0` cut before
-  the bump landed would have uploaded `polars_cv-0.19.0` under it, or built
-  every wheel and then failed at the upload with PyPI's "file already exists". A
-  `check-version` job runs first, and both build jobs need it.
-
-  It reads one manifest rather than re-comparing all four: the other three are
-  pinned to `pyproject.toml` by `test_version_consistency.py`, which `ci.yml`
-  runs on every push to main, so restating that comparison in the workflow would
-  be a second authority for one fact. A `workflow_dispatch` run has no tag to
-  check against, so it warns rather than skipping silently.
-
-- **Documentation that described code as it is not.** `geometry.md` still called
-  `scale`'s `origin` and `ensure_winding`'s `direction` literal-only "structural
-  parameters" after both became per-row expressions, and omitted
-  `label_reduce`'s two enums from the list of expression-capable parameters. It
-  said nothing about every `.contour` accessor now reading a contour *set*.
-  `image-ops.md` documented only the `height`/`width`/`channels` spelling of
-  `assert_shape`, not `dims=` — the one that pins the rank, and so the only one
-  that gets a `list`/`array` source to a fixed-shape `array` sink.
-  `CONTRIBUTING.md`'s release steps claimed GitHub Actions publishes to TestPyPI
-  and tests the install from there; `publish.yml` has never done either.
-
-  Four remaining recommendations of `maturin develop --release` for the develop
-  loop — in `build_info()`'s docstring and three `test_version_consistency.py`
-  messages — now say `maturin develop`, finishing what the earlier docs pass
-  started. The benchmark docs keep `--release`, which they need.
+- `assert_shape` raises at the call when it contradicts a known dimension,
+  instead of failing at `collect()`; `height=`/`width=`/`channels=` are
+  rejected once the rank is known not to be 3 (use `dims=`).
+- `.contour.ensure_winding()` and `.contour.scale(origin=)` raise on an
+  unrecognised value instead of guessing: `ensure_winding("CW")` used to return
+  counter-clockwise, and `scale(origin="top_left")` scaled about the centroid.
+- `numpy_from_struct()` read `"u8"` and `"i8"` as uint64/int64; it now uses this
+  project's dtype names and rejects numpy character codes and `bool`/`f2`.
+- `statistics(include=<generator>)` raised `IndexError`.
 
 ## [0.19.0] — 2026-08-09
 
+Strict rejection of ignored parameters, plan-time schema fixes, and corrected
+detection metrics.
+
+### Breaking changes
+
+- `average_precision(interpolation="all_points")` (the default) omitted the
+  first recall segment; reported AP is now higher and correct. `11_point` is
+  unchanged.
+- FROC/LROC curves are now sorted by descending `threshold`; reported AUC
+  changes.
+- FROC `fp_per_image` now divides by the number of distinct `image_id`s, not
+  metadata rows.
+- Duplicated `image_id`s with conflicting weights in FROC metadata now raise
+  `ValueError`.
+- `.contour.label_reduce()` scores a contour that covers no pixel centre at its
+  centroid value instead of 0.0, matching `Pipeline.label_reduce()`.
+- `MetricResult.interpolate`, `sensitivity_at_fp`, `sensitivity_at_fpf` and
+  `summary_table` return null past the curve's observed range instead of
+  repeating the last value.
+- `PreMatchedAdapter.match()` warns unless you pass `image_meta`, the frame
+  defining the full image population; combining `image_meta` with `n_gts_col`,
+  `weight_col`, `gt_label_col` or `group_col` raises.
+- `source("auto")` over a `Binary` image column into a `list` sink is now a
+  planning error; name the source or use another sink.
+- `sink("webp", quality=)` now raises, as do any unknown sink keywords and any
+  `sink()`/`source()` parameter that does not apply to the chosen format (e.g.
+  `source("image_bytes", width=224)`, `shape=` on a png sink).
+- `source("contour", dtype=...)` raises (it always yields `u8`), and
+  `cloud_options` on a non-path source raises instead of warning.
+- `rasterize(anti_alias=)` is removed; it was ignored.
+- `out_dtype="preserve"` is removed; use `preserve_dtype=True`. `out_dtype`
+  accepts any dtype name.
+- A newer Python paired with an older compiled extension now fails on unknown
+  graph node fields; re-run `maturin develop`.
+- `polars_cv.geometry.validation` and its exception classes are removed; they
+  were never raised.
+
 ### Added
 
-- **Operation parameters that no code path reads are now rejected.** `OpSpec`
-  is the documented exception to this crate's `deny_unknown_fields` rule — its
-  params ride on `#[serde(flatten)]`, which serde cannot combine with
-  unknown-field rejection — so the wire format could not refuse a parameter no
-  operation understood, and nothing else did either. That is how `scale` and
-  `clamp` carried an `out_dtype` for releases.
-
-  Every parameter read now goes through `OpParams`, a tracking wrapper, and
-  `resolve_op` rejects any name the arm did not touch. `resolve_op_inner` takes
-  the op *name* and the wrapper, never the `OpSpec`, so an arm cannot reach the
-  underlying map and read without recording — the compiler found two of `crop`'s
-  reads doing exactly that when the signature was narrowed. Reads are recorded
-  in a bitmask over the map's key order, so tracking allocates nothing on the
-  per-row path. It fires at both ends of the boundary with no extra wiring:
-  `resolve_op_from_json` backs `op_schema`, so a stray parameter fails in Python
-  while the `Pipeline` is being built, and `CompiledGraph::compile` resolves
-  every spec before any row executes. `OpParams::acknowledge` is the explicit
-  escape for a parameter a layer above the arm consumes (`rasterize`'s
-  `shape_ref`) or that a branch legitimately cannot use (`rotate`'s
-  `interpolation` and `border_value` on the lattice rotations, which resample
-  nothing).
-
-- **A schema-parity matrix: plan-time dtype == execution-time dtype, swept.**
-  Polars publishes an expression's dtype at planning time and again when the
-  data arrives, and in this plugin the two are computed by different code —
-  `dtype_for_output` from the hint bundle Python folds into the graph JSON, and
-  `build_series_from_spec` from the buffers execution actually produced. The
-  runtime half *reads the data* to decide: the typed list builder takes both
-  the leaf dtype and the nesting depth from the first non-null row, and
-  `resolved_output_specs` resolves every output's `"auto"` dtype from
-  `inputs.first()`. Whether that agrees with the plan depended on which row
-  happened to be first.
-
-  Six new files under `tests/test_schema_parity_*.py`, on a shared harness
-  (`tests/_schema_parity.py`) that asserts the planned dtype against the
-  produced one under **both** engines, streaming first, and checks the engines
-  agree. Rejection at build or plan time is an acceptable outcome for any cell;
-  planning succeeding and execution then failing or producing something else is
-  not. Every sweep carries an `assert_not_vacuous` check, because a sweep whose
-  cells all reject is green and worthless.
-
-  The axes:
-  - **Row layout.** Nine patterns — all-null, null-first, null-last, a null run
-    longer than a morsel, 64 alternating rows across a streaming batch
-    boundary, and rows whose shapes differ from one another, chunked so the
-    boundaries do not line up with the nulls. This is the axis that
-    distinguishes "the plan" from "row 0".
-  - **Operations.** All 71 chainable ops, driven from `tests/_op_cases.py` —
-    the table `test_op_case_table_is_complete` already pins to
-    `_chainable_pipeline_ops()`, moved out of `test_append_contract.py` so both
-    read one copy. An op cannot join the library without getting a
-    plan-vs-exec cell. Roughly forty had none before, including every
-    reduction, all four morphology ops, every colour conversion, and all five
-    histogram output modes.
-  - **Sources and dtypes.** Every `SourceFormat` (including `auto`, the
-    default, which had no plan-vs-exec test at all) and all ten `DType`s; only
-    four were previously compared against data. Channel counts 1/2/3/4,
-    including the 2-channel `GrayA` that `StripProcessRestore` produces and
-    that nothing had ever sunk.
-  - **Chains.** Composed effects asserted at every prefix, the steps
-    `op_infer_shape` refuses, all eleven binary ops (read from Rust's
-    `BINARY_OPS` registry), CSE-shared prefixes, two-root graphs, and affine
-    fusion.
-  - **`sink("array")`**, asserted in both directions: a knowable shape must be
-    accepted and exact, an unknowable one refused while planning. Its
-    dimensions are cross-checked against the shape the `numpy` sink reports for
-    the same pipeline — two independent producers of one fact.
-  - **The namespace accessors.** `.cv`, `.contour`, `.point` and `.bbox` are
-    separate `#[polars_expr]` functions declaring their own output types, a
-    second plan/runtime pair with no parity test — a gap
-    `geometry/AGENTS.md` flagged. The case tables are completeness-asserted
-    against the namespaces' real public methods.
-
-  Three files carried their own copy of the plan-vs-exec assertion
-  (`_assert_plan_matches_data`, `_planned_and_realized`,
-  `_assert_plan_equals_exec`); they now call the harness, and pick up the
-  streaming engine in the process.
-
-  **Four divergences found, and fixed** (see *Fixed* below).
-
-  Also recorded, without a bug marker: `expected_shape` is gated on rank 3, so
-  a rank-1 or rank-2 pipeline can never auto-shape an array sink even when the
-  planner has the dimensions. That is a deliberate conservative choice —
-  publishing `[H, W, C]` for a rank-2 output is how `channel_select` once
-  declared a schema execution could not produce — and the test asserts both the
-  refusal and that the withheld dimensions were correct.
-
-- **`allowed_roots`: a sandbox for path columns.** `source("file_path",
-  allowed_roots=[...])` and `.cv.read_bytes(allowed_roots=[...])` restrict
-  which locations a path column may read from. Until now neither surface
-  sanitized paths — they read whatever the column named, any local file and
-  any reachable URL, which is right for your own paths and wrong for paths
-  that arrived as data.
-
-  **Opt-in.** The default is unrestricted, so every existing pipeline is
-  unaffected and an unrestricted source serializes byte-identically to before
-  (`graph_json` is the compiled-graph cache key, so an always-emitted field
-  would split the cache for everyone and change nothing else). Once you ask
-  for a sandbox it denies by default: a path matching no entry is refused.
-
-  One list covers local and remote — an entry that parses as a remote URI is
-  matched as a URI prefix, anything else as a local directory. Splitting them
-  is how a sandbox comes to cover the filesystem while leaving `s3://` open.
-  Local paths are canonicalized before comparison, so `..` segments and
-  symlinks out of the tree are resolved rather than compared as text, and
-  matching is component-wise, so `/srv/images` does not admit
-  `/srv/images-private`. A refusal is an ordinary read failure as far as
-  `on_error` is concerned, so `on_error="null"` nulls those rows.
-
-  The check lives in `fetch.rs`, the one stage the two surfaces share, and
-  both `prefetch` and `row_bytes` take the policy as a **required** argument —
-  a caller that forgets it fails to compile rather than silently reading
-  unrestricted. Denied remote paths are dropped before the fetch, so a refusal
-  never becomes a network request.
+- `source("file_path", allowed_roots=[...])` and
+  `.cv.read_bytes(allowed_roots=[...])` sandbox which local paths and remote
+  URI prefixes a path column may read; off by default, and a refused path
+  follows `on_error`.
+- Operation parameters that no op reads are now rejected.
 
 ### Fixed
 
-- **`scale(out_dtype=...)` and `clamp(out_dtype=...)` were accepted and then
-  discarded.** The parameter was validated, serialized into the op's params —
-  so it entered the op's identity, and therefore the CSE and compiled-graph
-  cache keys — and read by nobody: no `resolve_op` arm looked at it, and
-  `output_dtype_for` honours an `out_dtype` override only for the
-  `Configurable` dtype rule, which is `normalize`'s, not theirs
-  (`PromoteToFloat`). A plan-vs-exec test could not see it, because plan and
-  execution *agreed*; they agreed on the promoted float rather than on what was
-  asked for.
-
-  Both now honour it, by lowering the request to a trailing `cast` — the
-  mechanism `preserve_dtype=True` already used, and the one kernel fusion
-  already handles exactly once (`try_fuse` pins `FusedKernel::out_dtype` to what
-  the unfused chain would have produced). Giving the ops their own output dtype
-  instead would have meant teaching `extract_ops` and that pinning about it, and
-  would have turned `PromoteToFloat` — which preserves f64 input — into a
-  `Configurable(F32)` that silently downgrades it. `out_dtype` and
-  `preserve_dtype` are now one mechanism with one target, in
-  `_out_dtype_target` / `_apply_out_dtype`.
-
-- **`warp_affine` silently substituted the identity for a singular matrix.**
-  Warping is inverse mapping — for each output pixel, ask where it came from —
-  so a matrix collapsing the plane onto a line or a point has no answer. The
-  runner returned the input unchanged and reported success, so a caller who
-  passed a degenerate transform got their image back with no signal. It is now
-  rejected where the user supplies it, naming the determinant.
-  `AffineParams::is_invertible` is the single authority, read by both the
-  rejection and the runner's `debug_assert`. The check is skipped under a
-  plan-time probe, where every expression parameter is bound to the same
-  placeholder and a per-row matrix is singular by construction; per-row values
-  are checked per row, where they exist.
-
-- **The channel rule had two readings.** Python's `_update_channels_from_rule`
-  re-derived the output channel count by parsing the stringified rule, and
-  disagreed with view-buffer's `OutputChannelRule::apply` on `NotApplicable`:
-  `apply` returns "no channel count", Python left the hint unchanged. It stayed
-  invisible because every `NotApplicable` op also drops below rank 3, where
-  `_drop_hints_below_rank` clears channels anyway — except
-  `histogram(output="quantized")`, which preserves rank and was mislabelled
-  `NotApplicable` while actually preserving channels. Two errors cancelled.
-
-  Quantized now declares `PreserveChannels` (its own comment already said so),
-  and Python reads `apply` through a new `op_output_channels` FFI instead of
-  holding a copy of the arithmetic. `_drop_hints_below_rank` stays: it is a
-  separate, correct invariant, not the mitigation it was doubling as.
-
-- **The contour round trip did not close: `source("contour")` could not read a
-  contour set.** `extract_contours().sink("native")` emits `List(CONTOUR_SCHEMA)`
-  — one *set* per row — but the source parsed a single `Struct` per row and read
-  a list as one contour's ring of points. Feeding the sink's own output back in
-  therefore failed with `Point struct missing 'x' field`, the contour struct's
-  `exterior`/`holes`/`is_closed` being read as a point's `x`/`y`. The asymmetry
-  was known and worked around in `test_schema_parity_sources.py`, which fed back
-  a single element of the set rather than the set.
-
-  The source now reads both shapes, through one parser (`parse_contour_set`).
-  The two list forms are told apart by element dtype — a `List` of point structs
-  is a ring, anything else in a `List` is a set — rather than by trying one and
-  falling back, because the fallback is what turned a legitimate contour set
-  into a complaint about points. Both shapes are now swept by
-  `test_schema_parity_sources.py::test_contour_source`.
-
-- **Rasterizing more than one contour with `fill_value < background` returned an
-  all-background canvas.** The graph executor rendered each contour to its own
-  mask and folded them with `max`, which is only union-like when the fill value
-  is the larger of the two: `rasterize(fill_value=0, background=255)` silently
-  erased every region as soon as the contour set held two of them (one contour
-  was fine, which is why it survived). Sequential painting into one canvas would
-  have swapped that for a different fault — a later contour's hole eating an
-  earlier contour's fill, making the mask depend on the set's order.
-
-  `rasterize` now takes the whole set, resolves coverage as a union first and
-  colours it once, so neither fault is reachable and the single-contour case is
-  the one-element case rather than a second implementation. The
-  contour source and the `rasterize` op share it, so a mask no longer depends on
-  which of the two routes produced it — asserted by
-  `TestMaskContourRoundTrip::test_the_two_routes_to_a_mask_agree`.
-
-- **`.sink()` accepted any keyword at all, and dropped the ones its format
-  does not read.** The sink takes `**kwargs` and spreads them into the graph's
-  `SinkSpec`, so `sink("jpeg", qualtiy=50)` built a graph carrying `qualtiy`,
-  serde dropped it as an unknown field, and the query encoded at the default
-  quality with nothing said. Of the three real keywords only `dtype` policed
-  where it applied: `quality` on a png sink and `shape` on a png sink were
-  accepted and ignored.
-
-  `quality` turned out to be jpeg-only. `SinkSpec` documented it as "JPEG and
-  WebP" and the sink docstring said "jpeg/webp", but the WebP arm of
-  `encode_image` calls an encoder that takes no quality argument — so a webp
-  quality has always been silently discarded. It is now rejected rather than
-  accepted-and-dropped; supporting it is an encoder change, not a parameter
-  change.
-
-  Both ends of the pipeline now answer this question from one place:
-  `SOURCE_PARAM_APPLIES` and `SINK_PARAM_APPLIES` in `_types.py`, next to the
-  specs they describe, read by one `reject_inapplicable_params`. A name that is
-  not in the table is rejected too, which is what closes the open `**kwargs`.
-  Rust's `SinkSpec` gained `#[serde(deny_unknown_fields)]`, the same mechanism
-  `GraphNode` already uses, so a hand-built graph cannot carry a sink field
-  nothing reads either.
-
-  The `quality` declaration is checked against the encoders rather than merely
-  asserted: for each image sink, whether the output changes between quality 10
-  and 95 must equal what the table claims.
-
-- **Three Python spec classes nothing referenced.** `_types.SinkSpec`,
-  `OutputSpec` and `MultiSinkSpec` were unreachable — the sink is built from
-  raw kwargs in `_graph.py`, and nothing in the package or tests names them.
-  They also carried a fourth, stale copy of the applicability fact
-  (`if format == JPEG or WEBP: result["quality"]`), wrong about WebP in exactly
-  the way the docstrings were. Deleted, with a guard in
-  `test_removed_surfaces.py`.
-
-- **Source parameters that do not apply to the chosen format were silently
-  ignored, and each one policed itself differently.** `Pipeline.source()` takes
-  eleven keywords, and most apply to a subset of the eight formats. Of the
-  seven with a limited scope, one raised (`decode_max_size`), one warned
-  (`cloud_options`), and five were dropped without a word: `width`, `height`,
-  `shape`, `fill_value` and `background` outside `"contour"`,
-  `require_contiguous` outside the nested-column decode, `allowed_roots`
-  outside a path read. So `source("image_bytes", width=224)` built a pipeline
-  that ignored the size, and `source("contour", allowed_roots=[...])` accepted
-  a sandbox it never applied.
-
-  Applicability now has one authority — `_SOURCE_PARAM_APPLIES`, each parameter
-  against exactly the formats whose decode reads it — and one check, which
-  raises. `_is_supplied` compares against the signature's own defaults, and
-  `source()` hands the check `locals()` rather than a hand-written list, so
-  the parameters it validates are the parameters it has.
-
-  Guarded three ways: the table's keys must equal `source()`'s keywords, so a
-  new parameter cannot inherit "applies everywhere" by omission; the check must
-  read `locals()`; and the full parameter x format grid is swept, every
-  applicable pair accepted and every inapplicable pair rejected. `thumbnail()`
-  reads the table too — it writes `decode_max_size`, and had drifted into
-  refusing an `"auto"` source that `source(decode_max_size=...)` accepted.
-
-  Two behaviour changes: `cloud_options` on a non-path source now raises
-  instead of warning (and its warn-and-drop branch, unreachable once the check
-  ran first, is gone rather than left behind) (a warning is filtered out of a query's output and the
-  credentials do nothing either way), and `dtype` on a contour source is
-  rejected as described below. `test_cloud_options_on_non_file_path_source_warns`
-  was rewritten to pin the rejection, and the `decode_max_size` and
-  `thumbnail()` message assertions now match the shared wording.
-
-- **`source("contour")` published a rank and nothing else, then dropped an
-  asserted dtype.** The source decodes by rasterizing, so what it hands the
-  first op is what the `rasterize` op hands its successor — an `[H, W, 1]` u8
-  mask. It stated a hand-written `_expected_ndim = 3` and left the dtype
-  `"auto"`, the channel count and the canvas unstated, while
-  `GeometryOp::Rasterize` had declared all four all along. Both typed sinks need
-  a concrete element dtype, so `source("contour").sink("list")` was unplannable
-  and a no-op `.cast("u8")` was the only way through; `sink("array")`
-  additionally demanded an explicit `shape=` for a canvas fixed by the source's
-  own `width`/`height`.
-
-  The source now folds `GeometryOp::Rasterize`'s contract through the same
-  `op_contract` / `op_schema` / `op_infer_shape` FFI an appended op goes
-  through, so the two routes to a mask publish one contract
-  (`TestContourSourcePlanTimeContract`). `source("contour", dtype=...)` is
-  rejected rather than dropped: rasterizing fixes u8, and the parameter reached
-  `SourceSpec.dtype` and stopped there — an asserted `"f32"` bought a u8 column.
-
-- **`rasterize(width=, height=)` published no shape, though its docstring said
-  `infer_shape` supplied one.** The planner declines to call `op_infer_shape`
-  when the input rank is unknown, and the contour domain has no rank — so the
-  one op whose canvas is fixed entirely by its own parameters was the one op
-  never asked. `_input_dims_for` now recognises a step that builds a buffer out
-  of a non-buffer domain (from the contract: `input_domains` excludes buffer,
-  `output_domain` is buffer) and asks with no input dims, which is what a
-  contour input actually is. Ops that consume a buffer are unaffected, and the
-  contour measures — whose `infer_shape` describes one value *per contour*, not
-  the vector's length — stay out of it by producing a vector rather than a
-  buffer.
-
-  `op_infer_shape` on a `rasterize(shape=<node>)` also reported a 1x1 canvas as
-  fact: introspection has to supply width/height for the op to resolve at all,
-  and the placeholders were literals, so they read as fixed across probes. They
-  are expression placeholders now, and the dimension reads as unknown
-  (`TestOpInferShapeAuthority::test_rasterize_by_shape_reference_is_unknown`).
-
-- **The runtime series builders read the data to decide the schema.**
-  `build_typed_list_series_from_rows_with_dtype` took both the element dtype
-  and the nesting depth from the *first non-null row*, using the planner's
-  `expected_dtype`/`expected_shape`/`expected_ndim` only as a fallback when
-  every row was null; the array builder likewise fell back to the first row's
-  shape. That inverts the contract — the spec is what `collect_schema()`
-  already promised — and it made the outcome depend on where the nulls fell: an
-  all-null column honoured the plan while the same pipeline with one value in
-  it did not.
-
-  The spec is now the authority in both builders. A row whose data contradicts
-  it is an error naming both dtypes rather than a silent reinterpretation, and
-  the array builder has no data fallback at all: a fixed-shape column whose
-  dtype depends on which row arrived first is the thing that sink exists to
-  rule out.
-
-- **An `"auto"` output dtype was taken from the input column, not folded
-  through the ops.** `resolved_output_specs` assigned the input column's leaf
-  type straight to any output still marked `"auto"`, which is correct only for
-  a preserve-input lineage: `source("list")` over a `List(UInt8)` column
-  followed by `scale()` planned `List(UInt8)` for data that arrives f32. The
-  per-row `validate_output_schema` guard caught it, so it surfaced as a
-  mid-`collect()` failure rather than a wrong column — planned wrong either way.
-
-  The dtype is now folded through the ops' `OutputDTypeRule`s from the resolved
-  source type by `fold_output_dtype`, the exact twin of the `fold_output_rank`
-  that sits beside it and had been doing this for the rank all along.
-
-- **A partially-resolved dtype is no longer discarded.** Folding a rule over an
-  unknown input used to collapse back to `"auto"`, throwing away real
-  information: whatever a PNG or TIFF turns out to decode to, `PromoteToFloat`
-  of it is *a float*. `PlannedDType` (view-buffer, `core/dtype.rs`) is the
-  three-state lattice — `Known(DType)`, `SomeFloat`, `Unknown` — and
-  `OutputDTypeRule::resolve_planned` is the symbolic twin of `resolve`.
-
-  `SomeFloat` is deliberately not a dtype: `PromoteToFloat` yields f32 for
-  integers and preserves f64, so there is no single answer, and inventing one
-  is a lie the runtime guard would catch. It is enough to decide a codec
-  though — `ImageCodec::check_planned` refuses only when *every* candidate
-  fails — which closes the last plan-then-fail case:
-  `source("image_bytes").scale(...).sink("jpeg")` is now a planning error
-  instead of an encoder error, while the same source *without* a promoting op
-  still plans, because it could still decode to u8.
-
-  Every site that compared a dtype string to `"auto"` now asks
-  `PlannedDType::parse(...).is_concrete()` instead — a hand-written comparison
-  would have let the second sentinel through to `dtype_str_to_polars`'s `u8`
-  arm.
-
-- **A multi-root graph resolved every output's dtype from the first column.**
-  `merge_pipe` and the binary ops join two `pl.col()` lineages into one
-  `vb_graph` call, and `resolved_output_specs` filled in each output's still-
-  `"auto"` element dtype from `inputs.first()` regardless of which branch the
-  output belonged to. Two list columns of different leaf types planned
-  `Struct({x: List(UInt8), y: List(UInt8)})` and executed with `y` as Float32 —
-  caught by the per-row `validate_output_schema` guard, so it surfaced as a
-  mid-`collect()` failure rather than a wrong answer, but planned wrong either
-  way. Two *separate* expressions never showed it: each is its own plugin call
-  with its own single input.
-
-  Each output is now resolved against the column its own lineage reads, found
-  by walking `upstream` to a root and reading `column_bindings`.
-
-- **`source("auto")` over a Binary column planned a rank it could not know.**
-  `auto` leaves `_expected_ndim` unset, and the `list` sink waived the
-  unknown-rank error for it on the theory that Rust resolves the rank from the
-  column type. That holds for a List/Array column, where `resolved_output_specs`
-  folds the nesting depth through the op rank rules, and not for image bytes,
-  whose rank is only settled by the decode. `dtype_for_output` fell through to a
-  depth-1 `List(UInt8)` while execution produced `List(List(List(UInt8)))`.
-
-  It now refuses instead, naming the two ways out (name the source, or use a
-  sink that does not encode the rank in its dtype). `auto` over List/Array
-  columns is unaffected.
-
-  **This changes an accepted query into a planning error.**
-  `source("auto", dtype=...)` into a `list` sink over a binary image column was
-  accepted before; it was never correct, and eagerly it happened to return a
-  column, which is why `test_auto_image_list_sink_with_explicit_dtype` passed
-  while asserting only that the column came back. An explicit dtype settles the
-  element type, not the rank.
-
-- **The image-encoder sinks checked their preconditions in the encoder.**
-  `png`, `jpeg`, `webp` and `tiff` each restrict the buffer's dtype, and all
-  four need an image-shaped buffer — facts that follow from the buffer's
-  description, which is exactly what `OutputSpec` carries. Checking them at
-  encode time meant a pipeline that promotes to f32, or flattens to rank 1,
-  planned as `Binary` and then died part-way through `collect()`.
-
-  `ImageCodec::check_support` (view-buffer, `interop/image.rs`) is now the one
-  table: read by `dtype_for_output` when the query is planned, by `encode_sink`,
-  and by the encoders themselves — `encode_tiff`'s fallback arm asks it for the
-  message rather than writing a second one. An unknown is never a rejection, so
-  a source that could still decode to u8 is not refused — but "unknown" is now
-  a lattice rather than a single state, so a *partially* resolved dtype is not
-  wasted (see below).
-
-  Guarded in Rust by `the_table_never_promises_what_an_encoder_cannot_deliver`,
-  which runs every (codec, dtype, channels) cell through both the table and the
-  real encoder and requires that the table never admits what the encoder
-  refuses. Two cells where it is deliberately *stricter* — 16-bit JPEG and WebP,
-  which `image` accepts by silently halving the bit depth — are listed with
-  their reason and separately pinned.
-
-- **Three vector-domain sinks planned one thing and executed another.** The two
-  halves of the sink contract keyed on different facts: `dtype_for_output`
-  decides the Polars dtype from `(expected_domain, format)`, while
-  `encode_node_output` decided the *value* from the runtime `NodeOutput`
-  variant. Those are not the same thing — a domain can arrive in more than one
-  representation. A perceptual hash is a `vector`-domain output that rides as a
-  `Buffer` (`apply_perceptual_hash` returns a 1-D `u8` buffer); `extract_shape`
-  produces a real `Vector`. Wherever the two diverged, so did the contract:
-
-  - `perceptual_hash().sink("native")` planned `List(UInt8)` and failed at
-    `collect()` with "Buffer outputs require explicit format" — `native` on a
-    vector output is the documented spelling.
-  - `extract_shape().sink("array", shape=[3])` planned `Array(Float64, 3)` and
-    failed with "Unsupported sink format: array". The schema arm for
-    `("vector", "array")` had been added to fix an earlier divergence *without*
-    the encode arm that makes it real.
-  - `perceptual_hash().sink("array")` reported a shape mismatch against the
-    buffer rather than encoding the hash.
-
-  The pairs that did work did so because the two dispatches happened to agree,
-  not by construction. `encode_node_output` now keys on the planned domain —
-  the same key its counterpart uses — and its arms mirror that function's one
-  for one; the `NodeOutput` variant is used only to reach the data, which is
-  what it actually tells you.
-
-  Guarded by `tests/test_sink_contract.py`, which sweeps every
-  (domain representation × `SinkFormat`) pair and asserts the *relationship*
-  rather than a blessed list: a pair rejected at plan time is fine, but one
-  that survives planning must execute to exactly the dtype planning promised.
-  Both axes are completeness-asserted, and the two vector representations are
-  pinned to encode identically.
-
-### Changed
-
-- **Declaring a `named_variants!` table and registering it are one act.**
-  `every_named_enum_is_registered` fails if an enum declares a `NAMED` table
-  without appearing in `naming::REGISTRY`. Registration is what surfaces an
-  enum over `enum_variants`, what gets its names checked for duplicates, and
-  what puts it in `enum_names()` — which the Python suite iterates to decide
-  what to parity-check. An unregistered enum was therefore not "private", it
-  was unchecked, with a Python mirror free to disagree with it. The check runs
-  in both directions, so a scan that stops matching fails rather than passing
-  vacuously.
-
-- **`SourceFormat` is pinned to Rust's `KNOWN_SOURCE_FORMATS`.** They are two
-  hand-written spellings of one vocabulary, and a note in the test suite
-  claimed there was nothing to pin them to — true of sink formats (which are
-  matched on and rejected by fall-through, never enumerated), not of sources,
-  which the graph validator checks against an explicit list. A Python-only
-  format built a graph the validator rejected at execution; a Rust-only one was
-  a decode path nothing could reach.
-
-- **`op_contract` publishes each fact once.** It carried both `input_domain`
-  (a single `Domain`) and `input_domains` (the accepted set) across the FFI;
-  only the set was ever read, and the two were free to disagree the moment a
-  step accepted more than one domain — which binary ops and reductions do. The
-  singular key is gone and `test_contract_publishes_no_second_spelling` pins
-  the key set in both directions.
-
-- **The graph wire format is closed at the node.** `GraphNode` now carries
-  `#[serde(deny_unknown_fields)]`, so a stale or misspelled key fails loudly
-  instead of being silently dropped — which is how `shape_hints` went on being
-  emitted long after its last reader. Fields only Python consumes
-  (`domain`, `output_dtype`) are declared on the Rust struct to keep it closed.
-  `OpSpec` is deliberately *not* closed: its parameters ride on
-  `#[serde(flatten)]`, which serde documents as incompatible with
-  `deny_unknown_fields`.
-
-  **This is a behaviour change under version skew.** A newer Python emitting a
-  node field an older compiled `.so` does not declare now fails the query
-  rather than dropping the field silently. The install is editable, so a stale
-  extension is the normal state after pulling Rust changes — re-run
-  `maturin develop`, or check `polars_cv.build_info()`, which reports the three
-  versions that must agree.
-
-- **Two `unreachable!()` panics removed from `build_plan`.** They were reachable
-  by an op author declaring `MemoryEffect::View` on a compute or image op — a
-  runtime abort for a contract mistake. The materialisation decision is now a
-  direct comparison that treats a `View` declaration as "no materialisation
-  needed", which is what it means.
-
-
-- **Binary ops and reductions declare that they accept a vector.** Their
-  `GraphStep` contract said `buffer`, which read as "images only" and was
-  wrong: a perceptual hash is a 1-D `u8` buffer encoded as a `vector`, and the
-  library's own `hamming_distance` is `hash_a ^ hash_b → reduce_popcount` with
-  both operands in `vector`. Nothing enforced input domains from that contract
-  until the planner started to, so the mistake was invisible. `input_domains()`
-  is now a set (`["buffer", "vector"]` for those two), which keeps
-  `extract_contours().reduce_sum()` rejected at build time — widening them to
-  `Domain::Any` would not have. The rejection message names the accepted set,
-  so it now reads "expects buffer or vector input".
-
-- **Shape hints are invalidated, not carried forward, when a step has no
-  inferable shape.** Axis reductions, histograms, channel merge and the binary
-  ops are graph-level steps `op_infer_shape` rejects; keeping the pre-op H/W
-  across them let a pipeline publish `[100, 200, 2]` for data that executes as
-  `[200, 3, 2]`. Unknown is always safe — a typed sink asks for an explicit
-  shape instead of planning a wrong one.
-
-- **`transpose` and `flip` validate their axes against the tracked rank.**
-  `transpose([1,0,2])` after a `channel_select` (rank 2) reached view-buffer's
-  `infer_shape`, which indexes the input shape unchecked, and surfaced as a
-  `PanicException` with a Rust backtrace from an ordinary builder call. The
-  builders now raise `ValueError`, and `op_infer_shape` catches unwinds so no
-  future op can leak a panic into the planner.
-
-- **Each operation's input domain now comes from its Rust contract.** Builders
-  passed their own expected domain to `_validate_domain(self.DOMAIN_BUFFER, ...)`
-  at 53 call sites, restating a fact `op_contract(...)["input_domain"]` already
-  published and nothing read. The check moved into the append path, and
-  `Pipeline`'s `DOMAIN_*` string constants — a third copy of the domain
-  vocabulary behind Rust's `Domain::NAMED` and the Python `Domain` enum — are
-  gone.
-
-- **`op_infer_shape` now covers geometry steps.** `rasterize`'s output canvas is
-  fixed by its own width/height, but the FFI accepted only buffer ops, so the
-  Python builder assigned those hints itself as a side effect of building the
-  op's parameters — which the continuation replay skipped. `GeometryOp`'s
-  `infer_shape` is now read like any other, and a step whose shape is genuinely
-  data-dependent (`extract_contours`) reports "not knowable" rather than rank 0.
-
-- **`assert_shape()` records the position it was written at.** A user assertion
-  outranks inference, but only from that point on, so it can survive a
-  continuation replay without overriding later ops that legitimately change the
-  shape (`assert_shape(channels=3).grayscale()` still reports 1 channel).
-
-- **`average_precision(interpolation="all_points")` omitted the first recall
-  segment.** `_all_points_ap` built the monotone precision envelope correctly
-  then integrated only over the recall values present in the curve, never
-  anchoring at recall = 0. The leftmost block — `recall[0] × envelope[0]` —
-  was dropped every time, so a three-detection curve that should score 2/3
-  reported 1/3, and a perfect single-TP result reported 0.0. Both
-  `_all_points_ap` and the matching per-replicate trapezoid in
-  `bootstrap_pr_auc` now prepend a recall-0 anchor (COCO / scikit-learn
-  `Σ (Rₙ − Rₙ₋₁) · Pₙ` with `R₀ = 0`). **This changes reported AP numbers**
-  for `interpolation="all_points"` (the default); `11_point` is unaffected.
-
-- **`PreMatchedAdapter` derived the image population from detections only.**
-  Images with no detections got no metadata row, silently deleting the
-  negative population and inflating recall / FP-per-image. `match()` now
-  accepts an optional `image_meta` frame that defines the full evaluation
-  population; omitting it keeps the previous behaviour but emits a
-  `UserWarning`. `image_meta` is the *sole* source of `image_metadata`, so
-  combining it with `n_gts_col` / `weight_col` / `gt_label_col` /
-  `group_col` — which only ever described how to derive metadata from the
-  *detection* frame — raises rather than accepting the arguments and
-  discarding them.
-
-- **FROC double-counted detections when `image_id` repeated in metadata.**
-  `_curve_from_detections` joined detections to `image_metadata` weights
-  without deduping by `image_id`, so a shared rendered image owned by two
-  cases (or a bootstrap-with-replacement draw) fan-out-multiplied every
-  detection before TP/FP aggregation. The weight lookup is now unique by
-  `(image_id, class_id)`. The same join bug made `FROCResult.bootstrap_ci`
-  produce intervals that excluded the point estimate and replica
-  sensitivities above 1.0; both are fixed.
-
-- **A FROC metadata row is one (image, class), but the FP-per-image
-  denominator counted rows.** `froc_curve` took `n_images` from
-  `image_metadata.height`, so a two-class table divided the false-positive
-  rate by two. The image count is now the number of distinct `image_id`s,
-  read once through `_count_images` by both `froc_curve` and
-  `FROCResult._reconstruct` — the two had drifted apart, the replicate
-  counting draws while the point estimate counted rows, and the bootstrap
-  distribution was therefore not on the same scale as the estimate it
-  bracketed. `_curve_from_detections` no longer takes `n_images` at all; it
-  reads the metadata it was already given.
-
-- **Bootstrap draws are distinct evaluation units, not repeated images.**
-  `FROCResult._reconstruct` resampled with replacement and carried the
-  duplicates as repeated `image_id`s, leaving every downstream count to
-  guess whether a repeat was a redraw or one image legitimately owned by two
-  cases. Each draw now gets a synthetic `image_id` (`<id>#draw<n>`), so a
-  redraw contributes its own detections, its own `n_gts` and its own slot in
-  the FP-per-image denominator, and a repeated `image_id` again means only
-  one thing.
-
-- **FROC / LROC curves were returned in ascending-threshold order**, so
-  `fp_per_image` / `fpf` ran downwards through the frame and
-  `plt.step(..., where="post")` drew backwards. Curves are now sorted by
-  **descending `threshold`**, which is ascending `fp_per_image` / `fpf`.
-  Sorting on the x-column directly looks equivalent and is not: thresholds
-  are unique so the order is total, while `fp_per_image` ties constantly —
-  every threshold bucket adding only true positives leaves it unchanged —
-  and Polars' `sort` defaults to `maintain_order=False`, so the y at each tie
-  boundary, and therefore the trapezoid leaving it, was unspecified and could
-  differ between runs and platforms. (Commit `7829291` fixed the same class
-  of nondeterminism in `bootstrap_pr_auc` after it surfaced as a macOS CI
-  failure.) **This changes reported FROC/LROC AUC**, deterministically.
-
-- **`MetricResult.auc` and `.interpolate` each re-sorted the curve by x
-  alone**, inheriting that same tie ambiguity no matter how the curve was
-  stored, and then read the *first* row of a tie group — so
-  `sensitivity_at_fp(0.0)` reported the origin's `0.0` rather than the
-  sensitivity a detector actually reaches while making no false positives.
-  Both now go through one `MetricResult._curve_xy`, which collapses tied x to
-  the maximum y (the standard ROC upper envelope) and yields strictly
-  increasing x. `summary_table`'s y column is Float64 even when every
-  operating point is out of range, instead of collapsing to `Null` dtype.
-
-- **The unweighted branch of `_curve_from_detections` was unreachable.**
-  `weight` is in `IMAGE_META_REQUIRED` and `DetectionTable.from_matched`
-  validates it, so `has_weights` was always true and the second curve
-  implementation behind it could never run. Deleted; an all-1.0 weight column
-  reduces the weighted formulas to the plain counts exactly.
-
-- **FROC weighted sensitivity was order-dependent when a duplicated
-  `image_id` carried conflicting weights.** The weight lookup deduped by
-  `image_id` (first row wins) while denominators summed every metadata row,
-  so `[1, 5]` vs `[5, 1]` flipped sensitivity (`0.1667` vs `0.8333`). Equal
-  weights still dedupe cleanly; conflicting weights now raise `ValueError`
-  pointing at a composite `image_id` or a single weight per unit. The lookup
-  key is `(image_id, class_id)` when class is present, and the *conflict
-  check* is on `image_id` alone — which subsumes it. A `weight` is a property
-  of an image, and the FP-per-image denominator dedupes on `image_id`, so two
-  classes of one image disagreeing about its weight left that denominator
-  depending on which row `unique` happened to keep.
-
-- **`MetricResult.interpolate` (and `sensitivity_at_fp` /
-  `sensitivity_at_fpf` / `summary_table`) clamped past the observed x-range
-  instead of returning null.** Queries beyond the curve's max now return
-  `None` / null so an unreachable operating point is visible rather than
-  silently repeating the last y value. `examples/06_detection_metrics.py`
-  formats through a `fmt()` helper accordingly — `round(None, 4)` is a
-  `TypeError`.
-
-- **`partial_auc` rejected integer bounds.** The boundary points it appends at
-  `lo` / `hi` were built with an inferred dtype, so the natural spelling of a
-  range — `froc.auc(fp_range=(0, 8))`, as the docs and
-  `examples/06_detection_metrics.py` both write it — produced an `Int64`
-  Series that would not concatenate onto the `Float64` curve and raised
-  `SchemaError: type Int64 is incompatible with expected type Float64`
-  whenever the curve did not already span the requested range. Bounds are
-  coerced to float and the boundary Series are constructed as `Float64`
-  explicitly.
-
-- **`.contour.label_reduce()` was a second, divergent implementation.** The
-  accessor scored contours with a plugin-local routine while
-  `Pipeline.label_reduce()` used the engine's `score_contours_on_buffer` — the
-  same math, moved into `view-buffer` earlier, whose plugin-side copy was never
-  deleted. The two had drifted:
-
-  - `region_mode="boundary"` was rejected by the accessor and accepted by the
-    pipeline.
-  - A contour catching no pixel centre (a sub-pixel detection) scored **0.0**
-    through the accessor and its **centroid value** through the pipeline. The
-    accessor's zero then read downstream as a detection with no evidence.
-  - The accessor copied the whole image into a `Vec<Vec<f64>>` before scoring.
-
-  Both entry points now call `score_contours_on_buffer` and parse `reduction` /
-  `region_mode` against the engine's `NAMED` tables, so accepted names cannot
-  drift either. **This changes reported numbers** for `.contour.label_reduce()`
-  on sub-pixel contours, which now score at their centroid instead of 0.0.
-  `Pipeline.label_reduce()` and `ContourMatcher` are unaffected — they were
-  already on the engine path.
-
-  The existing parity test covered only `region_mode="bbox"`, the one mode the
-  two agreed on; it now runs across every reduction and region mode.
-
-
-- `measures::signed_area` is now `geo`'s signed area rather than a hand-written
-  shoelace loop, and `transforms::ensure_winding` reads `measures::winding`
-  instead of re-deriving it — leaving `geo` the single authority for polygon
-  area. (`geo` treats a `LineString` as one-dimensional with zero area, so the
-  ring is measured as the hole-free polygon it bounds.)
+- `scale(out_dtype=)` and `clamp(out_dtype=)` were accepted and ignored; they
+  now cast the result.
+- `warp_affine` returned the input unchanged for a singular matrix; it now
+  raises, naming the determinant.
+- `source("contour")` could not read the contour sets that
+  `extract_contours().sink("native")` emits.
+- Rasterizing several contours with `fill_value < background` returned an
+  all-background canvas.
+- `source("contour")` now publishes its `[H, W, 1]` `u8` schema, so it plans
+  into `list` and `array` sinks without a no-op `.cast("u8")`; `rasterize(width=,
+  height=)` publishes its canvas shape.
+- Planned and produced dtypes disagreed on `list`/`array` sources followed by
+  promoting ops, on multi-root graphs with differently typed columns, and when
+  null rows came first. They now agree.
+- `png`/`jpeg`/`webp`/`tiff` sinks now reject unencodable dtypes or shapes at
+  planning time rather than part-way through `collect()`.
+- `perceptual_hash().sink("native")`, `extract_shape().sink("array", shape=)`
+  and `perceptual_hash().sink("array")` planned a schema and then failed.
+- `transpose` and `flip` raise `ValueError` for out-of-range axes instead of a
+  panic.
+- `assert_shape(...)` keeps later shape-changing ops accurate, and
+  `transpose`, `channel_select`, `channel_merge` and axis reductions no longer
+  publish stale shapes.
+- The lazy `.pipe(p).resize_to_height(50)` and similar reported wrong
+  shapes (`resize_max`, `pad`, `pad_to_size`, `rotate`).
+- `FROC` double-counted detections when `image_id` repeated in metadata, and
+  its bootstrap intervals could exclude the point estimate; bootstrap draws are
+  now distinct units.
+- `MetricResult.auc` and `.interpolate` were ambiguous on tied x values;
+  `sensitivity_at_fp(0.0)` now reports the best sensitivity at zero false
+  positives.
+- `partial_auc` rejected integer bounds such as `fp_range=(0, 8)`.
 
 ### Removed
 
-- **`OutputDType`, a partial second dtype table whose one distinct value meant
-  "the default".** It listed `f32`/`f64`/`u8` alongside the spellings
-  `dtype_table!` already owns, plus `"preserve"`, documented in the enum and in
-  `clamp`'s docstring as "keep input dtype (floats preserved, integers -> f32)"
-  — character for character what `OutputDTypeRule::PromoteToFloat` does, which
-  is what passing nothing already did. It was a synonym for the default, not an
-  unimplemented feature: `normalize` rejected it by hand for that reason, and
-  `scale`/`clamp` accepted it into the op's identity and dropped it.
-
-  The behaviour the word suggests (u8 in, u8 out) is `preserve_dtype=True`,
-  which is wired and tested. `out_dtype` now validates against `DType`, so every
-  dtype is requestable and there is one table of dtype names.
-
-- **Ten unreferenced `view-buffer` public items.** Zero-argument wrappers over a
-  parameterised primitive (`from_slice_simd_aligned`, `is_simd_aligned` — the
-  `from_slice_aligned` / `is_aligned` pair answers strictly more, and
-  `SIMD_ALIGNMENT` is now the named argument in their documented example), a
-  `size_bytes` whose docstring claimed a tiling caller that did not exist, the
-  `layout_report` / `LayoutReport` inspection pair with no consumer, `ScalarOp::
-  op_type` superseded by the `description` beside it, and four `NodeOutput`
-  accessors and constructors nothing called. `ImageView::get_pixel` was kept
-  and documented instead: it is that public view type's only accessor, so
-  deleting it would leave it unable to read what it borrows.
-
-- **Three surviving second copies.** `polars_dtype_to_str` (graph/compiled.rs)
-  was a second Polars-type→dtype map beside `decode::dtype_from_polars_datatype`
-  — the two were free to disagree about which Polars types are buffer elements
-  at all, and did. `output::dtype_to_string` was a second name for
-  `DType::numpy_name` with one caller. `cloud::is_cloud_path` was a second
-  path classifier beside the one `fetch.rs` actually uses, reachable only from
-  its own test; an unused classifier sitting next to a used one is an
-  invitation to pick the wrong one.
-
-- **`scripts/verify.sh`'s pinned Rust toolchain.** It set
-  `RUSTUP_TOOLCHAIN=1.96` — a third declaration behind `rust-toolchain.toml`
-  (`stable`) and CI (`dtolnay/rust-toolchain@stable`), disagreeing with both.
-  A local `PASS` was checking a different compiler than CI, and downloading a
-  toolchain to do it. `rust-toolchain.toml` is now the only declaration.
-
-- **`rasterize(anti_alias=)`.** It was threaded from the builder through the op
-  spec, the JSON graph, `resolve_rasterize_style` and `GeometryOp::Rasterize`
-  into `geometry::rasterize`, whose signature named it `_anti_alias` and ignored
-  it. Documented as "not yet implemented", but not free: it entered the op's
-  identity, so two pipelines that behave identically hashed differently for CSE
-  and compiled to separate graph-cache entries. Passing it now raises
-  `TypeError` instead of being silently discarded.
-
-- **view-buffer's unreachable pipeline-composition layer.** `ops/io.rs`
-  (`SourceFormat`, `SinkFormat`, `PlaceholderMeta`) and the `ExprNode`
-  variants only it fed — `LazySource`, `Placeholder`, `Sink` — plus their
-  constructors. Nothing in the workspace called them; the plugin builds its own
-  source/sink vocabulary. Every `match` over `ExprNode` carried arms for them,
-  two of which were `panic!("must be resolved before building plan")`. Also
-  removes the never-enabled `numpy_interop` / `torch_interop` features, and
-  retires the "three-way format representation split" that two comments
-  described as a divergence to live with.
-
-- **The cost-reporting subsystem.** `ops/cost.rs`, `OpCost`, `OpCostReport`,
-  `PipelineCostReport`, `ViewExpr::cost_report()`, `explain_costs()` and
-  `Op::intrinsic_cost()`. Exercised only by view-buffer's own tests — no Python
-  surface reached it, so every op author maintained a declaration for nobody.
-  `MemoryEffect` is retained and its documentation corrected: it called itself
-  legacy and pointed at `intrinsic_cost()`, when it is in fact the
-  materialisation authority (`build_plan` inserts `MaterializeContiguous` from
-  it) and cost could never have replaced it, because the `MemoryEffect ->
-  OpCost` conversion collapsed `StridePreserving` and `RequiresContiguous` into
-  a single value.
-
-- **Node-level `shape_hints` from the graph JSON.** No Rust code ever read the
-  key. Because `graph_json` is the compiled-graph cache key, two pipelines that
-  execute identically but carry different hints occupied separate cache
-  entries. Plan-time shape still crosses the boundary as `expected_shape` on
-  the output spec, which Rust does read.
-
-
-- **Unreachable geometry vocabulary.** `GeometryOp` carried ten variants
-  (`Winding`, `Flip`, `EnsureWinding`, `Normalize`, `ToAbsolute`, `IsConvex`,
-  `ContainsPoint`, `IoU`, `Dice`, `HausdorffDistance`) that no `resolve_op` arm
-  could construct, together with an arm in the plugin's graph executor whose only
-  job was to reject them. Those operations are served by the `.contour` namespace,
-  which calls the `view-buffer` geometry functions directly. `GeometryOp` now
-  lists only what the pipeline graph routes, and the executor's match is
-  exhaustive by construction rather than by a runtime error string.
-
-- **Dead `view-buffer::geometry` API**: `pairwise::bbox_to_contour`,
-  `predicates::point_in_polygon`, `measures::distance_to_segment`,
-  `Point::distance_squared_to`, `Contour::{from_int_tuples, add_hole, iter,
-  points}` and `BoundingBox::union` had no callers. `rasterize_simple` is now
-  `#[cfg(test)]`: it is the per-pixel oracle the scanline filler is checked
-  against, not a second rasterization path.
-
-- **`polars_cv.geometry.validation`**, along with the re-exported
-  `GeometryValidationError`, `OpenContourError`, `CoordinateRangeError` and
-  `InvalidContourError`. The three validator functions were never called and the
-  exception classes were never raised, so nothing could catch them. The
-  `Raises: OpenContourError` line on `.contour.area()` documented an error that
-  could not occur.
-
-### Fixed
-
-- **Plan-time shape tracking was opt-in, and most builders opted out.** Appending
-  an operation required a sequence of calls each builder made by hand. All 60
-  ran the schema fold (`_update_output_dtype`); only 19 also updated the shape
-  hints. Ops that change shape but skipped it published a planned schema
-  execution could not produce, which surfaced at `collect()` as
-  *"planned shape [...] but execution produced [...]. The planner's shape
-  contract disagrees with the Rust implementation."*
-
-  - `transpose(axes)` kept the pre-transpose H/W (a 100×200 image still reported
-    100×200 after `[1,0,2]`) and kept a channel count its `unknown` channel rule
-    says is not knowable.
-  - `channel_select(index)` dropped rank 3 → 2 while `expected_shape` kept
-    publishing a three-dimensional shape.
-  - `channel_merge` kept the first operand's channel count.
-
-  `Pipeline._push_op()` is now the only code that may mutate `_ops`, and it
-  applies the domain check, the schema fold and the hint update together.
-  Guarded structurally by `test_op_append_is_structurally_exclusive`, which
-  fails if anything else touches `_ops` — replacing a ratchet that enumerated
-  one of the two required calls.
-
-- **The lazy continuation's shape replay never ran.** `LazyPipelineExpr.pipe()`
-  re-applied each op's shape effect over the upstream hints, but assigned
-  `_expected_ndim` *after* that loop, so every replayed op saw `ndim = None` and
-  the H/W half of the replay returned at its opening guard. A post-loop overlay
-  masked it for absolute targets like `resize(h, w)` while producing wrong
-  values elsewhere — `.pipe(p).resize_to_height(50)` reported a width of 50,
-  `resize_max(120)` reported a square, and `pad`/`pad_to_size`/`rotate` silently
-  kept the upstream shape.
-
-  The continuation now folds state and hints together one op at a time through
-  the same append path the eager builders use, so the two spellings of an
-  operation — `.pipe(p.op())` and `.pipe(p).op()` — agree by construction.
-  Pinned by `test_eager_and_lazy_agree_on_shape_state` across every chainable
-  op, with the op table completeness-asserted so a new operation cannot join
-  without a case.
+- Unused public items in `view-buffer` (cost reporting, `layout_report`,
+  `from_slice_simd_aligned`, `is_simd_aligned`, dead geometry helpers and the
+  `numpy_interop`/`torch_interop` features).
 
 ## [0.18.0] — 2026-07-31
 
-### Fixed
+Contour geometry is now computed exactly; reported IoU, Dice and contour
+measures change.
 
-- **Contour IoU and Dice were wrong for most real contours.** Overlap went through
-  a hand-rolled Sutherland–Hodgman clipper, which is only correct when the *clip*
-  polygon is convex, and whose half-plane test hard-coded a counter-clockwise
-  winding. Neither condition is required by `CONTOUR_SCHEMA`, and neither was
-  enforced. Concretely, against an identical copy of itself: a clockwise-wound
-  square scored **0.0**, an L-shape **0.2**, a U-shape **0.0**. `iou(a, b)` was not
-  even symmetric — it returned 1.0 or 0.0 for the same pair depending on argument
-  order. Holes compounded it: they were subtracted from each contour's area but
-  ignored when intersecting, so a holed contour against itself produced an
-  intersection larger than its union, saved only by a final clamp; with a large
-  enough hole the union went negative and the result collapsed to 0.0.
+### Breaking changes
 
-  Segmentation contours are essentially never convex, so this affected
-  `.contour.iou()`, `.contour.dice()`, `.contour.pairwise_iou()`,
-  `.contour.match_detections()`, and everything built on them —
-  `ContourMatcher`, `DetectionTable`, and the FROC/LROC/precision-recall curves.
-
-  Overlap is now computed exactly, by `geo`'s boolean operations. Results are
-  winding-independent, hole-aware and symmetric. **This changes reported numbers**:
-  IoU and Dice will generally go up, so thresholds calibrated against the old
-  behaviour should be re-checked.
-
-- **Bounding-box IoU** no longer round-trips through polygon clipping; it is
-  computed analytically from the rectangle overlap.
-
-- **Overlapping and nested hole rings.** `Contour::area` subtracted each hole's
-  area in turn, double-counting wherever two hole rings overlapped, and reporting
-  a different region than `contains_point` and `rasterize` (which have always
-  treated the region as the exterior minus the *union* of the hole rings). Area
-  now uses that same region. A square with a hole containing a further ring reports
-  3600 rather than 3200, and `iou` against the solid square reports 0.36 rather
-  than 0.4348.
-
-- **`hausdorff_distance` on an empty contour** returned `-1.797e308` — a negative
-  distance — because `geo` folds with `Bounded::min_value()` where the previous
-  implementation used `f64::INFINITY`. It returns `INFINITY` again.
-
-- **`extract_contours` did not trace boundaries at all.** The Moore-neighbour
-  walk resumed its neighbourhood sweep five positions past the direction it had
-  just moved, rather than at the background cell it had arrived from. From the
-  top-left of a filled square its first step went *inward* along the diagonal; it
-  then bounced between four cells and returned to the start. A filled 400×400
-  region came back as **399 degenerate 2×2 contours, one per row** — never its
-  outline. Everything downstream inherited it: `.extract_contours()`, contour
-  metrics, and `ContourMatcher`, where `metrics` carried a filter for detections
-  whose "rasterized interior is empty and are provably artifacts of the boundary
-  tracer". A region now traces to exactly one border, following its rim.
-
-  Two related faults went with it. The sweep's starting side is now chosen the
-  way Suzuki–Abe does — west where a foreground run begins, east where one ends —
-  so a **hole's rim traces correctly** instead of wandering the interior until a
-  length guard stopped it; `mode="all"` reports the exterior plus one border per
-  enclosed background region. And a trace no longer *starts* at a cell touching
-  background only diagonally (the inside of a reflex corner, or a cell
-  catty-corner to a hole), which was producing spurious extra contours on L, U
-  and plus shapes.
-
-  The traced outline runs through the **centres** of the boundary pixels, so it
-  is inset by half a pixel: a region filling `w × h` pixels returns bounding
-  `(w-1) × (h-1)`. That is inherent to describing a pixel set by a polygon, and
-  is now documented and asserted rather than incidental.
-
-- **Rasterized masks were one pixel too wide at every right-hand edge.** The
-  scanline filler behind `source("contour", ...)` and `Pipeline.rasterize()`
-  rounded each span outward — `ceil(left)` to `floor(right)` — instead of asking
-  which pixel *centres* fall inside it. Since the scanline itself samples at
-  `y + 0.5`, the vertical extent was already right, so masks came out asymmetric:
-  a 400×400 box rasterized 401×400 pixels, and every interior hole was likewise
-  a column too wide. A mask's pixel count therefore did not agree with the
-  contour's `area()`, and `apply_mask` with a contour mask included a column of
-  pixels outside the contour. Masks are now exactly the set of pixels whose
-  centre lies in the shape — the rule `contains_point` and the area measures
-  already followed — so an axis-aligned box on integer coordinates rasterizes to
-  precisely its area. Zero-width or zero-height output no longer panics.
-
-- **`centroid` measured a different region than `area`.** It was the one measure
-  left on the holes-as-interior-rings representation, so it subtracted each hole's
-  moment in turn — double-counting wherever two hole rings overlap, and subtracting
-  a nested ring that lies in an already-removed part. It now measures the same
-  region as `area`, `contains_point`, `iou` and rasterization. For a 100×100 square
-  with holes `[10,50]²` and `[30,70]²`, the centroid moves from `(54.71, 54.71)` —
-  a shape that does not exist — to `(53.89, 53.89)`. Contours with no holes, and
-  contours whose holes are disjoint, are unaffected.
-
-### Changed
-
-- **`view-buffer` now depends on [`geo`](https://crates.io/crates/geo)** (0.33,
-  `default-features = false`) for its polygon maths. Alongside the clipper, the
-  hand-rolled Douglas–Peucker simplification, Graham-scan convex hull, ray-casting
-  point-in-polygon, convexity test, shoelace centroid and point-to-segment
-  projection were deleted in favour of `geo`'s implementations. Public signatures
-  in `view-buffer::geometry` are unchanged, but several **semantics** are not:
-
-  - The boolean ops, convexity test and point-in-polygon now use exact orientation
-    predicates instead of epsilon comparisons. A point within `1e-10` of an edge
-    previously read as *on the boundary* and now reads as inside or outside.
-    (Area, centroid, simplification and distance remain ordinary floating point.)
-  - `hausdorff_distance` walks hole vertices as well as the exterior. A holed
-    contour against the same solid shape used to report 0.0 and now reports a
-    positive distance.
-  - `centroid` of a **zero-area** ring returns `geo`'s length-weighted centroid
-    rather than the mean of the vertices. Non-degenerate contours are unaffected.
-  - `simplify(tolerance=0.0)` is now a no-op rather than dropping collinear
-    points, and simplification runs on the closed ring, so a ring is never
-    collapsed below 4 points — `simplify` with a huge tolerance returns the shape
-    instead of a degenerate 2-point line.
-  - `nearest_point_on_contour` returns null for a ring whose points are all
-    identical, where it used to return that point.
-
-- **Hole-ness is documented as structural, and only structural.** The `holes`
-  field of `CONTOUR_SCHEMA` is the sole carrier; ring winding is never interpreted
-  as a hole signal. The schema docstrings previously also stated a "CCW = exterior,
-  CW = hole" convention that no code read or enforced — following it (via
-  `.contour.ensure_winding("cw")`) is precisely what produced an IoU of 0.
-  `.contour.winding()` reports point order and `.contour.ensure_winding()` sets it;
-  nothing else consults it. `is_closed` is documented as reserved: it is written
-  unconditionally as `true` and never read back.
+- Contour IoU and Dice were wrong for non-convex or clockwise contours (a
+  clockwise square scored 0.0 against itself) and are now exact, symmetric,
+  winding-independent and hole-aware. IoU and Dice generally go up; recheck
+  thresholds. This affects `.contour.iou()`, `.dice()`, `.pairwise_iou()`,
+  `.match_detections()`, `ContourMatcher`, `DetectionTable` and the
+  FROC/LROC/PR curves.
+- `extract_contours` now traces region outlines; before, a filled region came
+  back as many degenerate 2x2 contours. Hole rims trace correctly and `mode="all"`
+  reports one border per enclosed background region. The outline runs through
+  boundary pixel centres, so a `w x h` region has bounds `(w-1) x (h-1)`.
+- Rasterized masks (`source("contour")`, `Pipeline.rasterize()`) were one pixel
+  too wide at right-hand edges; a mask is now exactly the pixels whose centre
+  lies inside the shape.
+- `area` and `centroid` now measure the exterior minus the union of the holes,
+  so overlapping or nested holes no longer double-count.
+- `hausdorff_distance` also walks hole vertices, so a holed contour against the
+  solid shape reports a positive distance; on an empty contour it returns
+  infinity again.
+- `centroid` of a zero-area ring is length-weighted. `simplify(tolerance=0.0)`
+  is a no-op and never collapses a ring below 4 points.
+  `nearest_point_on_contour` returns null for an all-identical ring.
+- Point-in-polygon and convexity tests use exact predicates, so points within
+  `1e-10` of an edge are no longer "on the boundary".
 
 ### Added
 
-- **`polars_cv.build_info()`** reports the three versions that must agree:
-  `__version__` (the imported Python source), the compiled extension's version
-  (now exposed as `polars_cv._lib.__version__`, baked in from `Cargo.toml`), and
-  the installed distribution's. The install is editable, so Python edits are live
-  while the compiled extension stays at its last `maturin develop` — after a `git
-  pull` that touches Rust, an unrebuilt environment silently runs new Python
-  against old Rust. This makes that visible.
+- `polars_cv.build_info()` reports the Python, compiled-extension and installed
+  versions, to detect a stale extension.
 
-- **`tests/test_version_consistency.py`** fails when the version manifests drift
-  apart or when the installed package is stale. The release checklist in
-  `CONTRIBUTING.md` previously noted that nothing checked them.
+### Changed
+
+- Bounding-box IoU is computed analytically from the rectangle overlap.
+- Hole-ness comes only from `CONTOUR_SCHEMA`'s `holes` field; ring winding
+  never marks a hole.
 
 ## [0.17.0] — 2026-07-31
 
+Null handling for per-row expression parameters.
+
 ### Added
 
-- **Null handling for per-row expression parameters.** A parameter given as a
-  `pl.Expr` is read from an ordinary column, which may contain nulls; until now
-  that was unconditionally fatal. `Pipeline.on_null_param("raise" | "null")`
-  chooses between failing the query (the default, unchanged) and yielding null
-  for the affected rows — the same null-in/null-out behaviour a null *input
-  image* has always had. The `.contour` / `.point` / `.bbox` namespaces bypass
-  the graph engine, so they carry the policy on the accessor instead:
-  `pl.col("c").contour.on_null("null").normalize(pl.col("w"), 100)`.
-
-  This is one shared mechanism rather than per-operation handling: the policy
-  rides on `ParamCtx`, and every null — numeric, enum, flag or list element, for
-  any of the ~70 operations — passes through `ParamCol::on_null`. No `resolve_op`
-  arm changed.
-
-  Two properties distinguish it from the existing `on_error("null")`:
-
-  - **Node-scoped.** A null parameter leaves that node without an output for the
-    row, which propagates through the path a null input already takes, so only
-    the outputs that actually depend on it go null — not every output of the row.
-  - **Independent of error reporting.** A null parameter is not treated as an
-    error, so it records no `_error` message under `null_with_message`, and
-    decode, encode and genuine operation failures still raise.
-
-  There is deliberately no "fallback default" mode: `pl.col("h").fill_null(224)`
-  already expresses it in Polars, and adding a per-parameter policy would have
-  had to enter the `ParamValue` wire format and its equality/hash (which CSE
-  depends on).
+- `Pipeline.on_null_param("raise" | "null")` chooses between failing the query
+  (default) and nulling the rows whose parameter is null. The geometry
+  namespaces use `on_null("null")` on the accessor.
 
 ### Fixed
 
-- A null operand no longer raises "references unknown node". A node that
-  produced nothing for a row — null input bytes, `source(on_error="null")`, or
-  now a null parameter — was indistinguishable from a node missing from the
-  graph, so a null image in a `merge_pipe` / `apply_mask` / `channel_merge`
-  operand column failed the query instead of nulling that row. All five
-  cross-node operand reads now go through `CompiledGraph::operand`, which
-  separates the two cases.
-- `source("contour", shape=...)` no longer fails a row whose shape reference is
-  null. A null image in the shape branch raised `Shape reference '<id>' not
-  found. Ensure the shape source is defined before this contour pipeline.` —
-  a message pointing at a graph-wiring problem that did not exist.
-- `source("contour", shape=expr)` now works when `expr` is referenced *only* as
-  the shape, with no nulls involved. The source recorded the reference by node
-  id but never registered it as a dependency, so the node was left out of the
-  graph entirely and execution failed on a dangling reference. It happened to
-  work whenever the shape node was also consumed some other way — masking with
-  it, which is what every example does — which is why it went unnoticed.
-- A null in a non-primitive parameter column reported a cast failure from
-  `try_extract` rather than the null-value error, bypassing the null path.
-
-### Documentation
-
-- The API reference gained a `BBoxNamespace` section — `.bbox` was the one
-  namespace with no reference page — plus the `on_null` policy the three
-  geometry accessors share, which is inherited from a mixin and so was not
-  rendered from any of their own class bodies.
-- `LazyPipelineExpr`'s reference page now says that the `Pipeline` methods
-  mirrored onto it are generated at import time, which is why they are absent
-  from the members list below it.
-- The composition rule for `on_null_param` is stated correctly: unlike
-  `on_error`, an explicit `"raise"` composed with a `"null"` gives the graph
-  `"null"` rather than being rejected as a conflict, because only non-default
-  policies are collected and there are only two values.
-- `shape=` on the contour source is documented as registering an upstream
-  dependency, so referencing a pipeline only as a shape is a supported shape of
-  graph, and a null in that branch nulls the mask.
+- A null operand in `merge_pipe`, `apply_mask` or `channel_merge` raised
+  "references unknown node" instead of nulling the row.
+- `source("contour", shape=...)` failed on rows with a null shape reference, and
+  failed outright when the expression was referenced only as the shape.
+- A null in a non-primitive parameter column reported a cast failure instead of
+  the null-value error.
 
 ## [0.16.0] — 2026-07-30
 
+Per-row expression parameters across the geometry namespaces and many more
+image ops.
+
 ### Added
 
-- **Per-row expression parameters in the geometry namespaces.** `.contour`,
-  `.point` and `.bbox` previously accepted only literals — and four `.contour`
-  methods annotated `int | pl.Expr` while unconditionally raising `TypeError` on
-  exactly that type, an impossible signature that the API reference published.
-  Their numeric parameters now resolve per row:
-
-  ```python
-  # Normalize each contour against its own image's dimensions
-  df.with_columns(
-      norm=pl.col("contour").contour.normalize(pl.col("img_w"), pl.col("img_h"))
-  )
-  ```
-
-  Covers `normalize`, `to_absolute`, `translate`, `scale`, `simplify`,
-  `area(signed=)` and `match_detections(threshold=)` on `.contour`; `normalize`,
-  `to_absolute`, `translate`, `scale`, `rotate(angle=)` and `interpolate(t=)` on
-  `.point`; and `match_detections(threshold=)` on `.bbox`. Aggregations
-  broadcast and null parameters are errors, matching the image operations.
-
-- **Per-row elements in list-valued parameters.** The list *length* stays
-  structural — it fixes a kernel size or channel count at planning time — while
-  each element may now be an expression, the encoding `warp_affine`'s matrix
-  already used. This covers `convolve2d(kernel=)`, `normalize(mean=, std=)` and
-  `channel_swap(order=)`, and in turn makes `sharpen(strength=)` per-row, whose
-  docstring previously described the limitation as permanent.
-
-- **Per-row non-structural enums and flags.** `filter` (every resize variant and
-  `letterbox`), `interpolation` (`rotate`, `warp_affine`), `pad(mode=)`,
-  `pad_to_size(position=)`, `convolve2d(border=)`, `extract_contours(mode=,
-  method=)`, `label_reduce(reduction=, region_mode=)` — on both `Pipeline` and
-  the `.contour` namespace — plus the flags `apply_mask(invert=)`,
-  `convolve2d(normalize=)` and `area(signed=)`. A parameter is eligible only
-  when it has no effect on output shape, rank or dtype; that invariant is what
-  lets plan-time shape probing substitute the default.
-  (`rasterize(anti_alias=)` is plumbed identically, but view-buffer's
-  rasterizer still ignores the flag, so it has no observable effect yet.)
-
-- **`rotate_and_scale(angle=, scale=, center=, output_size=)`** accept
-  expressions, building the affine matrix from expression arithmetic.
-- **`letterbox(filter=)`** is now exposed; Rust already read it. The historical
-  `lanczos3` default is unchanged.
-- **Contour-source `fill_value` / `background`** accept expressions, matching the
-  identical parameters on the `rasterize` op.
-- **`FilterType` exposes all five view-buffer filters.** `catmullrom` and
-  `gaussian` were deliberately withheld from Python while Rust accepted them.
-  Making `filter` per-row broke that restriction asymmetrically — a literal was
-  checked against the smaller Python enum, a column value went straight to
-  Rust's larger table — so rather than validate the same subset twice, the
-  subset was dropped and `FilterType` is now full parity.
+- `.contour`, `.point` and `.bbox` numeric parameters accept expressions:
+  `normalize`, `to_absolute`, `translate`, `scale`, `simplify`, `area(signed=)`
+  and `match_detections(threshold=)` on `.contour`; `normalize`, `to_absolute`,
+  `translate`, `scale`, `rotate(angle=)` and `interpolate(t=)` on `.point`;
+  `match_detections(threshold=)` on `.bbox`.
+- List-valued parameters accept per-element expressions (length stays literal):
+  `convolve2d(kernel=)`, `normalize(mean=, std=)`, `channel_swap(order=)`; this
+  makes `sharpen(strength=)` per-row.
+- Per-row enums and flags: `filter` on resize variants and `letterbox`,
+  `interpolation` on `rotate`/`warp_affine`, `pad(mode=)`,
+  `pad_to_size(position=)`, `convolve2d(border=, normalize=)`,
+  `extract_contours(mode=, method=)`, `label_reduce(reduction=, region_mode=)`,
+  `apply_mask(invert=)`, `area(signed=)`.
+- `rotate_and_scale(angle=, scale=, center=, output_size=)`, and the contour
+  source's `fill_value`/`background`, accept expressions.
+- `letterbox(filter=)` is exposed, and `FilterType` now includes `catmullrom`
+  and `gaussian`.
 
 ### Changed
 
-- **A Boolean column no longer satisfies a numeric per-row parameter.** It used
-  to coerce to `0`/`1`, which reads as a mis-routed expression far more often
-  than as a value someone chose; passing one now raises the same cast error a
-  `String` column does.
+- A Boolean column no longer satisfies a numeric per-row parameter.
 
 ### Fixed
 
-- **Plan/execution rank desync for ops with list-valued parameters on `list` and
-  `array` sources.** `fold_output_rank` re-serialized ops that graph compilation
-  had already bound, and the compiled-only `Slot`/`List` forms are
-  `#[serde(skip)]` — so the op silently failed to resolve, the output rank was
-  recorded as unknown, and a planned `List(List(List(f32)))` collapsed to
-  `List(f32)`. Affected `warp_affine` on list/array sources.
-- **Single-channel affine warps dropped the channel axis.** `warp_affine` (and
-  the arbitrary-angle `rotate`/`shear`/`rotate_and_scale` paths that share its
-  kernel) collapsed a `[H, W, 1]` input to `[H, W]`, contradicting the op's own
-  `infer_shape`, which preserves the input rank. A `[H, W]` input still produces
-  `[H, W]`; only the explicit single-channel axis is now retained. This was
-  masked by the rank-folding bug above.
-- **`convolve2d` skipped kernel/`ksize` validation entirely when `ksize` was an
-  expression**, letting a mismatched kernel reach Rust unchecked. The kernel
-  length is structural, so it is now always validated as an odd perfect square.
-- **Structural parameters given an expression now report why.** `cast(dtype=)`,
+- `warp_affine` on `list`/`array` sources planned the wrong output rank.
+- Single-channel affine warps (`warp_affine`, arbitrary-angle `rotate`, `shear`,
+  `rotate_and_scale`) dropped the channel axis of `[H, W, 1]` input.
+- `convolve2d` skipped kernel validation when `ksize` was an expression.
+- Structural parameters given an expression (`cast(dtype=)`,
   `normalize(method=)`, `histogram(closed=, output=)`,
-  `perceptual_hash(algorithm=)` and the `transpose`/`flip` axis lists failed
-  opaquely inside `bool()` ("the truth value of an Expr is ambiguous"), on
-  `.value`, or at JSON encoding; they now raise the same clear "is structural"
-  `TypeError` as the other literal-only parameters.
-- **`docs/user-guide/operations/geometry.md`** documented `point.normalize` and
-  `point.to_absolute` with `ref_width=` / `ref_height=` — the Rust kwarg names.
-  Both examples raised `TypeError`; the Python parameters are `width` / `height`.
-- The `Pipeline` docstring claimed *all* operations accept expressions, and the
-  image-ops guide's "all resize variants" claim sat directly above `thumbnail`,
-  whose `max_size` is literal-only. Both now state the actual rule.
-- The quickstart repeated the same "any parameter" claim; it now states the
-  eligibility rule and links the full table. The pipelines concept page states
-  the rule once where chaining is introduced, and points at the geometry
-  namespaces, which now follow it too. The geometry guide called `.contour` and
-  `.point` the geometry namespaces while documenting `.bbox` alongside them.
+  `perceptual_hash(algorithm=)`, `transpose`/`flip` axes) now raise a clear
+  "is structural" `TypeError`.
+- The geometry guide used `ref_width=`/`ref_height=` for `point.normalize` and
+  `point.to_absolute`; the parameters are `width`/`height`.
 
 ## [0.15.0] — 2026-07-26
 
 ### Added
 
-- **`.cv.read_bytes()` — read a path column's bytes without decoding.** The
-  `file_path` source has always been two stages (fetch the bytes a path names,
-  then decode them as an image); the fetch stage is now available on its own and
-  returns `Binary`. Bytes come back verbatim, so an encoded file survives the
-  round trip byte-for-byte and can be written back unchanged — the only lossless
-  path through the plugin, since re-encoding a decoded JPEG never reproduces the
-  original and no image sink carries EXIF/ICC metadata. It also lets the
-  header-only metadata methods (`.cv.width()` and friends, which take binary
-  columns) reach local and remote files for the first time:
-
-  ```python
-  df = df.with_columns(raw=pl.col("path").cv.read_bytes(cloud_options=options))
-  df = df.filter(pl.col("raw").cv.width() > 512)   # header-only, no decode
-  df = df.with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
-  ```
-
-  Takes the same `cloud_options` as `source("file_path")` and the same
-  `on_error` values (`"raise"` / `"null"`). Fetching is per plugin call — one
-  morsel under the streaming engine — so distinct remote paths are deduped and
-  fetched concurrently exactly as the source already does, and a bytes column
-  stays morsel-bounded under `engine="streaming"`.
-
-### Changed
-
-- **The `file_path` source and `read_bytes` share one fetch implementation**
-  (`src/fetch.rs`). The path-to-bytes stage — remote dedup and concurrent
-  prefetch, the local-read path that avoids misparsing colon-bearing filenames
-  as cloud URLs, and the `on_error` vocabulary — now lives in one module used by
-  both, so their credentials, concurrency, and error messages cannot drift.
-  Behaviour of existing pipelines is unchanged.
+- `.cv.read_bytes(cloud_options=, on_error=)` reads a path column's bytes
+  verbatim as `Binary`, without decoding, so files round-trip unchanged and the
+  header-only `.cv.width()` and friends can reach local and remote files.
 
 ## [0.14.0] — 2026-07-25
 
+### Breaking changes
+
+- `Pipeline.source()` defaults to `"auto"` instead of `"image_bytes"`: `String`
+  columns read as paths, `List` as `list`, `Array` as `array`, and `Binary` as
+  `blob` when it carries the VIEW magic, else `image_bytes`. An explicit format
+  overrides it.
+
 ### Added
 
-- **`source("auto")` — decode path inferred from the column dtype.** A source no
-  longer has to be told how to read its column when the Polars dtype already
-  says: `String` → `file_path`, `List` → `list`, `Array` → `array`, and `Binary`
-  → `blob` when the bytes carry the VIEW protocol magic, `image_bytes`
-  otherwise. The resolution happens once per batch (the column dtype is constant
-  across rows), so the now-default path costs no per-row work. Everything that
-  applied to the concrete formats still applies: `cloud_options` and concurrent
-  remote prefetch (an auto source over a URL column still prefetches),
-  `decode_max_size`, and `require_contiguous`. A dtype that cannot be routed
-  (e.g. a plain numeric column) raises and names the explicit formats to choose
-  from.
-- **16-bit PNG output.** A `u16` buffer now encodes to a 16-bit PNG
-  (`Luma16`/`LumaA16`/`Rgb16`/`Rgba16`) instead of failing with "Image export
-  requires U8 dtype", so a 16-bit PNG or TIFF read through a pipeline and back
-  out to `sink("png")` keeps its bit depth end to end.
-
-### Changed
-
-- **`Pipeline.source()` defaults to `"auto"`** (was `"image_bytes"`). A `Binary`
-  image column behaves exactly as before; a `String` column, which previously
-  had to be spelled `source("file_path")`, now reads as a path; and a VIEW-tagged
-  `Binary` column resolves to `blob` rather than failing an image decode. Passing
-  an explicit format still overrides the inference in every case.
+- `source("auto")` infers the decode path from the column dtype and raises on
+  an unroutable dtype.
+- A `u16` buffer encodes to a 16-bit PNG.
 
 ### Fixed
 
-- **Actionable errors for bit-depth mismatches at the image sinks.** JPEG and
-  WebP are 8-bit formats: sinking a non-`u8` buffer to them now fails before
-  encoding with an error naming the dtype and pointing at `.cast("u8")` or the
-  PNG/TIFF sinks, instead of a generic encode failure. Float buffers into any
-  image sink likewise suggest casting to an integer dtype or sinking to TIFF,
-  which supports floating point.
+- JPEG/WebP sinks given a non-`u8` buffer, and float buffers into any image
+  sink, now fail with an error that suggests `.cast("u8")` or the PNG/TIFF sinks.
 
 ## [0.13.0] — 2026-07-24
 
 ### Added
 
-- **Federated GCS authentication (Workload/Workforce Identity Federation)** —
-  Application Default Credentials of type `external_account` and
-  `external_account_authorized_user` (e.g. an OIDC identity exchanged into Google
-  through an identity pool) now work without minting a bearer token by hand.
-  When polars-cv detects a federated ADC (from `GOOGLE_APPLICATION_CREDENTIALS`,
-  an explicit `google_application_credentials` option, or the well-known gcloud
-  path), it delegates to `gcloud auth application-default print-access-token` —
-  which understands the entire federation matrix — and uses the resulting token,
-  cached until just before it expires. Requires the `gcloud` CLI on `PATH`; set
+- Federated GCS credentials (`external_account`,
+  `external_account_authorized_user`) work via the `gcloud` CLI; set
   `POLARS_CV_DISABLE_GCS_FEDERATION=1` to disable.
-- **`CloudOptions.token_command`** — a provider-agnostic hook: any shell command
-  whose stdout is an OAuth access token. Use it to source tokens from a custom
-  broker, wrapper script, or CLI. It applies to both OAuth-bearer backends —
-  **GCS and Azure** (e.g. `az account get-access-token`) — takes precedence over
-  the automatic `gcloud` delegation, and its output is cached like any other
-  token. It does not apply to S3 (SigV4, not bearer-based); passing it with an
-  `s3://` source raises rather than silently ignoring the credential.
+- `CloudOptions.token_command` supplies an OAuth token from any shell command
+  for GCS and Azure; it raises with `s3://` sources.
 
 ### Fixed
 
-- **GCS `gcs_bearer_token` no longer defeated by unparseable ambient
-  credentials** — bumped `object_store` to 0.13. In 0.12 the GCS builder read
-  and parsed Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`
-  or the well-known `~/.config/gcloud/application_default_credentials.json`)
-  inside `build()` *unconditionally*, before honoring an explicitly supplied
-  credential provider. So when the ambient ADC was a federated
-  `external_account_authorized_user` credential — exactly the case
-  `gcs_bearer_token` exists to work around — `build()` failed on the ADC parse
-  and the bearer token was never consulted. object_store 0.13 skips the ADC
-  read whenever an explicit credential (or service account) is configured,
-  restoring the intended escape-hatch behavior. The bump also dedupes
-  `object_store` to a single version, since polars 0.54 already pulls 0.13.
+- `gcs_bearer_token` was defeated by unparseable ambient credentials;
+  `object_store` is bumped to 0.13.
 
 ## [0.12.0] — 2026-07-23
 
+### Breaking changes
+
+- The `warp_affine` `matrix` graph-JSON is now per-element; regenerate any
+  persisted or hand-written graph. Pipelines built through Python are
+  unaffected.
+
 ### Added
 
-- **f16 tensor output** — `.sink("numpy"|"torch", dtype="f16")` downcasts the
-  output to half precision at the encode boundary, halving the output-tensor
-  bytes and host→device transfer. (The engine has no native f16 dtype; only the
-  sink container is f16.)
-- **Per-row affine/shear parameters** — `warp_affine(matrix=...)` accepts a
-  per-element mix of literals and Polars expressions, and `shear(sx=..., sy=...)`
-  accepts expressions, so a batch can apply a different (e.g. random) affine or
-  shear per row in one call.
-- **`Pipeline.thumbnail(max_size)`** — explicit, chainable form of the existing
-  JPEG IDCT-scaled decode (`source(..., decode_max_size=...)`), for cheap
-  decode-aware curation passes.
-- **Single-threaded execution warning** — a one-time notice when a large batch
-  runs single-threaded under the in-memory engine, pointing to
-  `engine="streaming"`. Silence with `POLARS_CV_SILENCE_ENGINE_WARNING=1`;
-  tune with `POLARS_CV_ENGINE_WARN_ROWS`.
-- **`CloudOptions.storage_options` pass-through** — arbitrary cloud options are
-  now forwarded verbatim to the underlying `object_store` backend using its
-  native config keys (e.g. `google_service_account_key`,
-  `google_application_credentials`, `aws_endpoint`), so any option the backend
-  understands is available without new plumbing. Keys in `storage_options` win
-  over the named `CloudOptions` fields on collision. This replaces the previous
-  fixed allow-list, which silently dropped unrecognized keys.
-- **`CloudOptions.gcs_bearer_token`** — supply a pre-obtained GCS OAuth access
-  token directly. This unblocks federated/brokered Google credentials (ADC of
-  type `external_account_authorized_user`) that `object_store` cannot parse
-  natively: mint a token out of band (e.g.
-  `gcloud auth application-default print-access-token`) and pass it in.
-
-### Changed
-
-- **`warp_affine` `matrix` wire format** — the serialized `matrix` parameter is
-  now an array of per-element `ParamValue` entries (each may be a literal or an
-  expression) rather than a raw float array. This is an internal graph-JSON
-  change; pipelines built through the Python API are unaffected. A persisted or
-  hand-written graph using the old raw-float `matrix` array must be regenerated.
+- `.sink("numpy"|"torch", dtype="f16")` outputs half precision.
+- `warp_affine(matrix=)` accepts per-element expressions and `shear(sx=, sy=)`
+  accepts expressions.
+- `Pipeline.thumbnail(max_size)` chainable form of the IDCT-scaled decode.
+- A one-time warning for large single-threaded in-memory batches, pointing to
+  `engine="streaming"`; silence with `POLARS_CV_SILENCE_ENGINE_WARNING=1`.
+- `CloudOptions.storage_options` forwards native `object_store` config keys and
+  wins over named fields; `CloudOptions.gcs_bearer_token` supplies a GCS token.
 
 ### Fixed
 
-- **`cloud_options` on non-`file_path` sources** — passing `cloud_options` to a
-  source format that ignores it (e.g. `image_bytes`) now emits a `UserWarning`
-  instead of silently dropping the credentials.
-- **`normalize(out_dtype=...)` planned vs. produced dtype** — the planner
-  honored `out_dtype` but execution always produced f32, so any `out_dtype`
-  other than f32 tripped the dtype-contract guard. Normalization now casts its
-  f32 result to the requested dtype, so `normalize(out_dtype="u8"|"f64")` works
-  and the planned dtype always matches the produced dtype. (`out_dtype="preserve"`
-  is rejected with a clear message — it is not meaningful for normalization.)
+- `cloud_options` on a non-`file_path` source warns instead of silently
+  dropping credentials.
+- `normalize(out_dtype=)` other than f32 failed the dtype check; it now casts
+  to the requested dtype. `out_dtype="preserve"` is rejected.
 
 ## [0.11.0] — 2026-07-10
 
 ### Added
 
-- **`file://` URLs in the local read path** — `source("file_path")` now decodes
-  `file://` URIs, not just bare local paths, routing local reads through the
-  same `cloud::read_file` entry point as remote schemes.
+- `source("file_path")` reads `file://` URLs.
 
 ### Changed
 
-- **Cloud access is signed by default, anonymous is opt-in** — GCS now honors
-  `CloudOptions(anonymous=True)` (via `with_skip_signature`) like S3 and Azure.
-  The previously documented "anonymous-first" credential chain — which no
-  provider actually implemented — is gone; requests are signed unless you
-  explicitly opt into anonymous access.
+- Cloud access is signed by default; GCS now honors
+  `CloudOptions(anonymous=True)` like S3 and Azure.
 
 ### Fixed
 
-- **Blob header validation** — untrusted `blob` VIEW-protocol headers are now
-  validated with checked arithmetic and stride-span checks, rejecting malformed
-  inputs instead of risking overflow.
-- **Arrow C-Data import** — the array offset is respected and null-bearing
-  arrays are rejected on import, fixing silently wrong reads of sliced/offset
-  Arrow buffers.
-- **Buffer deallocation** — owned buffers are freed with their original
-  alignment, fixing a mismatched-layout deallocation.
-- **Materializing kernels** now declare contiguous output, and `gamma`'s integer
-  range is corrected.
-- **Metrics** — the VOC 11-point AP denominator and the bootstrap PR-AUC
-  estimator mismatch are fixed.
-- **Panics eliminated** — axis reductions over 1-D buffers, and the
-  `u8` RGBA→Lab alpha color path (which also now preserves dtype) no longer
-  panic.
-- **Rotation fusion** uses position-correct shapes, and batch re-folds seed from
-  the post-source state.
-- Colon-bearing local paths are read literally, and a dead `Cast` stride arm was
-  removed.
-- **Builds on current stable Rust** — the transitive `ethnum` dependency is
-  pinned to 1.5.3, which drops the `TryFromIntError` transmute that failed to
-  compile (`E0512`) on newer `rustc`. The stack builds cleanly against polars
-  0.54.4 / pyo3-polars 0.27 / pyo3 0.28.
-
----
+- Malformed `blob` headers, Arrow C-Data offsets and null-bearing arrays are
+  validated instead of risking overflow or wrong reads.
+- Panics in axis reductions over 1-D buffers and in `u8` RGBA to Lab; the Lab
+  path now preserves dtype.
+- Metrics: VOC 11-point AP denominator and bootstrap PR-AUC estimator.
+- Colon-bearing local paths are read literally.
+- `gamma`'s integer range, rotation fusion shapes and an owned-buffer
+  deallocation mismatch.
+- Builds again on current stable Rust.
 
 ## [0.10.0] — 2026-06-13
 
 ### Added
 
-- **`preserve_dtype` on intensity ops** — `scale`, `clamp`, and
-  `adjust_brightness` accept `preserve_dtype=True` to cast the `f32` result back
-  to the input dtype (e.g. `u8` in → `u8` out) instead of promoting to `f32`.
-  Requires a known input dtype and is mutually exclusive with `out_dtype`.
-- **Graph-level error policy** — `Pipeline.on_error("raise" | "null" |
-  "null_with_message")` (mirrored on `LazyPipelineExpr`). Failing rows null all
-  outputs, optionally attaching a reserved `_error` message field, instead of
-  failing the whole batch.
-- **Full `LazyPipelineExpr` method parity** — every chainable `Pipeline`
-  operation can now be called directly on the lazy expression returned by
-  `.cv.pipe(...)`, without wrapping each step in its own `Pipeline`. Guarded by
-  `test_lazy_pipeline_method_parity`.
-- **Shape references for rasterization** — `rasterize(shape=<expr>)` and
-  `source("contour", shape=<expr>)` size the raster canvas from a referenced
-  pipeline's output `[H, W]`, implemented end-to-end.
-- **Rotation parameters** — `rotate()` accepts `interpolation` and
-  `border_value`.
+- `scale`, `clamp` and `adjust_brightness` accept `preserve_dtype=True`.
+- `Pipeline.on_error("raise" | "null" | "null_with_message")` nulls failing
+  rows instead of failing the batch.
+- Every chainable `Pipeline` op can be called on the lazy expression from
+  `.cv.pipe(...)`.
+- `rasterize(shape=<expr>)` and `source("contour", shape=<expr>)` size the
+  canvas from another pipeline's output.
+- `rotate()` accepts `interpolation` and `border_value`.
 
 ### Changed
 
-- **Single schema authority in view-buffer** — the Python planner no longer
-  keeps a parallel contract table. Per-op output domain, dtype, rank, and
-  channel count are read from view-buffer's declarative rules
-  (`OutputChannelRule` / `OutputRankRule`). The `OPERATION_CONTRACTS`,
-  `AlphaMode`, and `NdimEffect` structures were removed.
-- **Plan == exec** — planned dtype/shape now matches execution for promoting
-  binary ops (e.g. true division → `f32`) and for explicitly-typed 16-bit image
-  sources.
-- **Rotation unified through the affine path** — arbitrary-angle `rotate()`
-  routes through `ComputeOp::RotateAffine` → `apply_affine_warp()`; zero-copy
-  90/180/270 fast paths are preserved.
-- **Portable CI / wheel builds** — abi3 wheels on Linux and a fixed macOS build.
+- Planned dtype and shape now match execution for promoting binary ops and
+  16-bit image sources.
 
 ### Fixed
 
-- `cloud_options` now round-trips for remote `file_path` sources.
-- Assorted `ruff` / `clippy` lint findings; CI excludes flaky network-marked
-  tests.
+- `cloud_options` round-trips for remote `file_path` sources.
 
 ### Performance
 
-- Kernel fusion extended: casts fold into the `FusedKernel`
-  (`u8 → cast(f32) → scale → clamp → relu` runs as one pass); `rotate` →
-  `warp_affine` chains fuse.
-- Vectorized `erode`/`dilate`, `convolve2d` (interior/border split), and
-  separable Gaussian blur; Canny rewritten without `atan2` (bit-exact).
-- Remote `file_path` sources prefetch concurrently per batch.
-- Graphs compile once into a process-wide cache (`graph/compiled.rs`), so repeat
-  invocations (e.g. per streaming morsel) pay only a hash lookup.
+- More kernel fusion (casts, `rotate` into `warp_affine`) and faster `erode`,
+  `dilate`, `convolve2d`, Gaussian blur and Canny.
+- Remote `file_path` sources prefetch concurrently, and compiled graphs are
+  cached across calls.
+
+### Removed
+
+- `OPERATION_CONTRACTS`, `AlphaMode` and `NdimEffect`.
 
 ---
 

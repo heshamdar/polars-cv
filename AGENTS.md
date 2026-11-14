@@ -221,11 +221,33 @@ change to one of them is a new decision, raised as a GitHub issue first.
   flag for all keys, callers mix directions, and negating a key misplaces
   NaN. The reasons are in that module.
 
-## Release History
+## Changelog
 
-Per-release changes (added/changed/fixed/performance) are tracked in
-[`CHANGELOG.md`](CHANGELOG.md) — consult it rather than duplicating a running log
-here.
+[`CHANGELOG.md`](CHANGELOG.md) is for **users deciding whether and how to
+upgrade**. It is not a design log: the reasoning, measurements and internals of
+a change belong in its commit message and PR. Every user-visible change adds a
+line under `[Unreleased]`; a change no user would notice adds nothing.
+
+- **Sections**, only these and in this order: Breaking changes, Security,
+  Added, Changed, Fixed, Performance, Removed.
+- **One bullet per change, one or two sentences** (60 words at most, aim for
+  under 35), leading with the API in backticks. No bold lead-in titles.
+- **Breaking changes** say what to write instead
+  (`` `a(x=)` is now `b(x=)`; results are unchanged. ``), and a changed result
+  says which inputs it affects. A release with either also gets a migration
+  guide (`CONTRIBUTING.md`, "Release process").
+- **Fixed** says what was wrong, from the user's side, in a clause.
+  **Performance** gives the headline figure only, never the methodology.
+- **Leave out** internal refactors, file paths, private type names, test or
+  guard names, CI and tooling changes, issue/PR numbers and commit hashes, and
+  the history behind a change ("it used to… because…").
+- A release's summary (above its first section) is at most two sentences plus
+  the migration-guide link.
+
+`polars-cv/tests/test_changelog_style.py` holds the file to the mechanical
+part of this (sections, order, bullet and summary length, no ledger ids); its
+limits live in `tests/_changelog_style.py`. Brevity beyond those limits, and
+leaving internals out, is on the author.
 
 ## Durable Architecture Notes
 
@@ -327,6 +349,7 @@ side channel.
 | A parameter's default | `#[param(default = ...)]` on the field: the wire applies it when the field is absent, and the catalogue gives it to the generated signature (an `Option` field declares none) | `an_absent_field_takes_its_declared_default`; the derive refuses an `Option` field with a default |
 | Source/sink formats, and which parameters each reads | One variant per format of the `Source`/`Sink` families in `polars-cv/src/formats/` (`#[derive(Ops)]` → `tests/golden/io_catalog.json` → generated `SourceFormat`/`SinkFormat`, `source()` and `sink()` with a typed keyword per field, the `Sink.<format>` constructors, and `SOURCE_FIELDS`/`SINK_FIELDS`); what `sink()` accepts as an output (a name or a `Sink`) is read once, by `_graph.as_sink`; the builder checks what the caller passed with `Plan.with_source` (which also plans the source's state), and `.sink()` checks the whole graph with `check_graph` (the plugin's own compile, planning and `decode::output_schema`) | Deserialization: an unknown format or field is refused, and a field the format does not read names where it applies (`formats::from_wire`); `io_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_param_applicability.py` sweeps parameter × format grids from the catalogue and checks the `quality` claim against the encoders; `test_sink_signature.py` holds `sink()`'s keywords and each `Sink` constructor to the catalogue's fields (no `**kwargs`: a misspelled keyword is a `TypeError`, and a type checker sees it), and `format_fields` refuses a field with two types across formats; `test_sink_names_in_text.py` refuses a sink a message, docstring or guide names that the catalogue lacks |
 | Parsing JSON the Python builder wrote (a graph, a plan, an op, a source, a geometry call's arguments) | `polars-cv/src/wire.rs`: `wire::from_str`, whose error is the diagnosis without `serde_json`'s `at line L column C` | Clippy: `serde_json::from_str` is a `disallowed-methods` entry in `clippy.toml`, allowed only inside `wire::from_str`; `a_refusal_is_the_diagnosis_without_a_position`; `test_message_hygiene.py` runs a table of deliberate failures and refuses a Rust `Debug` struct, a JSON position or a build-time node id in any message (checker fixtures in the same file) |
+| The shape of a `CHANGELOG.md` entry (sections and their order, bullet and summary length, no ledger ids) | `polars-cv/tests/_changelog_style.py` (`SECTIONS`, `MAX_BULLET_WORDS`, `MAX_SUMMARY_WORDS`); the prose rule is "Changelog" above | `test_the_changelog_follows_its_style` over the real file, with known-good and known-bad fixtures in `test_changelog_style.py` (`test_a_departure_is_reported`) |
 | Which image formats a source decodes | The `image` entry of `[workspace.dependencies]` in the root `Cargo.toml` (named features, no defaults), which both crates take with `workspace = true` | `test_decode_formats.py`: a committed file per feature (`tests/fixtures/formats/`) is decoded through the pipeline, and the feature list, the files and the table in `docs/user-guide/concepts/sources.md` are compared as sets; a crate declaring `image` on its own fails `test_each_crate_takes_the_workspace_entry` |
 | `LazyPipelineExpr`'s method surface | generated by `gen_ops.py`: forwarders from the built `Pipeline` into `_lazy_forwarders.py`, and every `lazy_only` op into `_LazyOpsMixin` | `test_lazy_pipeline_method_parity`, `test_every_lazy_only_op_is_a_generated_lazy_method`, `test_the_committed_catalog_is_the_built_one` |
 | Which builder parameters are positional | Derived, never declared: `gen_ops.positional` (an op's only required field is positional-or-keyword, the rest keyword-only) | `tests/golden/signatures.json` (`test_the_call_surface_matches_the_snapshot`); `test_documented_pipeline_calls_bind` binds every documented `Pipeline()` call; the derive refuses a `#[param(positional)]` key |

@@ -34,11 +34,10 @@ The enforcement standard is stricter than "prefer the shared path":
   or a failing guard test — never silently accepted with reduced behaviour. An
   op that declines to declare its dtype rule must not simply be treated as
   `PreserveInput`; it must not compile. A dtype string nothing recognises must
-  not fall back to `u8`; it must error. Read the recent `CHANGELOG.md` entries
-  for what silent acceptance actually costs — a fallback that turned an
-  unmappable column into a claimed buffer of bytes, an unread wire field that
-  went on being emitted for releases, a parameter plumbed six layers deep and
-  discarded at the bottom.
+  not fall back to `u8`; it must error. Silent acceptance has cost this
+  project before: a fallback that turned an unmappable column into a claimed
+  buffer of bytes, an unread wire field that went on being emitted for
+  releases, a parameter plumbed six layers deep and discarded at the bottom.
 - **Prefer a mechanism callers cannot step around to a test that lists what
   they must remember.** A ratchet enumerating "you must also call X" fails the
   day someone adds Y. Make the sequence unskippable instead: one entry point
@@ -76,7 +75,8 @@ and the guard that enforces each one.
   Rust-side removals are guarded by the compiler; a Python method, parameter or
   wire field that no longer exists is refused by the generated signatures and
   the closed (`deny_unknown_fields`) wire. Do not add tests that only assert a
-  name is absent — say why it went in the commit message and the CHANGELOG.
+  name is absent — say why it went in the commit message (and, if users
+  notice, one CHANGELOG line).
 - When a fallback arm exists only to hide the case it cannot handle, remove the
   arm and raise.
 
@@ -125,6 +125,19 @@ and the guard that enforces each one.
 - Never edit or weaken an existing test to make it pass without saying so
   explicitly and getting agreement. Updating a test because the behaviour it
   pins was *deliberately* removed is fine — and the removal gets its own guard.
+
+### Changelog entries
+
+- `CHANGELOG.md` is for users deciding whether and how to upgrade, not a
+  design log. Add **one short bullet per user-visible change** (one or two
+  sentences, at most 60 words, aim for under 35) under `[Unreleased]`, in the
+  right section. A breaking change says what to write instead.
+- Never put reasoning, measurements, internals, file paths, test names,
+  issue/PR numbers or history there: they go in the commit message and the PR.
+  An internal change gets no entry.
+- The full rule is "Changelog" in [`AGENTS.md`](AGENTS.md#changelog), and
+  `test_changelog_style.py` fails on the mechanical part (sections, order,
+  length). Do not raise its limits to fit a long entry: shorten the entry.
 
 ### Dependencies and documentation
 
