@@ -14,7 +14,8 @@ is in the git history of this file.
 
 Graph inspection is unified under `expr.graph()`/`explain()`, the tensor sink
 is now one `sink("tensor")` that can be read back, and `sink()` gains typed
-keywords. Path reads now require `allowed_roots`.
+keywords. Path reads now require `allowed_roots`, and the metrics move to the
+polars-eval package.
 
 ### Breaking changes
 
@@ -48,8 +49,8 @@ keywords. Path reads now require `allowed_roots`.
   format names or `Sink`s and no longer reads shared keywords.
 - `image_info()` returns a fifth field, `orientation: Int64`; code that unnests
   it into a fixed set of columns gains a column.
-- The metrics are no longer re-exported from `polars_cv`:
-  `from polars_cv import froc_auc` becomes `from polars_cv.metrics import froc_auc`.
+- The metrics move to a separate package, polars-eval: `from polars_cv import
+  froc_auc` becomes `from polars_eval import froc_auc`.
 - `Pipeline.thumbnail(max_size)` is removed; use
   `.source("image_bytes", decode_max_size=64)` instead of
   `.source("image_bytes").thumbnail(64)`.

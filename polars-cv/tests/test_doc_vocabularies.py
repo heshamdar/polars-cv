@@ -20,7 +20,7 @@ import polars as pl
 import pytest
 
 import polars_cv
-from polars_cv import OptFlags, Pipeline, Sink, metrics
+from polars_cv import OptFlags, Pipeline, Sink
 from polars_cv._graph import PipelineGraph
 from polars_cv._types import Domain, SourceFormat
 from polars_cv.expressions import CvNamespace
@@ -98,21 +98,27 @@ def test_auto_source_table_names_real_source_formats() -> None:
 
 
 #: Names called in a doc example that belong to neither us nor Polars, with the
-#: reason each is allowed. **Empty, and that is the point.**
+#: reason each is allowed. Only polars-eval's: the migration guides of the
+#: releases that shipped the metrics here call them, and those pages stay as
+#: they were. Nothing else belongs here.
 #:
 #: This began as a 34-name set, which was an escape hatch rather than a
 #: contract: a stale method name is by definition not one of ours, so anything
 #: a reviewer added here would silence exactly the staleness the sweep exists
-#: to report. Once ``_resolves`` learned about the metrics API and
+#: to report. Once ``_resolves`` learned about the (since moved) metrics API and
 #: ``_POLARS_SURFACES`` learned about module-level ``pl.col``/``pl.DataFrame``,
 #: every one of the 34 turned out to be either resolvable or absent from the
 #: documentation entirely — so the hatch closed on its own.
 #:
-#: Keep it that way. An entry needs a reason, and
+#: An entry needs a reason, and
 #: ``test_foreign_methods_are_all_actually_foreign`` rejects one that is ours
 #: or that no page actually calls, so a dead exemption cannot accumulate here
 #: waiting to hide something.
-_FOREIGN_METHODS: "dict[str, str]" = {}
+_FOREIGN_METHODS: "dict[str, str]" = {
+    "by_group": "polars-eval's Statistic.by_group (migration-0.37.md)",
+    "ci": "polars-eval's DetectionReport.ci (migration-0.33.md)",
+    "match": "polars-eval's Matcher.match (migration-0.37.md)",
+}
 
 #: Every class a documented method may belong to: the builder, its lazy twin,
 #: the graph `graph()` returns and the `OptFlags` that optimizes it, the
@@ -133,12 +139,6 @@ _OUR_SURFACES = (
     ContourNamespace,
     BBoxNamespace,
 )
-
-#: Public classes the metrics package exposes — `DetectionTable`, the matchers,
-#: and the result objects whose methods the metrics page calls (`auc`,
-#: `sensitivity_at_fp`, `summary_table`, …). Read from the module rather than
-#: listed, so a renamed result class cannot leave its methods unresolvable.
-_METRICS_SURFACES = tuple(v for v in vars(metrics).values() if inspect.isclass(v))
 
 #: Polars objects a documented call may legitimately belong to. `pl` itself
 #: matters most: `pl.col(...)` and `pl.DataFrame(...)` are module-level, and
@@ -164,11 +164,7 @@ def _resolves(name: str) -> bool:
     """True when *name* is a method of ours."""
     if any(callable(getattr(cls, name, None)) for cls in _OUR_SURFACES):
         return True
-    if any(callable(getattr(cls, name, None)) for cls in _METRICS_SURFACES):
-        return True
-    return callable(getattr(polars_cv, name, None)) or callable(
-        getattr(metrics, name, None)
-    )
+    return callable(getattr(polars_cv, name, None))
 
 
 @pytest.mark.parametrize("page", [p.name for p in doc_pages()], ids=lambda n: n)
@@ -199,8 +195,7 @@ def test_documented_methods_exist(page: str) -> None:
     }
     assert not unresolved, (
         f"{page} calls {sorted(unresolved)}, which is not a method of "
-        f"Pipeline, LazyPipelineExpr, the expression namespaces, the metrics "
-        f"API, or Polars. Either the documentation is stale or the name "
+        f"Pipeline, LazyPipelineExpr, the expression namespaces, or Polars. Either the documentation is stale or the name "
         f"belongs in _FOREIGN_METHODS."
     )
 

@@ -2,16 +2,12 @@
 
 Since polars 2.0 a lazy ``collect()`` resolves ``engine="auto"`` to the
 streaming engine, and ``pl.Config.set_engine_affinity`` lets a user choose
-otherwise (in-memory while debugging, say). The metrics once passed
-``engine="streaming"`` at sixteen call sites: sixteen restatements of the
-default, each overriding the user's affinity. Now a ``collect``/``collect_all``
-in ``python/polars_cv`` either passes no engine or forwards one its own caller
-chose (``DetectionTable.collect(engine=...)``). A literal engine is the
-package choosing, and is refused.
-
-The streaming coverage this gave up nothing of: ``test_streaming_plans.py``
-holds every metrics plan to the streaming engine, whatever engine a caller
-then collects it with.
+otherwise (in-memory while debugging, say). A literal ``engine=`` in the
+package would restate the default and override the user's affinity (the
+metrics, since moved to polars-eval, once did so at sixteen call sites). So a
+``collect``/``collect_all`` in ``python/polars_cv`` either passes no engine or
+forwards one its own caller chose; a literal engine is the package choosing,
+and is refused.
 
 Limits: a source scan (the property is about call sites, which no runtime
 check sees). It finds ``engine=<literal>`` keywords in any call. An engine

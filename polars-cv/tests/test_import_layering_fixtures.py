@@ -56,11 +56,6 @@ BAD = {
         sub_pkg="from .m import f\n",
         sub__m="from polars_cv.a import x\n",
     ),
-    "downstream package importing a root that re-exports it": pkg(
-        root="from .metrics import f\n",
-        metrics_pkg="from .stats import f\n",
-        metrics__stats="from polars_cv import Pipeline\nf = 1\n",
-    ),
     "type-checking else branch still runs": pkg(
         a="from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    pass\nelse:\n    from .b import y\n",
         b="from .a import x\n",
@@ -94,12 +89,6 @@ GOOD = {
     "subpackage init importing its siblings": pkg(
         sub_pkg="from .m import f\n", sub__m="from polars_cv._t import T\n", _t=""
     ),
-    "downstream package importing the root's public API": pkg(
-        root="from .pipeline import Pipeline\n",
-        pipeline="class Pipeline: ...\n",
-        metrics_pkg="from .stats import f\n",
-        metrics__stats="from polars_cv import Pipeline\nf = 1\n",
-    ),
     "relative import climbing out of a subpackage": pkg(
         sub__m="from .._t import T\n", _t=""
     ),
@@ -115,13 +104,3 @@ def test_scanner_rejects(name: str) -> None:
 def test_scanner_accepts(name: str) -> None:
     found = violations(GOOD[name])
     assert not found, f"scanner rejected known-good layout {name}: {found}"
-
-
-def test_a_root_reexporting_its_downstream_package_is_a_cycle() -> None:
-    """The downstream exemption covers the root import, never the cycle.
-
-    A downstream module may import the root; if the root imports it back, the
-    report must be the cycle and not the (exempted) root import.
-    """
-    found = violations(BAD["downstream package importing a root that re-exports it"])
-    assert found and all(line.startswith("import cycle") for line in found), found

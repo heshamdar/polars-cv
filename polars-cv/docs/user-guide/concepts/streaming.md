@@ -158,12 +158,6 @@ Two knobs bound it:
 A row is still one call's indivisible unit of work: an image is decoded,
 processed and encoded whole, so a single image must fit in memory.
 
-!!! note
-    The detection-metrics APIs collect with Polars' default engine, the
-    streaming engine since Polars 2.0, so you don't need to opt in. They
-    follow `pl.Config.set_engine_affinity` like any lazy query: setting an
-    in-memory affinity while debugging makes them run in memory too.
-
 ## Feeding a training loop
 
 `LazyFrame.collect_batches` runs a query on the streaming engine and hands

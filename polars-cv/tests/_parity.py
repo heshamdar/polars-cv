@@ -12,9 +12,9 @@ on its module (``pytestmark``), class or function; the closest one wins. The
 declaration is what puts a test in the parity report, and collection refuses a
 reference test without one, so a comparison cannot be added that the report
 does not show. ``ops`` are checked against the public API: a bare name is a
-``Pipeline`` or ``LazyPipelineExpr`` method, ``contour.``/``point.``/``bbox.``/
-``cv.`` name an expression-namespace method and ``metrics.`` a function of
-``polars_cv.metrics``. A name none of them has is refused, so a renamed op
+``Pipeline`` or ``LazyPipelineExpr`` method, and ``contour.``/``point.``/
+``bbox.``/``cv.`` name an expression-namespace method. A name none of them has
+is refused, so a renamed op
 cannot leave the report describing one that no longer exists.
 
 A declared test must also run polars-cv: one whose setup and body never enter
@@ -57,7 +57,7 @@ _OUTCOMES = ("passed", "failed", "skipped")
 #: ``Definition`` a written contract and ``Hand-computed`` values worked out
 #: by hand. The report groups by this word, so a free-form one is refused.
 REFERENCES = (
-    "OpenCV", "SciPy", "NumPy", "PIL", "imagehash", "matplotlib", "pycocotools",
+    "OpenCV", "SciPy", "NumPy", "PIL", "imagehash", "matplotlib",
     "Python", "Cross-check", "Definition", "Hand-computed",
 )  # fmt: skip
 
@@ -74,14 +74,11 @@ def addoption(parser: pytest.Parser) -> None:
 def _known_op(name: str) -> bool:
     import polars as pl
 
-    import polars_cv.metrics
     from polars_cv import LazyPipelineExpr, Pipeline
 
     prefix, _, member = name.rpartition(".")
     if not prefix:
         return hasattr(Pipeline, name) or hasattr(LazyPipelineExpr, name)
-    if prefix == "metrics":
-        return hasattr(polars_cv.metrics, member)
     if prefix in ("contour", "point", "bbox", "cv"):
         return hasattr(getattr(pl.col("x"), prefix), member)
     return False

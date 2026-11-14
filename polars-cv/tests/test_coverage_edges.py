@@ -13,17 +13,7 @@ import pytest
 
 from polars_cv import build_info, numpy_from_struct
 from polars_cv.geometry.schemas import validate_contour
-from polars_cv.metrics import BBoxMatcher
 from tests.conftest import plugin_required
-
-_BBOX_SCHEMA = pl.Struct(
-    [
-        pl.Field("x", pl.Float64),
-        pl.Field("y", pl.Float64),
-        pl.Field("width", pl.Float64),
-        pl.Field("height", pl.Float64),
-    ]
-)
 
 
 class TestValidateContour:
@@ -209,63 +199,6 @@ class TestNumpyFromStruct:
         }
         out = numpy_from_struct(row)
         assert np.array_equal(out, flipped)
-
-
-class TestBBoxMatcherValidation:
-    """Construction and argument validation before any frame is touched."""
-
-    @pytest.mark.parametrize("bad", [0.0, -0.1, 1.5])
-    def test_iou_threshold_out_of_range_raises(self, bad: float) -> None:
-        with pytest.raises(ValueError, match="iou_threshold"):
-            BBoxMatcher(iou_threshold=bad)
-
-    def test_match_without_score_col_raises(self) -> None:
-        df = pl.DataFrame({"pred": [[]], "gt": [[]]})
-        with pytest.raises(ValueError, match="requires `score_col`"):
-            BBoxMatcher().match(df, pred_col="pred", gt_col="gt")
-
-
-@plugin_required
-class TestBBoxMatcherOptionalColumns:
-    """`match` wires through every optional column (class / weight / group).
-
-    The image-id path and the optional-column branches are otherwise not
-    exercised; this drives the full happy path with all of them set.
-    """
-
-    @staticmethod
-    def _frame() -> pl.DataFrame:
-        return pl.DataFrame(
-            {
-                "pred": [
-                    [{"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}],
-                    [{"x": 5.0, "y": 5.0, "width": 4.0, "height": 4.0}],
-                ],
-                "gt": [
-                    [{"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}],
-                    [{"x": 50.0, "y": 50.0, "width": 4.0, "height": 4.0}],
-                ],
-                "scores": [[0.9], [0.4]],
-                "cls": ["cat", "dog"],
-                "img": ["a", "b"],
-                "w": [1.0, 2.0],
-                "grp": ["g1", "g2"],
-            }
-        ).cast({"pred": pl.List(_BBOX_SCHEMA), "gt": pl.List(_BBOX_SCHEMA)})
-
-    def test_all_optional_columns_are_honoured(self) -> None:
-        table = BBoxMatcher(iou_threshold=0.5).match(
-            self._frame(),
-            pred_col="pred",
-            gt_col="gt",
-            score_col="scores",
-            class_col="cls",
-            image_id_col="img",
-            weight_col="w",
-            group_col="grp",
-        )
-        # A DetectionTable was produced from the fully-specified call.
-        assert table is not None
 
 
 @plugin_required
