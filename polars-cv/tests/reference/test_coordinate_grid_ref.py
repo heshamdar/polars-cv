@@ -1,4 +1,4 @@
-"""Reference tests for ``coordinate_grid(normalized=)`` (CR-100).
+"""Reference tests for ``coordinate_grid(normalized=)``.
 
 The f32 ``[H, W, 2]`` grid of each pixel's centre ``(x + 0.5, y + 0.5)`` (the
 centres ``rasterize`` samples), divided by ``W`` and ``H`` when ``normalized``,

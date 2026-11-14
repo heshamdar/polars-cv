@@ -1,5 +1,5 @@
 //! `ViewBuffer::from_polars_buffer_strided`: a view over untrusted
-//! `(shape, strides, offset)` (a tensor struct row, CR-138). It is built only
+//! `(shape, strides, offset)` (a tensor struct row). It is built only
 //! if every element it can address lies inside the buffer; these are the
 //! cases either side of each bound, and an exhaustive sweep of small layouts.
 #![cfg(feature = "polars_interop")]

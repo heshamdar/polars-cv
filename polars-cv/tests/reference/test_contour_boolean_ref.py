@@ -1,4 +1,4 @@
-"""Reference tests for the contour boolean ops (CR-99).
+"""Reference tests for the contour boolean ops.
 
 ``union``, ``intersection``, ``difference`` and ``symmetric_difference`` combine
 two contour sets, each read as the union of its regions; the result is a set

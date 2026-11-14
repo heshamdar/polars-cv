@@ -390,8 +390,7 @@ class TestStatistics:
 
     def test_masked_statistics_gather_the_masked_values_once(self) -> None:
         """Every statistic reads one ``masked_select`` node rather than
-        casting and scanning the image and mask again per statistic
-        (CR-131)."""
+        casting and scanning the image and mask again per statistic."""
         from tests._plan_view import op_names
 
         include = ["mean", "std", "min", "max", "p90"]
@@ -564,7 +563,7 @@ class TestNormalizeWindows:
 class TestNormalizePercentileMasked:
     """``normalize_percentile_masked``: ``normalize_percentile``'s window
     taken from the pixels a mask selects (a lesion's 1st-99th percentile),
-    applied to the whole image (CR-129)."""
+    applied to the whole image."""
 
     def _run(self, low, high, mask=MASK, img=IMG, **kw) -> np.ndarray:
         from polars_cv import numpy_from_struct

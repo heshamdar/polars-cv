@@ -78,7 +78,7 @@ fn test_is_integer_dtype() {
 /// MinMax/ZScore take global statistics over every element (as documented on
 /// `Pipeline.normalize`), so any shape is valid. These tests used to pin a
 /// "2-D or single-channel only" rule that execution never enforced — it never
-/// called `validate` — and that contradicts the kernel; enforcing it (CR-34)
+/// called `validate` — and that contradicts the kernel; enforcing it
 /// would have rejected every minmax normalize of an RGB image.
 #[test]
 fn test_normalize_accepts_any_shape() {

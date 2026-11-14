@@ -201,7 +201,7 @@ second, slow build into the loop, and both are now closed — keep them closed:
   extension build. CI and the SessionStart hook do this; `test_build_efficiency.py`
   guards it. `uv run` used to hit the same build on every call; `[tool.uv]
   package = false` in `pyproject.toml` now stops uv from ever building the
-  project (CR-43).
+  project.
 - **Release artifacts fill the container.** A full `--release` tree is ~2 GB the
   dev loop never uses. The SessionStart hook clears a stale one on entry, and
   `scripts/dev-clean.sh` reclaims it on demand (`--all` also drops `target/debug`

@@ -3,7 +3,7 @@
 ``pyproject.toml``'s ``[project] dependencies`` is the one authority for the
 oldest versions polars-cv claims to support. The ``dependency-floors`` CI job
 installs this script's output over the locked environment, so the floors are
-tested rather than asserted (CR-44)::
+tested rather than asserted::
 
     uv pip install $(python scripts/dependency_floors.py)
 

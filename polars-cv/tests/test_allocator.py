@@ -1,5 +1,5 @@
 """
-The plugin allocates through polars' own allocator (CR-60).
+The plugin allocates through polars' own allocator.
 
 pyo3-polars' `PolarsAllocator` relays every allocation to the allocator polars
 exports as the `polars.polars._allocator` capsule, and falls back to the

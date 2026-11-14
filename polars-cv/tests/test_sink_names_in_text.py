@@ -1,6 +1,6 @@
 """Every sink a message, docstring or guide names is a sink that exists.
 
-CR-81 replaced the `numpy`, `torch` and `ndarray` sinks with `tensor`, and
+The `tensor` sink replaced the `numpy`, `torch` and `ndarray` sinks, and
 three user-facing errors went on telling users to "use a `numpy` sink", which
 the wire then refused as an unknown format. The sink names come from the
 catalogue (`SinkFormat`, generated from Rust's `Sink`), so this reads them
@@ -82,7 +82,7 @@ def test_every_named_sink_exists() -> None:
 @pytest.mark.parametrize(
     "bad",
     [
-        # The three messages CR-81 left behind, as they read.
+        # The three messages that rename left behind, as they read.
         'a `numpy`/`list`/`array` sink for non-image data.",',
         '(e.g. `source(\\"image_bytes\\")`), or use a `numpy` sink, \\',
         '"expected the tensor struct, as sink(\\"numpy\\"), sink(\\"ndarray\\")',

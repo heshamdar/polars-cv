@@ -1,4 +1,4 @@
-"""EXIF orientation: ``source(orientation="exif")`` and ``image_info()`` (CR-137).
+"""EXIF orientation: ``source(orientation="exif")`` and ``image_info()``.
 
 A camera stores the sensor's pixels and tags how to turn them for display.
 The default, ``orientation="stored"``, decodes the pixels as stored (what PIL's

@@ -543,7 +543,7 @@ impl<'a> PointColumn<'a> {
 /// A negative size is refused, as a non-finite field is: it is no box, and
 /// it comes from corner data (`xyxy`) read as corner-and-size or the
 /// reverse, which every reader would otherwise score or crop as if it were
-/// meant (CR-76). A zero size is a degenerate box, and is read.
+/// meant. A zero size is a degenerate box, and is read.
 fn bbox_at(fields: &Fields<'_, 4>, k: usize) -> Result<BoundingBox, String> {
     let [x, y, w, h] = values(fields, k, "bbox")?;
     for (name, size) in [("width", w), ("height", h)] {
@@ -1028,7 +1028,7 @@ mod tests {
 
     /// A negative size is no box: the usual cause is corner data (`xyxy`)
     /// read as corner-and-size, or the reverse, which scored every such box
-    /// as a 0-IoU false positive (CR-76). A zero size is a degenerate box,
+    /// as a 0-IoU false positive. A zero size is a degenerate box,
     /// which annotation sets do hold, and is read.
     #[test]
     fn a_bbox_of_negative_size_is_refused_and_one_of_zero_size_is_read() {

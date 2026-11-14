@@ -1,4 +1,4 @@
-"""No operation panics on an input shape the planner could not see (CR-34).
+"""No operation panics on an input shape the planner could not see.
 
 The planner checks shapes when it knows them. A ``blob`` source carries its
 shape per row, so the engine meets shapes the plan never saw — and it used to

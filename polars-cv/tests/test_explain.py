@@ -1,4 +1,4 @@
-"""`explain()` on a graph: the text the planner renders for what will run (CR-148).
+"""`explain()` on a graph: the text the planner renders for what will run.
 
 `PipelineGraph.explain()` is rendered in Rust from the same planning
 `check()` and the schema read, so these tests hold the text to the graph

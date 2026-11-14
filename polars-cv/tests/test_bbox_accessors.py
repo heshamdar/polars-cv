@@ -1,4 +1,4 @@
-"""The ``.bbox`` per-box accessors and ``nms`` (CR-147).
+"""The ``.bbox`` per-box accessors and ``nms``.
 
 Each accessor is checked against a NumPy definition of the same quantity, on
 a single-box column and on a box-set column (the arity is the column's, as for

@@ -273,7 +273,7 @@ fn test_normalize_validation_accepts_hw1() {
 /// MinMax/ZScore are global statistics over every element, as documented on
 /// `Pipeline.normalize`, so a multi-channel buffer is valid input. This test
 /// used to assert the opposite, pinning a `validate` rule nothing enforced
-/// (execution never called `validate`); once execution did (CR-34), that rule
+/// (execution never called `validate`); once execution did, that rule
 /// would have rejected every minmax normalize of an RGB image. Only the
 /// per-channel `Preset` method constrains the channel count.
 #[test]

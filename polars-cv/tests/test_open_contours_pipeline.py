@@ -1,5 +1,5 @@
 """Open contours (lines) in the pipeline contour domain; ``boundary()`` and
-``close()`` (CR-97).
+``close()``.
 
 A contour row with ``is_closed = false`` is a polyline: edges join
 consecutive points only and it bounds no region. Pipelines carry lines as the
@@ -11,7 +11,7 @@ the lengths and areas against NumPy.
   ``bounding_box``, ``translate``, ``scale`` (not about a centroid),
   ``simplify``, and ``convex_hull`` (whose hull is a region).
 * Region ops refuse them: ``area``, ``centroid``, ``largest``.
-* ``rasterize`` strokes them (CR-98, ``reference/test_contour_shaping_ref.py``).
+* ``rasterize`` strokes them (``reference/test_contour_shaping_ref.py``).
 * ``boundary()`` turns a region's rings into lines (a set: holes add rings);
   ``close()`` joins a line's ends into a region.
 """

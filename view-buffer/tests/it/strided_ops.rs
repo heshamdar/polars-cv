@@ -101,7 +101,7 @@ fn test_crop_then_grayscale() {
 /// Grayscale of an image that is already one channel is that image, but
 /// packed: every image op's planned output is contiguous (`infer_strides`),
 /// and ops after it decide whether to pack from that plan, so handing the
-/// input view on unchanged would break it once grayscale reads views (CR-57).
+/// input view on unchanged would break it once grayscale reads views.
 #[test]
 fn test_grayscale_of_a_one_channel_view_is_packed() {
     let gray = make_gray_image(6, 5);

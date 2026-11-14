@@ -1,4 +1,4 @@
-"""A hostile VIEW blob is a row error, never undefined behaviour (CR-41).
+"""A hostile VIEW blob is a row error, never undefined behaviour.
 
 The blob header is column data, so every field in it is untrusted. Bounds were
 already checked; alignment was not. A ``data_offset`` or stride that is not a

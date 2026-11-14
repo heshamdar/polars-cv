@@ -333,7 +333,7 @@ fn resizing_a_view_with_packed_rows_allocates_only_its_output() {
 
 /// Grayscale reads a crop or a vertical flip where it lies: the output is the
 /// only allocation the size of the gray image. A planned pack of the view in
-/// front of it (CR-57) is a second one, three times the size.
+/// front of it is a second one, three times the size.
 #[test]
 fn grayscale_of_a_view_with_packed_rows_allocates_only_its_output() {
     let views = [
@@ -819,7 +819,7 @@ fn apply_mask_reads_a_mask_with_packed_rows_in_place() {
 }
 
 /// `apply_lut`'s range check and table map read a view where it lies (its
-/// `StridePreserving` declaration, CR-95), which the plugin's copy census
+/// `StridePreserving` declaration), which the plugin's copy census
 /// cannot measure: its catalogue sample is a two-row palette, and the census
 /// images hold values up to 250. Either way the output is the only
 /// view-sized allocation: one entry per row through the table map, and a

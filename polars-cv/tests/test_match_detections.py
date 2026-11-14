@@ -83,7 +83,7 @@ class TestGroupObjects:
 class TestBoxes:
     def test_corner_data_read_as_corner_and_size_is_refused(self) -> None:
         """xywh boxes passed as ``"xyxy"`` give negative sizes; they scored as
-        0-IoU false positives with nothing said (CR-76). The bbox reader
+        0-IoU false positives with nothing said. The bbox reader
         refuses a negative size, naming the format to check."""
         swapped = PREDS.with_columns(
             pl.Series(

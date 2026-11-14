@@ -1,4 +1,4 @@
-"""The package metadata describes what polars-cv actually needs (CR-44).
+"""The package metadata describes what polars-cv actually needs.
 
 The declared floors are tested by the ``dependency-floors`` CI job, which
 installs ``scripts/dependency_floors.py``'s output; the tests here pin that

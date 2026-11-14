@@ -222,7 +222,7 @@ class TestOpenContourReading:
         assert df.select(pl.col("c").contour.area()).item() == pytest.approx(50.0)
 
     def test_a_pipeline_region_op_refuses_an_open_contour(self) -> None:
-        """The pipeline's contour domain carries lines too (CR-97), and a
+        """The pipeline's contour domain carries lines too, and a
         region op refuses one there exactly as its accessor does: a polyline
         has no area."""
         from polars_cv import Pipeline

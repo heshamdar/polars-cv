@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://heshamdar.github.io/polars-cv/
+    about: The user guide, API reference and migration guides.
+  - name: Security vulnerability
+    url: https://github.com/heshamdar/polars-cv/security/policy
+    about: Please report security issues privately, not as a public issue.

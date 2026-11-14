@@ -1,4 +1,4 @@
-"""The image formats the build decodes are the ones it lists and documents (CR-145).
+"""The image formats the build decodes are the ones it lists and documents.
 
 Three lists must be one: the ``image`` crate features the workspace enables
 (root ``Cargo.toml``, ``[workspace.dependencies]``), the committed fixtures

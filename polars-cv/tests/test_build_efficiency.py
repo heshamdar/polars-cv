@@ -245,7 +245,7 @@ def test_dev_profile_is_tuned_for_iteration() -> None:
 
 
 def test_uv_never_builds_the_project() -> None:
-    """`uv run` must not build the extension (CR-43).
+    """`uv run` must not build the extension.
 
     `--no-install-project` protects only the commands that pass it; every
     `uv run` re-syncs the project and, for a maturin-backed package, compiles

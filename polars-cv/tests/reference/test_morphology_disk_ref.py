@@ -1,5 +1,5 @@
 """Reference tests for the disk footprint of ``erode``/``dilate``/
-``morphology_gradient``/``morphology_open``/``morphology_close`` (CR-94).
+``morphology_gradient``/``morphology_open``/``morphology_close``.
 
 ``footprint="disk"`` takes the minimum (or maximum) over the pixels within
 Euclidean distance ``r = ksize // 2`` of the centre, edges replicated, as

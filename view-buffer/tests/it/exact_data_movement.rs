@@ -140,7 +140,7 @@ fn channel_merge_is_exact() {
     });
 }
 
-/// Inputs bring their own channels (CR-111): `[H, W, 2]` then `[H, W]`
+/// Inputs bring their own channels: `[H, W, 2]` then `[H, W]`
 /// interleave per pixel as two channels then one.
 #[test]
 fn channel_merge_joins_channel_axes() {

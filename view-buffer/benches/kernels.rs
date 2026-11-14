@@ -228,7 +228,7 @@ fn layout_kernels(c: &mut Criterion) {
     bench_sizes(c, "grayscale_u8_flip_h", rgb, |b| {
         exec(b, |e| e.flip(vec![1]).grayscale())
     });
-    // A vertical flip reaching grayscale: read where it lies (CR-57).
+    // A vertical flip reaching grayscale: read where it lies.
     bench_sizes(c, "grayscale_u8_flip_v", rgb, |b| {
         exec(b, |e| e.flip(vec![0]).grayscale())
     });
@@ -318,7 +318,7 @@ fn spatial_kernels(c: &mut Criterion) {
     bench_sizes(c, "erode_k3_x3_f32", gray_f32, |b| {
         exec(b, |e| e.erode(3, 3, Footprint::Square))
     });
-    // The disk's cost in its radius (CR-105): linear since the spans grow
+    // The disk's cost in its radius: linear since the spans grow
     // incrementally, where one image per half-width made it quadratic.
     bench_sizes(c, "dilate_disk_k15_u8", gray, |b| {
         exec(b, |e| e.dilate(15, 1, Footprint::Disk))

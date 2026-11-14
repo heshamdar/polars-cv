@@ -281,7 +281,7 @@ class TestNullHandling:
     """Tests for null value handling in output."""
 
     def test_null_input_produces_a_null_row(self, simple_rgb_bytes: bytes) -> None:
-        """A null input is a null row, not a struct of null fields (CR-39)."""
+        """A null input is a null row, not a struct of null fields."""
         df = pl.DataFrame({"image": [simple_rgb_bytes, None, simple_rgb_bytes]})
 
         pipe = Pipeline().source("image_bytes")

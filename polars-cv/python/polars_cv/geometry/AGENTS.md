@@ -84,7 +84,7 @@ Set-level detection helpers also live here and operate on `CONTOUR_SET_SCHEMA`:
 
 Registered on `pl.Expr` for `BBOX_SCHEMA` columns, one box or a set per row
 (`Arity::of_bboxes`: any list is a set). Every box is read through
-`BBoxColumn`, which refuses a null, non-finite or negative-size field (CR-76).
+`BBoxColumn`, which refuses a null, non-finite or negative-size field.
 Methods:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
 - `correspond(other, threshold, order)` -> `CORRESPONDENCE_SCHEMA`

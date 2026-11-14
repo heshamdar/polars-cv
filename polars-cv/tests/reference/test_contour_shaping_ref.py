@@ -1,4 +1,4 @@
-"""Reference tests for the contour shaping ops and line rendering (CR-98).
+"""Reference tests for the contour shaping ops and line rendering.
 
 * ``offset(distance, join=)`` grows (or, negative, shrinks) the union of a
   set's regions; the result is always a set (a region can split or merge).

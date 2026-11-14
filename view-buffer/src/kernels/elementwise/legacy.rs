@@ -8,7 +8,7 @@
 //! has changed since, on purpose: `relu`, `clamp_min`, `clamp_max` and the
 //! MinMax normalize extremes propagate NaN (`ops::util::maximum`/`minimum`),
 //! as `clamp` and ZScore always did. And one representation: a constant is an
-//! f64 (CR-136), which the f32 arithmetic narrows (the f32 it always was) and
+//! f64, which the f32 arithmetic narrows (the f32 it always was) and
 //! the f64 arithmetic uses as given, where it used to widen an f32.
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};

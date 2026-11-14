@@ -1,4 +1,4 @@
-"""Out-of-range crop windows and ragged raw buffers are errors (CR-42).
+"""Out-of-range crop windows and ragged raw buffers are errors.
 
 ``crop`` used to clamp: a negative ``top`` became 0 while the height was kept
 (a *shifted* window), a window past the edge came back smaller, and a

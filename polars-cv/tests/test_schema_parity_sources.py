@@ -413,7 +413,7 @@ def test_blob_source_round_trips(pattern: str) -> None:
 def test_tensor_source_round_trips(pattern: str) -> None:
     """A tensor row is self-describing, as a blob is; the plan still has to match.
 
-    The column is the library's own ``numpy`` sink output (CR-138): what one
+    The column is the library's own ``numpy`` sink output: what one
     half writes, the other half must plan for.
     """
     src = pl.DataFrame(

@@ -1,4 +1,4 @@
-"""CR-149: the published cross-library benchmarks must measure a recent release.
+"""issue #228: the published cross-library benchmarks must measure a recent release.
 
 A known gap, pinned as `test_known_gaps.py` pins its others (strict xfail,
 only an ``AssertionError`` is the gap, so the refresh turns the suite red and
@@ -19,7 +19,7 @@ pytestmark = [pytest.mark.structural, requires_checkout]
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="CR-149: the published benchmarks report 0.38.0",
+    reason="issue #228: the published benchmarks report 0.38.0",
 )
 def test_the_published_benchmarks_measure_a_recent_release() -> None:
     """The cross-library results (``benchmarks/results/coco-*.json``, which

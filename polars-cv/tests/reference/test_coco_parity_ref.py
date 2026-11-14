@@ -1,7 +1,7 @@
 """``evaluate_detections`` against pycocotools' ``COCOeval`` on random data.
 
 pycocotools is in the dev group, so a missing install fails this test rather
-than skipping it: a skip is how the parity claim went unchecked (CR-79). The data
+than skipping it: a skip is how the parity claim went unchecked. The data
 avoid what the two deliberately do differently: scores are distinct (COCO
 orders tied scores by input order, polars-cv makes a tie one PR point), there
 are no crowd regions, and every box is in COCO's "all" area range.

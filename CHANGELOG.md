@@ -537,6 +537,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   functions. A colour conversion's tracked strides are now the contiguous
   strides of its output (they were `None`); nothing executes from them.
 - Documentation: the package `AGENTS.md` names `display.py` as the one exception to "no computation happens here" (notebook display normalises already-computed values), and the root `AGENTS.md` tree labels the repository root as the Cargo workspace and shows the root `scripts/` and `benchmarks/` directories beside their `polars-cv/` counterparts.
+- Open work is tracked in [GitHub issues](https://github.com/heshamdar/polars-cv/issues),
+  not in the repository. The `ISSUES.md` ledger and the `plans/` directory are
+  removed: each open item is now an issue (#203–#228), with its evidence and
+  approach. The owner's settled decisions moved to "Design decisions" in the
+  root `AGENTS.md`. Code comments and tests no longer cite ledger ids
+  (`CR-NN`); an id in an older CHANGELOG entry refers to the ledger in git
+  history. A pinned defect in `test_known_gaps.py` names its issue.
 
 ## [0.41.0] — 2026-10-23
 

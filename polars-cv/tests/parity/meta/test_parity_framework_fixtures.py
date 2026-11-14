@@ -101,7 +101,7 @@ class TestColourBoundsIgnoreAlpha:
     """A colour conversion runs on the colour channels and carries alpha
     through (``color_channels``), so its float bound scales with the colour
     channels alone. Scaled by the whole image, an infinite alpha made
-    ``to_hsv``'s dense bound infinite and the tolerance unbuildable (CR-91),
+    ``to_hsv``'s dense bound infinite and the tolerance unbuildable,
     and ``to_ycbcr``'s bound infinite, accepting anything."""
 
     @pytest.mark.parametrize(
@@ -130,12 +130,12 @@ class TestColourBoundsIgnoreAlpha:
 class TestLabReference:
     """The Lab reference is CIE Lab by its definition (sRGB curve, D65), in
     float64. OpenCV's float Lab approximates the sRGB curve and is 0.57 off
-    in a* on a dark pixel (CR-92), more than the bound it was given."""
+    in a* on a dark pixel, more than the bound it was given."""
 
     def test_a_dark_pixel_matches_the_definition(self) -> None:
         from tests.parity.framework.oracle import _lab_ref
 
-        # The CR-92 pixel; its Lab by the definition, worked independently.
+        # That dark pixel; its Lab by the definition, worked independently.
         x = np.array([[[3363, 7165, 3444]]], dtype=np.uint16)
         lab = _lab_ref(x, {})[0, 0]
         np.testing.assert_allclose(lab, [8.4907, -9.7715, 6.8934], atol=2e-3)

@@ -56,7 +56,7 @@ class TestWireForm:
         def build() -> str:
             x = pl.lit(pl.Series("f", [3]))
             pipe = Pipeline().source("image_bytes").resize(height=x, width=8)
-            # Node ids are random per build (CR-50); only the expression
+            # Node ids are random per build; only the expression
             # encoding is under test here.
             return re.sub(r"node_[0-9a-f]+", "node", _graph(pipe)._to_json())
 

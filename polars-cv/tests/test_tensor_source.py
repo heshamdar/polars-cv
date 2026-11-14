@@ -1,4 +1,4 @@
-"""``source("tensor")``: the numpy/ndarray/torch sink struct, read back (CR-138).
+"""``source("tensor")``: the numpy/ndarray/torch sink struct, read back.
 
 The three tensor sinks share one struct (``NUMPY_OUTPUT_SCHEMA``), and no
 source took it: their output could not feed another pipeline, even after a
