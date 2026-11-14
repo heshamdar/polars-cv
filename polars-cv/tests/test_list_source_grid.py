@@ -110,7 +110,7 @@ def test_other_dtypes_convert_to_the_declared_one() -> None:
 def test_a_value_the_declared_dtype_cannot_hold_is_refused(
     values: list, dtype: pl.DataType, shown: str
 ) -> None:
-    """It used to be stored as 0 (CR-61)."""
+    """It used to be stored as 0."""
     with pytest.raises(pl.exceptions.ComputeError, match=shown):
         _as_u8(values, dtype)
     assert _as_u8(values, dtype, on_error="null") == [None]

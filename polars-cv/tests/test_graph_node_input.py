@@ -1,4 +1,4 @@
-"""A graph node's input is declared once (CR-117).
+"""A graph node's input is declared once.
 
 A node either decodes a column through a source or reads another node; the
 nodes it depends on are that input plus the nodes its ops read, plus, for a

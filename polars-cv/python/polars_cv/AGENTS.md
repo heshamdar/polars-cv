@@ -402,7 +402,7 @@ same parser as its plain struct. Rust only builds tagged *outputs*
 our name over any other storage, so `isinstance(dtype, PointType)` is a
 complete check.
 
-`sink("tensor")` always emits the tag (owner's decision, 2026-11-12, CR-81;
+`sink("tensor")` always emits the tag (owner's decision, 2026-11-12;
 the `numpy`/`torch` sinks that wrote the plain struct are gone). Geometry
 outputs stay plain structs. The cost of a tag is that it breaks polars'
 struct operations (measured on py-polars 1.42), so docs and messages point
@@ -418,8 +418,8 @@ at `.ext.storage()`:
 | `.to_list()`, `.rows()` | works (plain dicts) |
 
 Polars documents the extension-type API as unstable: keep every use of it in
-`extension_types.py` and `src/ext_types.rs`. Remaining work (tagged geometry
-outputs, defaults, metadata) is listed under "Extension types" in the root `ISSUES.md`.
+`extension_types.py` and `src/ext_types.rs`. Opt-in tagged geometry
+output is [#219](https://github.com/heshamdar/polars-cv/issues/219).
 
 ## Common Pitfalls
 

@@ -97,7 +97,8 @@ what a null in a per-row expression parameter means. `.cv` deliberately has no
 ./                                  # Repository root (the Cargo workspace)
 ├── AGENTS.md                       # ← You are here
 ├── Cargo.toml                      # Workspace Cargo.toml
-├── CONTRIBUTING.md                 # Release process, CI
+├── CONTRIBUTING.md                 # Dev setup, PR workflow, release process, CI
+├── GLOSSARY.md                     # One meaning per overloaded word
 ├── view-buffer/                    # Rust kernel library (the engine)
 │   ├── AGENTS.md
 │   └── src/
@@ -114,16 +115,19 @@ what a null in a per-row expression parameter means. `.cv` deliberately has no
 │   │   └── AGENTS.md
 │   ├── benchmarks/                 # Regression suite over the checkout
 │   │   └── AGENTS.md
-│   ├── examples/                   # Runnable demos (13 numbered 01–13 + detection_data.py)
+│   ├── examples/                   # Runnable demos (numbered 01–15 + detection_data.py)
 │   ├── docs/                       # MkDocs user-guide documentation
 │   └── scripts/                    # Generators (gen_ops.py, ...) and utilities
 ├── scripts/                        # Repo tooling: verify.sh (CI checks), with-pyo3-env.sh (PyO3 env for cargo), dev-clean.sh (reclaim disk)
+├── polars-cv-macros/               # Proc macros: #[derive(Ops)], #[derive(Resolve)] for the typed catalogue
 ├── benchmarks/                     # Published-wheel comparison against PIL, OpenCV and others
+├── docker/                         # Linux build container (Dockerfile, compose.yaml)
+├── .github/                        # CI and publish workflows, issue and PR templates
 └── CHANGELOG.md                    # Keep-a-Changelog release history
 ```
 
 See root [`CONTRIBUTING.md`](CONTRIBUTING.md) for the release process and CI, and
-[`README.docker.md`](README.docker.md) for the Docker build environment. The two
+[`docker/README.md`](docker/README.md) for the Docker build environment. The two
 `benchmarks/` directories (repository root and `polars-cv/`) are explained in
 [`benchmarks/README.md`](benchmarks/README.md).
 
@@ -164,7 +168,58 @@ CI and wheel jobs clear it with `RUSTFLAGS=""`.
 
 - **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers. They execute correctly (in f64) but are excluded from kernel fusion (`view-buffer/src/kernels/elementwise/mod.rs::lower_to_scalars`).
 
-Deferred work and verified defects are tracked in the root `ISSUES.md`, not here.
+Open work — defects, performance gaps, pending decisions and upstream reports — is tracked in
+[GitHub issues](https://github.com/heshamdar/polars-cv/issues), not in the repository.
+
+## Design decisions
+
+Settled by the owner; recorded here so they are not reopened by accident. A
+change to one of them is a new decision, raised as a GitHub issue first.
+
+- **No stable API until 1.0** (2026-11-13). Every name, signature and the
+  wire may change in a minor release; each break is listed in the CHANGELOG
+  with a migration guide. No deprecation path is built.
+- **Bit-identical output is the default.** An optimisation never changes
+  pixels. Deliberate output changes so far: exact z-score statistics and
+  contrast mean, and the warp's border fill stored by the conversion rule.
+  Bug fixes that changed wrong output each got a CHANGELOG "Fixed" entry and
+  a guard.
+- **EXIF orientation: the default is `"stored"`** (2026-11-11). An image
+  source decodes the pixels as the file stores them, as PIL's `Image.open`
+  does; `orientation="exif"` is the opt-in.
+- **`sink("tensor")` is always tagged `polars_cv.ndarray`, with no
+  `dtype`/`ndim` metadata** (2026-11-12). The planner often cannot know
+  either, one column can hold several dtypes, and metadata would enter type
+  equality. A column of fixed, known shape and dtype has `sink("array")`.
+  Geometry outputs stay plain structs (opt-in tagging: #219).
+- **JPEG encoder: `image`'s stays** (2026-09-28). `jpeg-encoder` passed the
+  speed gate (1.62–1.65× geomean, ΔPSNR ≤ 0.04 dB) but writes 5–13% larger
+  files on smooth content. IJG stays out of `deny.toml`. The eval is
+  `view-buffer/tests/jpeg_encode_eval.rs`.
+- **A resize of more than 4 channels is refused** by its contract, not split
+  into channel groups (`TestResizeChannelLimit`).
+- **Integer `invert` is `MAX + MIN − x`** (`!x`) in the input dtype.
+- **A converting `list` row goes through polars' `strict_cast`** (15.8 µs per
+  64×64 `i64 → u8` row against 2.2 for an in-place one). It is a
+  convenience path, and a typed pass would need a second copy of polars'
+  cast rules.
+- **Metrics collect with `engine="auto"`** (2026-10-08): streaming by default
+  in Polars 2.0, following `pl.Config.set_engine_affinity`;
+  `tests/test_engine_choice.py` refuses a literal `engine=`.
+- **Drawing primitives** (2026-10-16/17). The pipeline contour domain carries
+  open lines as well as regions; region ops refuse a line with the
+  accessors' error, and `boundary()`/`close()` convert. An op whose result
+  can split a region (`offset`, the set operations, `union_all`) always
+  returns a set. An `apply_lut` index past the table is a row error;
+  clamping is an explicit `clamp(0, n - 1, out_dtype=...)` first. Signed
+  distance is negative inside, measured to the pixel-edge boundary
+  `extract_contours` traces. No built-in colormaps: `apply_lut` takes
+  explicit tables. Line width, cap and join belong to `stroke()`, never to
+  `rasterize`, which fills regions only; `offset` takes `join` alone.
+- **Ordered windows (`over(order_by=)`) are not used in `_grouped_scan.py`**
+  (measured 15–35% faster on the scan alone): `over` takes one `descending`
+  flag for all keys, callers mix directions, and negating a key misplaces
+  NaN. The reasons are in that module.
 
 ## Release History
 
@@ -270,7 +325,7 @@ side channel.
 | A graph policy's wire spelling (`on_error`, `on_null_param`) | Its `NAMED` table, read by `catalog::param::literal_field` (no serde derive on the enum) | `graph_policies_parse_through_their_named_tables`; there is no second spelling to compare |
 | An op's domain transitions (the "Domain:" docstring line) | Its Rust `input_domains`/`output_domain`, read by `catalog_json` over the op's structural choices → `domains` in `op_catalog.json` → the generated line; sugar composes its declared ops' (`@_sugar`, `polars_cv/_domains.py` renders both) | `the_domain_contract_is_read_off_the_op`, `test_sugar_appends_exactly_the_ops_it_declares`, `test_every_public_pipeline_method_has_one_kind` |
 | A parameter's default | `#[param(default = ...)]` on the field: the wire applies it when the field is absent, and the catalogue gives it to the generated signature (an `Option` field declares none) | `an_absent_field_takes_its_declared_default`; the derive refuses an `Option` field with a default |
-| Source/sink formats, and which parameters each reads | One variant per format of the `Source`/`Sink` families in `polars-cv/src/formats/` (`#[derive(Ops)]` → `tests/golden/io_catalog.json` → generated `SourceFormat`/`SinkFormat`, `source()` and `sink()` with a typed keyword per field, the `Sink.<format>` constructors, and `SOURCE_FIELDS`/`SINK_FIELDS`); what `sink()` accepts as an output (a name or a `Sink`) is read once, by `_graph.as_sink`; the builder checks what the caller passed with `Plan.with_source` (which also plans the source's state), and `.sink()` checks the whole graph with `check_graph` (the plugin's own compile, planning and `decode::output_schema`) | Deserialization: an unknown format or field is refused, and a field the format does not read names where it applies (`formats::from_wire`); `io_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_param_applicability.py` sweeps parameter × format grids from the catalogue and checks the `quality` claim against the encoders; `test_sink_signature.py` holds `sink()`'s keywords and each `Sink` constructor to the catalogue's fields (no `**kwargs`: a misspelled keyword is a `TypeError`, and a type checker sees it), and `format_fields` refuses a field with two types across formats; `test_sink_names_in_text.py` refuses a sink a message, docstring or guide names that the catalogue lacks (CR-81 left three errors naming `numpy`) |
+| Source/sink formats, and which parameters each reads | One variant per format of the `Source`/`Sink` families in `polars-cv/src/formats/` (`#[derive(Ops)]` → `tests/golden/io_catalog.json` → generated `SourceFormat`/`SinkFormat`, `source()` and `sink()` with a typed keyword per field, the `Sink.<format>` constructors, and `SOURCE_FIELDS`/`SINK_FIELDS`); what `sink()` accepts as an output (a name or a `Sink`) is read once, by `_graph.as_sink`; the builder checks what the caller passed with `Plan.with_source` (which also plans the source's state), and `.sink()` checks the whole graph with `check_graph` (the plugin's own compile, planning and `decode::output_schema`) | Deserialization: an unknown format or field is refused, and a field the format does not read names where it applies (`formats::from_wire`); `io_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_param_applicability.py` sweeps parameter × format grids from the catalogue and checks the `quality` claim against the encoders; `test_sink_signature.py` holds `sink()`'s keywords and each `Sink` constructor to the catalogue's fields (no `**kwargs`: a misspelled keyword is a `TypeError`, and a type checker sees it), and `format_fields` refuses a field with two types across formats; `test_sink_names_in_text.py` refuses a sink a message, docstring or guide names that the catalogue lacks |
 | Parsing JSON the Python builder wrote (a graph, a plan, an op, a source, a geometry call's arguments) | `polars-cv/src/wire.rs`: `wire::from_str`, whose error is the diagnosis without `serde_json`'s `at line L column C` | Clippy: `serde_json::from_str` is a `disallowed-methods` entry in `clippy.toml`, allowed only inside `wire::from_str`; `a_refusal_is_the_diagnosis_without_a_position`; `test_message_hygiene.py` runs a table of deliberate failures and refuses a Rust `Debug` struct, a JSON position or a build-time node id in any message (checker fixtures in the same file) |
 | Which image formats a source decodes | The `image` entry of `[workspace.dependencies]` in the root `Cargo.toml` (named features, no defaults), which both crates take with `workspace = true` | `test_decode_formats.py`: a committed file per feature (`tests/fixtures/formats/`) is decoded through the pipeline, and the feature list, the files and the table in `docs/user-guide/concepts/sources.md` are compared as sets; a crate declaring `image` on its own fails `test_each_crate_takes_the_workspace_entry` |
 | `LazyPipelineExpr`'s method surface | generated by `gen_ops.py`: forwarders from the built `Pipeline` into `_lazy_forwarders.py`, and every `lazy_only` op into `_LazyOpsMixin` | `test_lazy_pipeline_method_parity`, `test_every_lazy_only_op_is_a_generated_lazy_method`, `test_the_committed_catalog_is_the_built_one` |
@@ -320,7 +375,7 @@ the same exported `named_variants!` and lands in `PLUGIN_REGISTRY`, which the
 enum catalogue chains onto the engine's `REGISTRY`. Registering is what
 generates its Python class; there is no FFI arm or Python mirror to add.
 
-## The Single-Authority Refactor: What Was Done, What Is Left
+## The Single-Authority Refactor
 
 This is written down because it was not. The phased plan behind the
 single-authority work existed only in the agent session that produced it, so
@@ -335,7 +390,7 @@ current instead.
 1. *The mandatory op-append contract.* One way to append an op, applying the
    whole plan-time effect (now the Rust `Plan.push`). Fixed the `transpose` /
    `channel_select` / `channel_merge` shape desyncs and the lazy continuation's
-   dead shape replay. (A1/A2/A3 shape half, A10.)
+   dead shape replay.
 2. *Deleting what nothing reached.* view-buffer's pipeline-composition layer
    (`ops/io.rs`) and cost-reporting subsystem (`ops/cost.rs`),
    `rasterize(anti_alias=)`, node-level `shape_hints`, the geometry validation
@@ -351,7 +406,7 @@ current instead.
    one verification entry point.
 5. *The sink contract.* `encode_node_output` keyed on the planned domain rather
    than the runtime `NodeOutput` variant, so the dtype the planner publishes and
-   the value execution produces come from one key. (A1/A2/A3 sink half.)
+   the value execution produces come from one key.
 6. *Path sandboxing (default-deny, #171).* `fetch::PathPolicy` and the
    `allowed_roots` option on `source("file_path", ...)` (and an `auto` source
    over a path column), `.cv.read_bytes(...)` and the header-metadata methods.
@@ -375,7 +430,7 @@ current instead.
    at all, so "the credentials bound it" is not a sandbox. The error names
    remote URLs and shows a remote root, so a cloud pipeline sees its fix.
 
-7. *The typed op protocol (0.29.0, CR-45…CR-49).* One typed Rust definition per op, source and sink; a
+7. *The typed op protocol (0.29.0).* One typed Rust definition per op, source and sink; a
    generated Python builder, enums and pass flags; a Rust planner
    (`Plan`, `check_graph`) with
    symbolic shapes (`OpShape`). It replaces the name + untyped-param-map
@@ -389,15 +444,13 @@ current instead.
 should have but does not — are pinned executably in
 `polars-cv/tests/test_known_gaps.py`, one `xfail(strict=True)` each, so a fix
 turns the suite red rather than passing unnoticed; prefer adding an entry there
-to extending a prose list. Everything else open (cleanups, coverage holes,
-performance gaps, pending decisions and upstream drafts, most of which are not
-xfail-able wrong behaviour) lives in the root `ISSUES.md` ledger with a stable
-`CR-NN` id per item; a pinned defect is listed there too.
-
-(An earlier version of this section claimed the two items below were each pinned
-in `test_known_gaps.py`. They were not — one was a missing feature, the other a
-perf limitation, and neither is a defect the ledger is for. The claim is removed
-rather than back-filled with pins that would misuse the file.)
+to extending a prose list, and name its GitHub issue in the `xfail` reason.
+Everything else open (cleanups, coverage holes, performance gaps, pending
+decisions and upstream drafts) is a
+[GitHub issue](https://github.com/heshamdar/polars-cv/issues); the repository
+holds no ledger or plan files, and code comments state the invariant rather
+than cite an issue id. Settled questions are in
+[Design decisions](#design-decisions).
 
 **Known non-defect gaps.**
 

@@ -124,7 +124,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/src/cloud_auth.rs", "remote"),
     ("polars-cv/src/read_bytes.rs", "remote"),
     ("polars-cv/src/image_metadata.rs", _NONE),
-    # The global allocator: every allocation any case makes (CR-60).
+    # The global allocator: every allocation any case makes.
     ("polars-cv/src/allocator.rs", _ALL),
     ("polars-cv/src/test_alloc.rs", _NONE),  # test-only allocator
     ("polars-cv/src/source_hash_fixture.rs", _NONE),  # test-only: build-hash fixture

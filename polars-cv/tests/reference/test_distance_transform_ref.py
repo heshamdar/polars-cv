@@ -1,4 +1,4 @@
-"""Reference tests for ``distance_transform`` (CR-93).
+"""Reference tests for ``distance_transform``.
 
 Unsigned: each non-zero pixel's Euclidean distance to the nearest zero pixel,
 centre to centre, as ``scipy.ndimage.distance_transform_edt`` and

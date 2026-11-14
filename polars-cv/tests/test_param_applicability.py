@@ -195,8 +195,8 @@ def test_a_misspelled_sink_keyword_is_rejected() -> None:
 
     `sink("jpeg", qualtiy=50)` built a graph carrying `qualtiy`, which serde
     dropped as an unknown field — so the query encoded at quality 85 and said
-    nothing. `sink()`'s keywords are now generated from the typed sinks
-    (CR-142), so Python refuses the name as it refuses any unknown argument;
+    nothing. `sink()`'s keywords are now generated from the typed sinks,
+    so Python refuses the name as it refuses any unknown argument;
     a `Sink` built by hand around it still reaches the typed sink, which
     refuses it as before.
     """

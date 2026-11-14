@@ -2,7 +2,7 @@
 
 ``sink("list")`` at rank >= 2, and ``sink("array")`` with any null row, used to
 build one ``AnyValue`` per *element*: on 64 rows of 64x64x3 u8 they ran ~34x
-and ~40x slower than ``sink("tensor")`` (CR-33). They are now built straight
+and ~40x slower than ``sink("tensor")``. They are now built straight
 into Arrow from one flat values buffer.
 
 A wall-clock test is only robust when the margin dwarfs the noise, so this

@@ -212,7 +212,7 @@ def color_magnitude(x: np.ndarray) -> float:
     """:func:`magnitude` of the colour channels alone, for a ``ColorChannels``
     op's bound: alpha is carried through unchanged (:func:`color_channels`),
     so it cannot scale the colour error. Scaled by the whole image, an
-    infinite alpha made the bound infinite (CR-91)."""
+    infinite alpha made the bound infinite."""
     colour = x[:, :, :3] if x.ndim == 3 and x.shape[2] == 4 else x
     if x.ndim == 3 and x.shape[2] == 2:  # gray + alpha
         colour = x[:, :, :1]
@@ -877,7 +877,7 @@ def _lab_ref(x: np.ndarray, p: Params) -> np.ndarray:
     float64: the sRGB curve, the sRGB-to-XYZ matrix, then ``f(t)``.
 
     Not OpenCV's float Lab: it approximates the sRGB curve and is 0.57 off in
-    a* on a dark pixel (CR-92), more than a bound worth having.
+    a* on a dark pixel, more than a bound worth having.
     """
     scale = 1.0 if x.dtype.kind == "f" else float(np.iinfo(x.dtype).max)
     rgb = x[:, :, :3].astype(np.float64) / scale
@@ -1937,7 +1937,7 @@ OPS: dict[str, OpSpec] = {
             "apply_lut",
             _lut_params,
             # u8 only here: a u16 table is 65536 rows, about a second to encode
-            # per example on the debug build (CR-102), so the reference tests
+            # per example on the debug build (issue #210), so the reference tests
             # hold u16 instead (the full domain, a strided view, by value).
             accepts=lambda x: x.dtype == np.uint8,
             ref=_lut_ref,
@@ -2151,7 +2151,7 @@ OPS: dict[str, OpSpec] = {
             gain=_INF,
             note="CIE Lab (D65) of RGB scaled to [0, 1] by its definition "
             "(L in [0, 100]), in float64: not OpenCV's float Lab, whose sRGB "
-            "curve is approximate (0.57 off in a* on dark pixels, CR-92)",
+            "curve is approximate (0.57 off in a* on dark pixels)",
         ),
         _spec(
             "convert_color",

@@ -1,4 +1,4 @@
-"""``sink()`` is generated from the sink catalogue, as ``source()`` is (CR-142).
+"""``sink()`` is generated from the sink catalogue, as ``source()`` is.
 
 ``sink()`` took ``**kwargs``: Rust refused a keyword that did not apply, but an
 editor and ``ty`` saw nothing, and a multi-output's parameters were an

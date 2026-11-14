@@ -144,7 +144,7 @@ class TestOnErrorNull:
         assert row0["data"] is not None
 
         # Corrupt row is a null row (it used to be a struct of null fields,
-        # which is_null()/drop_nulls() could not see — CR-39).
+        # which is_null()/drop_nulls() could not see).
         assert result["out"][1] is None
         assert result["out"].is_null().to_list() == [False, True]
 
@@ -173,7 +173,7 @@ def _mismatched_shapes_frame() -> pl.DataFrame:
 
 @plugin_required
 class TestEnginePanicsFollowTheRowPolicy:
-    """A panic inside the engine is one row's failure, not the batch's (CR-34).
+    """A panic inside the engine is one row's failure, not the batch's.
 
     view-buffer reports some data-dependent errors by panicking. They were
     caught once per *call*, which ignored ``on_error``: under

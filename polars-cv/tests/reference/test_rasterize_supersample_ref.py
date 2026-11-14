@@ -1,4 +1,4 @@
-"""Reference tests for ``rasterize(supersample=n)`` (CR-96).
+"""Reference tests for ``rasterize(supersample=n)``.
 
 Each pixel samples the region at its ``n x n`` sub-pixel centres
 ``(x + (i + 0.5) / n, y + (j + 0.5) / n)`` and is painted

@@ -116,7 +116,7 @@ class TestJpegScaledDecode:
     def test_no_reduction_is_the_full_decoders_pixels(
         self, decode_max_size: int, gray: bool
     ) -> None:
-        """CR-139: an assertion the image already meets changes nothing.
+        """An assertion the image already meets changes nothing.
 
         The scaled path is another decoder, whose pixels differ from the full
         one's (by up to 10 levels on a chroma-subsampled file) and which is

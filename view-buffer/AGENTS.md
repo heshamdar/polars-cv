@@ -261,7 +261,7 @@ pub trait Op {
     fn identity_rule(&self) -> IdentityRule;           // Never is the safe answer
     fn is_spatial_window(&self) -> bool; // a hoistable H/W window (spatial pushdown)
     fn validate(&self, input_shapes: &[&[Dim]], input_dtypes: &[PlannedDType])
-        -> Result<(), ValidationError>; // plan time and before every row (CR-34)
+        -> Result<(), ValidationError>; // plan time and before every row
 }
 ```
 

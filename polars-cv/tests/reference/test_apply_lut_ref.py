@@ -1,4 +1,4 @@
-"""Reference tests for ``apply_lut`` (CR-95).
+"""Reference tests for ``apply_lut``.
 
 ``apply_lut(table, out_dtype=)`` reads each u8/u16 value as an index into
 ``table``. A table of single-entry rows maps every element in place, on any
@@ -6,7 +6,7 @@ channel count (``cv2.LUT`` with one table); rows of ``K > 1`` entries take a
 single-channel image to ``K`` channels (a palette). Oracles: NumPy fancy
 indexing (``table[x]``) everywhere, ``cv2.LUT`` for u8 -> u8.
 
-An index past the table is a row error (owner decision 3, ``ISSUES.md``):
+An index past the table is a row error (a design decision, root ``AGENTS.md``):
 clamping is explicit, ``clamp(0, n - 1, out_dtype=...)`` first (``clamp_max``
 alone promotes to f32, which ``apply_lut`` refuses).
 """

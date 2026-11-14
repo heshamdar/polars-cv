@@ -426,7 +426,7 @@ def test_a_parameter_is_named_as_the_user_wrote_it_not_by_its_wrapper() -> None:
     assert "kind" not in first, first
 
 
-# --- Messages written for the person who built the pipeline (CR-143) ---------
+# --- Messages written for the person who built the pipeline ---------
 
 
 def test_an_undecodable_row_says_what_is_wrong_in_words() -> None:

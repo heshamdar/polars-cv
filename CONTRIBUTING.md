@@ -1,98 +1,135 @@
+# Contributing to polars-cv
 
-## Development
+Thanks for your interest in polars-cv. Bug reports, feature requests,
+documentation fixes and pull requests are all welcome.
 
-### Testing Against Multiple Python Versions
+## Reporting issues
 
-To test against multiple Python versions locally using `uv`:
+- **Bugs and feature requests:** open a
+  [GitHub issue](https://github.com/heshamdar/polars-cv/issues/new/choose). For
+  a bug, include `polars_cv.build_info()`, your Polars version and a minimal
+  reproduction.
+- **Security vulnerabilities:** do not open a public issue. See
+  [`SECURITY.md`](SECURITY.md).
+
+All open work, including known defects, performance gaps and pending design
+decisions, is tracked in GitHub issues. The repository holds no separate
+to-do list.
+
+## Development setup
+
+You need:
+
+- Rust 1.96 or newer (`rustup update stable`). Both crates set this as their
+  `rust-version`, and cargo refuses an older compiler.
+- [uv](https://docs.astral.sh/uv/). CI uses the version pinned in the root
+  `.tool-versions`.
+- Python 3.11 or newer.
 
 ```bash
-# Use current Python environment (default - no arguments needed)
-python scripts/test_multiple_python.py
+git clone https://github.com/heshamdar/polars-cv.git
+cd polars-cv/polars-cv
 
-# Test all supported Python versions (3.11, 3.12, 3.13)
-python scripts/test_multiple_python.py --all
+uv sync --group dev --no-install-project   # Python dev dependencies only
+uv run --no-sync maturin develop           # compile the plugin (debug build)
 
-# Test only minimum and maximum versions (faster)
-python scripts/test_multiple_python.py --fast
-
-# Test specific versions
-python scripts/test_multiple_python.py --versions 3.11 3.13
+# Install the pre-commit hooks (the config lives at the repo root)
+cd .. && uv run --directory polars-cv pre-commit install
 ```
 
-**Prerequisites:**
-- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-  (CI installs the exact uv pinned in the repo-root `.tool-versions`; bump it
-  there, and every workflow's `astral-sh/setup-uv` step follows)
-- For multi-version testing, install Python versions: `uv python install 3.11 3.12 3.13`
+`--no-install-project` matters. Without it, `uv sync` builds the whole Polars
+stack at release LTO, which takes minutes, and `maturin develop` then
+overwrites that build anyway. The install is editable: Python edits take
+effect immediately, but after changing Rust you must run `maturin develop`
+again. `polars_cv.build_info()` reports a stale extension.
 
-The test script will:
-1. Use current environment if no versions specified (default behavior)
-2. For specified versions, create isolated environments using `uv run --python`
-3. Build the package (without cloud feature for speed)
-4. Install test dependencies
-5. Run the full test suite
-6. Report which versions passed/failed
-
-### Everyday Commands
+## Everyday commands
 
 From `polars-cv/`:
 
 ```bash
-# Build the extension for development (debug; the only dev build)
-maturin develop
+maturin develop                          # rebuild the extension (debug)
+uv run --no-sync pytest tests/ -n auto   # Python tests, on every core
+uvx ruff check python tests benchmarks   # lint
+uvx ruff format python tests benchmarks  # format
 
-# Run the Python tests
-uv run --no-sync pytest tests/
-
-# Run every check CI runs on a push or PR (from the repo root)
+# Every check CI runs on a push or PR, with one PASS/FAIL (from the repo root)
 ../scripts/verify.sh
-# ... plus the slow lane, CI's weekly job (before a release)
-../scripts/verify.sh --slow
+../scripts/verify.sh --slow              # plus the slow lane (before a release)
 ```
 
-## CI/CD and Publishing
+Run ad-hoc cargo commands through `scripts/with-pyo3-env.sh` (for example
+`../scripts/with-pyo3-env.sh cargo test -p view-buffer --all-features`). A bare
+`cargo` lacks the PyO3 environment that `maturin develop` sets, and the two then
+keep invalidating each other's build.
 
-This project uses GitHub Actions for continuous integration and publishing to PyPI.
+## Making a change
 
-### Workflows
+- **Read the guides first.** [`AGENTS.md`](AGENTS.md) explains the
+  architecture, the canonical paths (one authority per fact, each enforced by a
+  guard) and the settled design decisions. [`CLAUDE.md`](CLAUDE.md) holds the
+  working agreements, including how to add an operation, and
+  [`GLOSSARY.md`](GLOSSARY.md) fixes the vocabulary. Each subsystem has its own
+  `AGENTS.md`.
+- **Write the test first.** A fix comes with a test that fails without it. A
+  new op gets builder tests and an execution test, plus a reference test
+  against an independent implementation (`tests/reference/`) where one exists.
+- **A known defect you are not fixing** goes in
+  `polars-cv/tests/test_known_gaps.py` as a strict `xfail` that names its
+  GitHub issue, so a later fix turns the suite red rather than passing
+  unnoticed.
+- **Record user-visible changes** in [`CHANGELOG.md`](CHANGELOG.md) under
+  `[Unreleased]`. A breaking change or a changed result also needs a note in
+  `polars-cv/docs/user-guide/migration.md`.
+- **Do not hand-edit generated files.** `_ops_generated.py`,
+  `_lazy_forwarders.py` and the golden catalogues are regenerated by
+  `polars-cv/scripts/gen_ops.py` and the blessing tests (see "Adding a New
+  Operation" in `CLAUDE.md`).
 
-- **CI** (`ci.yml`): Runs on push/PR to main
-  - Linting (ruff, cargo clippy, cargo fmt)
-  - Tests across Python 3.11-3.13 on Linux (and macOS on pushes to main)
-  - Build verification
+## Pull requests
 
-- **Publish** (`publish.yml`): Runs on release creation
-  - Checks the release tag against the declared version
-  - Builds `abi3` wheels (linux-x86_64, linux-aarch64, macOS-arm64) and an sdist
-  - Publishes to PyPI via trusted publishing
+1. Branch from `main` and keep each PR to one topic.
+2. Make sure `scripts/verify.sh` passes. CI runs the same checks.
+3. Describe what changed and why, and link the issue it closes
+   (`Closes #123`).
+4. Expect review comments on design as well as code. The canonical-paths rules
+   in `AGENTS.md` are enforced, so a second implementation of something that
+   already has a shared mechanism will be asked to use that mechanism.
 
-### Required GitHub Secrets
+## Testing across Python versions
 
-To enable publishing, configure these secrets in your GitHub repository settings
-(Settings → Secrets and variables → Actions → New repository secret):
+From `polars-cv/`, with the interpreters installed
+(`uv python install 3.11 3.12 3.13`):
 
-| Secret | Description | Source |
-|--------|-------------|--------|
-| (none required) | Uses trusted publishing with OIDC | Configure on PyPI |
+```bash
+python scripts/test_multiple_python.py           # the current environment
+python scripts/test_multiple_python.py --all     # 3.11, 3.12 and 3.13
+python scripts/test_multiple_python.py --fast    # the oldest and newest only
+python scripts/test_multiple_python.py --versions 3.11 3.13
+```
 
-### PyPI Trusted Publisher Setup
+Each version gets an isolated environment (`uv run --python`), a build without
+the cloud feature (for speed) and a full test run, followed by a pass/fail
+summary.
 
-This project uses [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/) with OIDC,
-which is more secure than API tokens. To set it up:
+## CI and publishing
 
-1. **PyPI** (https://pypi.org):
-   - Go to your account → Publishing → Add a new pending publisher
-   - Owner: `<your-github-username>`
-   - Repository name: `polars-cv`
-   - Workflow name: `publish.yml`
-   - Environment name: `pypi`
+- **CI** (`.github/workflows/ci.yml`) runs on every push and PR to `main`:
+  ruff, rustfmt, clippy, `cargo deny`, the Rust and Python tests on Python
+  3.11–3.13 on Linux (macOS too on pushes to `main`), the declared dependency
+  floors, and a strict docs build. A weekly job runs the slow lane.
+  `scripts/verify.sh` runs the same checks locally, and a test fails if CI
+  gains a check that the script does not run.
+- **Publish** (`.github/workflows/publish.yml`) runs when a GitHub release is
+  created. It checks the tag against the declared version, builds `abi3` wheels
+  (Linux x86_64 and aarch64, macOS arm64) and an sdist, and publishes to PyPI
+  through [trusted publishing](https://docs.pypi.org/trusted-publishers/). No
+  API token is stored. The PyPI publisher is configured for this repository,
+  the workflow `publish.yml` and the GitHub environment `pypi`.
+- **Docs** (`.github/workflows/docs.yml`, run by hand) deploys the MkDocs site
+  to GitHub Pages.
 
-### GitHub Environments
-
-Create a **pypi** environment in your repository (Settings → Environments) for
-production publishing (consider adding required reviewers).
-
-### Release Process
+### Release process
 
 1. Bump the version in all seven places it is recorded — they must agree.
    `polars-cv/tests/test_version_consistency.py` checks the first five for you
@@ -128,7 +165,7 @@ production publishing (consider adding required reviewers).
    `docs/user-guide/migration.md` (moving its "Unreleased" notes into the new
    page), and add the page to the "Migration Guides" nav in `mkdocs.yml`.
    Bump the pinned minor in the README's "Project status" (`polars-cv~=0.NN.0`).
-4. Commit and push to main
+4. Commit and push to `main`.
 5. Create a GitHub release with a version tag matching the bumped version,
    prefixed with `v` (e.g. `v0.1.0`). `.github/workflows/publish.yml` checks the
    tag against `polars-cv/pyproject.toml` and refuses to build if they disagree,
@@ -139,15 +176,3 @@ production publishing (consider adding required reviewers).
    - Builds `abi3` wheels for linux-x86_64, linux-aarch64 and macOS-arm64, plus
      an sdist, and rejects any wheel that is not `abi3`
    - Publishes to PyPI via trusted publishing
-
-### Manual Publishing (Alternative)
-
-If you prefer using API tokens instead of trusted publishing:
-
-```bash
-# Build wheels
-maturin build --release
-
-# Publish to PyPI
-maturin publish
-```

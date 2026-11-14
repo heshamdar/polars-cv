@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use polars-cv in research, please cite the version you used."
+title: "polars-cv: Image processing as Polars expressions"
+type: software
+authors:
+  - family-names: Dar
+    given-names: Hesham
+repository-code: "https://github.com/heshamdar/polars-cv"
+url: "https://heshamdar.github.io/polars-cv/"
+license:
+  - MIT
+  - Apache-2.0

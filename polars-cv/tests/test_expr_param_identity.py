@@ -6,8 +6,7 @@ two different Python UDFs print the same ``python_udf`` text. polars-cv used
 that text as the identity of an expression parameter in every place one was
 compared — the plugin input slot it binds to, op equality (and so
 CSE), and root-column deduplication — so two different expressions with equal
-text silently became one, and the second op read the first op's values
-(CR-31).
+text silently became one, and the second op read the first op's values.
 
 The identity authority is now :class:`polars_cv._types.SlotTable`: a graph
 assigns each distinct expression (by ``Expr.meta.eq``) a plugin input

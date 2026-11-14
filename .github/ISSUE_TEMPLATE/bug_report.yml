@@ -1,0 +1,32 @@
+name: Bug report
+description: Something produces a wrong result, an error it should not, or a crash.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: A self-contained snippet, ideally with a small synthetic image (for example a NumPy array written with `sink("png")` or `pl.Series` of bytes).
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: build-info
+    attributes:
+      label: Versions
+      description: The output of `python -c "import polars_cv, polars; print(polars_cv.build_info(), polars.__version__)"`, plus your OS and CPU architecture.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Reference output (OpenCV, PIL, NumPy) you compared against, a traceback, or the `explain()` output of the pipeline.

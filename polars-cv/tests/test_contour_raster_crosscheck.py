@@ -318,7 +318,7 @@ def _coverage(contour: dict, n: int) -> float:
 class TestSupersampledCoverageTracksArea:
     """``supersample=n`` paints each pixel by the fraction of its ``n x n``
     sub-pixel centres inside, so the coverage summed over the mask estimates
-    ``area()`` with a boundary error that shrinks as ``1 / n`` (CR-96)."""
+    ``area()`` with a boundary error that shrinks as ``1 / n``."""
 
     @pytest.mark.parametrize("n", [2, 4])
     @pytest.mark.parametrize("name", sorted(RECTILINEAR))

@@ -22,7 +22,7 @@ use crate::formats::Format as _;
 /// factor is 1: the caller falls back to the full decoder.
 ///
 /// A factor of 1 has no work to skip, and this decoder is not the full one:
-/// it is slower at full size (about 30%, CR-139) and its pixels differ. So a
+/// it is slower at full size (about 30%) and its pixels differ. So a
 /// `max_size` the image already meets is the full decode, byte for byte.
 fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
     // JPEG SOI marker; anything else takes the regular decode path.

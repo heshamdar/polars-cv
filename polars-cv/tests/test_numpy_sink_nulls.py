@@ -1,4 +1,4 @@
-"""A null row in the tensor sink is a null value (CR-39).
+"""A null row in the tensor sink is a null value.
 
 It used to be a struct whose five fields were all null, so ``is_null()`` was
 ``False`` and ``drop_nulls()``/``null_count()`` could not see it — unlike every

@@ -650,7 +650,7 @@ class TestOptimizationRegressions:
     ) -> None:
         # A crop whose extent equals the input's but whose origin is not (0, 0)
         # keeps the input's shape while its window runs past the edge. That
-        # window is an error (CR-42; it used to be clamped), so it is not a
+        # window is an error (it used to be clamped), so it is not a
         # no-op: were identity elimination to delete it, the error would turn
         # into a successful, unchanged image under that flag subset.
         #

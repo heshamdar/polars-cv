@@ -32,8 +32,8 @@ import pytest
 from tests.conftest import plugin_required
 
 # Each gap carries its own lane: a source scan is `structural` (pre-commit runs
-# it with no compiled extension), a runtime one `plugin_required`. Each is
-# listed, with its fix, under its id in the root `ISSUES.md`.
+# it with no compiled extension), a runtime one `plugin_required`. Each names
+# the GitHub issue that describes it and its fix.
 
 
 def _gap(reason: str) -> pytest.MarkDecorator:
@@ -66,7 +66,7 @@ _GTS = pl.DataFrame(
 
 
 @plugin_required
-@_gap("CR-77: sweep thresholds are compared by exact float equality")
+@_gap("issue #216: sweep thresholds are compared by exact float equality")
 def test_a_swept_threshold_reports_its_metrics() -> None:
     """``np.arange(0.5, 0.96, 0.05)`` stores 0.75 as ``0.7500000000000002``, so
     the report drops ``map_75``. Fixed when a sweep normalises its thresholds
@@ -83,7 +83,7 @@ def test_a_swept_threshold_reports_its_metrics() -> None:
 
 
 @plugin_required
-@_gap("CR-116: the vector domain is a planner gate: buffer ops refuse a hash")
+@_gap("issue #211: the vector domain is a planner gate: buffer ops refuse a hash")
 def test_a_buffer_op_applies_to_a_hash_vector() -> None:
     """A perceptual hash is a 1-D array of u8 bytes, so a rank-1 buffer op
     such as ``invert`` should apply to it and give each byte's bitwise NOT
@@ -112,7 +112,7 @@ def test_a_buffer_op_applies_to_a_hash_vector() -> None:
 
 
 @plugin_required
-@_gap("CR-116: histogram buckets give the struct whatever the sink format")
+@_gap("issue #211: histogram buckets give the struct whatever the sink format")
 def test_histogram_buckets_refuse_a_format_they_ignore() -> None:
     """``histogram(output="buckets")`` encodes as ``List(Struct)`` for every
     sink format: ``SinkKind::resolve`` returns ``HistogramBuckets`` before it

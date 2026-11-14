@@ -293,13 +293,16 @@ polars-cv is 0.x, and there is no stable API until 1.0: a minor release may
 break any of it. Breaking changes are
 listed in the [changelog](https://github.com/heshamdar/polars-cv/blob/main/CHANGELOG.md),
 each with a [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration/).
-Pin a minor version (`polars-cv~=0.41.0`) if you depend on it. Outputs are
-checked against NumPy, SciPy, OpenCV and `imagehash` in CI.
+Pin a minor version (`polars-cv~=0.41.0`) if you depend on it.
 
 ## Contributing
 
-Issues and pull requests are welcome. [`CONTRIBUTING.md`](https://github.com/heshamdar/polars-cv/blob/main/CONTRIBUTING.md)
-covers the build, and `scripts/verify.sh` runs every check CI runs.
+Bug reports, feature requests and pull requests are welcome; open work is
+tracked in [GitHub issues](https://github.com/heshamdar/polars-cv/issues).
+[`CONTRIBUTING.md`](https://github.com/heshamdar/polars-cv/blob/main/CONTRIBUTING.md)
+covers the development setup and workflow, and `scripts/verify.sh` runs every
+check CI runs. Please report security issues privately, as described in
+[`SECURITY.md`](https://github.com/heshamdar/polars-cv/blob/main/SECURITY.md).
 
 ## Citation
 

@@ -1,4 +1,4 @@
-"""The scalar family's constants are f64 where the arithmetic is (CR-136).
+"""The scalar family's constants are f64 where the arithmetic is.
 
 Data whose accumulator is f64 (``Float64`` and the 32/64-bit integers)
 computes in f64 and stores f64. Its constants were f32 on the wire and in

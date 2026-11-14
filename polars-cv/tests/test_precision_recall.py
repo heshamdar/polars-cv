@@ -245,7 +245,7 @@ class TestMeanAveragePrecision:
     """Tests for mean_average_precision function.
 
     The exact-value pins below lock the numeric output of ``mAP`` so the
-    vectorization onto the grouped all-points authority (CR-07) cannot change
+    vectorization onto the grouped all-points authority cannot change
     any result. All fixtures use distinct scores, where the all-points estimator
     is tie-order-independent and therefore exactly reproducible.
     """
@@ -418,11 +418,11 @@ class TestAllPointsAPAuthority:
     """The scalar ``_all_points_ap`` and grouped ``all_points_ap_by_group``.
 
     Both implement the same monotone-envelope + anchored-trapezoid estimator and
-    agree *exactly* — on distinct scores and on ties alike. CR-30 gave them a
+    agree *exactly* — on distinct scores and on ties alike. They share a
     shared canonical tie convention (collapse every detection sharing a score
     into one PR point, at the cumulative counts after the whole tied block), so
     the all-points AP no longer depends on the input row order among equal scores
-    and the two paths no longer diverge; see ``metrics/AGENTS.md`` and CR-30.
+    and the two paths no longer diverge; see ``metrics/AGENTS.md``.
     """
 
     @staticmethod
@@ -497,9 +497,9 @@ class TestAllPointsAPAuthority:
         """On exact score ties both paths collapse the tie into one PR point.
 
         The all-points AP used to be tie-order-sensitive and the two paths could
-        disagree (the documented CR-06 gap, which earlier only pinned that both
+        disagree (a documented gap, which earlier only pinned that both
         stayed valid all-points APs because the divergence was platform-
-        dependent). CR-30's canonical tie convention -- collapse detections
+        dependent). The canonical tie convention -- collapse detections
         sharing a score to the cumulative counts after the whole tied block --
         makes the AP independent of the row order among equal scores and makes
         the scalar and grouped authorities agree exactly.

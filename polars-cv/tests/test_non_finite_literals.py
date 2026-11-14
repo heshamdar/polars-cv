@@ -4,7 +4,7 @@ JSON, the wire every op and geometry call crosses, has no NaN or infinity, so
 every float field reads and writes them as ``"nan"``, ``"inf"`` and ``"-inf"``
 (``naming.rs``; ``_types._literal`` encodes them). A literal then meets the
 op's own check, exactly as the same value passed per row through an
-expression does. (CR-103 first refused such a literal in Python, which made
+expression does. (An earlier version refused such a literal in Python, which made
 ``apply_lut([[nan]], out_dtype="f32")`` an error while ``pl.lit(nan)`` worked.)
 
 The sweep below is registry-driven: every float field of every op
@@ -165,7 +165,7 @@ def _sweep_lazy_only(op: str, field: str, path: tuple[int, ...], value: float) -
 
 
 def test_a_nan_table_entry_is_a_nan() -> None:
-    """The case CR-103 refused: a palette mapping a label to NaN."""
+    """The case an earlier version refused: a palette mapping a label to NaN."""
     table = [[0.5], [math.nan], [math.inf]]
     pipe = Pipeline().source("raw", dtype="u8").apply_lut(table, out_dtype="f32")
     data = np.array([[0, 1, 2]], np.uint8)

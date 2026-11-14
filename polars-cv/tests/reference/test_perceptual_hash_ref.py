@@ -720,7 +720,7 @@ class TestPhashMatchesImagehash:
 def test_every_algorithm_packs_bits_msb_first() -> None:
     """The algorithms share one output column type, so one bit order: row-major,
     most significant bit first, as imagehash's hex. aHash and dHash used to
-    come out least significant first (CR-115), 0 bits from imagehash read one
+    come out least significant first, 0 bits from imagehash read one
     way and tens of bits off read the documented way."""
     import imagehash
     from PIL import Image

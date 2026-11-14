@@ -1,7 +1,7 @@
 """One plugin call runs its rows in parallel and returns them as if in order.
 
-A call splits its rows into ranges that run on the plugin's thread pool
-(CR-32). These pin what that must not change, on a frame large enough to be
+A call splits its rows into ranges that run on the plugin's thread pool.
+These pin what that must not change, on a frame large enough to be
 split and held in a single chunk (the in-memory engine hands such a frame to
 the plugin in one call): row order, which error ``on_error="raise"`` reports,
 and which rows the null policies null.

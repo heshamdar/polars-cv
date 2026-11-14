@@ -1,4 +1,4 @@
-"""Every example in the drawing guide runs (CR-101).
+"""Every example in the drawing guide runs.
 
 ``docs/user-guide/drawing.md`` promises that each example runs as written:
 each fenced ``python`` block is executed here on its own, in a fresh

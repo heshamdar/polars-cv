@@ -1,4 +1,4 @@
-"""No message a user reads carries a Debug value, a JSON position or a node id (CR-143).
+"""No message a user reads carries a Debug value, a JSON position or a node id.
 
 ``_message_hygiene.leaks`` is the checker; its fixtures are below, the three
 messages that shipped among them. ``FAILURES`` is a table of deliberate

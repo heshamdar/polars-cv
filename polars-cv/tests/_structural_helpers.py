@@ -91,7 +91,7 @@ def _binary_op_names_from_source() -> set[str]:
     """The element-wise binary ops among :func:`_node_op_calls_from_source`.
 
     ``_node_op`` builds every ``lazy_only`` op, so the contour set ops
-    (``union``, ``intersection``, …, CR-99), the mask ops and ``channel_merge``
+    (``union``, ``intersection``, …), the mask ops and ``channel_merge``
     go through it too; the element-wise ones are those that read any numeric container, a
     ``buffer`` and a ``vector`` alike, as their catalogued domains say.
     """

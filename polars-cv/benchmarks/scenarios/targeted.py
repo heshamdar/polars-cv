@@ -182,7 +182,7 @@ def _pipe(
 def _scaled_decode(divisor: int) -> Callable[[_Inputs], Callable[[], Any]]:
     """Decode the JPEG frame with a ``decode_max_size`` of the long side over
     ``divisor``: the scaled decoder at that factor (1/2, 1/4, 1/8), to set
-    beside ``codec_jpeg_decode``, the full decode (CR-139)."""
+    beside ``codec_jpeg_decode``, the full decode."""
 
     def build(i: _Inputs) -> Callable[[], Any]:
         df = i.jpeg

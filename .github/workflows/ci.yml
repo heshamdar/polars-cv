@@ -171,8 +171,8 @@ jobs:
 
   dependency-floors:
     # The locked environment tests the newest versions; this job tests the
-    # oldest ones pyproject.toml claims, on the oldest supported Python
-    # (CR-44). `scripts/dependency_floors.py` reads the floors from
+    # oldest ones pyproject.toml claims, on the oldest supported Python.
+    # `scripts/dependency_floors.py` reads the floors from
     # `[project] dependencies`, so the claim and the test cannot drift apart.
     name: Test declared dependency floors
     runs-on: ubuntu-latest

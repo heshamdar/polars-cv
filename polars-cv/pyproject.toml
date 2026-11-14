@@ -28,7 +28,7 @@ license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 requires-python = ">=3.11"
 # Each floor is the oldest release the full fast suite passes on, and the
 # `dependency-floors` CI job installs exactly these (read by
-# `scripts/dependency_floors.py`) to keep that true (CR-44). polars 2.0 is
+# `scripts/dependency_floors.py`) to keep that true. polars 2.0 is
 # the first with `register_plugin_function(is_deterministic=)`, which every
 # plugin call passes (plugin CSE), and the plugin is built against its Rust
 # crates (0.55). numpy 1.x runs the package but not its reference tests
@@ -91,7 +91,7 @@ dev = [
     "matplotlib>=3.9.4",
     "pytest-xdist>=3.6",
     # tests/reference/test_coco_parity_ref.py holds evaluate_detections to
-    # COCOeval; it imports pycocotools rather than skipping without it (CR-79).
+    # COCOeval; it imports pycocotools rather than skipping without it.
     "pycocotools>=2.0.8",
 ]
 bench = [
@@ -120,7 +120,7 @@ docs = [
 # extension build (debug). Without this, `uv run <cmd>` re-syncs the project
 # through the maturin backend at [profile.release] (fat LTO) — minutes of work
 # that `maturin develop` then overwrites — and the documented `uv run pytest`
-# walked straight into it (CR-43). Guarded by
+# walked straight into it. Guarded by
 # `test_build_efficiency.py::test_uv_never_builds_the_project`.
 [tool.uv]
 package = false
