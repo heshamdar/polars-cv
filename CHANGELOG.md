@@ -325,8 +325,7 @@ all equal work. Upgrading from 0.38: see the
 - CSE now computes each distinct value once, fuses linear runs of ops and
   repeats until the graph settles; outputs are byte-identical, and
   `opt_flags=False` shows the graph as written.
-- The README is shorter and leads with one decode per image, and the docs gain
-  a Parameters & Errors page and a migration section.
+- New guide pages: Parameters & Errors, and migration guides per release.
 
 ### Fixed
 
@@ -397,7 +396,6 @@ must be recomputed. Upgrading from 0.37: see the
 - `polars_cv.set_row_parallelism(enabled)` and `row_parallelism()` turn the
   plugin's own row splitting off or on for the process.
 - License texts (`LICENSE-MIT`, `LICENSE-APACHE`) now ship with the package.
-- A rewritten README with cross-library benchmark results.
 
 ### Fixed
 
@@ -585,9 +583,8 @@ Upgrading from 0.32: see the [migration guide](https://heshamdar.github.io/polar
 
 Detection evaluation in one call (`evaluate_detections`, `evaluate_heatmaps`,
 `evaluate_segmentation`), weighted precision-recall metrics, and bounded
-bootstrap memory. Several metric values were wrong and are now computed as
-documented: multi-class matching, AP over tied scores, and multi-class or
-grouped bootstrap draws. Requires polars >= 1.44.2.
+bootstrap memory; multi-class matching, AP over tied scores and grouped
+bootstrap draws were wrong and are now computed as documented.
 Upgrading from 0.31: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.32/).
 
 ### Breaking changes
@@ -689,8 +686,7 @@ Upgrading from 0.31: see the [migration guide](https://heshamdar.github.io/polar
 Open polylines become a first-class contour (`is_closed=False` is read), with
 boundary distances, coverage matching for line-shaped ground truth, closing a
 line along the image frame, and coordinate-list constructors. FROC/LROC curves
-are read past their end by one policy, null by default. Contour labelling and
-`label_reduce` region scans are orders of magnitude faster.
+read past their end are null by default.
 Upgrading from 0.30: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.31/).
 
 ### Breaking changes
@@ -874,7 +870,6 @@ Upgrading from 0.29: see the [migration guide](https://heshamdar.github.io/polar
 - Histogram edges now meet integer pixels exactly (u64/i64 values above 2**53
   landed in the wrong bin), and a value on a bin edge is counted in the bin the
   edges give.
-- `ViewBuffer::reshape` accepted a strided view in release builds.
 - 8-bit HSV hue could round to 180; it now wraps to 0 as in OpenCV.
 - A gray + alpha image now round-trips through the `tiff` sink as two channels.
 - The `scalar_fusion` pass changed an integer chain's result (u16
@@ -957,10 +952,6 @@ Upgrading from 0.29: see the [migration guide](https://heshamdar.github.io/polar
 - The half-precision tensor sink (`sink("numpy"|"torch", dtype="f16")`) is 3–6x
   faster and runs in parallel.
 
-### Removed
-
-- `ratio` (use `divide`) and the `polars_cv._lib.rotation_matrix_2d` FFI.
-
 ## [0.29.0] — 2026-09-27
 
 Plan-time optimizations are now one explicit, toggleable phase, and many silent
@@ -1009,7 +1000,6 @@ Upgrading from 0.28: see the [migration guide](https://heshamdar.github.io/polar
   by `show_graph()`. Wheels are tagged `cp310-abi3`.
 - The single-thread warning and `POLARS_CV_ENGINE_WARN_SECONDS`,
   `POLARS_CV_ENGINE_WARN_ROWS` and `POLARS_CV_SILENCE_ENGINE_WARNING` are gone.
-- `_graph.LIB_PATH` and `_namespace._LIB_PATH` are removed.
 
 ### Added
 
@@ -1037,9 +1027,6 @@ Upgrading from 0.28: see the [migration guide](https://heshamdar.github.io/polar
 - `sink("ndarray")` is the numpy sink tagged `polars_cv.ndarray`;
   `numpy_from_struct` and `show_images` read it. `sink("numpy")` is unchanged.
 - Hand-built graph JSON may omit a field that has a declared default.
-- Benchmarks: `maturin develop --profile benchmark` builds with thin LTO,
-  `--select` and `--changed REF` run only the cases a change can move, and
-  `run_suite` refuses debug builds unless given `--allow-debug-build`.
 
 ### Changed
 
@@ -1105,8 +1092,6 @@ Upgrading from 0.28: see the [migration guide](https://heshamdar.github.io/polar
   operands that cannot broadcast; one bad row failed the whole query.
 - A row the sink cannot represent is an error, not a null; `list` and `array`
   sink rows that differ from the plan (dtype, element count) are errors.
-- The OpenCV and Pillow benchmark adapters now time the same operation as
-  polars-cv.
 
 ### Performance
 
@@ -1125,7 +1110,7 @@ Upgrading from 0.28: see the [migration guide](https://heshamdar.github.io/polar
 
 ### Removed
 
-- `Pipeline.output_encoding()` and `PlanState.DIM_NAMES`.
+- `Pipeline.output_encoding()`.
 - `convolve2d(ksize=)`, `sobel(ksize=)` and `laplacian(ksize=)`; the kernel is
   `3x3` for `sobel`/`laplacian`, and `convolve2d`'s side comes from `kernel`'s
   length (a square of an odd number). `sobel(axis=)` accepts only `"x"`/`"y"`.
@@ -1421,8 +1406,6 @@ detection metrics.
 - `rasterize(anti_alias=)` is removed; it was ignored.
 - `out_dtype="preserve"` is removed; use `preserve_dtype=True`. `out_dtype`
   accepts any dtype name.
-- A newer Python paired with an older compiled extension now fails on unknown
-  graph node fields; re-run `maturin develop`.
 - `polars_cv.geometry.validation` and its exception classes are removed; they
   were never raised.
 
@@ -1468,12 +1451,6 @@ detection metrics.
   `sensitivity_at_fp(0.0)` now reports the best sensitivity at zero false
   positives.
 - `partial_auc` rejected integer bounds such as `fp_range=(0, 8)`.
-
-### Removed
-
-- Unused public items in `view-buffer` (cost reporting, `layout_report`,
-  `from_slice_simd_aligned`, `is_simd_aligned`, dead geometry helpers and the
-  `numpy_interop`/`torch_interop` features).
 
 ## [0.18.0] — 2026-07-31
 
@@ -1698,10 +1675,6 @@ image ops.
   `dilate`, `convolve2d`, Gaussian blur and Canny.
 - Remote `file_path` sources prefetch concurrently, and compiled graphs are
   cached across calls.
-
-### Removed
-
-- `OPERATION_CONTRACTS`, `AlphaMode` and `NdimEffect`.
 
 ---
 
