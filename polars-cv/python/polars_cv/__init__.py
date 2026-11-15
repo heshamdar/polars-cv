@@ -66,7 +66,7 @@ from .pipeline import Pipeline
 # storage. Pure Python, so importing polars-cv still loads no compiled code.
 register_extension_types()
 
-__version__ = "0.41.0"
+__version__ = "0.42.0"
 
 
 def set_row_parallelism(enabled: bool) -> bool:

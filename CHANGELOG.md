@@ -12,10 +12,13 @@ is in the git history of this file.
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-11-15
+
 Graph inspection is unified under `expr.graph()`/`explain()`, the tensor sink
 is now one `sink("tensor")` that can be read back, and `sink()` gains typed
 keywords. Path reads now require `allowed_roots`, and the metrics move to the
 polars-eval package.
+Upgrading from 0.41: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.42/).
 
 ### Breaking changes
 
@@ -1682,7 +1685,8 @@ image ops.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.41.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.42.0
 [0.41.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.41.0
 [0.40.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.40.0
 [0.39.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.39.0

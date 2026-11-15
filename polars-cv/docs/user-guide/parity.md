@@ -5,8 +5,8 @@
 polars-cv's outputs are checked against independent implementations: OpenCV,
 SciPy, NumPy, PIL and imagehash, or a written definition where
 no library computes the same thing. 875 tests over 116 ops ran and
-passed at commit `b8bcaf9` on 2026-11-14, with
-polars-cv 0.41.0, polars 2.1.0, numpy 2.5.3, opencv-python 4.11.0.86, scipy 1.16.3, pillow 12.0.0, imagehash 4.3.2.
+passed at commit `c8476fd` on 2026-11-15, with
+polars-cv 0.42.0, polars 2.1.0, numpy 2.5.3, opencv-python 4.11.0.86, scipy 1.16.3, pillow 12.0.0, imagehash 4.3.2.
 
 Every test declares what it compares and the tolerance it asserts
 (`@pytest.mark.parity` in `tests/reference/`). A reference test without a

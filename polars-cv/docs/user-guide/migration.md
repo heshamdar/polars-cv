@@ -7,6 +7,7 @@ releases, read each page from your version up.
 
 | Upgrading from | To | What to check |
 |---|---|---|
+| 0.41 | [0.42](migration-0.42.md) | One `sink("tensor")` and `expr.graph()`; path reads need `allowed_roots`; metrics move to polars-eval |
 | 0.40 | [0.41](migration-0.41.md) | `normalize_preset` replaces `method="preset"`; `LabelReduction` is `Statistic`; `Int64` image sizes |
 | 0.39 | [0.40](migration-0.40.md) | Every hash algorithm packs bits MSB-first; `hash_similarity` loses `hash_bits=`; graph wire version 2 |
 | 0.38 | [0.39](migration-0.39.md) | Binary ops no longer broadcast; `channel_select` keeps the channel axis; `apply_mask`'s mask scale |
