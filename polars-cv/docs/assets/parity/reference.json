@@ -1,8 +1,8 @@
 {
- "generated": "2026-11-14",
- "commit": "b8bcaf9",
+ "generated": "2026-11-15",
+ "commit": "c8476fd",
  "versions": {
-  "polars-cv": "0.41.0",
+  "polars-cv": "0.42.0",
   "polars": "2.1.0",
   "numpy": "2.5.3",
   "opencv-python": "4.11.0.86",
