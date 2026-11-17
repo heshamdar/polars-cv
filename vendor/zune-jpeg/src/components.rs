@@ -17,7 +17,7 @@ use alloc::{format, vec};
 use zune_core::log::trace;
 
 use crate::alloc::string::ToString;
-use crate::decoder::MAX_COMPONENTS;
+use crate::decoder::{IDCTPtr, MAX_COMPONENTS};
 use crate::errors::DecodeErrors;
 use crate::upsampler::upsample_no_op;
 const MAX_SAMP_FACTOR: usize = 4;
@@ -75,6 +75,12 @@ pub(crate) struct Components {
     pub w2: usize,
     pub y: usize,
     pub sample_ratio: SampleRatios,
+    /// Side of the block one IDCT writes for this component: 8, or 4, 2 or 1
+    /// under a scaled decode (`crate::scaled`).
+    pub block_size: usize,
+    /// The reduced IDCT writing `block_size` squared samples, when that is
+    /// not 8.
+    pub scaled_idct: Option<IDCTPtr>,
     // a very annoying bug
     pub fix_an_annoying_bug: usize
 }
@@ -174,6 +180,8 @@ impl Components {
             y: 0,
             w2: 0,
             sample_ratio: SampleRatios::None,
+            block_size: 8,
+            scaled_idct: None,
             fix_an_annoying_bug: 1
         })
     }

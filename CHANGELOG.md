@@ -15,8 +15,8 @@ is in the git history of this file.
 ### Added
 
 - `decode_from_plan="approximate"` on image sources lets a JPEG decode at a
-  reduced scale before a leading `resize`, or as luma only before a leading
-  `grayscale`; approximate, off by default.
+  reduced scale before a leading `resize`, as luma only before a leading
+  `grayscale`, or both; approximate, off by default.
 
 ### Changed
 

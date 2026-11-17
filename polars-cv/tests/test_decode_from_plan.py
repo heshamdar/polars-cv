@@ -9,8 +9,7 @@ make unnecessary, at a small documented cost in fidelity:
   scaling at the smallest of 1/8, 1/4, 1/2 that still covers the target on
   both sides; the resize still runs;
 - a leading ``grayscale`` decodes only the luma (Y) channel of a YCbCr JPEG,
-  when no scaled decode applies (no decoder at hand does both; the scale is
-  the larger saving).
+  scaled too when a following ``resize`` allows (one decode does both).
 
 Every other encoding, and a JPEG the shortcuts cannot reduce, decodes
 bit-identically to ``"off"``. The tests that compare ``"approximate"`` with
@@ -50,10 +49,15 @@ def _photo(width: int, height: int, seed: int = 3) -> np.ndarray:
 
 
 def _jpeg(
-    width: int, height: int, *, mode: str = "RGB", tag: int | None = None
+    width: int,
+    height: int,
+    *,
+    mode: str = "RGB",
+    tag: int | None = None,
+    progressive: bool = False,
 ) -> bytes:
     img = Image.fromarray(_photo(width, height), "RGB").convert(mode)
-    kwargs: dict = {"format": "JPEG", "quality": 90}
+    kwargs: dict = {"format": "JPEG", "quality": 90, "progressive": progressive}
     if tag is not None:
         exif = Image.Exif()
         exif[ORIENTATION] = tag
@@ -66,6 +70,18 @@ def _jpeg(
 def _png(width: int, height: int) -> bytes:
     buf = io.BytesIO()
     Image.fromarray(_photo(width, height), "RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _turbo_scaled(data: bytes, mode: str, size: tuple[int, int]) -> bytes:
+    """libjpeg-turbo's own IDCT-scaled decode of ``data`` (Pillow's
+    ``draft``), as a PNG: what the scaled decode reproduces."""
+    img = Image.open(io.BytesIO(data))
+    img.draft(mode, size)
+    img = img.convert(mode)
+    assert img.size == size
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -185,7 +201,7 @@ class TestApproximate:
     def test_scaled_decode_before_resize(self) -> None:
         """1600x1200 -> 224x224 decodes at 1/4 (400x300).
 
-        Measured against "off": PSNR 44.7 dB, mean abs diff 1.01, max 9.
+        Measured against "off": PSNR 49.3 dB, mean abs diff 0.62, max 4.
         """
         data = _jpeg(1600, 1200)
         off = _run(data, _resize)
@@ -227,9 +243,9 @@ class TestApproximate:
         assert diff.max() <= 2
 
     def test_grayscale_then_resize_composes(self) -> None:
-        """A 1/4-scale RGB decode, then the grayscale and resize as written.
+        """A 1/4-scale luma decode, then the grayscale and resize as written.
 
-        Measured against "off": PSNR 52.6 dB, mean abs diff 0.35, max 2.
+        Measured against "off": PSNR 50.2 dB, mean abs diff 0.55, max 3.
         """
         data = _jpeg(1600, 1200)
         off = _run(data, _gray_resize)
@@ -238,6 +254,33 @@ class TestApproximate:
         assert not np.array_equal(approx, off)
         assert _psnr(approx, off) >= 30
         assert np.abs(approx.astype(int) - off.astype(int)).mean() <= 3
+
+    def test_grayscale_then_resize_decodes_scaled_luma(self) -> None:
+        """Luma and scale in one decode: the result is libjpeg-turbo's 1/4
+        luma decode, resized (measured: identical). A scaled RGB decode
+        converted to gray afterwards differs from it (by up to 2 before
+        resize).
+        """
+        data = _jpeg(1600, 1200)
+        approx = _run(data, _gray_resize, decode_from_plan="approximate")
+        reference = _run(_turbo_scaled(data, "L", (400, 300)), _resize)
+        assert approx.shape == reference.shape == (224, 224, 1)
+        assert np.array_equal(approx, reference)
+
+    def test_scaled_decode_of_a_progressive_jpeg(self) -> None:
+        """A progressive file scales as a baseline one does: libjpeg-turbo's
+        1/4 decode resized, to within zune's colour conversion (measured
+        max 1), and close to "off" (PSNR 49.3 dB).
+        """
+        data = _jpeg(1600, 1200, progressive=True)
+        off = _run(data, _resize)
+        approx = _run(data, _resize, decode_from_plan="approximate")
+        assert approx.shape == off.shape == (224, 224, 3)
+        assert not np.array_equal(approx, off), "the scaled decode did not run"
+        assert _psnr(approx, off) >= 30
+        assert np.abs(approx.astype(int) - off.astype(int)).mean() <= 3
+        reference = _run(_turbo_scaled(data, "RGB", (400, 300)), _resize)
+        assert np.abs(approx.astype(int) - reference.astype(int)).max() <= 2
 
     @pytest.mark.parametrize("tag", [3, 6])
     @pytest.mark.parametrize("build", [_resize, _gray(False), _gray_resize])

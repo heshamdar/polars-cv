@@ -384,7 +384,7 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
         return Ok(());
     }
 
-    fn decode_mcu_width<const PROGRESSIVE: bool>(
+    pub(crate) fn decode_mcu_width<const PROGRESSIVE: bool>(
         &mut self, mcu_width: usize, mcu_height: usize, tmp: &mut [i32; 64],
         stream: &mut BitStream, progressive: &mut [Vec<i16>; 4]
     ) -> Result<McuContinuation, DecodeErrors> {
@@ -457,8 +457,10 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
 
                 let qt_table = &component.quantization_table;
                 let channel = if PROGRESSIVE {
-                    let offset =
-                        mcu_height * component.width_stride * 8 * component.vertical_sample;
+                    let offset = mcu_height
+                        * component.width_stride
+                        * component.block_size
+                        * component.vertical_sample;
                     &mut progressive[k][offset..]
                 } else {
                     &mut component.raw_coeff
@@ -529,15 +531,18 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
 
                             let idct_position = {
                                 // derived from stb and rewritten for my tastes
-                                let c2 = v_samp * 8;
-                                let c3 = ((j * component.horizontal_sample) + h_samp) * 8;
+                                let c2 = v_samp * component.block_size;
+                                let c3 = ((j * component.horizontal_sample) + h_samp)
+                                    * component.block_size;
 
                                 component.width_stride * c2 + c3
                             };
 
                             let idct_pos = channel.get_mut(idct_position..).unwrap();
 
-                            if len <= 1 {
+                            if let Some(scaled_idct) = component.scaled_idct {
+                                scaled_idct(tmp, idct_pos, component.width_stride);
+                            } else if len <= 1 {
                                 (self.idct_1x1_func)(tmp, idct_pos, component.width_stride);
                             } else if len <= 10 {
                                 (self.idct_4x4_func)(tmp, idct_pos, component.width_stride);
@@ -815,7 +820,7 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
     }
 }
 
-enum McuContinuation {
+pub(crate) enum McuContinuation {
     Ok,
     AnotherSos,
     Terminate

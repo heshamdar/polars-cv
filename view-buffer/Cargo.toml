@@ -82,6 +82,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 zune-png = "0.4"
 # Property tests for the hot kernels (tests/it/kernel_props.rs).
 proptest = "1.12.0"
+# Scaled JPEG decode (tests/it/jpeg_scaled.rs): the vendored zune-jpeg
+# directly, and jpeg-decoder for its timing comparison; dev-only, ships nothing.
+zune-jpeg = "0.5"
+jpeg-decoder = "0.3"
 
 [[bench]]
 # Kernel micro-benchmarks (`benches/kernels.rs`): the base-vs-head gate for a

@@ -12,6 +12,26 @@ never published. Every feature `src` names in `cfg`s is kept.
 
 ## Local changes
 
-None yet.
+- Scaled output (`JpegDecoder::set_idct_scale`, `IdctScale`; new module
+  `src/scaled.rs`): decode at 1/2, 1/4 or 1/8 of each dimension, sizes
+  rounded up as libjpeg does (`ceil(len * n / 8)`), the libjpeg way. Each
+  8x8 block goes through a reduced IDCT straight to its 4x4, 2x2 or 1x1
+  output (libjpeg's `jidctred.c`; the 1x1 is zune's own DC arithmetic);
+  a subsampled component gets a larger IDCT where that lands it at the
+  output size (libjpeg's `jdmaster.c` rule), and what is left is
+  upsampled with libjpeg's `jdsample.c` filters; colour conversion is
+  zune's. Covers baseline and progressive, every subsampling with integral
+  expansion, restart intervals, and composes with Luma output. A baseline
+  file whose components all land at the output size streams one MCU row
+  at a time; others buffer whole-image planes. Scalar code, no `unsafe`.
+  `dimensions()` and `output_buffer_size()` report the scaled size.
+  Touches the MCU loop only to place a block by its component's
+  `block_size` (8 unless scaled) and to call its `scaled_idct`. Within a
+  step of libjpeg-turbo's scaled decode; the default, `IdctScale::Full`,
+  is byte-identical to the release. Guarded by
+  `view-buffer/tests/it/jpeg_scaled.rs`.
+- Known upstream divergence, not changed here: a progressive file with
+  restart intervals (`p420_rst_77x50` in those fixtures) decodes far from
+  libjpeg-turbo, at full size too.
 
 Drop this directory and the patch once upstream ships an equivalent.

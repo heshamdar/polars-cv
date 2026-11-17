@@ -116,7 +116,7 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
             } else {
                 error!("{}", result.err().unwrap());
                 // Go process it and return as much as we can, exiting here
-                return self.finish_progressive_decoding(&block, pixels);
+                return self.finish_progressive(&block, pixels);
             };
         }
 
@@ -205,7 +205,7 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
             }
         }
 
-        self.finish_progressive_decoding(&block, pixels)
+        self.finish_progressive(&block, pixels)
     }
 
     /// Reset progressive parameters
@@ -480,6 +480,18 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
         }
         Ok(())
     }
+    /// IDCT, upsample and colour convert the decoded coefficients, at the
+    /// scale set with `set_idct_scale`.
+    fn finish_progressive(
+        &mut self, block: &[Vec<i16>; MAX_COMPONENTS], pixels: &mut [u8]
+    ) -> Result<(), DecodeErrors> {
+        if self.idct_scale == crate::IdctScale::Full {
+            self.finish_progressive_decoding(block, pixels)
+        } else {
+            self.finish_progressive_scaled(block, pixels)
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::needless_range_loop, clippy::cast_sign_loss)]
     fn finish_progressive_decoding(

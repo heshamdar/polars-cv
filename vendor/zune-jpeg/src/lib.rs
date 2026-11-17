@@ -171,6 +171,7 @@ pub use zune_core;
 
 pub use crate::decoder::{ImageInfo, JpegDecoder};
 pub use crate::marker::Marker;
+pub use crate::scaled::IdctScale;
 mod bitstream;
 mod color_convert;
 mod components;
@@ -186,6 +187,7 @@ mod marker;
 mod mcu;
 mod mcu_prog;
 mod misc;
+mod scaled;
 mod unsafe_utils;
 mod unsafe_utils_avx2;
 mod unsafe_utils_neon;

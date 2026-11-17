@@ -4787,6 +4787,7 @@ dependencies = [
  "i_overlay",
  "image",
  "image_hasher",
+ "jpeg-decoder",
  "ndarray",
  "num-traits",
  "png",
@@ -4800,6 +4801,7 @@ dependencies = [
  "smallvec",
  "thiserror 1.0.69",
  "tiff",
+ "zune-jpeg 0.5.8",
  "zune-png",
 ]
 

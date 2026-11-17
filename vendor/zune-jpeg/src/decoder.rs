@@ -26,6 +26,7 @@ use crate::headers::{
     parse_start_of_frame
 };
 use crate::huffman::HuffmanTable;
+use crate::scaled::IdctScale;
 use crate::idct::{choose_idct_func, choose_idct_1x1_func, choose_idct_4x4_func};
 use crate::marker::Marker;
 use crate::misc::SOFMarkers;
@@ -155,7 +156,9 @@ pub struct JpegDecoder<T: ZByteReaderTrait> {
     // exif data, lifted from app2
     pub(crate) icc_data: Vec<ICCChunk>,
     pub(crate) is_mjpeg: bool,
-    pub(crate) coeff:    usize // Solves some weird bug :)
+    pub(crate) coeff:    usize, // Solves some weird bug :)
+    /// Output scale (`set_idct_scale`)
+    pub(crate) idct_scale: IdctScale
 }
 
 impl<T> JpegDecoder<T>
@@ -201,7 +204,8 @@ where
             seen_sof:          false,
             icc_data:          vec![],
             is_mjpeg:          false,
-            coeff:             1
+            coeff:             1,
+            idct_scale:        IdctScale::Full
         }
     }
     /// Decode a buffer already in memory
@@ -264,8 +268,8 @@ where
     pub fn output_buffer_size(&self) -> Option<usize> {
         return if self.headers_decoded {
             Some(
-                usize::from(self.width())
-                    .checked_mul(usize::from(self.height()))?
+                self.idct_scale.scaled(usize::from(self.width()))
+                    .checked_mul(self.idct_scale.scaled(usize::from(self.height())))?
                     .checked_mul(self.options.jpeg_get_out_colorspace().num_components())?
             )
         } else {
@@ -788,7 +792,10 @@ where
         let out = &mut out[0..out_len];
 
         if self.is_progressive {
+            // Its scale applies once every coefficient is decoded.
             self.decode_mcu_ycbcr_progressive(out)
+        } else if self.idct_scale != IdctScale::Full {
+            self.decode_mcu_scaled_baseline(out)
         } else {
             self.decode_mcu_ycbcr_baseline(out)
         }
@@ -826,6 +833,18 @@ where
     #[must_use]
     pub fn new_with_options(buf: T, options: DecoderOptions) -> JpegDecoder<T> {
         JpegDecoder::default(options, buf)
+    }
+
+    /// Decode at a reduced scale: 1/2, 1/4 or 1/8 of each dimension, rounded
+    /// up as libjpeg rounds (`ceil(len * n / 8)`), instead of at full size.
+    ///
+    /// Each 8x8 block is inverse transformed straight to its 4x4, 2x2 or 1x1
+    /// output (libjpeg's reduced IDCTs), so the work after entropy decoding
+    /// shrinks with the output. [`dimensions`](Self::dimensions) and
+    /// [`output_buffer_size`](Self::output_buffer_size) report the scaled
+    /// size. The default, [`IdctScale::Full`], is the ordinary decode.
+    pub fn set_idct_scale(&mut self, scale: IdctScale) {
+        self.idct_scale = scale;
     }
 
     /// Set up-sampling routines in case an image is down sampled
@@ -910,10 +929,18 @@ where
     /// # Returns
     /// - `Some(width,height)`: Image dimensions
     /// -  None : The image headers haven't been decoded
+    ///
+    /// These are the dimensions of the decoded output: the image's own under
+    /// the default [`IdctScale::Full`], else scaled by
+    /// [`set_idct_scale`](Self::set_idct_scale). [`info`](Self::info) keeps
+    /// the stored size.
     #[must_use]
     pub const fn dimensions(&self) -> Option<(usize, usize)> {
         return if self.headers_decoded {
-            Some((self.info.width as usize, self.info.height as usize))
+            Some((
+                self.idct_scale.scaled(self.info.width as usize),
+                self.idct_scale.scaled(self.info.height as usize)
+            ))
         } else {
             None
         };

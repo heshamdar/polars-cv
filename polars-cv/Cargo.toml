@@ -133,9 +133,11 @@ futures = "0.3"
 # gives object_store's S3/GCS/Azure clients HTTPS. Dropping it would leave every
 # cloud read failing at runtime with a missing-TLS-backend error.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# `decode_max_size`'s IDCT-scaled JPEG decode.
 jpeg-decoder = "0.3"
-# Luma-only JPEG decode (`decode_from_plan="approximate"` before a leading
-# grayscale): the decoder `image` itself uses, asked for the Y channel alone.
+# `decode_from_plan="approximate"`'s JPEG decode, scaled and/or luma-only in
+# one pass: the decoder `image` itself uses (vendored with scaled output,
+# vendor/zune-jpeg/VENDORED.md).
 zune-jpeg = "0.5"
 
 [features]
