@@ -91,3 +91,4 @@ split-debuginfo = "off"
 # (vendor/fast_image_resize/VENDORED.md). Drop this once upstream ships one.
 [patch.crates-io]
 fast_image_resize = { path = "vendor/fast_image_resize" }
+zune-jpeg = { path = "vendor/zune-jpeg" }
