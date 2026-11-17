@@ -207,6 +207,7 @@ impl ColorRange {
 }
 
 /// A pixel's RGB, in units of `scale` (a channel at full scale is `scale`).
+#[inline(always)]
 fn decode_rgb(from: ColorSpace, px: &[f64], range: &ColorRange, scale: f64) -> [f64; 3] {
     let v = |i: usize| px[i];
     match from {
@@ -239,6 +240,7 @@ fn decode_rgb(from: ColorSpace, px: &[f64], range: &ColorRange, scale: f64) -> [
 
 /// A pixel's target-space values from its RGB in units of `scale`, stored
 /// in `range`.
+#[inline(always)]
 fn encode(to: ColorSpace, [r, g, b]: [f64; 3], scale: f64, range: &ColorRange) -> [f64; 3] {
     let k = range.full / scale;
     match to {
@@ -280,6 +282,7 @@ fn encode(to: ColorSpace, [r, g, b]: [f64; 3], scale: f64, range: &ColorRange) -
 }
 
 /// HSV (hue in degrees, saturation in [0, 1]) to RGB in the value's units.
+#[inline(always)]
 fn hsv_to_rgb(hue: f64, s: f64, v: f64) -> [f64; 3] {
     if s == 0.0 {
         return [v, v, v];
@@ -330,22 +333,42 @@ fn convert_ranged(buf: &ViewBuffer, op: &ColorConvertOp, out_dtype: DType) -> Vi
         scale,
         wrap,
     };
-    // A pixel map (`core::map`), so a view is read where it lies: an f64
-    // input's cast is the input itself.
-    let src = buf.cast(DType::F64);
-    let out = match (in_c, out_c) {
-        (1, 1) => map_pixels::<f64, f64, 1, 1, _>(&src, &map),
-        (1, 3) => map_pixels::<f64, f64, 1, 3, _>(&src, &map),
-        (3, 1) => map_pixels::<f64, f64, 3, 1, _>(&src, &map),
-        (3, 3) => map_pixels::<f64, f64, 3, 3, _>(&src, &map),
-        (i, o) => unreachable!("a colour space has 1 or 3 channels, not {i} or {o}"),
+    // A pixel map (`core::map`), so a view is read where it lies. The
+    // dtypes images arrive in load and store inside the map, converting
+    // each value as `cast` would (`CastFrom`, the one conversion rule): the
+    // same f64 arithmetic per pixel, without an f64 copy of the image and a
+    // second pass to store it. Every other dtype goes through f64 buffers,
+    // where an f64 input's cast is the input itself.
+    let out = match (buf.dtype(), out_dtype) {
+        (DType::U8, DType::U8) => ranged_pixels::<u8, u8>(buf, &map, in_c, out_c),
+        (DType::F32, DType::F32) => ranged_pixels::<f32, f32>(buf, &map, in_c, out_c),
+        _ => ranged_pixels::<f64, f64>(&buf.cast(DType::F64), &map, in_c, out_c).cast(out_dtype),
     };
     debug_assert_eq!(out.shape(), [h, w, out_c]);
-    out.cast(out_dtype)
+    out
+}
+
+/// [`Ranged`] over every pixel of `buf`, loading `S` and storing `D`.
+fn ranged_pixels<S, D>(buf: &ViewBuffer, map: &Ranged, in_c: usize, out_c: usize) -> ViewBuffer
+where
+    S: crate::core::dtype::ViewType,
+    D: crate::core::dtype::ViewType + CastFrom<f64>,
+    f64: CastFrom<S>,
+{
+    match (in_c, out_c) {
+        (1, 1) => map_pixels::<S, D, 1, 1, _>(buf, map),
+        (1, 3) => map_pixels::<S, D, 1, 3, _>(buf, map),
+        (3, 1) => map_pixels::<S, D, 3, 1, _>(buf, map),
+        (3, 3) => map_pixels::<S, D, 3, 3, _>(buf, map),
+        (i, o) => unreachable!("a colour space has 1 or 3 channels, not {i} or {o}"),
+    }
 }
 
 /// [`convert_ranged`]'s per-pixel conversion: decode to RGB in the input's
-/// range, encode the target in the output's, in f64.
+/// range, encode the target in the output's, in f64. Each value is loaded
+/// from `S` and stored to `D` by the conversion rule (`CastFrom`), so a
+/// `<u8, u8>` map computes exactly what casting to f64, mapping
+/// `<f64, f64>` and casting back did.
 struct Ranged {
     from: ColorSpace,
     to: ColorSpace,
@@ -357,12 +380,48 @@ struct Ranged {
 }
 
 // SAFETY: `map_into` writes all `O` slots of every output pixel.
-unsafe impl<const C: usize, const O: usize> PixelMap<f64, f64, C, O> for Ranged {
+unsafe impl<S, D, const C: usize, const O: usize> PixelMap<S, D, C, O> for Ranged
+where
+    S: crate::core::dtype::ViewType,
+    D: crate::core::dtype::ViewType + CastFrom<f64>,
+    f64: CastFrom<S>,
+{
     #[inline(always)]
-    fn map_into(&self, src: &[[f64; C]], dst: &mut [MaybeUninit<f64>]) {
+    fn map_into(&self, src: &[[S; C]], dst: &mut [MaybeUninit<D>]) {
+        // The commonest pair gets a loop of its own with its spaces as
+        // constants, so the per-pixel `match`es in `decode_rgb`/`encode` fold
+        // away; the arithmetic is the same functions either way.
+        match (self.from, self.to) {
+            (ColorSpace::Rgb, ColorSpace::Hsv) => {
+                self.convert::<S, D, C, O>(src, dst, ColorSpace::Rgb, ColorSpace::Hsv);
+            }
+            (ColorSpace::Hsv, ColorSpace::Rgb) => {
+                self.convert::<S, D, C, O>(src, dst, ColorSpace::Hsv, ColorSpace::Rgb);
+            }
+            (from, to) => self.convert::<S, D, C, O>(src, dst, from, to),
+        }
+    }
+}
+
+impl Ranged {
+    /// [`Ranged`]'s loop, `from` and `to` given so a caller can pass them
+    /// as constants.
+    #[inline(always)]
+    fn convert<S, D, const C: usize, const O: usize>(
+        &self,
+        src: &[[S; C]],
+        dst: &mut [MaybeUninit<D>],
+        from: ColorSpace,
+        to: ColorSpace,
+    ) where
+        S: crate::core::dtype::ViewType,
+        D: crate::core::dtype::ViewType + CastFrom<f64>,
+        f64: CastFrom<S>,
+    {
         for (px, out) in src.iter().zip(dst.as_chunks_mut::<O>().0) {
-            let rgb = decode_rgb(self.from, px, &self.in_range, self.scale);
-            let mut v = encode(self.to, rgb, self.scale, &self.out_range);
+            let px = px.map(f64::cast_from);
+            let rgb = decode_rgb(from, &px, &self.in_range, self.scale);
+            let mut v = encode(to, rgb, self.scale, &self.out_range);
             if let Some(period) = self.wrap {
                 let rounded = v[0].round();
                 v[0] = if rounded >= period {
@@ -372,7 +431,7 @@ unsafe impl<const C: usize, const O: usize> PixelMap<f64, f64, C, O> for Ranged 
                 };
             }
             for (o, &x) in out.iter_mut().zip(&v[..O]) {
-                o.write(x);
+                o.write(D::cast_from(x));
             }
         }
     }
