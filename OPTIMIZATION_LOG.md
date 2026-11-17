@@ -3,7 +3,7 @@
 Hand-off document between iterations. Each phase appends; nothing is rewritten
 except the "Status" line and the candidate table's status column.
 
-**Status:** Phase 3. T1 and T2 accepted; next: PNG decode (now in scope), `Blocked` scratch zeroing, grayscale.
+**Status:** Phase 3 done for this session. T1, T2 and T4 accepted; decode and T3 rejected; final e2e below.
 
 **User decisions (2026-11-17):** prioritise the ops users run most often; outputs
 may move within a documented tolerance (any golden re-bless is raised first);
@@ -144,16 +144,42 @@ scratch zeroing → T2 blur → T3 grayscale → T4 HSV.
 | 2026-11-17 | PNG decode: faster inflater (zlib-rs/libdeflate behind a minimal PNG path) | Inflate headroom on realistic zlib streams | sizing first: C zlib inflates the corpus IDAT streams (PIL level 6, ratio 1.30) at **1.17 ms/img**, vs ~0.56 ms·core for the plugin's *whole* PNG decode with `fdeflate`. fdeflate is already ~2× stock zlib, so a custom PNG decoder at best ties | rejected (not built: sizing shows no headroom) | – |
 | 2026-11-17 | T3a `Blocked` scratch (`kernels/elementwise/mod.rs`) | The per-block `[0.0f32; 2048]` scratch (8 KB zeroed per block, per run for views; `memset` 5–8% of callgrind instructions) → uninitialised `MaybeUninit` scratch for the block and the per-channel lane | local x86-64-v3: u8 Blocked users 1.06–1.5× (scale/contrast ±17–23%); **wheel x86-64: mostly noise, `normalize_preset_f32` 0.82× at every size** (±4–8%) | rejected (regression on the shipping build) | – |
 | 2026-11-17 | T3b same, block scratch only (lane zeroed as before) | Isolate the suspected lane regression | wheel: every case 0.86–1.12×, the same band as the untouched grayscale controls (0.93–1.10×) | rejected (within noise); two consecutive failures, so the target is stopped | – |
+| 2026-11-17 | T4a colour conversion (`kernels/color.rs::convert_ranged`) | cast→f64 map→cast (three passes, two 8×-size temporaries) → load/store inside the pixel map for u8→u8 and f32→f32, same f64 arithmetic via `CastFrom`. Bit-exact. | HSV u8 0.76/1.36/1.85× (wheel), 0.78/1.47/1.88× (local): **regressed at 256²**; per-pixel cost flat at 25 ns vs the old 19 ns in cache, because the generic body stopped folding the per-pixel `from`/`to` matches | rejected as-is | – |
+| 2026-11-17 | T4b T4a + a constant-space loop for RGB→HSV and HSV→RGB (`decode_rgb`/`encode` inlined) | Fold the matches back | HSV u8 **1.65/2.43/2.75×** (wheel), 1.69/2.34/2.09× (local); HSV f32 1.77/1.28/2.65× \| 2.09/1.13/2.03×; Lab ≈1× (powf-bound); grayscale control 0.88–1.05× | accepted | `8804416` |
+
+### Final end-to-end (base `f4c1adb` → head `8804416`)
+
+`--profile benchmark`, 4 threads, tensor sink, median of 3 alternating 4 s
+runs. Absolute rates drift run to run on this shared host (the T1-only
+light run measured 2,775 → 3,614), so ratios are the comparison.
+
+| pipeline | base img/s | head img/s | head/base |
+|---|---|---|---|
+| decode only (control) | 5,692 | 5,672 | 1.00× |
+| light: resize 224 → normalize | 2,643 | 3,198 | **1.21×** |
+| heavy: resize → flip → gray → blur → normalize → threshold | 3,511 | 4,032 | **1.15×** |
+| medical: gray → normalize → resize 512 | 2,132 | 2,386 | **1.12×** |
+| imagenet: resize → crop → normalize_preset (untouched ops) | 5,064 | 5,425 | 1.07× (±3%, borderline) |
+| resize 224 → HSV | 1,130 | 2,239 | **1.98×** |
+| imagenet, JPEG 768² | 597 | 617 | 1.03× |
+
+`scripts/verify.sh` passes at `8804416` (all 16 checks).
 
 ## 6. Remaining ideas (ranked)
 
-_Running list; ranked at the end._
+1. **Lanczos coefficient cache in `fast_image_resize`** (3–7% of resize pipelines' instructions; `sin` per tap per image). Upstream patch, or our own resampler for the default filter. Ask before adding a fork.
+2. **Lab/YCbCr: the same constant-space loop as HSV.** T4b gave RGB↔HSV their own loops; RGB→Lab is `powf`/`cbrt`-bound (no gain from T4a), and YCbCr is cheap arithmetic that would probably gain like HSV. Each pair adds about 12 instances (issue #209).
+3. **f32 `normalize` minmax** (`float_extremes`): scalar fold with the NaN rule. A lane fold that tracks NaN separately would be exact. Less common than u8.
+4. **Python and pipeline overhead per call**: about 5% of the profile is `_PyEval`/`type_new`, mostly import. Measure per-`select` overhead separately before acting.
+5. **Decode**: no headroom from Rust decoders (see the rejected rows). The remaining lever is the existing `decode_max_size` (JPEG IDCT scaling), which is a user-facing option and not a kernel.
 
 - The `memset` callgrind flagged was mostly its per-byte `rep stosb` count, not time (see T3a/b). Zeroed scratch isn't a measurable cost on the wheel build.
-- Lanczos coefficients are recomputed per image inside `fast_image_resize` (3–7% of resize pipelines). It has no cache API, so this needs an upstream patch.
-- f32 `normalize` minmax (`float_extremes`) is still a scalar fold with the NaN rule. It's lower priority because pipelines normalize u8 far more often.
 - **Measurement method:** base and head bench binaries are built separately (`benchbin.sh`) and alternated three rounds (`ab.py`). End-to-end extensions are built in a git worktree (`e2ebuild.sh`), so edits in the main tree can't contaminate a measurement. An early baseline was lost this way and re-run.
 
 ## 7. Correctness issues found in the original code
 
-_None yet. Reported here and to the user, not silently fixed._
+None. Every new falsifier (properties, 1,650 golden digests, 336 NumPy
+normalize references) passed on the unoptimised code. The two failures seen
+while writing them were bugs in the test code (a u16 overflow in a generator,
+and a wrong assumption that grayscale keeps alpha; it drops it), not in the
+engine.
