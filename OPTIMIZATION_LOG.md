@@ -180,7 +180,8 @@ Light pipeline (resize 224 → normalize), all threads: decode 47% (fdeflate 38%
 ## 6. Remaining ideas (ranked)
 
 0. **Scaled IDCT inside zune-jpeg** (vendor plus upstream PR, as with `fast_image_resize`). It would let `decode_from_plan` scale and decode luma in the decoder that's already fastest at Huffman, closing the gap to the 3–7.6× libjpeg-turbo shows. Then **progressive-JPEG DC-scan selection** (`DECODE_RESEARCH_ACADEMIC.md` #1; exact, 4–8× on progressive files at 1/8). First measure what share of real inputs are progressive.
-- **CI note:** `cargo deny` now fails on three new upstream "unmaintained" advisories (RUSTSEC-2026-0542/0543/0555: humantime, chrono, chrono-tz, all via polars). The previous HEAD fails the same way. Ignoring them in `deny.toml` is the maintainer's call.
+- **CI note:** `cargo deny` failed on three new upstream "unmaintained" advisories (RUSTSEC-2026-0542/0543/0555: humantime, chrono, chrono-tz, all via polars/arrow/object_store, no vulnerability). The user approved ignoring them; `deny.toml` records why. Re-check on the next dependency bump.
+- **Upstream PR for the resize cache:** deferred by the user. The vendored copy stays; the patch is `git diff 9dbcb82 a2fea90 -- vendor/` against `cykooz/fast_image_resize`.
 
 1. **Lanczos coefficient cache in `fast_image_resize`** (≈9–10% of the light pipeline's wall time per samply; `sin` per tap per image). Upstream patch, or our own resampler for the default filter. Ask before adding a fork.
 2. **Lab/YCbCr: the same constant-space loop as HSV.** T4b gave RGB↔HSV their own loops; RGB→Lab is `powf`/`cbrt`-bound (no gain from T4a), and YCbCr is cheap arithmetic that would probably gain like HSV. Each pair adds about 12 instances (issue #209).
