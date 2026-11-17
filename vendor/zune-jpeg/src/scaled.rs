@@ -1,5 +1,5 @@
 /*
- * Local addition to the vendored zune-jpeg 0.5.8 (see VENDORED.md), under the
+ * Local addition to the vendored zune-jpeg (see VENDORED.md), under the
  * crate's own licences (MIT, Apache-2.0 or Zlib).
  */
 
@@ -171,11 +171,14 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
     /// Decode a baseline image at the scale set with `set_idct_scale`.
     ///
     /// The MCU loop is `decode_mcu_ycbcr_baseline`'s, with each component's
-    /// IDCT writing its scaled block. When every component the output reads
-    /// arrives in the first scan already at the output size, each MCU row is
-    /// colour converted as soon as it is decoded, from planes one MCU row
-    /// tall that stay in cache (the full decode's streaming); otherwise the
-    /// planes hold the whole image and are upsampled at the end.
+    /// IDCT writing its scaled block. A file whose components all arrive in
+    /// the first scan decodes one MCU row at a time into each component's
+    /// `raw_coeff`, as the full decode does: when every component the output
+    /// reads is already at the output size, the row is colour converted as
+    /// soon as it is decoded, while it is in cache (the full decode's
+    /// streaming); otherwise it is copied into whole-image planes, upsampled
+    /// at the end. A file whose components come in separate scans decodes
+    /// into the whole-image planes directly, as the full decode buffers it.
     pub(crate) fn decode_mcu_scaled_baseline(
         &mut self, pixels: &mut [u8]
     ) -> Result<(), DecodeErrors> {
@@ -200,7 +203,6 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
             && plans[..self.scaled_output_components()]
                 .iter()
                 .all(|plan| plan.h_expand == 1 && plan.v_expand == 1);
-        let buffered_mcu_rows = if streaming { 1 } else { mcu_height };
 
         let mut planes: [Vec<i16>; MAX_COMPONENTS] = core::array::from_fn(|_| vec![]);
         let mut strides = [0; MAX_COMPONENTS];
@@ -215,8 +217,13 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
             component.width_stride = component.width_stride / 8 * plan.block;
             strides[pos] = component.width_stride;
             // 128 (mid grey) where a truncated stream leaves rows undecoded.
-            let rows = buffered_mcu_rows * component.vertical_sample * plan.block;
-            planes[pos] = vec![128; component.width_stride * rows];
+            let mcu_row = component.width_stride * component.vertical_sample * plan.block;
+            if all_components_in_first_scan {
+                component.raw_coeff = vec![128; mcu_row];
+            }
+            if !streaming {
+                planes[pos] = vec![128; mcu_row * mcu_height];
+            }
         }
         // Output rows per MCU row (the same for every component, streaming).
         let mcu_rows_out = self.components[0].vertical_sample * plans[0].block;
@@ -234,18 +241,43 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
                     error!("Premature end of buffer");
                     break 'sos;
                 }
-                // Streaming, every MCU row decodes into the top of the planes.
-                let continuation = self.decode_mcu_width::<true>(
-                    mcu_width,
-                    if streaming { 0 } else { i },
-                    &mut tmp,
-                    &mut stream,
-                    &mut planes
-                )?;
-                if streaming {
-                    rows_written +=
-                        self.convert_scaled_rows(&planes, strides[0], rows_written, mcu_rows_out, pixels)?;
-                }
+                let continuation = if all_components_in_first_scan {
+                    if !streaming {
+                        // Undecoded blocks of a terminated row stay mid grey.
+                        for component in &mut self.components {
+                            component.raw_coeff.fill(128);
+                        }
+                    }
+                    let continuation = self.decode_mcu_width::<false>(
+                        mcu_width,
+                        i,
+                        &mut tmp,
+                        &mut stream,
+                        &mut planes
+                    )?;
+                    let rows: [&[i16]; MAX_COMPONENTS] = core::array::from_fn(|pos| {
+                        self.components.get(pos).map_or(&[][..], |c| c.raw_coeff.as_slice())
+                    });
+                    if streaming {
+                        rows_written +=
+                            self.convert_scaled_rows(rows, strides[0], rows_written, mcu_rows_out, pixels)?;
+                    } else {
+                        for (plane, row) in planes.iter_mut().zip(rows) {
+                            if let Some(dst) = plane.get_mut(i * row.len()..(i + 1) * row.len()) {
+                                dst.copy_from_slice(row);
+                            }
+                        }
+                    }
+                    continuation
+                } else {
+                    self.decode_mcu_width::<true>(
+                        mcu_width,
+                        i,
+                        &mut tmp,
+                        &mut stream,
+                        &mut planes
+                    )?
+                };
                 match continuation {
                     McuContinuation::Ok => {}
                     McuContinuation::AnotherSos if all_components_in_first_scan => {
@@ -253,6 +285,12 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
                         break 'sos;
                     }
                     McuContinuation::AnotherSos => continue 'sos,
+                    McuContinuation::InterScanMarker(marker) => {
+                        if self.advance_to_next_sos(marker, &mut stream)? {
+                            continue 'sos;
+                        }
+                        break 'sos;
+                    }
                     McuContinuation::Terminate => {
                         warn!("Got terminate signal, will not process further");
                         break 'sos;
@@ -286,7 +324,7 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
     /// planes at the output size sharing one `stride`; returns how many there
     /// were (fewer at the bottom edge).
     fn convert_scaled_rows(
-        &self, planes: &[Vec<i16>; MAX_COMPONENTS], stride: usize, first: usize, rows: usize,
+        &self, planes: [&[i16]; MAX_COMPONENTS], stride: usize, first: usize, rows: usize,
         pixels: &mut [u8]
     ) -> Result<usize, DecodeErrors> {
         let out_colorspace = self.options.jpeg_get_out_colorspace();
@@ -298,13 +336,8 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
             return Err(DecodeErrors::FormatStatic("Output too small for its rows"));
         };
         let mut samples: [&[i16]; MAX_COMPONENTS] = [&[]; MAX_COMPONENTS];
-        for (sample, plane) in samples
-            .iter_mut()
-            .zip(planes)
-            .take(self.scaled_output_components())
-        {
-            *sample = plane;
-        }
+        let n = self.scaled_output_components();
+        samples[..n].copy_from_slice(&planes[..n]);
         color_convert(
             &samples,
             self.color_convert_16,
@@ -382,16 +415,21 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
         });
         if direct {
             // Every plane is at the output size already, with one stride.
-            self.convert_scaled_rows(planes, strides[0], 0, height, pixels)?;
+            self.convert_scaled_rows(slices(planes), strides[0], 0, height, pixels)?;
             return Ok(());
         }
         let mut expanded: [Vec<i16>; MAX_COMPONENTS] = core::array::from_fn(|_| vec![]);
         for c in 0..components {
             expanded[c] = expand(&planes[c], strides[c], plans[c], width, height, fancy);
         }
-        self.convert_scaled_rows(&expanded, width, 0, height, pixels)?;
+        self.convert_scaled_rows(slices(&expanded), width, 0, height, pixels)?;
         Ok(())
     }
+}
+
+/// Each plane as a slice.
+fn slices(planes: &[Vec<i16>; MAX_COMPONENTS]) -> [&[i16]; MAX_COMPONENTS] {
+    core::array::from_fn(|pos| planes[pos].as_slice())
 }
 
 /// A component plane brought to `width x height` (libjpeg's `jdsample.c`

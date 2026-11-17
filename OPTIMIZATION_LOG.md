@@ -196,7 +196,7 @@ Light pipeline (resize 224 → normalize), all threads: decode 47% (fdeflate 38%
 
 ## 7. Correctness issues found in the original code
 
-- **zune-jpeg 0.5.8 (upstream, and so `image`'s normal JPEG decode) mis-decodes progressive JPEGs with restart markers, even at full size** (fixture `p420_rst_77x50.jpg`: mean abs error 25.6 against libjpeg-turbo). It's excluded from the scaled-decode comparison, and a test is pinned to fail once upstream fixes it. Not fixed here: reported, not silently changed.
+- **zune-jpeg 0.5.8 (upstream, and so `image`'s normal JPEG decode) mis-decodes progressive JPEGs with restart markers, even at full size** (fixture `p420_rst_77x50.jpg`: mean abs error 25.6 against libjpeg-turbo). It's excluded from the scaled-decode comparison, and a test is pinned to fail once upstream fixes it. Not fixed here: reported, not silently changed. **Fixed since**, at the user's request, by moving the vendored base to 0.5.15 (0.38 and 0.18 mean against libjpeg-turbo for it and `p422_rstrow_200x150.jpg`, which was 15.3); both are now in every reference comparison.
 
 None. Every new falsifier (properties, 1,650 golden digests, 336 NumPy
 normalize references) passed on the unoptimised code. The two failures seen

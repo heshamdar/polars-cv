@@ -24,6 +24,11 @@ is in the git history of this file.
   crop's last row, so damage in the image data below it no longer fails the
   row.
 
+### Fixed
+
+- Progressive JPEGs that use restart markers decode correctly; they came out
+  garbled.
+
 ## [0.42.0] — 2026-11-15
 
 Graph inspection is unified under `expr.graph()`/`explain()`, the tensor sink

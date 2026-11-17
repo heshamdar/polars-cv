@@ -218,12 +218,13 @@ pub enum ComponentID {
     Q
 }
 
-#[derive(Copy, Debug, Clone, PartialEq, Eq)]
+#[derive(Copy, Debug, Clone, PartialEq, Eq, Default)]
 pub enum SampleRatios {
     HV,
     V,
     H,
     Generic(usize, usize),
+    #[default]
     None
 }
 

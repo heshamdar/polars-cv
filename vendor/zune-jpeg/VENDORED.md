@@ -1,6 +1,6 @@
-# Vendored `zune-jpeg` 0.5.8
+# Vendored `zune-jpeg` 0.5.15
 
-Source: crates.io `zune-jpeg` 0.5.8 (MIT OR Apache-2.0 OR Zlib, all three
+Source: crates.io `zune-jpeg` 0.5.15 (MIT OR Apache-2.0 OR Zlib, all three
 licence files kept), wired in by the workspace's `[patch.crates-io]`. It
 replaces the 0.5.x zune-jpeg `image` decodes JPEGs with as well as the one
 polars-cv calls directly; the 0.4.x zune-jpeg another dependency pulls in is
@@ -22,8 +22,11 @@ never published. Every feature `src` names in `cfg`s is kept.
   upsampled with libjpeg's `jdsample.c` filters; colour conversion is
   zune's. Covers baseline and progressive, every subsampling with integral
   expansion, restart intervals, and composes with Luma output. A baseline
-  file whose components all land at the output size streams one MCU row
-  at a time; others buffer whole-image planes. Scalar code, no `unsafe`.
+  file decodes through the full decode's MCU loop: one whose components
+  all arrive in the first scan one MCU row at a time, colour converted at
+  once where every component lands at the output size and copied into
+  whole-image planes otherwise; one with components in separate scans
+  straight into those planes. Scalar code, no `unsafe`.
   `dimensions()` and `output_buffer_size()` report the scaled size.
   Touches the MCU loop only to place a block by its component's
   `block_size` (8 unless scaled) and to call its `scaled_idct`. Within a
@@ -39,8 +42,5 @@ never published. Every feature `src` names in `cfg`s is kept.
   are decoded as before. The output is byte-identical to decoding every
   scan; only corrupt data in a skipped scan no longer fails or truncates
   the decode. Guarded by the same test file.
-- Known upstream divergence, not changed here: a progressive file with
-  restart intervals (`p420_rst_77x50` in those fixtures) decodes far from
-  libjpeg-turbo, at full size too.
 
 Drop this directory and the patch once upstream ships an equivalent.

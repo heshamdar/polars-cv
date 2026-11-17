@@ -7,10 +7,12 @@
 //! the subsamplings (4:4:4, 4:2:2, 4:2:0, 4:1:1, 4:4:0), baseline and
 //! progressive, restart intervals, grayscale and sizes that are not
 //! multiples of 8 or 16; each comes with libjpeg-turbo's own scaled decode
-//! (Pillow's `draft`). The scaled output must have libjpeg's size,
-//! `ceil(dim * s / 8)`, stay within [`MEAN_BOUND`]/[`MAX_BOUND`] of that
-//! reference and within the looser block-average bounds of zune's own full
-//! decode. Scale 1 must stay the unpatched crate's output byte for byte:
+//! (Pillow's `draft`), and its full decode. The scaled output must have
+//! libjpeg's size, `ceil(dim * s / 8)`, stay within
+//! [`MEAN_BOUND`]/[`MAX_BOUND`] of that reference and within the looser
+//! block-average bounds of zune's own full decode; the full decode stays
+//! within [`FULL_MEAN_BOUND`]/[`MAX_BOUND`] of libjpeg-turbo's. Scale 1
+//! must stay the unpatched crate's output byte for byte:
 //! its digests (`jpeg_scaled/full_digests.txt`) were recorded before the
 //! patch, through zune directly and through `image`. A progressive file's
 //! 1/8 decode, which skips the AC scans it does not read, must stay the
@@ -39,19 +41,13 @@ const CASES: &[&str] = &[
     "p422_53x41",
     "p420_100x75",
     "p420_rst_77x50",
+    "p422_rstrow_200x150",
     "bgray_45x29",
     "pgray_45x29",
 ];
 
 /// Colour fixtures whose luma-only scaled decode is pinned too.
 const LUMA: &[&str] = &["b420_61x37", "p420_100x75", "b422_61x37"];
-
-/// Fixtures zune-jpeg 0.5.8 itself decodes differently from libjpeg-turbo,
-/// at full size too (progressive with restart intervals): the scaled decode
-/// reads the same coefficients, so it cannot match libjpeg either. Held to
-/// zune's own full decode instead, and pinned as divergent so the exclusion
-/// goes once upstream decodes them right.
-const ZUNE_DIVERGENT: &[&str] = &["p420_rst_77x50"];
 
 /// `(denominator, scale)`: the output is `1/denominator` of each dimension.
 const SCALES: [(usize, IdctScale); 3] = [
@@ -67,6 +63,13 @@ const SCALES: [(usize, IdctScale); 3] = [
 /// conversion is zune's own fixed point, which rounds differently by a step.
 const MEAN_BOUND: f64 = 0.25;
 const MAX_BOUND: u8 = 4;
+
+/// The mean bound of zune's full decode against libjpeg-turbo's (the max is
+/// [`MAX_BOUND`]): looser than the scaled one, as zune's own chroma
+/// upsampling differs from libjpeg's. Measured at most 0.434 mean and 4 max
+/// over every fixture, the progressive ones with restart intervals included
+/// (zune-jpeg before 0.5.15 decoded those 25.6 and 15.3 off).
+const FULL_MEAN_BOUND: f64 = 0.5;
 
 /// Bounds against zune's full decode averaged over each `d x d` block, in
 /// luma: a sanity check that the scaled output is the same picture, not a
@@ -183,13 +186,8 @@ fn for_each_case(
 
 #[test]
 fn scaled_decode_matches_libjpeg_turbo() {
-    let cases: Vec<&str> = CASES
-        .iter()
-        .copied()
-        .filter(|name| !ZUNE_DIVERGENT.contains(name))
-        .collect();
     for_each_case(
-        &cases,
+        CASES,
         out_colorspace,
         |name, denom, out, _, _| reference(&format!("{name}.s{denom}.png"), out),
         (MEAN_BOUND, MAX_BOUND),
@@ -251,22 +249,30 @@ fn scaled_decode_is_close_to_the_full_decode_block_averaged() {
     );
 }
 
-/// The exclusion above is upstream's: zune's *full* decode of each
-/// `ZUNE_DIVERGENT` file is already far from libjpeg-turbo's. When this
-/// fails, upstream decodes it right: move the file back into the reference
-/// comparison.
+/// zune's full decode is libjpeg-turbo's, within [`FULL_MEAN_BOUND`] and
+/// [`MAX_BOUND`]: every fixture, so the scaled references above compare
+/// against a full decode that is itself right (progressive files with
+/// restart intervals included).
 #[test]
-fn zune_divergent_files_diverge_at_full_size() {
-    for &name in ZUNE_DIVERGENT {
+fn full_decode_matches_libjpeg_turbo() {
+    let mut failures = Vec::new();
+    for &name in CASES {
         let bytes = std::fs::read(fixture(&format!("{name}.jpg"))).unwrap();
-        let (got, ..) = decode(&bytes, None, ColorSpace::RGB);
-        let (want, ..) = reference(&format!("{name}.s1.png"), ColorSpace::RGB);
-        let (mean, _) = diff(&got, &want);
-        assert!(
-            mean > 10.0,
-            "{name}: zune's full decode now matches libjpeg-turbo ({mean:.3})"
-        );
+        let out = out_colorspace(name);
+        let (got, w, h) = decode(&bytes, None, out);
+        let (want, ww, wh) = reference(&format!("{name}.s1.png"), out);
+        assert_eq!((w, h), (ww, wh), "{name}: the reference's size");
+        let (mean, max) = diff(&got, &want);
+        println!("{name:>20} full: mean {mean:.3} max {max}");
+        if mean > FULL_MEAN_BOUND || max > MAX_BOUND {
+            failures.push(format!("{name}: mean {mean:.3}, max {max}"));
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "full decodes out of bounds ({FULL_MEAN_BOUND}, {MAX_BOUND}):\n{}",
+        failures.join("\n")
+    );
 }
 
 /// FNV-1a over the bytes.
@@ -305,13 +311,11 @@ fn full_scale_output_is_the_unpatched_crates() {
 
 /// Progressive files whose 1/8 decode is pinned to the decode that read
 /// every scan: the [`CASES`] that are progressive, and larger ones (4:2:0
-/// with and without restart intervals, 4:2:2 with a restart every MCU row,
-/// grayscale, and 4:4:4 with one DC scan per component instead of
-/// interleaved ones).
+/// with and without restart intervals, grayscale, and 4:4:4 with one DC
+/// scan per component instead of interleaved ones).
 const DC_SCAN_CASES: &[&str] = &[
     "p420_512x384",
     "p420_rst_512x384",
-    "p422_rstrow_200x150",
     "pgray_256x192",
     "p444_dcsplit_100x75",
 ];
@@ -397,15 +401,10 @@ fn one_eighth_progressive_decode_does_not_read_unneeded_ac_scans() {
         garble_ac_scans(&mut all_ac, |_| true);
         let out = out_colorspace(name);
         let at = |bytes: &[u8], scale, out| decode(bytes, Some(scale), out).0;
-        // zune drops these files' AC data at every scale already: they are
-        // progressive with restart intervals, which it decodes far from
-        // libjpeg-turbo at full size (mean 25.6 and 15.3).
-        if !matches!(name, "p420_rst_77x50" | "p422_rstrow_200x150") {
-            assert!(
-                at(&luma_ac, IdctScale::Quarter, out) != at(&bytes, IdctScale::Quarter, out),
-                "{name}: the garbling reaches a decode that reads AC scans"
-            );
-        }
+        assert!(
+            at(&luma_ac, IdctScale::Quarter, out) != at(&bytes, IdctScale::Quarter, out),
+            "{name}: the garbling reaches a decode that reads AC scans"
+        );
         assert!(
             at(&luma_ac, IdctScale::Eighth, out) == at(&bytes, IdctScale::Eighth, out),
             "{name}: the 1/8 decode read a luma AC scan"

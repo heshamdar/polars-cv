@@ -1899,8 +1899,8 @@ dependencies = [
  "ravif",
  "rayon",
  "tiff",
- "zune-core 0.5.0",
- "zune-jpeg 0.5.8",
+ "zune-core 0.5.3",
+ "zune-jpeg 0.5.15",
 ]
 
 [[package]]
@@ -2831,7 +2831,7 @@ dependencies = [
  "thiserror 1.0.69",
  "url",
  "view-buffer",
- "zune-jpeg 0.5.8",
+ "zune-jpeg 0.5.15",
 ]
 
 [[package]]
@@ -4801,7 +4801,7 @@ dependencies = [
  "smallvec",
  "thiserror 1.0.69",
  "tiff",
- "zune-jpeg 0.5.8",
+ "zune-jpeg 0.5.15",
  "zune-png",
 ]
 
@@ -5442,9 +5442,9 @@ checksum = "3f423a2c17029964870cfaabb1f13dfab7d092a62a29a89264f4d36990ca414a"
 
 [[package]]
 name = "zune-core"
-version = "0.5.0"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "111f7d9820f05fd715df3144e254d6fc02ee4088b0644c0ffd0efc9e6d9d2773"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
 
 [[package]]
 name = "zune-inflate"
@@ -5466,9 +5466,9 @@ dependencies = [
 
 [[package]]
 name = "zune-jpeg"
-version = "0.5.8"
+version = "0.5.15"
 dependencies = [
- "zune-core 0.5.0",
+ "zune-core 0.5.3",
 ]
 
 [[package]]

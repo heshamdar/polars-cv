@@ -6,8 +6,8 @@ baseline/progressive/restart/grayscale cases, through imagecodecs for the
 4:1:1 and 4:4:0 subsamplings Pillow cannot write. Each `<name>.s<f>.png` is
 libjpeg-turbo's own scaled decode of it at 1/f (Pillow's `draft`), the
 reference the vendored zune-jpeg's scaled output is held to; `.L.s<f>.png`
-is the same decode asked for grayscale (luma) output, and `.s1.png` a full
-decode, kept only for a file zune decodes differently even at full size.
+is the same decode asked for grayscale (luma) output, and `.s1.png` the full
+decode, the reference for zune's full-size output.
 
 Run with: uv run --no-project --with pillow==12.0.0 --with imagecodecs \
     --with numpy python -I generate.py
@@ -78,6 +78,12 @@ CASES: dict[str, bytes] = {
         progressive=True,
         restart_marker_blocks=2,
     ),
+    "p422_rstrow_200x150": pillow(
+        content(150, 200, 17),
+        subsampling="4:2:2",
+        progressive=True,
+        restart_marker_rows=1,
+    ),
     "bgray_45x29": pillow(gray(content(29, 45, 13))),
     "pgray_45x29": pillow(gray(content(29, 45, 14)), progressive=True),
 }
@@ -97,12 +103,6 @@ DC_SCAN_CASES: dict[str, bytes] = {
         subsampling="4:2:0",
         progressive=True,
         restart_marker_blocks=5,
-    ),
-    "p422_rstrow_200x150": pillow(
-        content(150, 200, 17),
-        subsampling="4:2:2",
-        progressive=True,
-        restart_marker_rows=1,
     ),
     "pgray_256x192": pillow(gray(content(192, 256, 18)), progressive=True),
 }
@@ -201,10 +201,6 @@ DC_SCAN_CASES["p444_dcsplit_100x75"] = split_dc_scans(
 # Colour files whose luma-only scaled decode is also pinned.
 LUMA = ("b420_61x37", "p420_100x75", "b422_61x37")
 
-# Files zune-jpeg 0.5.8 decodes differently from libjpeg-turbo even at full
-# size; their full decode (`.s1.png`) pins that the divergence is upstream's.
-ZUNE_DIVERGENT = ("p420_rst_77x50",)
-
 
 def reference(data: bytes, mode: str, factor: int) -> Image.Image:
     im = Image.open(io.BytesIO(data))
@@ -225,12 +221,11 @@ def main() -> None:
     for name, data in CASES.items():
         (HERE / f"{name}.jpg").write_bytes(data)
         mode = "L" if name[1:5] == "gray" else "RGB"
+        reference(data, mode, 1).save(HERE / f"{name}.s1.png")
         for factor in SCALES:
             reference(data, mode, factor).save(HERE / f"{name}.s{factor}.png")
             if name in LUMA:
                 reference(data, "L", factor).save(HERE / f"{name}.L.s{factor}.png")
-        if name in ZUNE_DIVERGENT:
-            reference(data, mode, 1).save(HERE / f"{name}.s1.png")
     for name, data in DC_SCAN_CASES.items():
         (HERE / f"{name}.jpg").write_bytes(data)
     # The split file is a different stream of the same coefficients.
