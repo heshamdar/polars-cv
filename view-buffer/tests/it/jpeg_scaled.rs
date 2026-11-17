@@ -12,8 +12,11 @@
 //! reference and within the looser block-average bounds of zune's own full
 //! decode. Scale 1 must stay the unpatched crate's output byte for byte:
 //! its digests (`jpeg_scaled/full_digests.txt`) were recorded before the
-//! patch, through zune directly and through `image`. Re-record only for a
-//! deliberate change, with `VIEW_BUFFER_BLESS=1`.
+//! patch, through zune directly and through `image`. A progressive file's
+//! 1/8 decode, which skips the AC scans it does not read, must stay the
+//! decode of every scan: `jpeg_scaled/dc_scan_digests.txt`, recorded before
+//! the skip. Re-record only for a deliberate change, with
+//! `VIEW_BUFFER_BLESS=1`.
 
 use std::path::{Path, PathBuf};
 
@@ -300,6 +303,121 @@ fn full_scale_output_is_the_unpatched_crates() {
     assert_eq!(got, want, "a full-scale JPEG decode changed");
 }
 
+/// Progressive files whose 1/8 decode is pinned to the decode that read
+/// every scan: the [`CASES`] that are progressive, and larger ones (4:2:0
+/// with and without restart intervals, 4:2:2 with a restart every MCU row,
+/// grayscale, and 4:4:4 with one DC scan per component instead of
+/// interleaved ones).
+const DC_SCAN_CASES: &[&str] = &[
+    "p420_512x384",
+    "p420_rst_512x384",
+    "p422_rstrow_200x150",
+    "pgray_256x192",
+    "p444_dcsplit_100x75",
+];
+
+fn progressive_cases() -> impl Iterator<Item = &'static str> {
+    CASES
+        .iter()
+        .copied()
+        .filter(|name| name.starts_with('p'))
+        .chain(DC_SCAN_CASES.iter().copied())
+}
+
+/// At 1/8 a block is its DC coefficient alone, so a progressive file's 1/8
+/// decode entropy-decodes only its DC scans (first and refinement) and
+/// skips every AC scan's data. The output is the decode that read every
+/// scan, byte for byte: `jpeg_scaled/dc_scan_digests.txt` was recorded
+/// before the skip existed, in the file's colour space and, for a colour
+/// file, as luma too.
+#[test]
+fn one_eighth_progressive_decode_is_the_every_scan_decode() {
+    let path = fixture("dc_scan_digests.txt");
+    let mut got = String::new();
+    for name in progressive_cases() {
+        let bytes = std::fs::read(fixture(&format!("{name}.jpg"))).unwrap();
+        let (pixels, ..) = decode(&bytes, Some(IdctScale::Eighth), out_colorspace(name));
+        got += &format!("{name} {:016x}", fnv(&pixels));
+        if !is_gray(name) {
+            let (luma, ..) = decode(&bytes, Some(IdctScale::Eighth), ColorSpace::Luma);
+            got += &format!(" {:016x}", fnv(&luma));
+        }
+        got += "\n";
+    }
+    if std::env::var_os("VIEW_BUFFER_BLESS").is_some() {
+        std::fs::write(&path, &got).unwrap();
+        return;
+    }
+    let want = std::fs::read_to_string(&path).expect("the digest fixture exists");
+    assert_eq!(got, want, "a 1/8 progressive decode changed");
+}
+
+/// `bytes` with the entropy-coded data of every AC scan whose component
+/// `garble` picks (by id) replaced by garbage: no 0xFF is written or
+/// removed, so every marker stays where it was. Returns how many scans it
+/// garbled.
+fn garble_ac_scans(bytes: &mut [u8], garble: impl Fn(u8) -> bool) -> usize {
+    let mut garbled = 0;
+    let mut i = 2;
+    while bytes[i + 1] != 0xD9 {
+        let len = usize::from(u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]));
+        let end = i + 2 + len;
+        if bytes[i + 1] != 0xDA {
+            i = end;
+            continue;
+        }
+        // One component per AC scan: [n, id, tables, Ss, Se, Ah|Al].
+        let this = bytes[end - 3] != 0 && garble(bytes[i + 5]);
+        let mut j = end;
+        while bytes[j] != 0xFF || matches!(bytes[j + 1], 0x00 | 0xD0..=0xD7) {
+            if this && bytes[j] != 0xFF && bytes[j - 1] != 0xFF {
+                bytes[j] = (bytes[j] ^ 0x5A).min(0xFE);
+            }
+            j += 1;
+        }
+        garbled += usize::from(this);
+        i = j;
+    }
+    garbled
+}
+
+/// The skip is real: an AC scan the 1/8 output does not need is not read.
+/// Garbage in place of the luma AC scans leaves the 1/8 decode unchanged
+/// (a subsampled chroma's 1/8 IDCT is the 2x2, which reads its AC scans,
+/// so those are decoded), as does garbage in every AC scan for luma output;
+/// the 1/4 decode, which reads them, changes.
+#[test]
+fn one_eighth_progressive_decode_does_not_read_unneeded_ac_scans() {
+    for name in progressive_cases() {
+        let bytes = std::fs::read(fixture(&format!("{name}.jpg"))).unwrap();
+        // The first component (luma) has id 1 in every fixture.
+        let mut luma_ac = bytes.clone();
+        assert!(garble_ac_scans(&mut luma_ac, |id| id == 1) > 0, "{name}");
+        let mut all_ac = bytes.clone();
+        garble_ac_scans(&mut all_ac, |_| true);
+        let out = out_colorspace(name);
+        let at = |bytes: &[u8], scale, out| decode(bytes, Some(scale), out).0;
+        // zune drops these files' AC data at every scale already: they are
+        // progressive with restart intervals, which it decodes far from
+        // libjpeg-turbo at full size (mean 25.6 and 15.3).
+        if !matches!(name, "p420_rst_77x50" | "p422_rstrow_200x150") {
+            assert!(
+                at(&luma_ac, IdctScale::Quarter, out) != at(&bytes, IdctScale::Quarter, out),
+                "{name}: the garbling reaches a decode that reads AC scans"
+            );
+        }
+        assert!(
+            at(&luma_ac, IdctScale::Eighth, out) == at(&bytes, IdctScale::Eighth, out),
+            "{name}: the 1/8 decode read a luma AC scan"
+        );
+        assert!(
+            at(&all_ac, IdctScale::Eighth, ColorSpace::Luma)
+                == at(&bytes, IdctScale::Eighth, ColorSpace::Luma),
+            "{name}: the 1/8 luma decode read an AC scan"
+        );
+    }
+}
+
 /// Decode time per image at each scale, zune's scaled IDCT against
 /// jpeg-decoder's, for the JPEGs named in `JPEG_SCALED_TIMING` (paths,
 /// `:`-separated). Not a correctness check: run it on an optimised build,
@@ -353,7 +471,8 @@ fn timing() {
                 }
             }
         }
-        println!("{}", path.display());
+        let (eighth, ..) = decode(&bytes, Some(IdctScale::Eighth), ColorSpace::RGB);
+        println!("{} (1/8 digest {:016x})", path.display(), fnv(&eighth));
         for (&(denom, _), [zune, luma, jd]) in all.iter().zip(&best) {
             println!(
                 "  1/{denom}: zune {zune:7.2} ms (luma {luma:7.2})   jpeg-decoder {jd:7.2} ms"

@@ -247,6 +247,20 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
                 )));
             }
 
+            if self.spec_start != 0 && self.ac_coefficients_unread(k) {
+                // The output never reads this component's AC coefficients:
+                // the scan's data is skipped, not decoded, after the table
+                // check its first block would make.
+                let pos = self.components[k].ac_huff_table;
+                self.ac_huffman_tables
+                    .get(pos)
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        DecodeErrors::Format(format!("No huffman table for component:{pos}"))
+                    })?;
+                return self.skip_entropy_coded_data(stream);
+            }
+
             let (mcu_width, mcu_height);
 
             if self.components[k].vertical_sample != 1
@@ -437,6 +451,36 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
             }
         }
         return Ok(());
+    }
+
+    /// Skip a scan's entropy-coded data unread: advance past every byte up
+    /// to the next marker that is neither a stuffed `0xFF00` nor a restart
+    /// marker, and leave that marker on `stream` as the bit reader does. A
+    /// marker the bit reader would refuse is refused here alike, and running
+    /// out of data is an error, as `get_marker` makes it after a decoded scan.
+    fn skip_entropy_coded_data(&mut self, stream: &mut BitStream) -> Result<(), DecodeErrors> {
+        loop {
+            if self.stream.read_u8_err()? != 0xFF {
+                continue;
+            }
+            let mut next = self.stream.read_u8_err()?;
+            while next == 0xFF {
+                next = self.stream.read_u8_err()?;
+            }
+            // A stuffed zero byte or a restart marker is part of the scan.
+            if next == 0x00 || (0xD0..=0xD7).contains(&next) {
+                continue;
+            }
+            return match Marker::from_u8(next) {
+                None | Some(Marker::UNKNOWN(_)) => {
+                    Err(DecodeErrors::Format("Unknown marker in bit stream".to_string()))
+                }
+                Some(marker) => {
+                    stream.marker = Some(marker);
+                    Ok(())
+                }
+            };
+        }
     }
 
     pub(crate) fn handle_rst_main(&mut self, stream: &mut BitStream) -> Result<(), DecodeErrors> {

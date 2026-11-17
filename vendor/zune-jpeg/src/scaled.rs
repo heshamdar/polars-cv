@@ -139,6 +139,17 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
         Ok(plans)
     }
 
+    /// Whether the output never reads component `pos`'s AC coefficients, so
+    /// a progressive file's AC scans of it need not be decoded: at 1/8, a
+    /// component whose IDCT is the 1x1 (its DC alone; a subsampled one gets a
+    /// larger IDCT, which reads AC too) or one the output does not read.
+    /// Never at the other scales.
+    pub(crate) fn ac_coefficients_unread(&self, pos: usize) -> bool {
+        self.idct_scale == IdctScale::Eighth
+            && (!self.scaled_component_needed(pos)
+                || self.scaled_plans().is_ok_and(|plans| plans[pos].block == 1))
+    }
+
     /// Whether component `pos` contributes to the output colourspace.
     fn scaled_component_needed(&self, pos: usize) -> bool {
         pos < self.options.jpeg_get_out_colorspace().num_components()

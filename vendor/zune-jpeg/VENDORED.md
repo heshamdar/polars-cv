@@ -30,6 +30,15 @@ never published. Every feature `src` names in `cfg`s is kept.
   step of libjpeg-turbo's scaled decode; the default, `IdctScale::Full`,
   is byte-identical to the release. Guarded by
   `view-buffer/tests/it/jpeg_scaled.rs`.
+- Progressive at 1/8 (`JpegDecoder::ac_coefficients_unread`,
+  `skip_entropy_coded_data` in `src/mcu_prog.rs`): an AC scan of a
+  component whose 1/8 IDCT is the 1x1 (its DC alone), or which the output
+  does not read, is skipped to the next marker that is not a restart
+  marker or stuffed byte, not Huffman-decoded; DC scans, refinements
+  included, and a subsampled chroma's AC scans (its 1/8 IDCT is the 2x2)
+  are decoded as before. The output is byte-identical to decoding every
+  scan; only corrupt data in a skipped scan no longer fails or truncates
+  the decode. Guarded by the same test file.
 - Known upstream divergence, not changed here: a progressive file with
   restart intervals (`p420_rst_77x50` in those fixtures) decodes far from
   libjpeg-turbo, at full size too.

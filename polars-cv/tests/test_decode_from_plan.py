@@ -282,6 +282,30 @@ class TestApproximate:
         reference = _run(_turbo_scaled(data, "RGB", (400, 300)), _resize)
         assert np.abs(approx.astype(int) - reference.astype(int)).max() <= 2
 
+    @pytest.mark.parametrize("mode", ["RGB", "L"])
+    def test_one_eighth_decode_of_a_progressive_jpeg(self, mode: str) -> None:
+        """2048x1536 -> 160x160 decodes at 1/8 (256x192), where a
+        progressive file's AC scans the output does not read are skipped
+        unread: libjpeg-turbo's 1/8 decode resized, to within zune's colour
+        conversion (measured: max 1; luma identical). Its 1/4 decode resized
+        is 3 to 4 off.
+        """
+        data = _jpeg(2048, 1536, progressive=True)
+
+        def build(p: Pipeline) -> Pipeline:
+            p = p.grayscale() if mode == "L" else p
+            return p.resize(height=160, width=160)
+
+        approx = _run(data, build, decode_from_plan="approximate")
+        reference = _run(
+            _turbo_scaled(data, mode, (256, 192)),
+            lambda p: p.resize(height=160, width=160),
+        )
+        assert approx.shape == reference.shape == (160, 160, 3 if mode == "RGB" else 1)
+        assert np.abs(approx.astype(int) - reference.astype(int)).max() <= 2
+        if mode == "L":
+            assert np.array_equal(approx, reference)
+
     @pytest.mark.parametrize("tag", [3, 6])
     @pytest.mark.parametrize("build", [_resize, _gray(False), _gray_resize])
     def test_orientation_turns_the_shortcut_decode(self, tag: int, build) -> None:

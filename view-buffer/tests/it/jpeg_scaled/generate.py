@@ -82,6 +82,122 @@ CASES: dict[str, bytes] = {
     "pgray_45x29": pillow(gray(content(29, 45, 14)), progressive=True),
 }
 
+# Larger progressive files for the 1/8 decode's DC-scan selection (only the
+# DC scans are entropy-decoded at 1/8): its output is pinned byte for byte to
+# the decode that read every scan (`dc_scan_digests.txt`), so these carry no
+# reference PNGs. libjpeg's progressive script has an interleaved first DC
+# scan (Al=1) and an interleaved DC refinement scan; `split_dc_scans` makes
+# a file whose DC scans are one per component instead.
+DC_SCAN_CASES: dict[str, bytes] = {
+    "p420_512x384": pillow(
+        content(384, 512, 15), subsampling="4:2:0", progressive=True
+    ),
+    "p420_rst_512x384": pillow(
+        content(384, 512, 16),
+        subsampling="4:2:0",
+        progressive=True,
+        restart_marker_blocks=5,
+    ),
+    "p422_rstrow_200x150": pillow(
+        content(150, 200, 17),
+        subsampling="4:2:2",
+        progressive=True,
+        restart_marker_rows=1,
+    ),
+    "pgray_256x192": pillow(gray(content(192, 256, 18)), progressive=True),
+}
+
+
+def split_dc_scans(data: bytes) -> bytes:
+    """Re-pack each interleaved DC scan of a 4:4:4 progressive JPEG (no
+    restart interval) as one non-interleaved scan per component.
+
+    With every component at 1x1 sampling, a component's blocks come in the
+    same raster order interleaved or not, so its DC predictions and hence
+    its Huffman codes are unchanged: each block's code bits are copied
+    as they are, only regrouped by component. The pixels are the input's.
+    """
+    out = bytearray(data[:2])
+    tables: dict[int, dict[tuple[int, int], int]] = {}
+    comps: dict[int, int] = {}  # component id -> DC table
+    blocks = 0
+    i = 2
+    while True:
+        marker = data[i + 1]
+        if marker == 0xD9:
+            out += data[i:]
+            return bytes(out)
+        length = int.from_bytes(data[i + 2 : i + 4], "big")
+        seg = data[i + 4 : i + 2 + length]
+        end = i + 2 + length
+        if marker == 0xDD:
+            assert int.from_bytes(seg, "big") == 0, "restart intervals unsupported"
+        if marker == 0xC2:
+            height, width = (int.from_bytes(seg[k : k + 2], "big") for k in (1, 3))
+            assert all(seg[7 + 3 * k] == 0x11 for k in range(seg[5])), "4:4:4 only"
+            blocks = math.ceil(width / 8) * math.ceil(height / 8)
+        if marker == 0xC4:
+            k = 0
+            while k < len(seg):
+                tc_th, counts = seg[k], seg[k + 1 : k + 17]
+                symbols = iter(seg[k + 17 : k + 17 + sum(counts)])
+                code, table = 0, {}
+                for bits, count in enumerate(counts, 1):
+                    for _ in range(count):
+                        table[(bits, code)] = next(symbols)
+                        code += 1
+                    code <<= 1
+                if tc_th >> 4 == 0:
+                    tables[tc_th & 15] = table
+                k += 17 + sum(counts)
+        if marker != 0xDA:
+            out += data[i:end]
+            i = end
+            continue
+        n = seg[0]
+        ids = [seg[1 + 2 * k] for k in range(n)]
+        for k in range(n):
+            comps[ids[k]] = seg[2 + 2 * k] >> 4
+        ss, se, ahal = seg[1 + 2 * n], seg[2 + 2 * n], seg[3 + 2 * n]
+        j = end
+        while data[j] != 0xFF or data[j + 1] == 0:
+            j += 2 if data[j] == 0xFF else 1
+        if ss != 0 or n == 1:
+            out += data[i:j]
+            i = j
+            continue
+        raw = data[end:j].replace(b"\xff\x00", b"\xff")
+        bits = "".join(f"{b:08b}" for b in raw)
+        pos = 0
+        per: list[list[str]] = [[] for _ in ids]
+        for _ in range(blocks):
+            for c, cid in enumerate(ids):
+                start = pos
+                if ahal >> 4 == 0:
+                    table, length_, code = tables[comps[cid]], 0, 0
+                    while (length_, code) not in table:
+                        code = code << 1 | int(bits[pos])
+                        length_ += 1
+                        pos += 1
+                    pos += table[(length_, code)]
+                else:
+                    pos += 1
+                per[c].append(bits[start:pos])
+        for c, cid in enumerate(ids):
+            body = "".join(per[c])
+            body += "1" * (-len(body) % 8)
+            ecs = int(body, 2).to_bytes(len(body) // 8, "big") if body else b""
+            header = bytes([1, cid, comps[cid] << 4, ss, se, ahal])
+            out += b"\xff\xda" + (len(header) + 2).to_bytes(2, "big") + header
+            out += ecs.replace(b"\xff", b"\xff\x00")
+        i = j
+
+
+DC_SCAN_CASES["p444_dcsplit_100x75"] = split_dc_scans(
+    pillow(content(75, 100, 19), subsampling="4:4:4", progressive=True)
+)
+
+
 # Colour files whose luma-only scaled decode is also pinned.
 LUMA = ("b420_61x37", "p420_100x75", "b422_61x37")
 
@@ -115,6 +231,14 @@ def main() -> None:
                 reference(data, "L", factor).save(HERE / f"{name}.L.s{factor}.png")
         if name in ZUNE_DIVERGENT:
             reference(data, mode, 1).save(HERE / f"{name}.s1.png")
+    for name, data in DC_SCAN_CASES.items():
+        (HERE / f"{name}.jpg").write_bytes(data)
+    # The split file is a different stream of the same coefficients.
+    split = Image.open(io.BytesIO(DC_SCAN_CASES["p444_dcsplit_100x75"]))
+    unsplit = Image.open(
+        io.BytesIO(pillow(content(75, 100, 19), subsampling="4:4:4", progressive=True))
+    )
+    assert np.array_equal(np.asarray(split), np.asarray(unsplit))
 
 
 if __name__ == "__main__":
