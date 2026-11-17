@@ -27,6 +27,8 @@ mod fused_ops;
 mod gamma_dtype_range;
 mod identity_rule_contract;
 mod integration_plan;
+mod kernel_golden;
+mod kernel_props;
 mod luma_authority;
 mod memory_effect_verification;
 mod morph_ref;

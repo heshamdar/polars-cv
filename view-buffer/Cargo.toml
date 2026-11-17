@@ -77,6 +77,8 @@ serde_json = "1.0"
 criterion = { version = "0.5", features = ["html_reports"] }
 # PNG-decoder evaluation (tests/it/png_decode_eval.rs); dev-only, ships nothing.
 zune-png = "0.4"
+# Property tests for the hot kernels (tests/it/kernel_props.rs).
+proptest = "1.12.0"
 
 [[bench]]
 # Kernel micro-benchmarks (`benches/kernels.rs`): the base-vs-head gate for a
