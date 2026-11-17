@@ -311,9 +311,9 @@ pub(crate) enum Strategy {
 /// A kernel that is an integer affine map of 8/16-bit input into the same
 /// dtype runs in integers ([`int_affine`]).
 ///
-/// A lookup table pays only when the per-value work cannot vectorise, or
-/// differs per channel: a `powf` per element (gamma) or a per-channel
-/// normalize. It needs an enumerable input (8-bit; 16-bit once there are at
+/// A lookup table pays when the per-value work cannot vectorise, differs
+/// per channel, or widens 8-bit input to a float: a `powf` per element
+/// (gamma), a per-channel normalize, or a u8 `normalize`/`scale` to f32. It needs an enumerable input (8-bit; 16-bit once there are at
 /// least as many elements per table as entries). A vectorisable kernel such
 /// as `255 - x` streams faster than a table read (measured 0.23 vs 4.1 ms
 /// for a 1024² RGB u8 invert). Everything else streams in blocks.
@@ -333,7 +333,15 @@ pub(crate) fn strategy(in_dtype: DType, n_elems: usize, kernels: &[FusedKernel])
         DType::U16 | DType::I16 => n_elems >= tables * (1 << 16),
         _ => false,
     };
+    // An 8-bit input widened to a float output (normalize, scale) writes
+    // four bytes per element whatever runs; a table read then beats the
+    // convert-compute-convert stream it replaces.
+    let widened = matches!(in_dtype, DType::U8 | DType::I8)
+        && kernels
+            .iter()
+            .all(|k| crate::core::dtype::DTypeCategory::Float.accepts(k.out_dtype));
     let costly = tables > 1
+        || widened
         || kernels
             .iter()
             .any(|k| k.ops.iter().any(scalar_op_is_costly));
