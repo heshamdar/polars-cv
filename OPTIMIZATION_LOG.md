@@ -3,7 +3,11 @@
 Hand-off document between iterations. Each phase appends; nothing is rewritten
 except the "Status" line and the candidate table's status column.
 
-**Status:** Phase 0 complete (2026-11-17). Awaiting target selection before Phase 1.
+**Status:** Phase 1 committed; Phase 2 ranking below; Phase 3 iterating on T1.
+
+**User decisions (2026-11-17):** prioritise the ops users run most often; outputs
+may move within a documented tolerance (any golden re-bless is raised first);
+`proptest` may be added.
 
 ---
 
@@ -92,7 +96,43 @@ bit-identity provable by construction.
 
 ## 4. Profile ranking (Phase 2)
 
-_Not started._
+**Method.** `perf` is not installed and `perf_event_paranoid=2` blocks samply
+(lowering it was refused), so profiles are `valgrind --tool=callgrind`
+instruction counts over the scratch driver `e2e_drive.py` (100 × 256² PNG,
+tensor sink; JPEG 768² × 30), with the extension built `--profile benchmark`
+plus symbols. Instruction share ≠ time share: callgrind counts `rep stosb`
+per byte (inflating `memset`) and ignores memory stalls, so every candidate
+is confirmed by criterion timing before it's accepted.
+
+**End-to-end baseline** (`--profile benchmark`, 4 threads, tensor sink, best
+of one 4 s run):
+
+| pipeline | source | img/s | decoded MB/s |
+|---|---|---|---|
+| decode only | PNG 256² | 7,088 | 1,394 |
+| light: resize 224 (lanczos3) → normalize | PNG 256² | 3,200 | 629 |
+| imagenet: resize 256 → crop 224 → normalize_preset | PNG 256² | 6,008 | 1,181 |
+| heavy: resize → flip → gray → blur 1.5 → normalize → threshold | PNG 256² | 4,141 | 814 |
+| medical: gray → normalize → resize 512 | PNG 256² | 2,394 | 471 |
+| resize 224 → HSV | PNG 256² | 1,210 | 238 |
+| decode only | JPEG 768² | 850 | 1,503 |
+| imagenet | JPEG 768² | 711 | 1,258 |
+
+**Instruction share, excluding Python and codec** (decode is
+`fdeflate`/`zune-jpeg`, third-party, 25–42% of the total):
+
+| # | Where | light | heavy | medical | imagenet | Notes |
+|---|---|---|---|---|---|---|
+| T1 | `stats::min_max_f32::int_extremes` (normalize minmax's extremes) | 11% | 5% | 4% | – | two scalar passes, ~10 instr/element, inside a closure that dispatch never reaches |
+| – | `memset` (zeroed scratch in `Blocked`, zeroed large allocations) | 8% | 8% | 6% | 7% | inflated by callgrind; confirm by timing |
+| T2 | `SeparableBlur<u8,f32>` | – | ~13% | – | – | already dispatched |
+| – | Lanczos coefficients (`sin`, `precompute_coefficients`) | 3% | – | 7% | – | inside `fast_image_resize`, recomputed per call, no cache API: upstream idea |
+| – | `fast_image_resize` convolution | 15% | – | 20% | – | real work, already AVX2 |
+| T3 | `MapPixels<u8,u8,3,1,Grayscale>` | – | 2% | – | – | ~4 instr/pixel |
+| T4 | colour conversion (f64 per pixel) | – | – | – | – | 1,210 img/s e2e; not bit-exact-able, so it waits for a golden re-bless decision |
+
+Ranking by (share × how common): **T1 normalize minmax extremes** → `Blocked`
+scratch zeroing → T2 blur → T3 grayscale → T4 HSV.
 
 ## 5. Hypotheses tried
 
