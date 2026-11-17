@@ -3,7 +3,7 @@
 Hand-off document between iterations. Each phase appends; nothing is rewritten
 except the "Status" line and the candidate table's status column.
 
-**Status:** Phase 1 committed; Phase 2 ranking below; Phase 3 iterating on T1.
+**Status:** Phase 3. T1 and T2 accepted; next: PNG decode (now in scope), `Blocked` scratch zeroing, grayscale.
 
 **User decisions (2026-11-17):** prioritise the ops users run most often; outputs
 may move within a documented tolerance (any golden re-bless is raised first);
@@ -138,10 +138,21 @@ scratch zeroing → T2 blur → T3 grayscale → T4 HSV.
 
 | Date | Target | Hypothesis | Result (before → after, ±) | Verdict | Commit |
 |---|---|---|---|---|---|
+| 2026-11-17 | T1 normalize minmax extremes (`stats::min_max_f32`) | Two scalar `Iterator::min/max` passes inside an undispatched closure → one 64-lane fold (`pminub`/`pmaxub`) as a dispatched `SimdKernel` with a `RunSink` for views. Bit-exact. | criterion `normalize_minmax_u8` 4.10/4.34/4.29× (256/512/1024, ±≤13%), wheel 3.9–4.1×; cropped 3.7–4.3×; resize→minmax chain 1.14–1.60×; controls 0.96–1.10×. **e2e light 2,775 → 3,614 img/s (1.30×)**, heavy 1.09×, medical 1.10×, imagenet (control) 1.00× | accepted | `8e41faf` |
+| 2026-11-17 | T2 Gaussian blur (`kernels/blur.rs`) | Both passes re-read and re-wrote the output row once per tap → 32 outputs per chunk with sums held in registers across taps, same tap order from zero. Bit-exact. | criterion u8 RGB 1.20/1.18/1.29×, gray 1.05/1.21/1.33×, f32 1.20/1.39/1.30× (wheel 1.05–1.41×); control 0.98–1.10× | accepted | `6e6ae22` |
+| 2026-11-17 | PNG decode: swap to `zune-png` | A faster decoder than `png` 0.18 + `fdeflate` (decode is 25–42% of e2e instructions; 96% of PNG decode is inflate) | repo harness `png_decode_eval` (`--profile benchmark`): **0.34× geomean** on RGB/RGBA, slower in every cell (gradient 0.60–0.77×, noise 0.16–0.19×) | rejected | – |
+| 2026-11-17 | PNG decode: faster inflater (zlib-rs/libdeflate behind a minimal PNG path) | Inflate headroom on realistic zlib streams | sizing first: C zlib inflates the corpus IDAT streams (PIL level 6, ratio 1.30) at **1.17 ms/img**, vs ~0.56 ms·core for the plugin's *whole* PNG decode with `fdeflate`. fdeflate is already ~2× stock zlib, so a custom PNG decoder at best ties | rejected (not built: sizing shows no headroom) | – |
+| 2026-11-17 | T3a `Blocked` scratch (`kernels/elementwise/mod.rs`) | The per-block `[0.0f32; 2048]` scratch (8 KB zeroed per block, per run for views; `memset` 5–8% of callgrind instructions) → uninitialised `MaybeUninit` scratch for the block and the per-channel lane | local x86-64-v3: u8 Blocked users 1.06–1.5× (scale/contrast ±17–23%); **wheel x86-64: mostly noise, `normalize_preset_f32` 0.82× at every size** (±4–8%) | rejected (regression on the shipping build) | – |
+| 2026-11-17 | T3b same, block scratch only (lane zeroed as before) | Isolate the suspected lane regression | wheel: every case 0.86–1.12×, the same band as the untouched grayscale controls (0.93–1.10×) | rejected (within noise); two consecutive failures, so the target is stopped | – |
 
 ## 6. Remaining ideas (ranked)
 
-_Filled at the end of the campaign._
+_Running list; ranked at the end._
+
+- The `memset` callgrind flagged was mostly its per-byte `rep stosb` count, not time (see T3a/b). Zeroed scratch isn't a measurable cost on the wheel build.
+- Lanczos coefficients are recomputed per image inside `fast_image_resize` (3–7% of resize pipelines). It has no cache API, so this needs an upstream patch.
+- f32 `normalize` minmax (`float_extremes`) is still a scalar fold with the NaN rule. It's lower priority because pipelines normalize u8 far more often.
+- **Measurement method:** base and head bench binaries are built separately (`benchbin.sh`) and alternated three rounds (`ab.py`). End-to-end extensions are built in a git worktree (`e2ebuild.sh`), so edits in the main tree can't contaminate a measurement. An early baseline was lost this way and re-run.
 
 ## 7. Correctness issues found in the original code
 
