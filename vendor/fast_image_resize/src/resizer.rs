@@ -140,6 +140,56 @@ pub struct Resizer {
     alpha_buffer: Vec<u8>,
     convolution_buffer: Vec<u8>,
     super_sampling_buffer: Vec<u8>,
+    coefficients: CoefficientsCache,
+}
+
+/// What a set of convolution coefficients depends on: one axis's source
+/// size, crop (as exact bits), destination size, filter and kernel
+/// adaptivity. (Local change: see the vendoring notes.)
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CoefficientsKey {
+    in_size: u32,
+    in0: u64,
+    in1: u64,
+    out_size: u32,
+    filter: FilterType,
+    adaptive: bool,
+}
+
+/// The most recently used coefficients, newest first, so a run of resizes
+/// between the same sizes (a batch of images) computes them once instead of
+/// once per image. A hit returns a copy of exactly what was computed, so
+/// results are unchanged. (Local change: see the vendoring notes.)
+#[derive(Default, Debug, Clone)]
+struct CoefficientsCache {
+    entries: Vec<(CoefficientsKey, convolution::Coefficients)>,
+}
+
+impl CoefficientsCache {
+    /// Room for both axes of a few recent size pairs.
+    const CAPACITY: usize = 8;
+
+    fn get_or_compute(
+        &mut self,
+        key: CoefficientsKey,
+        compute: impl FnOnce() -> convolution::Coefficients,
+    ) -> convolution::Coefficients {
+        // A custom filter's equality compares its name and support, not its
+        // function, so two different ones could share a key: never cached.
+        if matches!(key.filter, FilterType::Custom(_)) {
+            return compute();
+        }
+        if let Some(i) = self.entries.iter().position(|(k, _)| *k == key) {
+            let entry = self.entries.remove(i);
+            let coeffs = entry.1.clone();
+            self.entries.insert(0, entry);
+            return coeffs;
+        }
+        let coeffs = compute();
+        self.entries.insert(0, (key, coeffs.clone()));
+        self.entries.truncate(Self::CAPACITY);
+        coeffs
+    }
 }
 
 impl Resizer {
@@ -378,31 +428,51 @@ impl Resizer {
         let need_horizontal =
             dst_width as f64 != crop_box.width || crop_box.left != crop_box.left.round();
         let horiz_coeffs = need_horizontal.then(|| {
-            test_log!("compute horizontal convolution coefficients");
-            convolution::precompute_coefficients(
-                src_view.width(),
-                crop_box.left,
-                crop_box.left + crop_box.width,
-                dst_width,
-                filter_fn,
-                filter_support,
-                adaptive_kernel_size,
-            )
+            let key = CoefficientsKey {
+                in_size: src_view.width(),
+                in0: crop_box.left.to_bits(),
+                in1: (crop_box.left + crop_box.width).to_bits(),
+                out_size: dst_width,
+                filter: filter_type,
+                adaptive: adaptive_kernel_size,
+            };
+            self.coefficients.get_or_compute(key, || {
+                test_log!("compute horizontal convolution coefficients");
+                convolution::precompute_coefficients(
+                    src_view.width(),
+                    crop_box.left,
+                    crop_box.left + crop_box.width,
+                    dst_width,
+                    filter_fn,
+                    filter_support,
+                    adaptive_kernel_size,
+                )
+            })
         });
 
         let need_vertical =
             dst_height as f64 != crop_box.height || crop_box.top != crop_box.top.round();
         let vert_coeffs = need_vertical.then(|| {
-            test_log!("compute vertical convolution coefficients");
-            convolution::precompute_coefficients(
-                src_view.height(),
-                crop_box.top,
-                crop_box.top + crop_box.height,
-                dst_height,
-                filter_fn,
-                filter_support,
-                adaptive_kernel_size,
-            )
+            let key = CoefficientsKey {
+                in_size: src_view.height(),
+                in0: crop_box.top.to_bits(),
+                in1: (crop_box.top + crop_box.height).to_bits(),
+                out_size: dst_height,
+                filter: filter_type,
+                adaptive: adaptive_kernel_size,
+            };
+            self.coefficients.get_or_compute(key, || {
+                test_log!("compute vertical convolution coefficients");
+                convolution::precompute_coefficients(
+                    src_view.height(),
+                    crop_box.top,
+                    crop_box.top + crop_box.height,
+                    dst_height,
+                    filter_fn,
+                    filter_support,
+                    adaptive_kernel_size,
+                )
+            })
         });
 
         match (horiz_coeffs, vert_coeffs) {
