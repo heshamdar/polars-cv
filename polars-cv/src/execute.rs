@@ -62,13 +62,26 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
 /// `decode_max_size`. `blob`/`raw`
 /// sources never reach it: they decode zero-copy via
 /// `graph::decode::decode_binary_row`.
-pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuffer> {
+///
+/// `rows_needed` is how many leading rows the pipeline reads (a leading
+/// `crop`'s last row, from the compiled graph): a PNG then decodes only those
+/// (`ImageAdapter::decode_png_rows`), bit-identical to their full decode. Not
+/// with an orientation applied, where stored rows are not displayed rows.
+pub fn decode_image_bytes(
+    bytes: &[u8],
+    source: &Source,
+    rows_needed: Option<u32>,
+) -> PolarsResult<ViewBuffer> {
     // An explicit decode-scale assertion lets JPEG decode skip work via IDCT
     // scaling; other formats fall through to a full decode.
     let scaled = source
         .decode_max_size()
         .and_then(|max_size| decode_jpeg_scaled(bytes, max_size));
-    let buf = match scaled {
+    let partial = || {
+        let rows = rows_needed.filter(|_| !source.applies_orientation())?;
+        ImageAdapter::decode_png_rows(bytes, rows as usize)
+    };
+    let buf = match scaled.or_else(partial) {
         Some(buf) => buf,
         None => ImageAdapter::decode(bytes)
             .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {}", e))?,

@@ -12,6 +12,12 @@ is in the git history of this file.
 
 ## [Unreleased]
 
+### Changed
+
+- A pipeline that starts with a literal `crop` decodes a PNG only down to the
+  crop's last row, so damage in the image data below it no longer fails the
+  row.
+
 ## [0.42.0] — 2026-11-15
 
 Graph inspection is unified under `expr.graph()`/`explain()`, the tensor sink

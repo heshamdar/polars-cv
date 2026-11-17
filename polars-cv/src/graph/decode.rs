@@ -25,6 +25,7 @@ pub(crate) fn decode_source_row(
     series: &Series,
     row: usize,
     fetch: RowFetch<'_>,
+    rows_needed: Option<u32>,
 ) -> Result<Option<NodeOutput>, String> {
     if series.dtype() == &DataType::Null {
         return Ok(None);
@@ -69,7 +70,7 @@ pub(crate) fn decode_source_row(
                 return Ok(None);
             };
             // Stage 2: the contents decode like image bytes.
-            decode_image_bytes(&bytes, source)
+            decode_image_bytes(&bytes, source, rows_needed)
                 .map(buffer)
                 .map_err(|e| format!("Decode error for file '{path}': {e}"))
         }
@@ -121,7 +122,7 @@ pub(crate) fn decode_source_row(
             }
         }
         Source::ImageBytes { .. } => match binary()?.get(row) {
-            Some(bytes) => decode_image_bytes(bytes, source)
+            Some(bytes) => decode_image_bytes(bytes, source, rows_needed)
                 .map(buffer)
                 .map_err(|e| format!("Decode error: {e}")),
             None => Ok(None),

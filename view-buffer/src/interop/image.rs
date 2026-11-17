@@ -420,6 +420,64 @@ impl ImageAdapter {
         }
     }
 
+    /// The first `rows` rows of a PNG, as [`decode`](Self::decode) would
+    /// produce them, without inflating the rest of the image: what a pipeline
+    /// whose first step is a `crop` ending at row `rows` needs.
+    ///
+    /// `None` when this is not a PNG this path reproduces exactly (interlaced,
+    /// animated, palette, transparency key, under 8 bits, or not a PNG at
+    /// all), when `rows` is not inside the image, or on any decode error:
+    /// the caller then decodes in full, so it reports the error the full
+    /// decode does. Rows past `rows` are never read, so damage there no
+    /// longer fails the decode.
+    pub fn decode_png_rows(encoded_bytes: &[u8], rows: usize) -> Option<ViewBuffer> {
+        const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        if !encoded_bytes.starts_with(&SIGNATURE) {
+            return None;
+        }
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(encoded_bytes));
+        // As `image`'s PNG decoder: no 16 → 8-bit scaling.
+        decoder.set_transformations(png::Transformations::EXPAND);
+        let mut reader = decoder.read_info().ok()?;
+        let info = reader.info();
+        let (width, height) = (info.width as usize, info.height as usize);
+        if info.interlaced
+            || info.animation_control.is_some()
+            || info.trns.is_some()
+            || rows == 0
+            || rows >= height
+        {
+            return None;
+        }
+        let channels = match info.color_type {
+            png::ColorType::Grayscale => 1,
+            png::ColorType::GrayscaleAlpha => 2,
+            png::ColorType::Rgb => 3,
+            png::ColorType::Rgba => 4,
+            png::ColorType::Indexed => return None,
+        };
+        let line = reader.output_line_size(info.width)?;
+        let mut data = vec![0u8; rows * line];
+        for row in data.chunks_exact_mut(line) {
+            reader.read_row(row).ok()??;
+        }
+        let shape = vec![rows, width, channels];
+        match reader.output_color_type().1 {
+            png::BitDepth::Eight => Some(ViewBuffer::from_vec_with_shape(data, shape)),
+            // Stored big-endian, as `image` converts them: native u16s.
+            png::BitDepth::Sixteen => {
+                let values: Vec<u16> = data
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&b| u16::from_be_bytes(b))
+                    .collect();
+                Some(ViewBuffer::from_vec_with_shape(values, shape))
+            }
+            _ => None,
+        }
+    }
+
     /// Opens an image from disk and decodes it into a ViewBuffer.
     /// Routes through `decode()` to use the custom TIFF decoder for float TIFF support.
     pub fn open(path: impl AsRef<Path>) -> Result<ViewBuffer, image::ImageError> {

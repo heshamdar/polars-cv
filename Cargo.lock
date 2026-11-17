@@ -4788,6 +4788,7 @@ dependencies = [
  "image_hasher",
  "ndarray",
  "num-traits",
+ "png",
  "polars-arrow",
  "polars-buffer",
  "polars-cv-macros",

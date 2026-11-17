@@ -35,6 +35,7 @@ mod morph_ref;
 mod nan_ordering;
 mod opt_config;
 mod png_decode_eval;
+mod png_rows;
 mod polars_interop;
 mod resize_coefficient_cache;
 mod resize_views;

@@ -85,6 +85,27 @@ pub(super) struct PlannedDecode {
     /// column holds them, and the refusal is made where a path column is
     /// about to be read ([`CompiledGraph::fetchers`]).
     pub(super) path_policy: Result<crate::fetch::PathPolicy, String>,
+    /// The rows a decode needs when the node's first step is a literal
+    /// `crop` with a height: the crop's last row. An image decoder may stop
+    /// there ([`crate::execute::decode_image_bytes`]); the crop still runs,
+    /// so the node's output is unchanged.
+    pub(super) rows_needed: Option<u32>,
+}
+
+/// The rows a leading literal crop reads (its `top + height`), if the node
+/// starts with one. Only a static crop: a per-row one is not known before
+/// its row decodes.
+fn leading_crop_rows(steps: &[CompiledStep]) -> Option<u32> {
+    use view_buffer::ops::view::ViewOp;
+    use view_buffer::ViewDto;
+    match &steps.first()?.resolver {
+        OpResolver::Static(GraphStep::Buffer(ViewDto::View(ViewOp::Crop {
+            top,
+            height: Some(height),
+            ..
+        }))) => top.checked_add(*height),
+        _ => None,
+    }
 }
 
 impl PlannedInput {
@@ -199,6 +220,7 @@ impl CompiledGraph {
                             .transpose()
                             .map_err(|e| polars_err!(ComputeError: "{e}"))?,
                         path_policy: crate::fetch::PathPolicy::resolve(source.path_settings().1),
+                        rows_needed: leading_crop_rows(&steps),
                     }))
                 }
                 NodeInput::Node(up) => {
