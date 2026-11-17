@@ -412,6 +412,10 @@ mod blur_dispatch_tests {
     }
 }
 
+/// Outputs per register-held chunk in the blur's passes: four AVX2 vectors
+/// of f32.
+const BLUR_CHUNK: usize = 32;
+
 #[inline(always)]
 fn separable_gaussian_blur_body<T, F>(rows_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
@@ -470,18 +474,34 @@ where
                 continue;
             }
 
-            // Interior: per-tap shifted-slice multiply-add over contiguous
-            // memory — the inner zip vectorizes.
+            // Interior (output `lo..hi`): a chunk of outputs at a time, its
+            // sums held in registers across the taps. Output `lo + t` reads
+            // `row_in[t + ki * c]` at tap `ki`. Each sum starts at zero and
+            // adds the taps in order — the additions a per-tap pass over the
+            // whole row made, without storing and reloading the row per tap.
             let lo = radius * c;
             let hi = (w - radius) * c;
-            row_out[lo..hi].fill(F::zero());
-            for (ki, &kw) in kernel.iter().enumerate() {
-                let shift = (ki as i64 - radius as i64) * c as i64;
-                let src_start = (lo as i64 + shift) as usize;
-                let src_slice = &row_in[src_start..src_start + (hi - lo)];
-                for (o, &v) in row_out[lo..hi].iter_mut().zip(src_slice) {
-                    *o += kw * v;
+            let (chunks, tail) = row_out[lo..hi].as_chunks_mut::<BLUR_CHUNK>();
+            for (j, out) in chunks.iter_mut().enumerate() {
+                let x0 = j * BLUR_CHUNK;
+                let mut acc = [F::zero(); BLUR_CHUNK];
+                for (ki, &kw) in kernel.iter().enumerate() {
+                    let src = row_in[x0 + ki * c..]
+                        .first_chunk::<BLUR_CHUNK>()
+                        .expect("an interior tap's chunk lies inside the row");
+                    for (a, &v) in acc.iter_mut().zip(src) {
+                        *a += kw * v;
+                    }
                 }
+                *out = acc;
+            }
+            let x0 = chunks.len() * BLUR_CHUNK;
+            for (t, o) in tail.iter_mut().enumerate() {
+                let mut sum = F::zero();
+                for (ki, &kw) in kernel.iter().enumerate() {
+                    sum += kw * row_in[x0 + t + ki * c];
+                }
+                *o = sum;
             }
             // Borders: clamped gather for `radius` columns on each side.
             for x in (0..radius).chain(w - radius..w) {
@@ -499,16 +519,40 @@ where
 
         // ── Vertical pass (F → F row accumulation) → T ───────────────────
         // Stored through M5: round-then-saturate to an integer, as is to f32.
+        // Each output row's sums a chunk of columns at a time, held in
+        // registers across the taps' rows, in tap order from zero (as the
+        // interior of the horizontal pass), then converted as one row.
+        let horiz: &[F] = horiz;
         let mut acc_row = vec![F::zero(); wc];
+        let mut taps: Vec<&[F]> = Vec::with_capacity(kernel.len());
         let mut out: Vec<T> = Vec::with_capacity(n);
         for y in 0..h {
-            acc_row.fill(F::zero());
-            for (ki, &kw) in kernel.iter().enumerate() {
+            taps.clear();
+            for ki in 0..kernel.len() {
                 let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
-                let src_row = &horiz[sy * wc..(sy + 1) * wc];
-                for (o, &v) in acc_row.iter_mut().zip(src_row) {
-                    *o += kw * v;
+                taps.push(&horiz[sy * wc..(sy + 1) * wc]);
+            }
+            let (chunks, tail) = acc_row.as_chunks_mut::<BLUR_CHUNK>();
+            for (j, out) in chunks.iter_mut().enumerate() {
+                let x0 = j * BLUR_CHUNK;
+                let mut acc = [F::zero(); BLUR_CHUNK];
+                for (row, &kw) in taps.iter().zip(&kernel) {
+                    let src = row[x0..]
+                        .first_chunk::<BLUR_CHUNK>()
+                        .expect("a full chunk lies inside the row");
+                    for (a, &v) in acc.iter_mut().zip(src) {
+                        *a += kw * v;
+                    }
                 }
+                *out = acc;
+            }
+            let x0 = chunks.len() * BLUR_CHUNK;
+            for (t, o) in tail.iter_mut().enumerate() {
+                let mut sum = F::zero();
+                for (row, &kw) in taps.iter().zip(&kernel) {
+                    sum += kw * row[x0 + t];
+                }
+                *o = sum;
             }
             out.extend(acc_row.iter().map(|&v| T::cast_from(v)));
         }
