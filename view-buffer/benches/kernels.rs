@@ -24,8 +24,8 @@ use view_buffer::execution::ExecutionPlan;
 use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
 use view_buffer::{
-    BinaryOp, ComputeOp, DType, FilterType, Footprint, ImageAdapter, InterpolationType,
-    NormalizeMethod, ViewBuffer, ViewDto, ViewExpr,
+    BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, DType, FilterType, Footprint, ImageAdapter,
+    InterpolationType, NormalizeMethod, ViewBuffer, ViewDto, ViewExpr,
 };
 
 const SIZES: [usize; 3] = [256, 512, 1024];
@@ -136,6 +136,28 @@ fn color_kernels(c: &mut Criterion) {
     });
 }
 
+/// `convert_color` from RGB to `to`.
+fn convert_from_rgb(to: ColorSpace) -> ViewDto {
+    ViewDto::Color(ColorConvertOp {
+        from_space: ColorSpace::Rgb,
+        to_space: to,
+    })
+}
+
+fn color_convert_kernels(c: &mut Criterion) {
+    let rgb = |s| owned_u8(&image_u8(s, 3), s, 3);
+    let rgb_f32 = |s| owned_f32(&image_u8(s, 3), s, 3);
+    bench_sizes(c, "convert_rgb_to_hsv_u8", rgb, |b| {
+        exec(b, |e| e.apply_op(convert_from_rgb(ColorSpace::Hsv)))
+    });
+    bench_sizes(c, "convert_rgb_to_hsv_f32", rgb_f32, |b| {
+        exec(b, |e| e.apply_op(convert_from_rgb(ColorSpace::Hsv)))
+    });
+    bench_sizes(c, "convert_rgb_to_lab_u8", rgb, |b| {
+        exec(b, |e| e.apply_op(convert_from_rgb(ColorSpace::Lab)))
+    });
+}
+
 fn value_kernels(c: &mut Criterion) {
     let rgb = |s| owned_u8(&image_u8(s, 3), s, 3);
     let rgb_f32 = |s| owned_f32(&image_u8(s, 3), s, 3);
@@ -197,6 +219,29 @@ fn value_kernels(c: &mut Criterion) {
     });
     bench_sizes(c, "normalize_zscore_f32", rgb_f32, |b| {
         exec(b, |e| e.normalize(NormalizeMethod::ZScore, DType::F32))
+    });
+    // MinMax: `normalize()`'s default, in most ML preprocessing pipelines.
+    bench_sizes(c, "normalize_minmax_u8", rgb, |b| {
+        exec(b, |e| e.normalize(NormalizeMethod::MinMax, DType::F32))
+    });
+    // The same over a view (a crop): the strided extremes and map.
+    bench_sizes(c, "normalize_minmax_u8_cropped", rgb, |b| {
+        let s = b.shape()[0];
+        exec(b, |e| {
+            e.crop(vec![1, 1, 0], vec![s - 1, s - 1, 3])
+                .normalize(NormalizeMethod::MinMax, DType::F32)
+        })
+    });
+    bench_sizes(c, "normalize_minmax_f32", rgb_f32, |b| {
+        exec(b, |e| e.normalize(NormalizeMethod::MinMax, DType::F32))
+    });
+    // The common model-input chain: resize to 224 (the builder's lanczos3
+    // default), then MinMax normalize.
+    bench_sizes(c, "resize_lanczos_224_normalize_minmax_u8", rgb, |b| {
+        exec(b, |e| {
+            e.resize(224, 224, FilterType::Lanczos3)
+                .normalize(NormalizeMethod::MinMax, DType::F32)
+        })
     });
 }
 
@@ -560,6 +605,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = color_kernels, value_kernels, layout_kernels, spatial_kernels, binary_kernels, codec_kernels, sink_kernels
+    targets = color_kernels, color_convert_kernels, value_kernels, layout_kernels, spatial_kernels, binary_kernels, codec_kernels, sink_kernels
 }
 criterion_main!(benches);

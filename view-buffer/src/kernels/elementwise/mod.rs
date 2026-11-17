@@ -311,9 +311,9 @@ pub(crate) enum Strategy {
 /// A kernel that is an integer affine map of 8/16-bit input into the same
 /// dtype runs in integers ([`int_affine`]).
 ///
-/// A lookup table pays only when the per-value work cannot vectorise, or
-/// differs per channel: a `powf` per element (gamma) or a per-channel
-/// normalize. It needs an enumerable input (8-bit; 16-bit once there are at
+/// A lookup table pays when the per-value work cannot vectorise, differs
+/// per channel, or widens 8-bit input to a float: a `powf` per element
+/// (gamma), a per-channel normalize, or a u8 `normalize`/`scale` to f32. It needs an enumerable input (8-bit; 16-bit once there are at
 /// least as many elements per table as entries). A vectorisable kernel such
 /// as `255 - x` streams faster than a table read (measured 0.23 vs 4.1 ms
 /// for a 1024² RGB u8 invert). Everything else streams in blocks.
@@ -333,7 +333,15 @@ pub(crate) fn strategy(in_dtype: DType, n_elems: usize, kernels: &[FusedKernel])
         DType::U16 | DType::I16 => n_elems >= tables * (1 << 16),
         _ => false,
     };
+    // An 8-bit input widened to a float output (normalize, scale) writes
+    // four bytes per element whatever runs; a table read then beats the
+    // convert-compute-convert stream it replaces.
+    let widened = matches!(in_dtype, DType::U8 | DType::I8)
+        && kernels
+            .iter()
+            .all(|k| crate::core::dtype::DTypeCategory::Float.accepts(k.out_dtype));
     let costly = tables > 1
+        || widened
         || kernels
             .iter()
             .any(|k| k.ops.iter().any(scalar_op_is_costly));
@@ -933,8 +941,11 @@ impl ElementMapInPlace<f64> for F64Map<'_> {
 pub(crate) mod stats {
     use crate::core::buffer::ViewBuffer;
     use crate::core::convert::CastFrom;
+    use crate::core::dispatch::{dispatch, SimdKernel};
     use crate::core::dtype::{with_dtype, DType, ViewType};
     use crate::core::map::for_each_run;
+    use crate::core::strided::{RunSink, Walk};
+    use std::marker::PhantomData;
 
     /// The starting value of `f64`'s `Sum`, so a sum carried across runs
     /// adds exactly what one `sum()` over the elements would.
@@ -949,17 +960,18 @@ pub(crate) mod stats {
     /// and MinMax normalize NaN throughout, as ZScore's mean already was.
     /// `(inf, -inf)` for no elements.
     pub(crate) fn min_max_f32(buf: &ViewBuffer) -> (f32, f32) {
-        fn int_extremes<T: ViewType + Ord>(buf: &ViewBuffer) -> Option<(T, T)> {
-            let mut extremes: Option<(T, T)> = None;
-            for_each_run::<T>(buf, |run| {
-                if let (Some(&lo), Some(&hi)) = (run.iter().min(), run.iter().max()) {
-                    extremes = Some(match extremes {
-                        Some((a, b)) => (a.min(lo), b.max(hi)),
-                        None => (lo, hi),
-                    });
-                }
-            });
-            extremes
+        fn int_extremes<T: ViewType + Ord + num_traits::Bounded>(
+            buf: &ViewBuffer,
+        ) -> Option<(T, T)> {
+            match dispatch(IntExtremes::<T> {
+                buf,
+                _type: PhantomData,
+            })
+            .as_slice()
+            {
+                &[lo, hi] => Some((lo, hi)),
+                _ => None,
+            }
         }
         fn float_extremes<T: ViewType>(buf: &ViewBuffer) -> (f32, f32)
         where
@@ -993,6 +1005,87 @@ pub(crate) mod stats {
             DType::I64 => ints!(i64),
             DType::F32 => float_extremes::<f32>(buf),
             DType::F64 => float_extremes::<f64>(buf),
+        }
+    }
+
+    /// The integer extremes of a buffer, one pass, as a dispatched kernel:
+    /// `[min, max]`, or empty for no elements.
+    ///
+    /// Each run is folded [`LANES`] elements at a time into per-lane
+    /// minima and maxima, which then fold to one pair, so the loop
+    /// vectorises (a `min`/`max` per vector); `Iterator::min`/`max` over a
+    /// run did not, and took two passes. Integer `min`/`max` are exact and
+    /// order-free, so the result is the same pair.
+    struct IntExtremes<'a, T> {
+        buf: &'a ViewBuffer,
+        _type: PhantomData<T>,
+    }
+
+    impl<T> Clone for IntExtremes<'_, T> {
+        fn clone(&self) -> Self {
+            IntExtremes {
+                buf: self.buf,
+                _type: PhantomData,
+            }
+        }
+    }
+
+    /// Lanes of the extremes fold: two AVX2 registers of u8, eight of u32.
+    const LANES: usize = 64;
+
+    /// The running extremes of the runs handed to it.
+    struct ExtremesSink<T> {
+        lo: T,
+        hi: T,
+        seen: bool,
+    }
+
+    impl<T: Copy + Ord> RunSink<T> for ExtremesSink<T> {
+        #[inline(always)]
+        fn take(&mut self, run: &[T]) {
+            let (chunks, tail) = run.as_chunks::<LANES>();
+            if let Some((first, rest)) = chunks.split_first() {
+                let (mut lo, mut hi) = (*first, *first);
+                for chunk in rest {
+                    for i in 0..LANES {
+                        lo[i] = lo[i].min(chunk[i]);
+                        hi[i] = hi[i].max(chunk[i]);
+                    }
+                }
+                for i in 0..LANES {
+                    self.lo = self.lo.min(lo[i]);
+                    self.hi = self.hi.max(hi[i]);
+                }
+                self.seen = true;
+            }
+            for &x in tail {
+                self.lo = self.lo.min(x);
+                self.hi = self.hi.max(x);
+                self.seen = true;
+            }
+        }
+    }
+
+    impl<T: ViewType + Ord + num_traits::Bounded> SimdKernel for IntExtremes<'_, T> {
+        type Output = Vec<T>;
+
+        #[inline(always)]
+        fn run(self) -> Vec<T> {
+            let mut sink = ExtremesSink {
+                lo: T::max_value(),
+                hi: T::min_value(),
+                seen: false,
+            };
+            if self.buf.layout.is_contiguous() {
+                sink.take(self.buf.as_slice::<T>());
+            } else {
+                Walk::of(self.buf).for_each_run::<T>(1, &mut sink);
+            }
+            if sink.seen {
+                vec![sink.lo, sink.hi]
+            } else {
+                Vec::new()
+            }
         }
     }
 

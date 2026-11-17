@@ -1,6 +1,6 @@
 {
- "generated": "2026-11-15",
- "commit": "c8476fd",
+ "generated": "2026-11-17",
+ "commit": "4cbfee0",
  "versions": {
   "polars-cv": "0.42.0",
   "polars": "2.1.0",
@@ -1870,6 +1870,71 @@
    "tolerance": "exact",
    "tests": 1,
    "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy float32 (x - min) / (max - min)",
+   "file": "tests/reference/test_normalize_ref.py",
+   "ops": [
+    "normalize"
+   ],
+   "tolerance": "atol 1e-6, rtol 0; exact 0 and 1 extremes",
+   "tests": 126,
+   "passed": 126,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy float64 mean/std cast to float32, (x - mean) / std",
+   "file": "tests/reference/test_normalize_ref.py",
+   "ops": [
+    "normalize"
+   ],
+   "tolerance": "rtol 1e-5, atol 1e-5",
+   "tests": 84,
+   "passed": 84,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy per-row references; null rows stay null",
+   "file": "tests/reference/test_normalize_ref.py",
+   "ops": [
+    "normalize",
+    "normalize_preset"
+   ],
+   "tolerance": "as the non-null cases",
+   "tests": 9,
+   "passed": 9,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy views of the same window, then the float32 references",
+   "file": "tests/reference/test_normalize_ref.py",
+   "ops": [
+    "normalize",
+    "normalize_preset",
+    "crop",
+    "flip_h",
+    "flip_v"
+   ],
+   "tolerance": "minmax atol 1e-6; zscore/preset atol 1e-5",
+   "tests": 75,
+   "passed": 75,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy float32 per-channel (x - mean[c]) / std[c]",
+   "file": "tests/reference/test_normalize_ref.py",
+   "ops": [
+    "normalize_preset"
+   ],
+   "tolerance": "atol 1e-5, rtol 0",
+   "tests": 42,
+   "passed": 42,
    "failed": 0,
    "skipped": 0
   },

@@ -42,6 +42,9 @@ i_overlay = { version = "4.5.1, < 4.6.0", default-features = false }
 # Image codecs, resize and perceptual hashing are unconditional: view-buffer
 # is unpublished and its one consumer always used them.
 image = { workspace = true }
+# Row-limited PNG decoding (`ImageAdapter::decode_png_rows`): the same png
+# crate `image` decodes with, read directly so a decode can stop early.
+png = "0.18"
 tiff = { version = "0.10" }
 fast_image_resize = { version = "6.1" }
 image_hasher = { version = "3.0" }
@@ -77,6 +80,12 @@ serde_json = "1.0"
 criterion = { version = "0.5", features = ["html_reports"] }
 # PNG-decoder evaluation (tests/it/png_decode_eval.rs); dev-only, ships nothing.
 zune-png = "0.4"
+# Property tests for the hot kernels (tests/it/kernel_props.rs).
+proptest = "1.12.0"
+# Scaled JPEG decode (tests/it/jpeg_scaled.rs): the vendored zune-jpeg
+# directly, and jpeg-decoder for its timing comparison; dev-only, ships nothing.
+zune-jpeg = "0.5"
+jpeg-decoder = "0.3"
 
 [[bench]]
 # Kernel micro-benchmarks (`benches/kernels.rs`): the base-vs-head gate for a

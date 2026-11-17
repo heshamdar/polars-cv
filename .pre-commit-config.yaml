@@ -1,3 +1,7 @@
+# Vendored upstream code (vendor/) stays byte-identical to its release, so
+# a local patch reads as a clean diff against it.
+exclude: ^vendor/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

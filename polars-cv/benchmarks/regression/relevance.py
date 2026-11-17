@@ -73,6 +73,8 @@ RULES: tuple[tuple[str, str], ...] = (
     ("view-buffer/src/ops/**", _OPS),
     ("view-buffer/src/execution/**", _OPS),
     ("view-buffer/src/kernels/**", _OPS),
+    # The vendored resize engine (`[patch.crates-io]`): every resize runs it.
+    ("vendor/fast_image_resize/**", _OPS),
     ("view-buffer/src/expr.rs", _OPS),
     ("view-buffer/src/lib.rs", _OPS),
     ("view-buffer/src/mode.rs", _OPS),
@@ -101,6 +103,9 @@ RULES: tuple[tuple[str, str], ...] = (
     ),
     ("polars-cv/src/formats/**", f"{_OPS},zero_copy,targeted"),
     ("polars-cv/src/execute.rs", f"{_OPS},targeted:codec_*"),
+    # The vendored JPEG decoder (`[patch.crates-io]`): `image` and the
+    # `decode_from_plan` shortcuts decode every JPEG with it.
+    ("vendor/zune-jpeg/**", f"{_OPS},targeted:codec_*"),
     ("polars-cv/src/output.rs", f"{_OPS},zero_copy,targeted:blob_*"),
     ("polars-cv/src/ext_types.rs", _NONE),  # tagged (`ndarray`) outputs only
     # Every call's rows, and every tensor sink's fill phase, run through the

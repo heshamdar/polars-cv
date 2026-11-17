@@ -12,6 +12,23 @@ is in the git history of this file.
 
 ## [Unreleased]
 
+### Added
+
+- `decode_from_plan="approximate"` on image sources lets a JPEG decode at a
+  reduced scale before a leading `resize`, as luma only before a leading
+  `grayscale`, or both; approximate, off by default.
+
+### Changed
+
+- A pipeline that starts with a literal `crop` decodes a PNG only down to the
+  crop's last row, so damage in the image data below it no longer fails the
+  row.
+
+### Fixed
+
+- Progressive JPEGs that use restart markers decode correctly; they came out
+  garbled.
+
 ## [0.42.0] — 2026-11-15
 
 Graph inspection is unified under `expr.graph()`/`explain()`, the tensor sink

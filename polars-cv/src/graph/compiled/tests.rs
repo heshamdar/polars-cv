@@ -1237,3 +1237,87 @@ fn a_null_operand_nulls_the_node_for_every_reading_op() {
         );
     }
 }
+
+// --- Decode hints: what a node's leading steps let its decode skip ---
+
+/// The hint compiled for a single-node graph whose source is `source` and
+/// whose steps are `ops` (both JSON).
+fn hint_for(source: &str, ops: &str) -> crate::execute::DecodeHint {
+    let graph = format!(
+        r#"{{
+            "version": 2,
+            "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {source}}}}},
+                              "ops": {ops}}}}},
+            "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "blob"}}}}}}
+        }}"#
+    );
+    let compiled = CompiledGraph::compile(&graph).expect("graph must compile");
+    compiled.plan[0].input.decode().expect("a root").hint
+}
+
+#[test]
+fn decode_hints_follow_the_leading_static_steps() {
+    use crate::execute::DecodeHint;
+    const APPROX: &str = r#"{"format": "image_bytes", "decode_from_plan": "approximate"}"#;
+    const OFF: &str = r#"{"format": "image_bytes"}"#;
+    const RESIZE: &str = r#"{"op": "resize", "height": 224, "width": 300}"#;
+    const GRAY: &str = r#"{"op": "grayscale", "keepdims": false}"#;
+    let hint = |rows_needed, scale_to, luma| DecodeHint {
+        rows_needed,
+        scale_to,
+        luma,
+    };
+    let cases = [
+        // Approximate: a leading resize, a leading grayscale, and both.
+        (
+            APPROX,
+            format!("[{RESIZE}]"),
+            hint(None, Some((300, 224)), false),
+        ),
+        (APPROX, format!("[{GRAY}]"), hint(None, None, true)),
+        (
+            APPROX,
+            format!("[{GRAY}, {RESIZE}]"),
+            hint(None, Some((300, 224)), true),
+        ),
+        // A resize after anything but a leading grayscale is not the decode's.
+        (
+            APPROX,
+            format!(r#"[{{"op": "blur", "sigma": 1.0}}, {RESIZE}]"#),
+            hint(None, None, false),
+        ),
+        (
+            APPROX,
+            format!("[{RESIZE}, {GRAY}]"),
+            hint(None, Some((300, 224)), false),
+        ),
+        // A per-row resize is not known before its row decodes.
+        (
+            APPROX,
+            r#"[{"op": "resize", "height": {"$slot": 1}, "width": 300}]"#.to_string(),
+            hint(None, None, false),
+        ),
+        // A cast before grayscale: no luma (its luma would be fractional).
+        (
+            r#"{"format": "image_bytes", "decode_from_plan": "approximate", "dtype": "f32"}"#,
+            format!("[{GRAY}, {RESIZE}]"),
+            hint(None, Some((300, 224)), false),
+        ),
+        // Off: no approximate hint, whatever the steps.
+        (OFF, format!("[{GRAY}, {RESIZE}]"), hint(None, None, false)),
+        // The crop pushdown is exact, so it holds either way.
+        (
+            OFF,
+            r#"[{"op": "crop", "top": 2, "left": 0, "height": 5}]"#.to_string(),
+            hint(Some(7), None, false),
+        ),
+        (
+            APPROX,
+            r#"[{"op": "crop", "top": 2, "left": 0, "height": 5}]"#.to_string(),
+            hint(Some(7), None, false),
+        ),
+    ];
+    for (source, ops, want) in cases {
+        assert_eq!(hint_for(source, &ops), want, "{source} {ops}");
+    }
+}

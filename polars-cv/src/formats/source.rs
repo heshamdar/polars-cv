@@ -45,6 +45,17 @@ use crate::fetch::FetchErrorPolicy;
 /// bit-identical to a full decode and the same resize, hence the explicit
 /// opt-in.
 ///
+/// ``decode_from_plan="approximate"`` lets a JPEG decode skip what the
+/// node's own leading steps throw away, at a small cost in fidelity. Before a
+/// literal ``resize`` (first, or after a leading ``grayscale``) it decodes
+/// with IDCT scaling at the smallest scale still covering the target on both
+/// sides; otherwise, before a leading ``grayscale``, it decodes only a colour
+/// JPEG's luma (within a level or two of the grayscale of the full decode,
+/// with an undeclared or u8 ``dtype``). Other encodings, and
+/// a JPEG with nothing to skip, decode exactly as with ``"off"`` (the
+/// default). It is refused beside ``decode_max_size``, which answers the same
+/// question.
+///
 /// ``orientation`` says which way up a decoded image is. A camera stores the
 /// sensor's pixels and tags how to turn them for display (EXIF
 /// ``Orientation``; TIFF's own tag). ``"stored"``, the default, ignores the
@@ -98,6 +109,21 @@ view_buffer::naming::named_variants!(Orientation: "Which way up an image source 
     "exif" => Exif,
 });
 
+/// Whether an image decode may be shaped by the node's leading steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DecodeFromPlan {
+    /// The full decode, whatever follows it.
+    #[default]
+    Off,
+    /// A JPEG decode may skip what the leading steps discard.
+    Approximate,
+}
+
+view_buffer::naming::named_variants!(DecodeFromPlan: "Whether an image source's decode may be shaped by the steps that follow it.\n\n- OFF: the full decode, exactly (the default).\n- APPROXIMATE: a JPEG decodes at a reduced IDCT scale before a leading ``resize``, or as luma only before a leading ``grayscale``; close to, not identical with, the full decode." {
+    "off" => Off,
+    "approximate" => Approximate,
+});
+
 #[derive(Debug, Clone, PartialEq, Ops)]
 pub enum Source {
     /// A Polars fixed-size `Array` column, one nesting level per axis.
@@ -130,6 +156,11 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// "off" (default) decodes in full; "approximate" lets a JPEG decode
+        /// skip what the leading ``resize``/``grayscale`` discards (see
+        /// above).
+        #[param(default = "off")]
+        decode_from_plan: Literal<DecodeFromPlan>,
         /// "stored" (default) decodes the pixels as the file stores them;
         /// "exif" turns them for display by the file's orientation tag (see
         /// above).
@@ -172,6 +203,11 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// "off" (default) decodes in full; "approximate" lets a JPEG decode
+        /// skip what the leading ``resize``/``grayscale`` discards (see
+        /// above).
+        #[param(default = "off")]
+        decode_from_plan: Literal<DecodeFromPlan>,
         /// "stored" (default) decodes the pixels as the file stores them;
         /// "exif" turns them for display by the file's orientation tag (see
         /// above).
@@ -189,6 +225,11 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// "off" (default) decodes in full; "approximate" lets a JPEG decode
+        /// skip what the leading ``resize``/``grayscale`` discards (see
+        /// above).
+        #[param(default = "off")]
+        decode_from_plan: Literal<DecodeFromPlan>,
         /// "stored" (default) decodes the pixels as the file stores them;
         /// "exif" turns them for display by the file's orientation tag (see
         /// above).
@@ -241,8 +282,19 @@ impl Source {
 
 impl super::Format for Source {
     const KIND: &'static str = "source";
-    /// A source's fields are independent: each is checked by its type.
+    /// Each field is checked by its type; the one cross-field rule is that
+    /// `decode_from_plan="approximate"` and `decode_max_size` both decide how
+    /// much of a JPEG to decode, so a source takes one or the other.
     fn check(&self) -> Result<(), String> {
+        if self.decode_from_plan() == DecodeFromPlan::Approximate
+            && self.decode_max_size().is_some()
+        {
+            return Err(format!(
+                "source '{}': decode_from_plan=\"approximate\" and decode_max_size both decide \
+                 how much of a JPEG to decode; set one or the other",
+                self.name()
+            ));
+        }
         Ok(())
     }
     fn formats() -> &'static [view_buffer::mode::OpDesc] {
@@ -271,16 +323,18 @@ impl Source {
             cloud_options,
             allowed_roots,
             decode_max_size,
+            decode_from_plan,
             orientation,
             on_error,
         } = self
         else {
             return None;
         };
-        let (dtype, require_contiguous, decode_max_size, orientation, on_error) = (
+        let (dtype, require_contiguous, decode_max_size, decode_from_plan, orientation, on_error) = (
             *dtype,
             *require_contiguous,
             *decode_max_size,
+            *decode_from_plan,
             *orientation,
             *on_error,
         );
@@ -290,6 +344,7 @@ impl Source {
                 cloud_options: cloud_options.clone(),
                 allowed_roots: allowed_roots.clone(),
                 decode_max_size,
+                decode_from_plan,
                 orientation,
                 on_error,
             }),
@@ -317,6 +372,7 @@ impl Source {
                     Source::ImageBytes {
                         dtype,
                         decode_max_size,
+                        decode_from_plan,
                         orientation,
                         on_error,
                     }
@@ -439,6 +495,27 @@ impl Source {
         }
     }
 
+    /// Whether an image decode may be shaped by the node's leading steps.
+    pub fn decode_from_plan(&self) -> DecodeFromPlan {
+        match self {
+            Source::Auto {
+                decode_from_plan, ..
+            }
+            | Source::FilePath {
+                decode_from_plan, ..
+            }
+            | Source::ImageBytes {
+                decode_from_plan, ..
+            } => decode_from_plan.get(),
+            Source::Array { .. }
+            | Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::List { .. }
+            | Source::Raw { .. }
+            | Source::Tensor { .. } => DecodeFromPlan::Off,
+        }
+    }
+
     /// Whether an image decode applies the file's orientation tag.
     pub fn applies_orientation(&self) -> bool {
         match self {
@@ -510,6 +587,16 @@ mod tests {
         assert_eq!(image.decode_max_size(), Some(64));
         assert!(image.nulls_on_error());
         assert_eq!(image.dtype(), Some(DType::U8));
+        let approx =
+            parse(serde_json::json!({"format": "auto", "decode_from_plan": "approximate"}))
+                .unwrap();
+        for column in [
+            Series::new("b".into(), [Some(&b"\x89PNG"[..])]),
+            Series::new("p".into(), ["/a.png"]),
+        ] {
+            let routed = approx.route(&column).unwrap().unwrap();
+            assert_eq!(routed.decode_from_plan(), DecodeFromPlan::Approximate);
+        }
         let blob = view_buffer::ViewBuffer::from_vec(vec![1u8, 2]).to_blob();
         assert_eq!(
             route(Series::new("b".into(), [&blob[..]])).unwrap().name(),
@@ -537,12 +624,32 @@ mod tests {
         );
     }
 
+    /// Both settings decide how much of a JPEG to decode: the wire refuses
+    /// the pair, so no decoder has to pick one.
+    #[test]
+    fn decode_from_plan_is_refused_beside_decode_max_size() {
+        for format in ["image_bytes", "file_path", "auto"] {
+            let err = parse(serde_json::json!({"format": format, "decode_max_size": 64,
+                                               "decode_from_plan": "approximate"}))
+            .unwrap_err();
+            assert!(
+                err.contains("decode_from_plan=\"approximate\"") && err.contains("decode_max_size"),
+                "{err}"
+            );
+            let off = parse(serde_json::json!({"format": format, "decode_max_size": 64,
+                                               "decode_from_plan": "off"}))
+            .unwrap();
+            assert_eq!(off.decode_from_plan(), DecodeFromPlan::Off);
+        }
+    }
+
     #[test]
     fn absent_settings_take_their_defaults() {
         let source = parse(serde_json::json!({"format": "image_bytes"})).unwrap();
         assert!(!source.nulls_on_error());
         assert_eq!(source.dtype(), None);
         assert_eq!(source.decode_max_size(), None);
+        assert_eq!(source.decode_from_plan(), DecodeFromPlan::Off);
     }
 
     /// Every parameter used to be accepted by every format on the wire, and
