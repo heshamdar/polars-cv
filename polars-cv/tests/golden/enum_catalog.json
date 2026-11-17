@@ -88,6 +88,14 @@
     ]
   },
   {
+    "name": "DecodeFromPlan",
+    "doc": "Whether an image source's decode may be shaped by the steps that follow it.\n\n- OFF: the full decode, exactly (the default).\n- APPROXIMATE: a JPEG decodes at a reduced IDCT scale before a leading ``resize``, or as luma only before a leading ``grayscale``; close to, not identical with, the full decode.",
+    "variants": [
+      "off",
+      "approximate"
+    ]
+  },
+  {
     "name": "Domain",
     "doc": "The kind of data a pipeline carries at one point: ``buffer`` (an image or array), ``contour`` (geometry), ``scalar`` or ``vector``.",
     "variants": [

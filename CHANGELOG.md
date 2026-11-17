@@ -12,6 +12,12 @@ is in the git history of this file.
 
 ## [Unreleased]
 
+### Added
+
+- `decode_from_plan="approximate"` on image sources lets a JPEG decode at a
+  reduced scale before a leading `resize`, or as luma only before a leading
+  `grayscale`; approximate, off by default.
+
 ### Changed
 
 - A pipeline that starts with a literal `crop` decodes a PNG only down to the

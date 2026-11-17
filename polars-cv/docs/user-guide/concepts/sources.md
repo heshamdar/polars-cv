@@ -27,8 +27,8 @@ pipe = Pipeline().source(allowed_roots=["/srv/images"]).resize(height=224, width
 The column dtype is constant across rows, so the resolution happens once per
 batch — the default path adds no per-row cost. Options that apply to the
 resolved format still apply to `auto`: `cloud_options`, `allowed_roots` and the
-windowed remote fetch (over a `String` URL column), `decode_max_size`, and
-`require_contiguous`.
+windowed remote fetch (over a `String` URL column), `decode_max_size`,
+`decode_from_plan`, and `require_contiguous`.
 
 Pass an explicit format when the dtype cannot be routed — a plain numeric
 column raises and names the alternatives — or when you want to override the
@@ -94,6 +94,32 @@ pipe = Pipeline().source(
 
 Because a scaled decode + resize is not bit-identical to a full decode + the same
 resize, this is an opt-in (see [Scaled decode](../operations/image-ops.md#scaled-decode)).
+
+### Decoding From the Plan: `decode_from_plan`
+
+`decode_from_plan="approximate"` lets a JPEG decode skip what the node's own
+first steps discard, instead of you stating a size:
+
+- before a literal `resize(height=H, width=W)` (first, or right after a leading
+  `grayscale`), the JPEG decodes at the smallest IDCT scale whose width is at
+  least `W` and height at least `H`; the resize still runs;
+- otherwise, before a leading `grayscale`, a colour JPEG decodes only its luma
+  channel (with no `dtype`, or `dtype="u8"`), within a level or two of the
+  grayscale of the full decode.
+
+```python
+pipe = (
+    Pipeline()
+    .source("image_bytes", decode_from_plan="approximate")
+    .resize(height=224, width=224)
+)
+```
+
+The output's shape and dtype are those of `"off"` (the default), and its pixels
+are close to, not identical with, them. Other encodings, a JPEG with nothing to
+skip, and per-row (expression) resize sizes decode exactly as with `"off"`.
+Setting it together with `decode_max_size` raises: both decide how much of the
+JPEG to decode.
 
 ### Orientation
 

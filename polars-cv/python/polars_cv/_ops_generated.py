@@ -39,6 +39,7 @@ __all__ = [
     "ColorSpace",
     "CoordOrder",
     "DType",
+    "DecodeFromPlan",
     "Domain",
     "ExtractMode",
     "FetchErrorPolicy",
@@ -153,6 +154,17 @@ class DType(str, Enum):
     I64 = "i64"
     F32 = "f32"
     F64 = "f64"
+
+
+class DecodeFromPlan(str, Enum):
+    """Whether an image source's decode may be shaped by the steps that follow it.
+
+    - OFF: the full decode, exactly (the default).
+    - APPROXIMATE: a JPEG decodes at a reduced IDCT scale before a leading ``resize``, or as luma only before a leading ``grayscale``; close to, not identical with, the full decode.
+    """
+
+    OFF = "off"
+    APPROXIMATE = "approximate"
 
 
 class Domain(str, Enum):
@@ -1859,6 +1871,13 @@ SOURCE_FIELDS: dict[str, dict[str, Any]] = {
         "inner": {"kind": "scalar", "per_row": False, "py": "str", "this": False},
     },
     "cloud_options": {"kind": "map"},
+    "decode_from_plan": {
+        "kind": "scalar",
+        "per_row": False,
+        "py": "DecodeFromPlan",
+        "this": False,
+        "variants": ["off", "approximate"],
+    },
     "decode_max_size": {"kind": "scalar", "per_row": False, "py": "int", "this": False},
     "dtype": {
         "kind": "scalar",
@@ -2081,6 +2100,7 @@ class _OpsMixin:
         *,
         allowed_roots: Sequence[str] | None = None,
         cloud_options: CloudOptions | dict[str, Any] | None = None,
+        decode_from_plan: str | None = None,
         decode_max_size: int | None = None,
         dtype: str | None = None,
         on_error: str | None = None,
@@ -2106,6 +2126,9 @@ class _OpsMixin:
             from; required to read one (``["*"]`` for any; see above).
         cloud_options: ``auto``, ``file_path``: Cloud-storage credentials: a
             ``CloudOptions`` or a dict.
+        decode_from_plan: ``auto``, ``file_path``, ``image_bytes``: "off" (default)
+            decodes in full; "approximate" lets a JPEG decode skip what the leading
+            ``resize``/``grayscale`` discards (see above).
         decode_max_size: ``auto``, ``file_path``, ``image_bytes``: Decode only
             enough pixels for this long side (JPEG IDCT scaling; see above).
         dtype: ``array``, ``list``: Element dtype; inferred from the column when
@@ -2133,6 +2156,7 @@ class _OpsMixin:
             {
                 "allowed_roots": allowed_roots,
                 "cloud_options": cloud_options,
+                "decode_from_plan": decode_from_plan,
                 "decode_max_size": decode_max_size,
                 "dtype": dtype,
                 "on_error": on_error,

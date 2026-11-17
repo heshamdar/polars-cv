@@ -143,6 +143,21 @@
           }
         },
         {
+          "name": "decode_from_plan",
+          "doc": "\"off\" (default) decodes in full; \"approximate\" lets a JPEG decode\nskip what the leading ``resize``/``grayscale`` discards (see\nabove).",
+          "default": "off",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "DecodeFromPlan",
+            "this": false,
+            "variants": [
+              "off",
+              "approximate"
+            ]
+          }
+        },
+        {
           "name": "orientation",
           "doc": "\"stored\" (default) decodes the pixels as the file stores them;\n\"exif\" turns them for display by the file's orientation tag (see\nabove).",
           "default": "stored",
@@ -316,6 +331,21 @@
           }
         },
         {
+          "name": "decode_from_plan",
+          "doc": "\"off\" (default) decodes in full; \"approximate\" lets a JPEG decode\nskip what the leading ``resize``/``grayscale`` discards (see\nabove).",
+          "default": "off",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "DecodeFromPlan",
+            "this": false,
+            "variants": [
+              "off",
+              "approximate"
+            ]
+          }
+        },
+        {
           "name": "orientation",
           "doc": "\"stored\" (default) decodes the pixels as the file stores them;\n\"exif\" turns them for display by the file's orientation tag (see\nabove).",
           "default": "stored",
@@ -389,6 +419,21 @@
               "py": "int",
               "this": false
             }
+          }
+        },
+        {
+          "name": "decode_from_plan",
+          "doc": "\"off\" (default) decodes in full; \"approximate\" lets a JPEG decode\nskip what the leading ``resize``/``grayscale`` discards (see\nabove).",
+          "default": "off",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "DecodeFromPlan",
+            "this": false,
+            "variants": [
+              "off",
+              "approximate"
+            ]
           }
         },
         {

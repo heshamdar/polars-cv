@@ -2831,6 +2831,7 @@ dependencies = [
  "thiserror 1.0.69",
  "url",
  "view-buffer",
+ "zune-jpeg 0.5.8",
 ]
 
 [[package]]

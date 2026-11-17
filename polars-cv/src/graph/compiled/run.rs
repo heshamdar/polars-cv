@@ -401,7 +401,7 @@ impl CompiledGraph {
                         column,
                         source,
                         source_null,
-                        rows_needed,
+                        hint,
                         ..
                     } = decode.as_ref();
                     // An `"auto"` source reads as the concrete source it was
@@ -421,7 +421,7 @@ impl CompiledGraph {
                             RowFetch {
                                 fetcher: state.fetchers[idx].as_ref(),
                             },
-                            *rows_needed,
+                            hint,
                         )
                     });
                     match decode_result {

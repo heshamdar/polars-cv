@@ -4550,6 +4550,11 @@
     "None"
    ],
    [
+    "decode_from_plan",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
     "decode_max_size",
     "KEYWORD_ONLY",
     "None"

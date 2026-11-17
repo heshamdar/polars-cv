@@ -9,7 +9,7 @@ use std::sync::{atomic::AtomicUsize, Mutex};
 use view_buffer::PlannedDType;
 
 use crate::catalog::TypedOp;
-use crate::formats::source::Source;
+use crate::formats::source::{DecodeFromPlan, Source};
 use crate::params::ParamCtx;
 
 use crate::graph::step::GraphStep;
@@ -85,27 +85,58 @@ pub(super) struct PlannedDecode {
     /// column holds them, and the refusal is made where a path column is
     /// about to be read ([`CompiledGraph::fetchers`]).
     pub(super) path_policy: Result<crate::fetch::PathPolicy, String>,
-    /// The rows a decode needs when the node's first step is a literal
-    /// `crop` with a height: the crop's last row. An image decoder may stop
-    /// there ([`crate::execute::decode_image_bytes`]); the crop still runs,
-    /// so the node's output is unchanged.
-    pub(super) rows_needed: Option<u32>,
+    /// What the node's leading static steps let its image decode skip
+    /// ([`decode_hint`]). Every step still runs, so the hint never changes
+    /// the output's shape or dtype.
+    pub(super) hint: crate::execute::DecodeHint,
 }
 
-/// The rows a leading literal crop reads (its `top + height`), if the node
-/// starts with one. Only a static crop: a per-row one is not known before
-/// its row decodes.
-fn leading_crop_rows(steps: &[CompiledStep]) -> Option<u32> {
+/// What a node's leading steps let its image decode skip: the one place a
+/// decode is shaped by the plan.
+///
+/// - `rows_needed` (exact, always): a leading literal `crop` with a height
+///   reads rows up to its `top + height`.
+/// - `scale_to` and `luma` (approximate, only under the source's
+///   `decode_from_plan="approximate"`): a leading `grayscale` sets `luma`
+///   when the decode stays u8 (a cast first would make the grayscale's luma
+///   fractional, which a u8 Y channel cannot match), and a literal `resize`
+///   first, or right after that `grayscale`, sets `scale_to`.
+///
+/// Only static (all-literal) steps count: a per-row step is not known before
+/// its row decodes, and a step after a per-row one may see any size.
+pub(super) fn decode_hint(steps: &[CompiledStep], source: &Source) -> crate::execute::DecodeHint {
+    use view_buffer::ops::image::ImageOpKind;
     use view_buffer::ops::view::ViewOp;
     use view_buffer::ViewDto;
-    match &steps.first()?.resolver {
-        OpResolver::Static(GraphStep::Buffer(ViewDto::View(ViewOp::Crop {
+    let leading = |i: usize| match steps.get(i).map(|s| &s.resolver) {
+        Some(OpResolver::Static(GraphStep::Buffer(dto))) => Some(dto),
+        _ => None,
+    };
+    let rows_needed = match leading(0) {
+        Some(ViewDto::View(ViewOp::Crop {
             top,
             height: Some(height),
             ..
-        }))) => top.checked_add(*height),
+        })) => top.checked_add(*height),
         _ => None,
+    };
+    let mut hint = crate::execute::DecodeHint {
+        rows_needed,
+        ..Default::default()
+    };
+    if source.decode_from_plan() != DecodeFromPlan::Approximate {
+        return hint;
     }
+    let image = |i: usize| match leading(i) {
+        Some(ViewDto::Image(op)) => Some(&op.kind),
+        _ => None,
+    };
+    let grayscale = matches!(image(0), Some(ImageOpKind::Grayscale { .. }));
+    hint.luma = grayscale && source.dtype().is_none_or(|d| d == view_buffer::DType::U8);
+    if let Some(ImageOpKind::Resize { width, height, .. }) = image(usize::from(grayscale)) {
+        hint.scale_to = Some((*width, *height));
+    }
+    hint
 }
 
 impl PlannedInput {
@@ -220,7 +251,7 @@ impl CompiledGraph {
                             .transpose()
                             .map_err(|e| polars_err!(ComputeError: "{e}"))?,
                         path_policy: crate::fetch::PathPolicy::resolve(source.path_settings().1),
-                        rows_needed: leading_crop_rows(&steps),
+                        hint: decode_hint(&steps, source),
                     }))
                 }
                 NodeInput::Node(up) => {
