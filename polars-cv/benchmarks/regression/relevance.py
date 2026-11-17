@@ -73,6 +73,8 @@ RULES: tuple[tuple[str, str], ...] = (
     ("view-buffer/src/ops/**", _OPS),
     ("view-buffer/src/execution/**", _OPS),
     ("view-buffer/src/kernels/**", _OPS),
+    # The vendored resize engine (`[patch.crates-io]`): every resize runs it.
+    ("vendor/fast_image_resize/**", _OPS),
     ("view-buffer/src/expr.rs", _OPS),
     ("view-buffer/src/lib.rs", _OPS),
     ("view-buffer/src/mode.rs", _OPS),

@@ -86,3 +86,8 @@ split-debuginfo = "off"
 
 [profile.dev.package.polars-cv-macros]
 split-debuginfo = "off"
+
+# fast_image_resize 6.1.0 with a convolution-coefficient cache in `Resizer`
+# (vendor/fast_image_resize/VENDORED.md). Drop this once upstream ships one.
+[patch.crates-io]
+fast_image_resize = { path = "vendor/fast_image_resize" }
