@@ -146,6 +146,7 @@ scratch zeroing → T2 blur → T3 grayscale → T4 HSV.
 | 2026-11-17 | T3b same, block scratch only (lane zeroed as before) | Isolate the suspected lane regression | wheel: every case 0.86–1.12×, the same band as the untouched grayscale controls (0.93–1.10×) | rejected (within noise); two consecutive failures, so the target is stopped | – |
 | 2026-11-17 | T4a colour conversion (`kernels/color.rs::convert_ranged`) | cast→f64 map→cast (three passes, two 8×-size temporaries) → load/store inside the pixel map for u8→u8 and f32→f32, same f64 arithmetic via `CastFrom`. Bit-exact. | HSV u8 0.76/1.36/1.85× (wheel), 0.78/1.47/1.88× (local): **regressed at 256²**; per-pixel cost flat at 25 ns vs the old 19 ns in cache, because the generic body stopped folding the per-pixel `from`/`to` matches | rejected as-is | – |
 | 2026-11-17 | T4b T4a + a constant-space loop for RGB→HSV and HSV→RGB (`decode_rgb`/`encode` inlined) | Fold the matches back | HSV u8 **1.65/2.43/2.75×** (wheel), 1.69/2.34/2.09× (local); HSV f32 1.77/1.28/2.65× \| 2.09/1.13/2.03×; Lab ≈1× (powf-bound); grayscale control 0.88–1.05× | accepted | `8804416` |
+| 2026-11-17 | T5 `strategy()`: 8-bit input → float output uses the 256-entry LUT | samply (wall time) put normalize's u8→f32 `Blocked` map at 13% of the light pipeline (~2 cycles/element: convert, sub, div, store); the LUT path `normalize_preset` already uses is the same f32 arithmetic per value, so the change is bit-exact | wheel: minmax u8 1.74/1.60/1.46×, cropped 1.49/1.56/1.61×, zscore u8 1.23/1.15/1.21×, scale_u8 0.98/0.99/0.83× (base ±30%); local: minmax 1.57/1.74/1.65×, cropped 1.80/1.86/1.72×, zscore 1.10/1.19/1.29×, scale 1.19/1.10/1.15×; resize→minmax chain 0.94–1.16×; grayscale controls 0.76–1.08× | **pending user approval**: it flips the existing test row `"u8 minmax -> f32" → Blocked` in `the_strategy_tables_only_costly_kernels_over_enumerable_input`. Stashed (`git stash list`). 275 integration tests and goldens pass. | – |
 
 ### Final end-to-end (base `f4c1adb` → head `8804416`)
 
@@ -165,9 +166,17 @@ light run measured 2,775 → 3,614), so ratios are the comparison.
 
 `scripts/verify.sh` passes at `8804416` (all 16 checks).
 
+### Wall-time profile (samply, after T1/T2/T4; `perf_event_paranoid` lowered with the user's OK)
+
+Light pipeline (resize 224 → normalize), all threads: decode 47% (fdeflate 38%, `build_table` 3.5%), `fast_image_resize` 32%, **of which Lanczos coefficients (`sin`, `precompute_coefficients`, `lanczos_filter`, `Normalizer16`) ≈ 9–10%**, normalize map `MapNew<Blocked<u8,f32>>` 13%, `memset` 4.5%, T1's extremes 0.24%. Page faults are ruled out (12 minor faults/img, sys 4%). Callgrind had understated the coefficient cost and the map.
+
+### Decode research
+
+`DECODE_RESEARCH.md` (research agent, 13 searches + 4 fetches). Engine swaps are worth 0–15%, because fdeflate and zune-jpeg are already in the libdeflate/libjpeg-turbo class. The wins are planner-driven work avoidance: (1) JPEG DCT-domain downscale derived from the downstream resize (3–7.6× for 12 MP → 224, tolerance, opt-in); (2) crop pushdown (PNG early stop, bit-exact, small; JPEG needs a zune fork); (3) luma-only JPEG for `grayscale` plans (1.30–1.50×, ±1 on 2.3% of pixels, opt-in). A second, academic-literature survey is running.
+
 ## 6. Remaining ideas (ranked)
 
-1. **Lanczos coefficient cache in `fast_image_resize`** (3–7% of resize pipelines' instructions; `sin` per tap per image). Upstream patch, or our own resampler for the default filter. Ask before adding a fork.
+1. **Lanczos coefficient cache in `fast_image_resize`** (≈9–10% of the light pipeline's wall time per samply; `sin` per tap per image). Upstream patch, or our own resampler for the default filter. Ask before adding a fork.
 2. **Lab/YCbCr: the same constant-space loop as HSV.** T4b gave RGB↔HSV their own loops; RGB→Lab is `powf`/`cbrt`-bound (no gain from T4a), and YCbCr is cheap arithmetic that would probably gain like HSV. Each pair adds about 12 instances (issue #209).
 3. **f32 `normalize` minmax** (`float_extremes`): scalar fold with the NaN rule. A lane fold that tracks NaN separately would be exact. Less common than u8.
 4. **Python and pipeline overhead per call**: about 5% of the profile is `_PyEval`/`type_new`, mostly import. Measure per-`select` overhead separately before acting.
